@@ -1,0 +1,26 @@
+# data exports stay local - history CSVs, dumps, model artefacts
+data/
+*.csv
+*.parquet
+*.pkl
+*.joblib
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.eggs/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# tooling
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
