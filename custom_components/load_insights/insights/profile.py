@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .calendars import CalendarModel, CalendarSignals, fit_calendar
 from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
+from .nowcast import LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows, fit_nowcast
 
 Sample = Tuple[datetime, float]
 
@@ -268,6 +269,8 @@ class Forecast:
     temperature: TemperatureResponse = NO_RESPONSE
     hours_with_forecast_temperature: int = 0
     calendars: tuple = ()        # CalendarModel per linked calendar, this series' own fit
+    nowcast: Nowcast = NO_NOWCAST
+    nowcast_deltas: tuple = ()   # kWh added to the first NOWCAST_LEADS rows
 
 
 def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
@@ -283,13 +286,18 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
              holidays: Optional[Set[date]] = None,
              temps_history: Optional[Dict[float, float]] = None,
              temps_forecast: Optional[Dict[float, float]] = None,
-             calendars: Optional[Sequence[CalendarSignals]] = None) -> Forecast:
+             calendars: Optional[Sequence[CalendarSignals]] = None,
+             state_history: Optional[Dict[float, float]] = None,
+             state_now: Optional[float] = None) -> Forecast:
     """``temps_history`` / ``temps_forecast`` map hour keys (epoch seconds of
     the period start) to outdoor temperature in C. Absent, the profile stands
     alone; present, a temperature response is fitted on the residuals and
     applied to the horizon hours that have a forecast temperature.
     ``calendars`` carry each linked calendar's on-hours over history and
     horizon; each is fitted on this series and applied where it engaged.
+    ``state_history`` / ``state_now`` are a device's own state sensor (hour
+    key -> hourly mean, and the live value): a nowcast is fitted on the
+    residuals and shifts the first few horizon hours.
 
     Order, fit and predict alike: slot -> + temperature -> x calendars ->
     x level. The level is judged against the fully adjusted expectation."""
@@ -351,12 +359,33 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
                     hist_mult[k] = hist_mult.get(k, 1.0) * m.multiplier(k, h, sig)
 
     level = level_correction(profile, samples, now, response, temps_history, hist_mult)
+
+    # the device's own state, if it has one: residuals against the fully
+    # adjusted expectation, lined up with the state a few hours earlier
+    nowcast = NO_NOWCAST
+    if state_history:
+        cutoff_k = _key(floor_hour(now))
+        resid: Dict[float, float] = {}
+        weights: Dict[float, float] = {}
+        for t, v in samples:
+            k = _key(t)
+            if v is None or k >= cutoff_k:
+                continue
+            e = profile.slot_kwh(t)
+            if e is None:
+                continue
+            e = max(0.0, e + response.delta((temps_history or {}).get(k))) * hist_mult.get(k, 1.0) * level
+            resid[k] = v - e
+            weights[k] = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
+        nowcast = fit_nowcast(build_rows(state_history, resid, weights))
+    deltas = nowcast.deltas(state_now)
+
     base = profile.predict(now, horizon_hours, 1.0)
     base_bands = profile.predict_bands(now, horizon_hours, 1.0)
     hourly = []
     bands = []
     with_temp = 0
-    for (t, v), (lo, hi) in zip(base, base_bands):
+    for i, ((t, v), (lo, hi)) in enumerate(zip(base, base_bands)):
         k = _key(t)
         temp = (temps_forecast or {}).get(k)
         d = response.delta(temp)
@@ -366,8 +395,18 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         for m, sig in zip(cal_models, calendars or ()):
             if m.engaged:
                 mult *= m.multiplier(k, t.hour, sig)
-        hourly.append((t, max(0.0, (v + d) * mult * level)))
-        bands.append((max(0.0, (lo + d) * mult * level), max(0.0, (hi + d) * mult * level)))
+        centre = (v + d) * mult * level
+        lo_v = (lo + d) * mult * level
+        hi_v = (hi + d) * mult * level
+        if i < NOWCAST_LEADS and nowcast.engaged:
+            shift = deltas[i]
+            shrink = nowcast.band_shrink(i)
+            half_lo = (centre - lo_v) * shrink
+            half_hi = (hi_v - centre) * shrink
+            centre += shift
+            lo_v, hi_v = centre - half_lo, centre + half_hi
+        hourly.append((t, max(0.0, centre)))
+        bands.append((max(0.0, lo_v), max(0.0, hi_v)))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(
@@ -383,4 +422,6 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         temperature=response,
         hours_with_forecast_temperature=with_temp,
         calendars=tuple(cal_models),
+        nowcast=nowcast,
+        nowcast_deltas=tuple(deltas) if nowcast.engaged else (),
     )

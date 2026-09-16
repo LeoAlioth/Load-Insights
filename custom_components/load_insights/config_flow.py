@@ -12,6 +12,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CALENDAR_ENTITIES,
+    CONF_DEVICE_STATE_SENSORS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
@@ -75,11 +76,49 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
+    """Two pages: the site-level inputs, and one device's own state sensor."""
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state"])
+
+    async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             # An emptied selector clears the input; only set keys are kept.
-            return self.async_create_entry(data={k: v for k, v in user_input.items() if v})
+            # The per-device map lives on another page and is carried over.
+            keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {})}
+            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):
             current[CONF_WEATHER_ENTITY] = _single_weather_entity(self.hass)
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(_inputs_schema(current)))
+        return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current)))
+
+    async def async_step_device_state(self, user_input: dict[str, Any] | None = None):
+        """Pick a device the Energy dashboard lists, then the sensor that says
+        what it will do next. One device per visit; an emptied sensor clears
+        that device's mapping."""
+        manager = await async_get_manager(self.hass)
+        site = SiteModel.from_prefs(manager.data)
+        labels = {d.energy: d.label for d in site.devices}
+        current = dict(self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS) or {})
+        if user_input is not None:
+            device = user_input.get("device")
+            sensor_id = user_input.get("state_entity")
+            if device:
+                if sensor_id:
+                    current[device] = sensor_id
+                else:
+                    current.pop(device, None)
+            options = {**dict(self.config_entry.options), CONF_DEVICE_STATE_SENSORS: current}
+            return self.async_create_entry(data=options)
+        if not labels:
+            return self.async_abort(reason="no_devices")
+        return self.async_show_form(
+            step_id="device_state",
+            data_schema=vol.Schema({
+                vol.Required("device"): selector.SelectSelector(selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=k, label=f"{v}  ({current.get(k) or '-'})") for k, v in labels.items()],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )),
+                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor", "input_number", "number"])),
+            }),
+        )

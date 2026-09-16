@@ -65,6 +65,14 @@
             "init": {
                 "title": "Pojasnjevalni vhodi",
                 "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
+                "menu_options": {
+                    "inputs": "Pojasnjevalni vhodi",
+                    "device_state": "Lastni senzor stanja naprave"
+                }
+            },
+            "inputs": {
+                "title": "Pojasnjevalni vhodi",
+                "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
                 "data": {
                     "weather_entity": "Vremenska entiteta",
                     "outdoor_temperature_entity": "Senzor zunanje temperature",
@@ -75,7 +83,18 @@
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
                     "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja."
                 }
+            },
+            "device_state": {
+                "title": "Senzor stanja naprave",
+                "description": "Izberite napravo iz nadzorne plošče Energija in senzor, ki pove, kaj bo naprava kmalu počela - temperaturo bojlerja, nivo v cisterni za črpalko. Njegova trenutna vrednost izostri napoved te naprave za naslednjih šest ur. Ena naprava na obisk; pustite senzor prazen, da ga odstranite.",
+                "data": {
+                    "device": "Naprava",
+                    "state_entity": "Senzor stanja"
+                }
             }
+        },
+        "abort": {
+            "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav."
         }
     }
 }
