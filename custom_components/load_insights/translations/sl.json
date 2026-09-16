@@ -74,7 +74,8 @@
                 "menu_options": {
                     "inputs": "Pojasnjevalni vhodi",
                     "device_state": "Lastni senzor stanja naprave",
-                    "detection": "Zaznavanje porabnikov"
+                    "detection": "Zaznavanje porabnikov",
+                    "submeter": "Podštevec"
                 }
             },
             "inputs": {
@@ -103,6 +104,25 @@
                 "title": "Zaznavanje porabnikov",
                 "description": "Surove meritve števca po fazah. Najpomembnejša je delovna moč po fazah; faktor moči, tok in napetost izostrijo podpise, kjer jih števec objavlja. Vsa polja so neobvezna. Enofazni števec uporabi le polja A.",
                 "data": {
+                    "power_a": "Delovna moč A",
+                    "power_b": "Delovna moč B",
+                    "power_c": "Delovna moč C",
+                    "pf_a": "Faktor moči A",
+                    "pf_b": "Faktor moči B",
+                    "pf_c": "Faktor moči C",
+                    "current_a": "Tok A",
+                    "current_b": "Tok B",
+                    "current_c": "Tok C",
+                    "voltage_a": "Napetost A",
+                    "voltage_b": "Napetost B",
+                    "voltage_c": "Napetost C"
+                }
+            },
+            "submeter": {
+                "title": "Podštevec",
+                "description": "Trifazni števec pod glavnim - Shelly 3EM na podrazdelilniku. Dajte mu ime in enake meritve po fazah. Porabnik, ki ga vidita glavni in ta števec, je lociran tu; tisti, ki ga vidi le glavni, je nad vsemi podštevci. Obstoječi: {existing}. Za odstranitev vnesite ime in pustite vsa polja prazna.",
+                "data": {
+                    "name": "Ime",
                     "power_a": "Delovna moč A",
                     "power_b": "Delovna moč B",
                     "power_c": "Delovna moč C",

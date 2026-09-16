@@ -202,6 +202,16 @@ class Signature:
     last_seen: float
     interval_s: Optional[float] = None   # running mean START-to-start spacing ("every 5 min")
     last_start: Optional[float] = None
+    locations: Dict[str, int] = field(default_factory=dict)   # submeter name -> sessions also seen there
+
+    @property
+    def location(self) -> str:
+        """Where the load lives: the downstream meter that saw most of its
+        sessions, or "main" when none did - upstream of every submeter."""
+        if not self.locations:
+            return "main"
+        name, n = max(self.locations.items(), key=lambda kv: kv[1])
+        return name if n * 2 >= self.count else "main"
     hours: List[int] = field(default_factory=lambda: [0] * 24)
     level_count: float = 1.0
     name: Optional[str] = None
@@ -256,14 +266,14 @@ class Signature:
         return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
                 "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
                 "interval_s": self.interval_s, "hours": self.hours, "level_count": self.level_count, "name": self.name,
-                "last_start": self.last_start}
+                "last_start": self.last_start, "locations": self.locations}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
         return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
                    count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
                    hours=list(d.get("hours") or [0] * 24), level_count=d.get("level_count", 1.0), name=d.get("name"),
-                   last_start=d.get("last_start"))
+                   last_start=d.get("last_start"), locations=dict(d.get("locations") or {}))
 
 
 def _fmt_s(x: Optional[float]) -> str:
@@ -334,6 +344,13 @@ class Detector:
             self._file(s)
             out.append(s)
         return out
+
+    def signature_of(self, s: Session) -> Optional["Signature"]:
+        """The signature a just-filed session went into (its recent entry)."""
+        for r in reversed(self.recent):
+            if r["start"] == s.start and r["end"] == s.end and r["phases"] == s.phases:
+                return next((x for x in self.signatures if x.id == r["signature"]), None)
+        return None
 
     @staticmethod
     def _combine(g: List[Session]) -> Session:
@@ -435,3 +452,83 @@ class Detector:
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         return det
+
+
+# ------------------------------------------------------------------ the fleet: main meter + downstream meters
+@dataclass
+class Fleet:
+    """One detector per meter. The MAIN meter sees everything; a DOWNSTREAM
+    meter (a Shelly 3EM on a subpanel) sees only its own circuit. A main-meter
+    session that a downstream meter also saw - same start, same end, same
+    phases, same size - is located there; one that none saw is upstream of
+    them all. Locations accumulate per signature, so the answer sharpens
+    with every session."""
+    main: Detector = field(default_factory=Detector)
+    subs: Dict[str, Detector] = field(default_factory=dict)
+    pending_main: List[Session] = field(default_factory=list)    # main sessions awaiting a downstream partner
+    pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
+
+    def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
+                main_pf=None, sub_pf=None, now_ts: Optional[float] = None) -> None:
+        latest = now_ts or 0.0
+        closed_main = self.main.process(main_samples, main_pf, now_ts)
+        closed_sub = {}
+        for name, samples in sub_samples.items():
+            det = self.subs.setdefault(name, Detector())
+            det.tz_offset_s = self.main.tz_offset_s
+            closed_sub[name] = det.process(samples, (sub_pf or {}).get(name), now_ts)
+        self._locate(closed_main, closed_sub, latest)
+
+    def _locate(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]], latest: float) -> None:
+        self.pending_main += closed_main
+        for name, sessions in closed_sub.items():
+            self.pending_sub.setdefault(name, []).extend(sessions)
+        still: List[Session] = []
+        for m in self.pending_main:
+            sig = self.main.signature_of(m)
+            hit = None
+            for name, subs in self.pending_sub.items():
+                for i, s in enumerate(subs):
+                    if _same_load(m, s):
+                        hit = (name, i)
+                        break
+                if hit:
+                    break
+            if hit and sig is not None:
+                name, i = hit
+                self.pending_sub[name].pop(i)
+                sig.locations[name] = sig.locations.get(name, 0) + 1
+            elif latest - m.end < HELD_TAIL_S * 2:
+                still.append(m)          # a partner may still close on a slower meter
+        self.pending_main = still
+        for name in list(self.pending_sub):
+            self.pending_sub[name] = [s for s in self.pending_sub[name] if latest - s.end < HELD_TAIL_S * 2]
+
+    def to_dict(self) -> dict:
+        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
+                "pending_main": [s.to_dict() for s in self.pending_main],
+                "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()}}
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "Fleet":
+        f = cls()
+        if not d:
+            return f
+        f.main = Detector.from_dict(d.get("main"))
+        f.subs = {n: Detector.from_dict(v) for n, v in (d.get("subs") or {}).items()}
+        f.pending_main = [Session.from_dict(x) for x in d.get("pending_main") or []]
+        f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
+        return f
+
+
+def _same_load(a: Session, b: Session) -> bool:
+    if a.phases != b.phases:
+        return False
+    if abs(a.start - b.start) > MERGE_TOLERANCE_S or abs(a.end - b.end) > MERGE_TOLERANCE_S:
+        return False
+    pa, pb = a.power_by_phase(), b.power_by_phase()
+    for ph in a.phases:
+        tol = max(MATCH_POWER_REL * max(pa[ph], pb.get(ph, 0.0)), MIN_NOISE_W)
+        if abs(pa[ph] - pb.get(ph, 0.0)) > tol:
+            return False
+    return True

@@ -14,6 +14,7 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
+    CONF_SUBMETERS,
     DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -81,7 +82,34 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     """Two pages: the site-level inputs, and one device's own state sensor."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection"])
+        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "submeter"])
+
+    async def async_step_submeter(self, user_input: dict[str, Any] | None = None):
+        """A downstream 3-phase meter - a Shelly 3EM on a subpanel. Same
+        fields as the main meter plus a name. A load the main meter and this
+        meter both see is located here. Edit an existing one by name; a name
+        with every field empty removes it."""
+        subs = dict(self.config_entry.options.get(CONF_SUBMETERS) or {})
+        if user_input is not None:
+            name = (user_input.get("name") or "").strip()
+            fields = {k: v for k, v in user_input.items() if k != "name" and v}
+            if name:
+                if fields:
+                    subs[name] = fields
+                else:
+                    subs.pop(name, None)
+            return self.async_create_entry(data={**dict(self.config_entry.options), CONF_SUBMETERS: subs})
+        schema: dict = {vol.Required("name"): selector.TextSelector()}
+        classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
+        for kind in DETECTION_KINDS:
+            for p in ("a", "b", "c"):
+                schema[vol.Optional(f"{kind}_{p}")] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
+                )
+        return self.async_show_form(
+            step_id="submeter", data_schema=vol.Schema(schema),
+            description_placeholders={"existing": ", ".join(sorted(subs)) or "-"},
+        )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """The meter's raw per-phase readings for load detection. Active
@@ -107,7 +135,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # An emptied selector clears the input; only set keys are kept.
             # The per-device map lives on another page and is carried over.
             keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {}),
-                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {})}
+                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {}),
+                    CONF_SUBMETERS: self.config_entry.options.get(CONF_SUBMETERS, {})}
             return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):

@@ -127,5 +127,35 @@ def test_active_reports_what_is_on_now_and_merges_phases_started_together():
     assert 5600 < det.unknown_power(T0 + 400) < 6400
 
 
+def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
+    fleet = D.Fleet()
+    hours = 2
+    end = T0 + hours * 3600 + 200
+    # the kiln (A+C, 3 kW each) is in the workshop: main AND workshop meters see it
+    main_a = series(hours * 3600, kiln()); main_c = series(hours * 3600, kiln(), seed=1)
+    ws_a = series(hours * 3600, kiln(), seed=4, base=50.0, noise=5.0); ws_c = series(hours * 3600, kiln(), seed=5, base=50.0, noise=5.0)
+    # a 2 kW heater on B every 20 min in the house: only the main meter sees it
+    heater = kiln(period=1200.0, on=300.0, watts=2000.0)
+    main_b = series(hours * 3600, heater, seed=6)
+    ws_b = series(hours * 3600, lambda s: 0.0, seed=7, base=50.0, noise=5.0)
+    # feed in slices, like the runner
+    n = len(main_a)
+    for i in range(0, n, 300):
+        j = min(i + 300, n)
+        fleet.process({"a": main_a[i:j], "b": main_b[i:j], "c": main_c[i:j]},
+                      {"workshop": {"a": ws_a[i:j], "b": ws_b[i:j], "c": ws_c[i:j]}}, now_ts=main_a[j - 1][0])
+    fleet.process({}, {}, now_ts=end)
+    sigs = {s.phases: s for s in fleet.main.signatures}
+    assert set(sigs) == {"ac", "b"}, [s.describe(None) for s in fleet.main.signatures]
+    assert sigs["ac"].location == "workshop", sigs["ac"].locations
+    assert sigs["b"].location == "main" and sigs["b"].locations == {}
+    assert sigs["ac"].locations["workshop"] >= sigs["ac"].count * 0.8, (sigs["ac"].locations, sigs["ac"].count)
+    # the workshop meter has its own, finer library: just the kiln
+    assert len(fleet.subs["workshop"].signatures) == 1
+    # and all of it survives a restart
+    copy = D.Fleet.from_dict(json.loads(json.dumps(fleet.to_dict())))
+    assert {s.phases: s.location for s in copy.main.signatures} == {"ac": "workshop", "b": "main"}
+
+
 if __name__ == "__main__":
     run_main(globals())
