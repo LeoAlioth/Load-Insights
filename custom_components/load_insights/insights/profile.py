@@ -20,8 +20,8 @@ generated in UTC and converted, so they are 168 real consecutive hours.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Sequence, Tuple
+from datetime import date, datetime, timedelta, timezone
+from typing import List, Optional, Sequence, Set, Tuple
 
 Sample = Tuple[datetime, float]
 
@@ -46,8 +46,15 @@ def _key(t: datetime) -> float:
     return t.timestamp()
 
 
-def slot_of(dt: datetime) -> int:
-    return dt.weekday() * 24 + dt.hour
+SUNDAY = 6
+
+
+def slot_of(dt: datetime, holidays: Optional[Set[date]] = None) -> int:
+    """(weekday, hour) -> 0..167. A public holiday is filed under SUNDAY: a
+    household on a Tuesday holiday behaves like a Sunday household, not like
+    a Tuesday one, and Slovenia has enough of them for it to show."""
+    weekday = SUNDAY if holidays and dt.date() in holidays else dt.weekday()
+    return weekday * 24 + dt.hour
 
 
 def hour_buckets(start: datetime, hours: int) -> List[datetime]:
@@ -86,8 +93,10 @@ class Profile:
     hod_bands: tuple = ()        # 24 x Optional[(p10, p90)]
     overall_band: Optional[tuple] = None
 
+    holidays: Optional[frozenset] = None   # the dates filed under Sunday, fit and predict alike
+
     def slot_kwh(self, dt: datetime) -> Optional[float]:
-        v = self.slots[slot_of(dt)]
+        v = self.slots[slot_of(dt, self.holidays)]
         if v is None:
             v = self.hour_of_day[dt.hour]
         if v is None:
@@ -96,8 +105,9 @@ class Profile:
 
     def slot_band(self, dt: datetime) -> Optional[tuple]:
         """The spread from the same tier the point value came from."""
-        if self.slots[slot_of(dt)] is not None:
-            return self.slot_bands[slot_of(dt)]
+        s = slot_of(dt, self.holidays)
+        if self.slots[s] is not None:
+            return self.slot_bands[s]
         if self.hour_of_day[dt.hour] is not None:
             return self.hod_bands[dt.hour]
         return self.overall_band
@@ -119,9 +129,12 @@ class Profile:
 
 
 def fit_profile(samples: Sequence[Sample], now: datetime,
-                half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS) -> Profile:
+                half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
+                holidays: Optional[Set[date]] = None) -> Profile:
     """Recency-weighted slot means. The hour containing ``now`` is excluded:
-    its statistic is still accumulating and would read low."""
+    its statistic is still accumulating and would read low. ``holidays`` are
+    the dates (local) filed under Sunday."""
+    hol = frozenset(holidays) if holidays else None
     cutoff = floor_hour(now)
     cutoff_k = _key(cutoff)
     sw = [0.0] * HOURS_PER_WEEK
@@ -140,7 +153,7 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
             continue
         age_weeks = (_key(now) - _key(t)) / WEEK_SECONDS
         w = 0.5 ** (age_weeks / half_life_weeks) if half_life_weeks > 0 else 1.0
-        s = slot_of(t)
+        s = slot_of(t, hol)
         sw[s] += w
         swx[s] += w * v
         hw[t.hour] += w
@@ -168,6 +181,7 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
         slot_bands=tuple(band(p) for p in slot_pairs),
         hod_bands=tuple(band(p) for p in hod_pairs),
         overall_band=band(all_pairs),
+        holidays=hol,
     )
 
 
@@ -249,8 +263,9 @@ def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTOR
 
 
 def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOURS_PER_WEEK,
-             half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS) -> Forecast:
-    profile = fit_profile(samples, now, half_life_weeks)
+             half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
+             holidays: Optional[Set[date]] = None) -> Forecast:
+    profile = fit_profile(samples, now, half_life_weeks, holidays)
     level = level_correction(profile, samples, now)
     hourly = profile.predict(now, horizon_hours, level)
     bands = profile.predict_bands(now, horizon_hours, level)

@@ -10,10 +10,11 @@ DEFAULT_NAME = "Home"
 # phase 1 does exactly that and nothing incremental.
 HISTORY_WEEKS = 12
 
-# The forecast is recomputed on the quarter hours - the grid the tariff blocks
-# live on - and a little after the mark so the recorder's hourly and 5-minute
-# statistics for the period just closed are already compiled.
-REFRESH_MINUTES = (0, 15, 30, 45)
+# The model is hourly - it can only change when a completed hour's statistic
+# arrives - so the forecast is recomputed once an hour, a little after the
+# mark so the recorder has compiled that hour. It was every quarter hour;
+# three of those four refreshes carried nothing new (Anže, 2026-09-16).
+REFRESH_MINUTES = (0,)
 REFRESH_SECOND = 30
 
 HORIZON_HOURS = 168

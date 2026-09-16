@@ -177,6 +177,35 @@ def test_an_unseen_slot_takes_its_band_from_the_fallback_tier():
     assert P.fit_profile([], NOW).slot_band(monday_3) is None
 
 
+def test_a_holiday_is_filed_under_sunday_in_the_fit_and_the_prediction():
+    """A Wednesday holiday in the history must feed the Sunday slots, not the
+    Wednesday ones; a holiday in the horizon must be predicted from Sunday."""
+    hol_past = (P.floor_hour(NOW) - timedelta(weeks=2)).date()      # a Wednesday, two weeks ago
+    hol_future = (P.floor_hour(NOW) + timedelta(days=5)).date()     # next Monday
+    hols = {hol_past, hol_future}
+
+    def with_holiday_as_sunday(t):
+        # the household actually behaved like a Sunday on the past holiday
+        if t.date() == hol_past:
+            sunday_like = t + timedelta(days=(6 - t.weekday()))
+            return pattern(sunday_like)
+        return pattern(t)
+
+    samples = weeks_of(NOW, 8, with_holiday_as_sunday)
+    # Without holidays the Wednesday slots are polluted by the holiday's
+    # Sunday-shaped evening (+0.4 at 17-21).
+    plain = P.fit_profile(samples, NOW)
+    wed_18 = next(t for t in P.hour_buckets(P.floor_hour(NOW), 168) if t.weekday() == 2 and t.hour == 18)
+    assert plain.slot_kwh(wed_18) > 0.8
+    # With holidays that day goes to Sunday, and Wednesday is clean again.
+    prof = P.fit_profile(samples, NOW, holidays=hols)
+    assert math.isclose(prof.slot_kwh(wed_18), 0.8, abs_tol=1e-9)
+    # And the coming Monday holiday is predicted as a Sunday: 1.2 at 18:00.
+    fc = P.forecast(samples, NOW, holidays=hols)
+    mon_18 = [v for t, v in fc.hourly if t.date() == hol_future and t.hour == 18][0]
+    assert math.isclose(mon_18, 1.2 * fc.level, rel_tol=1e-9), (mon_18, fc.level)
+
+
 def test_history_is_the_last_48_completed_hours_oldest_first():
     samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]     # plus the hour in progress
     fc = P.forecast(samples, NOW)

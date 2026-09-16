@@ -103,6 +103,10 @@ class ForecastPowerSensor(_Base):
             "weeks_of_data": round(fc.span_weeks, 1),
             "hours_fitted": fc.sample_count,
             "computed_at": data.computed_at.isoformat(),
+            # Public holidays are scored as Sundays; None here means the
+            # holidays library is not installed (no Workday integration).
+            "holidays_modelled": data.holidays_known,
+            "holidays_in_horizon": list(data.holidays_in_horizon),
         }
         if self._which == "remainder":
             attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]

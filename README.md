@@ -71,15 +71,18 @@ Note that the forecast drawn over past hours is today's fit, which already
 contains them - a picture of how well the profile explains the week, not a
 test of yesterday's prediction. Scoring stored past forecasts is later work.
 
-The forecast is recomputed on the quarter hours from twelve weeks of hourly
+The forecast is recomputed once an hour from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight
 halves every three weeks) with a damped, clamped correction from the last 24
 hours. Each hour also carries a spread: the weighted 10th and 90th
 percentiles of that slot's samples, so a weekday 10:00 where the car charges
 on some weeks reads "0.4 to 4.0 kWh" rather than an average that never
 happens. `kwh` is the mean, so daily totals add up exactly; percentiles do
-not add, so the daily sensors carry no band. Nothing learned in the machine
-sense; every number is explainable.
+not add, so the daily sensors carry no band. Public holidays are scored as Sundays, in the
+history and in the week ahead, using the `holidays` library that Home
+Assistant's Workday integration installs (no Workday, no holidays - the
+sensor's `holidays_modelled` attribute says which). Nothing learned in the
+machine sense; every number is explainable.
 
 ## Requirements
 
