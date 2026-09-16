@@ -1,5 +1,12 @@
 {
     "name": "Load Insights",
+    "content_in_root": false,
+    "domains": [
+        "load_insights"
+    ],
     "homeassistant": "2026.6.0",
-    "render_readme": true
+    "render_readme": true,
+    "icon": "mdi:chart-timeline-variant",
+    "zip_release": true,
+    "filename": "load-insights.zip"
 }

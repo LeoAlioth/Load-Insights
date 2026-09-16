@@ -36,8 +36,12 @@ hours. Nothing learned in the machine sense; every number is explainable.
 
 ## Install
 
-HACS custom repository `https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights`,
-then Settings -> Devices & services -> Add integration -> Load Insights.
+HACS only reads GitHub, so the Gitea repository (the source of truth) is
+mirrored to `https://github.com/LeoAlioth/Load-Insights`, and every push to
+`dev` publishes a tagged pre-release with the zip on both. In HACS add
+`https://github.com/LeoAlioth/Load-Insights` as a custom repository
+(integration), install it, restart, then Settings -> Devices & services ->
+Add integration -> Load Insights.
 
 ## Development
 
