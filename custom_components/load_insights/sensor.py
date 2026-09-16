@@ -18,12 +18,19 @@ from .insights.profile import Forecast
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coordinator: InsightsCoordinator = hass.data[DOMAIN][entry.entry_id]
-    add([
+    entities = [
         ForecastPowerSensor(coordinator, entry, "consumption_forecast", "consumption"),
         ForecastEnergySensor(coordinator, entry, "consumption_today", "consumption", "today_kwh"),
         ForecastEnergySensor(coordinator, entry, "consumption_tomorrow", "consumption", "tomorrow_kwh"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
-    ])
+    ]
+    # One per device the Energy dashboard lists, from the site model of the
+    # first refresh. A device added to the dashboard later appears after a
+    # reload of the integration; a removed one keeps its entity, unavailable.
+    data: InsightsData = coordinator.data
+    if data is not None:
+        entities += [DeviceForecastSensor(coordinator, entry, d) for d in data.site.devices]
+    add(entities)
 
 
 class _Base(CoordinatorEntity, SensorEntity):
@@ -110,3 +117,37 @@ class ForecastEnergySensor(_Base):
     def native_value(self) -> Optional[float]:
         fc = self._forecast()
         return None if fc is None else round(getattr(fc, self._field), 2)
+
+
+class DeviceForecastSensor(ForecastPowerSensor):
+    """The same forecast, for one individually metered device.
+
+    Disabled by default: a busy dashboard lists twenty devices and nobody
+    wants a forecast of the bug lamp on a card - enable the two or three that
+    matter from the device page. The unique id is built from the device's
+    statistic id, which is what the dashboard itself keys the device by.
+    """
+
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, device) -> None:
+        super().__init__(coordinator, entry, "device_forecast", "device")
+        self._energy = device.energy
+        self._device = device
+        self._attr_unique_id = f"{entry.entry_id}_device_{device.energy.replace('.', '_')}"
+        self._attr_translation_placeholders = {"device": device.label}
+
+    def _forecast(self) -> Optional[Forecast]:
+        data: Optional[InsightsData] = self.coordinator.data
+        if data is None or not data.devices:
+            return None
+        return data.devices.get(self._energy)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = super().extra_state_attributes
+        if attrs:
+            attrs["statistic_id"] = self._energy
+            if self._device.included_in:
+                attrs["included_in"] = self._device.included_in
+        return attrs
