@@ -30,7 +30,10 @@
             },
             "remainder_forecast": {
                 "name": "Unmetered consumption forecast"
+            },
+            "device_forecast": {
+                "name": "{device} forecast"
             }
         }
     }
-}
+}\n

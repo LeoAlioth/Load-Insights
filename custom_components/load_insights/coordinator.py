@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance
@@ -31,6 +31,10 @@ class InsightsData:
     computed_at: datetime
     remainder_complete_since: Optional[datetime] = None
     devices_without_statistics: tuple = ()
+    # One forecast per individually metered device, keyed by its statistic id.
+    # A device with no statistics yet has no entry, and its sensor stays
+    # unavailable rather than showing a forecast of nothing.
+    devices: Dict[str, Forecast] = None  # type: ignore[assignment]
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -86,10 +90,18 @@ class InsightsCoordinator(DataUpdateCoordinator):
             await self.hass.async_add_executor_job(forecast, remainder, now, HORIZON_HOURS)
             if remainder else None
         )
+        # Every listed device, nested ones included - the series are already
+        # in hand for the remainder, so this is only the fits.
+        device_fc: Dict[str, Forecast] = {}
+        for d in site.devices:
+            rows = series.get(d.energy) or []
+            if rows:
+                device_fc[d.energy] = await self.hass.async_add_executor_job(forecast, rows, now, HORIZON_HOURS)
         return InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
+            devices=device_fc,
         )
 
 

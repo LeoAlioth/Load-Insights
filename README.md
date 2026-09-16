@@ -16,11 +16,15 @@ statistics for them, and publishes a consumption forecast:
 | **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh (the shape the PV forecast integrations use), today/tomorrow kWh, level correction, weeks of data |
 | **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
 | **Consumption tomorrow** | kWh | |
-| **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices` |
+| **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
+| **\<device\> forecast**, one per individually metered device | as the first, for that device alone | `statistic_id`; **disabled by default** - enable the ones you want from the device page |
 
 Consumption is `grid in - grid out + PV + battery out - battery in`, the
 dashboard's own signs. A device listed as included in another listed device
 (`included_in_stat`) is not subtracted twice.
+
+A device added to the Energy dashboard later gets its sensor after a reload
+of the integration.
 
 The forecast is recomputed on the quarter hours from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight

@@ -30,7 +30,10 @@
             },
             "remainder_forecast": {
                 "name": "Napoved nemerjene porabe"
+            },
+            "device_forecast": {
+                "name": "Napoved - {device}"
             }
         }
     }
-}
+}\n
