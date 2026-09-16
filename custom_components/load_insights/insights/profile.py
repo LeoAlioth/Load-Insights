@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from .calendars import CalendarModel, CalendarSignals, fit_calendar
 from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
 
 Sample = Tuple[datetime, float]
@@ -132,10 +133,13 @@ class Profile:
 
 def fit_profile(samples: Sequence[Sample], now: datetime,
                 half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
-                holidays: Optional[Set[date]] = None) -> Profile:
+                holidays: Optional[Set[date]] = None,
+                exclude: Optional[Set[float]] = None) -> Profile:
     """Recency-weighted slot means. The hour containing ``now`` is excluded:
     its statistic is still accumulating and would read low. ``holidays`` are
-    the dates (local) filed under Sunday."""
+    the dates (local) filed under Sunday. ``exclude`` are hour keys left out
+    of the fit - the on-hours of engaged calendars, so the BASELINE profile
+    carries no mixture of away days and ordinary ones."""
     hol = frozenset(holidays) if holidays else None
     cutoff = floor_hour(now)
     cutoff_k = _key(cutoff)
@@ -151,7 +155,7 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
     hod_pairs = [[] for _ in range(24)]
     all_pairs = []
     for t, v in samples:
-        if v is None or _key(t) >= cutoff_k:
+        if v is None or _key(t) >= cutoff_k or (exclude and _key(t) in exclude):
             continue
         age_weeks = (_key(now) - _key(t)) / WEEK_SECONDS
         w = 0.5 ** (age_weeks / half_life_weeks) if half_life_weeks > 0 else 1.0
@@ -189,10 +193,12 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
 
 def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
                      response: TemperatureResponse = NO_RESPONSE,
-                     temps: Optional[Dict[float, float]] = None) -> float:
-    """Last 24 completed hours, actual over the (temperature-adjusted)
-    expectation, clamped then damped. Adjusting first is what stops a cold
-    snap being counted twice - once by the response, once as a level."""
+                     temps: Optional[Dict[float, float]] = None,
+                     multipliers: Optional[Dict[float, float]] = None) -> float:
+    """Last 24 completed hours, actual over the fully adjusted expectation
+    (temperature, calendars), clamped then damped. Adjusting first is what
+    stops a cold snap or an away week being counted twice - once by its
+    input, once as a level."""
     end = _key(floor_hour(now))
     start = end - 24 * 3600.0
     actual = 0.0
@@ -204,7 +210,7 @@ def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
         e = profile.slot_kwh(t)
         if e is None:
             continue
-        e = max(0.0, e + response.delta((temps or {}).get(_key(t))))
+        e = max(0.0, e + response.delta((temps or {}).get(_key(t)))) * (multipliers or {}).get(_key(t), 1.0)
         actual += v
         expected += e
         hours += 1
@@ -261,6 +267,7 @@ class Forecast:
     bands: tuple = ()            # (p10, p90) per row of ``hourly``, same order
     temperature: TemperatureResponse = NO_RESPONSE
     hours_with_forecast_temperature: int = 0
+    calendars: tuple = ()        # CalendarModel per linked calendar, this series' own fit
 
 
 def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
@@ -275,11 +282,17 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
              half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
              holidays: Optional[Set[date]] = None,
              temps_history: Optional[Dict[float, float]] = None,
-             temps_forecast: Optional[Dict[float, float]] = None) -> Forecast:
+             temps_forecast: Optional[Dict[float, float]] = None,
+             calendars: Optional[Sequence[CalendarSignals]] = None) -> Forecast:
     """``temps_history`` / ``temps_forecast`` map hour keys (epoch seconds of
     the period start) to outdoor temperature in C. Absent, the profile stands
     alone; present, a temperature response is fitted on the residuals and
-    applied to the horizon hours that have a forecast temperature."""
+    applied to the horizon hours that have a forecast temperature.
+    ``calendars`` carry each linked calendar's on-hours over history and
+    horizon; each is fitted on this series and applied where it engaged.
+
+    Order, fit and predict alike: slot -> + temperature -> x calendars ->
+    x level. The level is judged against the fully adjusted expectation."""
     profile = fit_profile(samples, now, half_life_weeks, holidays)
 
     response = NO_RESPONSE
@@ -298,19 +311,63 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             rows.append((w, v - e, temp))
         response = fit_temperature_response(rows)
 
-    level = level_correction(profile, samples, now, response, temps_history)
+    # calendars, in two passes. DETECT against the mixture profile: which
+    # calendars mean anything for this series. Then, if any does, refit the
+    # profile on the BASELINE hours only - outside every engaged calendar -
+    # and fit the EFFECTS against that, so an away week never drags the slot
+    # means it is then measured against.
+    cal_models: List[CalendarModel] = []
+    hist_mult: Dict[float, float] = {}
+    if calendars:
+        cutoff_k = _key(floor_hour(now))
+
+        def residual_rows(prof):
+            out = []
+            for t, v in samples:
+                k = _key(t)
+                if v is None or k >= cutoff_k:
+                    continue
+                e = prof.slot_kwh(t)
+                if e is None:
+                    continue
+                e = max(0.0, e + response.delta((temps_history or {}).get(k)))
+                w = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
+                out.append((k, t.hour, w, v, e))
+            return out
+
+        detected = [fit_calendar(residual_rows(profile), sig, scale_off=True) for sig in calendars]
+        engaged = [sig for sig, m in zip(calendars, detected) if m.engaged]
+        if engaged:
+            exclude = set().union(*(sig.existence for sig in engaged))
+            baseline = fit_profile(samples, now, half_life_weeks, holidays, exclude)
+            if baseline.sample_count >= HOURS_PER_WEEK:      # a week of ordinary hours, or the baseline is too thin to trust
+                profile = baseline
+        rows = residual_rows(profile)
+        for sig, det in zip(calendars, detected):
+            m = fit_calendar(rows, sig, scale_off=False) if det.engaged else det
+            cal_models.append(m)
+            if m.engaged:
+                for k, h, _, _, _ in rows:
+                    hist_mult[k] = hist_mult.get(k, 1.0) * m.multiplier(k, h, sig)
+
+    level = level_correction(profile, samples, now, response, temps_history, hist_mult)
     base = profile.predict(now, horizon_hours, 1.0)
     base_bands = profile.predict_bands(now, horizon_hours, 1.0)
     hourly = []
     bands = []
     with_temp = 0
     for (t, v), (lo, hi) in zip(base, base_bands):
-        temp = (temps_forecast or {}).get(_key(t))
+        k = _key(t)
+        temp = (temps_forecast or {}).get(k)
         d = response.delta(temp)
         if temp is not None and response.engaged:
             with_temp += 1
-        hourly.append((t, max(0.0, (v + d) * level)))
-        bands.append((max(0.0, (lo + d) * level), max(0.0, (hi + d) * level)))
+        mult = 1.0
+        for m, sig in zip(cal_models, calendars or ()):
+            if m.engaged:
+                mult *= m.multiplier(k, t.hour, sig)
+        hourly.append((t, max(0.0, (v + d) * mult * level)))
+        bands.append((max(0.0, (lo + d) * mult * level), max(0.0, (hi + d) * mult * level)))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(
@@ -325,4 +382,5 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         bands=tuple(bands),
         temperature=response,
         hours_with_forecast_temperature=with_temp,
+        calendars=tuple(cal_models),
     )

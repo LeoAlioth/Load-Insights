@@ -7,12 +7,14 @@
                 "data": {
                     "name": "Name",
                     "weather_entity": "Weather entity",
-                    "outdoor_temperature_entity": "Outdoor temperature sensor"
+                    "outdoor_temperature_entity": "Outdoor temperature sensor",
+                    "calendar_entities": "Calendars"
                 },
                 "data_description": {
                     "name": "Shown as the device that groups the forecast sensors.",
                     "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
-                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
+                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
+                    "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average."
                 }
             }
         },
@@ -65,11 +67,13 @@
                 "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
                 "data": {
                     "weather_entity": "Weather entity",
-                    "outdoor_temperature_entity": "Outdoor temperature sensor"
+                    "outdoor_temperature_entity": "Outdoor temperature sensor",
+                    "calendar_entities": "Calendars"
                 },
                 "data_description": {
                     "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
-                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
+                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
+                    "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average."
                 }
             }
         }

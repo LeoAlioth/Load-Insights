@@ -20,6 +20,7 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
+    CONF_CALENDAR_ENTITIES,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
     DOMAIN,
@@ -28,6 +29,7 @@ from .const import (
     REFRESH_MINUTES,
     REFRESH_SECOND,
 )
+from .insights.calendars import CalendarSignals
 from .insights.covariates import interpolate_hourly
 from .insights.model import SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
@@ -75,6 +77,8 @@ class InsightsData:
     temperature_entity: Optional[str] = None
     temperature_history_hours: int = 0
     temperature_forecast_hours: int = 0
+    calendar_entities: tuple = ()
+    calendar_on_hours: Dict[str, int] = None  # type: ignore[assignment]
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
@@ -155,6 +159,14 @@ class InsightsCoordinator(DataUpdateCoordinator):
                     temps_hist[float(r["start"])] = float(r["mean"])
             temps_fc = await self._forecast_temperatures(weather_entity, now)
 
+        # --- calendars: every linked one, over history and horizon ---
+        cal_entities = tuple(opts.get(CONF_CALENDAR_ENTITIES) or ())
+        hour_keys = [b.timestamp() for b in hour_buckets(floor_hour(start), int((end_h - floor_hour(start)).total_seconds() // 3600) + 1)]
+        cal_signals: List[CalendarSignals] = []
+        for cal in cal_entities:
+            events = await self._calendar_events(cal, start, end_h)
+            cal_signals.append(CalendarSignals.from_events(cal, events, hour_keys))
+
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
@@ -166,7 +178,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
         fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
-            forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None
+            forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None, cal_signals or None
         )
         cons_fc = await fit(consumption)
         rem_fc = await fit(remainder) if remainder else None
@@ -203,7 +215,40 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temperature_history_hours=len(temps_hist),
             temperature_forecast_hours=len(temps_fc),
             ledgers=dict(ledgers),
+            calendar_entities=cal_entities,
+            calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
         )
+
+    async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:
+        """(start_key, end_key, title) for every event of a calendar between
+        ``start`` and ``end`` - PAST included, which is what lets a calendar
+        be fitted rather than declared. All-day events span local midnights."""
+        try:
+            resp = await self.hass.services.async_call(
+                "calendar", "get_events",
+                {"entity_id": entity_id, "start_date_time": start.isoformat(), "end_date_time": end.isoformat()},
+                blocking=True, return_response=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("Calendar %s could not be read: %s", entity_id, exc)
+            return []
+        out = []
+        for ev in ((resp or {}).get(entity_id) or {}).get("events") or []:
+            s_raw, e_raw = ev.get("start"), ev.get("end")
+            if not s_raw or not e_raw:
+                continue
+            s_dt = dt_util.parse_datetime(s_raw) if isinstance(s_raw, str) and "T" in s_raw else None
+            e_dt = dt_util.parse_datetime(e_raw) if isinstance(e_raw, str) and "T" in e_raw else None
+            if s_dt is None:      # all-day: a date
+                d = dt_util.parse_date(s_raw) if isinstance(s_raw, str) else s_raw
+                s_dt = dt_util.start_of_local_day(d) if d else None
+            if e_dt is None:
+                d = dt_util.parse_date(e_raw) if isinstance(e_raw, str) else e_raw
+                e_dt = dt_util.start_of_local_day(d) if d else None
+            if s_dt is None or e_dt is None:
+                continue
+            out.append((dt_util.as_utc(s_dt).timestamp(), dt_util.as_utc(e_dt).timestamp(), ev.get("summary") or ""))
+        return out
 
     async def _forecast_temperatures(self, weather_entity: str, now: datetime) -> Dict[float, float]:
         """Hour key -> forecast temperature in C over the horizon, from the
