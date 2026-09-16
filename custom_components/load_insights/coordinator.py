@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Set
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance
@@ -23,6 +23,26 @@ from .insights.series import combine, coverage, subtract_all
 _LOGGER = logging.getLogger(__name__)
 
 
+def holiday_dates(country: Optional[str], years) -> Optional[Set[date]]:
+    """Public holidays for ``country`` over ``years``, or None when they cannot
+    be known. Uses the ``holidays`` library that Home Assistant's Workday
+    integration depends on - so it is present wherever Workday is set up and
+    absent otherwise, in which case holidays are simply not modelled. Read
+    for the whole history AND the horizon, which a binary sensor's ten days
+    of recorder history could never give."""
+    if not country:
+        return None
+    try:
+        import holidays as _holidays  # noqa: PLC0415  optional, see above
+    except ImportError:
+        return None
+    try:
+        return set(_holidays.country_holidays(country, years=list(years)).keys())
+    except Exception as exc:  # noqa: BLE001  an unknown country code, most likely
+        _LOGGER.warning("Holidays for %s not available: %s", country, exc)
+        return None
+
+
 @dataclass
 class InsightsData:
     site: SiteModel
@@ -31,6 +51,8 @@ class InsightsData:
     computed_at: datetime
     remainder_complete_since: Optional[datetime] = None
     devices_without_statistics: tuple = ()
+    holidays_known: bool = False
+    holidays_in_horizon: tuple = ()
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
@@ -66,6 +88,10 @@ class InsightsCoordinator(DataUpdateCoordinator):
 
         now = dt_util.now()
         start = now - timedelta(weeks=HISTORY_WEEKS)
+        end_h = now + timedelta(hours=HORIZON_HOURS + 1)
+        hols = await self.hass.async_add_executor_job(
+            holiday_dates, self.hass.config.country, range(start.year, end_h.year + 1)
+        )
         ids = site.all_statistic_ids()
         # Hourly "change" of each energy statistic, normalised to kWh whatever
         # unit the sensor reports in. Recorder work runs on its own executor.
@@ -85,23 +111,25 @@ class InsightsCoordinator(DataUpdateCoordinator):
 
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
-        cons_fc = await self.hass.async_add_executor_job(forecast, consumption, now, HORIZON_HOURS)
-        rem_fc = (
-            await self.hass.async_add_executor_job(forecast, remainder, now, HORIZON_HOURS)
-            if remainder else None
+        fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
+            forecast, rows, now, HORIZON_HOURS, 3.0, hols
         )
+        cons_fc = await fit(consumption)
+        rem_fc = await fit(remainder) if remainder else None
         # Every listed device, nested ones included - the series are already
         # in hand for the remainder, so this is only the fits.
         device_fc: Dict[str, Forecast] = {}
         for d in site.devices:
             rows = series.get(d.energy) or []
             if rows:
-                device_fc[d.energy] = await self.hass.async_add_executor_job(forecast, rows, now, HORIZON_HOURS)
+                device_fc[d.energy] = await fit(rows)
         return InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
+            holidays_known=hols is not None,
+            holidays_in_horizon=tuple(sorted(d.isoformat() for d in (hols or ()) if now.date() <= d <= end_h.date())),
         )
 
 
