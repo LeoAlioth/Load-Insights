@@ -1,0 +1,36 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Load Insights",
+                "description": "Prebere, kar vaša nadzorna plošča Energija že ve, in iz tega napove porabo. Tu se nič ne vnaša znova.\n\nNajdeno v nadzorni plošči Energija: {grid} omrežje, {solar} PV, {battery} baterija, {devices} posameznih naprav, {forecasts} vnosov napovedi PV.",
+                "data": {
+                    "name": "Ime"
+                },
+                "data_description": {
+                    "name": "Prikazano kot naprava, ki združuje senzorje napovedi."
+                }
+            }
+        },
+        "abort": {
+            "no_energy_dashboard": "Nadzorna plošča Energija nima nastavljenega vira omrežja. Najprej tam nastavite vsaj omrežje; PV, baterija in posamezne naprave napoved izboljšajo.",
+            "already_configured": "Load Insights je že nastavljen."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "consumption_forecast": {
+                "name": "Napoved porabe"
+            },
+            "consumption_today": {
+                "name": "Poraba danes"
+            },
+            "consumption_tomorrow": {
+                "name": "Poraba jutri"
+            },
+            "remainder_forecast": {
+                "name": "Napoved nemerjene porabe"
+            }
+        }
+    }
+}

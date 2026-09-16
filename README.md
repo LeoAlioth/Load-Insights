@@ -1,7 +1,53 @@
 # Load Insights
 
-Consumption prediction and load detection / classification for a Home Assistant
-site, from the meter and sensor history it already records. Companion to
-Load Juggler, which does the controlling; this project does the understanding.
+Consumption forecasts for a Home Assistant site, from what its **Energy
+dashboard already knows**. Companion to Load Juggler, which controls loads;
+this one understands them. Fully independent - it does not need Load Juggler,
+and Load Juggler does not need it.
 
-Design and scope are being worked out. Nothing here is settled yet.
+## What it does (phase 1)
+
+Reads the Energy dashboard's configuration - grid import/export, PV, battery,
+individual devices, linked PV forecast entries - and the recorder's hourly
+statistics for them, and publishes a consumption forecast:
+
+| entity | state | attributes |
+|---|---|---|
+| **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh (the shape the PV forecast integrations use), today/tomorrow kWh, level correction, weeks of data |
+| **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
+| **Consumption tomorrow** | kWh | |
+| **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices` |
+
+Consumption is `grid in - grid out + PV + battery out - battery in`, the
+dashboard's own signs. A device listed as included in another listed device
+(`included_in_stat`) is not subtracted twice.
+
+The forecast is recomputed on the quarter hours from twelve weeks of hourly
+statistics. The model is a recency-weighted hour-of-week profile (weight
+halves every three weeks) with a damped, clamped correction from the last 24
+hours. Nothing learned in the machine sense; every number is explainable.
+
+## Requirements
+
+- Home Assistant with the Energy dashboard configured, at least a grid source.
+  Any supported core works for phase 1; the power-sensor fields that phase 2
+  (load detection) will use arrived in 2025.12 / 2026.3 / 2026.6.
+- Nothing else. No cloud, no extra Python packages.
+
+## Install
+
+HACS custom repository `https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights`,
+then Settings -> Devices & services -> Add integration -> Load Insights.
+
+## Development
+
+The model lives in `custom_components/load_insights/insights/` and imports no
+Home Assistant. Its tests run on bare Python:
+
+```bash
+python3 tests/run_all.py
+```
+
+Phase 2 adds load detection / classification on the unmetered remainder from
+the dashboard's power sensors (per phase where CTs exist), and a test rig for
+the Home Assistant layer.
