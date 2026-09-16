@@ -315,4 +315,18 @@ class DeviceForecastSensor(ForecastPowerSensor):
             data: Optional[InsightsData] = self.coordinator.data
             if data is not None and data.ledgers and self._energy in data.ledgers:
                 attrs["score"] = _score_attrs(data.ledgers[self._energy], data.computed_at)
+            fc = self._forecast()
+            st_entity = (data.device_state_sensors or {}).get(self._energy) if data else None
+            if st_entity and fc is not None:
+                # The device's own state and what it says about the next hours.
+                attrs["nowcast"] = {
+                    "state_entity": st_entity,
+                    "current_value": (data.device_state_now or {}).get(self._energy),
+                    "engaged": fc.nowcast.engaged,
+                    "kwh_per_unit_by_lead": [round(c, 4) for c in fc.nowcast.coefficients],
+                    "residual_explained_by_lead": [round(e, 3) for e in fc.nowcast.explained],
+                    "state_mean": round(fc.nowcast.state_mean, 2) if fc.nowcast.engaged else None,
+                    "hours_fitted": fc.nowcast.hours,
+                    "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
+                }
         return attrs

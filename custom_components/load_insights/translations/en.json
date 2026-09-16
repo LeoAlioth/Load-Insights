@@ -65,6 +65,14 @@
             "init": {
                 "title": "Explanatory inputs",
                 "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
+                "menu_options": {
+                    "inputs": "Explanatory inputs",
+                    "device_state": "A device's own state sensor"
+                }
+            },
+            "inputs": {
+                "title": "Explanatory inputs",
+                "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
                 "data": {
                     "weather_entity": "Weather entity",
                     "outdoor_temperature_entity": "Outdoor temperature sensor",
@@ -75,7 +83,18 @@
                     "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
                     "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average."
                 }
+            },
+            "device_state": {
+                "title": "Device state sensor",
+                "description": "Pick a device from the Energy dashboard and the sensor that says what it is about to do - a boiler's tank temperature, a pump's tank level. Its recent value then sharpens that device's forecast for the next six hours. One device per visit; leave the sensor empty to clear it.",
+                "data": {
+                    "device": "Device",
+                    "state_entity": "State sensor"
+                }
             }
+        },
+        "abort": {
+            "no_devices": "The Energy dashboard lists no individual devices."
         }
     }
 }

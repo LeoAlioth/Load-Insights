@@ -21,6 +21,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
     CONF_CALENDAR_ENTITIES,
+    CONF_DEVICE_STATE_SENSORS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
     DOMAIN,
@@ -79,6 +80,8 @@ class InsightsData:
     temperature_forecast_hours: int = 0
     calendar_entities: tuple = ()
     calendar_on_hours: Dict[str, int] = None  # type: ignore[assignment]
+    device_state_sensors: Dict[str, str] = None  # type: ignore[assignment]
+    device_state_now: Dict[str, Optional[float]] = None  # type: ignore[assignment]
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
@@ -195,13 +198,38 @@ class InsightsCoordinator(DataUpdateCoordinator):
         if rem_fc is not None:
             score(REMAINDER_KEY, rem_fc, remainder)
         # Every listed device, nested ones included - the series are already
-        # in hand for the remainder, so this is only the fits.
+        # in hand for the remainder, so this is only the fits. A device with a
+        # state sensor also gets its nowcast: the sensor's hourly means over
+        # the same window, and its live value now.
+        state_map: Dict[str, str] = dict(opts.get(CONF_DEVICE_STATE_SENSORS) or {})
+        state_now: Dict[str, Optional[float]] = {}
         device_fc: Dict[str, Forecast] = {}
         for d in site.devices:
             rows = series.get(d.energy) or []
-            if rows:
-                device_fc[d.energy] = await fit(rows)
-                score(d.energy, device_fc[d.energy], rows)
+            if not rows:
+                continue
+            st_hist: Dict[float, float] = {}
+            st_now: Optional[float] = None
+            st_entity = state_map.get(d.energy)
+            if st_entity:
+                srows = await get_instance(self.hass).async_add_executor_job(
+                    rec_stats.statistics_during_period,
+                    self.hass, start, None, {st_entity}, "hour", None, {"mean"},
+                )
+                for r in srows.get(st_entity, []):
+                    if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
+                        st_hist[float(r["start"])] = float(r["mean"])
+                st = self.hass.states.get(st_entity)
+                try:
+                    st_now = float(st.state) if st is not None else None
+                except (TypeError, ValueError):
+                    st_now = None
+                state_now[d.energy] = st_now
+            device_fc[d.energy] = await self.hass.async_add_executor_job(
+                forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
+                cal_signals or None, st_hist or None, st_now,
+            )
+            score(d.energy, device_fc[d.energy], rows)
         await self._save_ledgers()
         return InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
@@ -217,6 +245,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             ledgers=dict(ledgers),
             calendar_entities=cal_entities,
             calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
+            device_state_sensors=state_map,
+            device_state_now=state_now,
         )
 
     async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:

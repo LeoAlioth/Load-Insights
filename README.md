@@ -97,6 +97,14 @@ the sensor's past and applied to the weather entity's coming week - and kept
 only if it explains a real share of the residual, so an input that turns out
 not to matter cannot make the forecast worse. Each sensor's
 `temperature_response` attribute says whether it engaged and by how much.
+A device can be given its own state sensor (Configure -> "A device's own
+state sensor"): the boiler its tank temperature, the pump its tank level. The
+sensor's recorded past is regressed, hour by hour of lead, against what the
+device then did, and its live value shifts that device's forecast for the
+next six hours and narrows their spread - a cold tank means the boiler is
+about to run. Nothing beyond six hours is touched, because the state has no
+forward source. The `nowcast` attribute on the device sensor shows the fit.
+
 Link any calendars and Load Insights works out what each one means: from
 its past events an existence signal is fitted on the residuals, per hour of
 day - an away calendar comes out as daytime factors near 0.4 and nights near
