@@ -17,6 +17,9 @@ statistics for them, and publishes a consumption forecast:
 | **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
 | **Consumption tomorrow** | kWh | |
 | **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
+| **Forecast error / bias, day ahead** and **hour ahead** | trailing 7-day mean absolute error and signed mean error of the site forecast, W | per-lead table (hour, day and week ahead), `band_coverage_day_ahead` (share of actuals inside p10-p90; honest is about 0.8), the last 48 scored hours |
+| **Yesterday's day-ahead error** | actual minus the "tomorrow" total the forecast showed at noon the day before, kWh | |
+| **Unmetered forecast error / bias, day ahead** | the same for the remainder | |
 | **\<device\> forecast**, one per individually metered device | as the first, for that device alone | `statistic_id`; **disabled by default** - enable the ones you want from the device page |
 
 Consumption is `grid in - grid out + PV + battery out - battery in`, the
@@ -25,6 +28,15 @@ dashboard's own signs. A device listed as included in another listed device
 
 A device added to the Energy dashboard later gets its sensor after a reload
 of the integration.
+
+### Scoring
+
+Every hour the forecast's value for the hour one hour, one day and one week
+(the horizon's last row, 167 h) ahead is remembered; when that hour arrives, prediction and actual are paired
+and the errors kept for 30 days in `.storage`. The score sensors report the
+trailing week. Device scores are the `score` attribute on each device
+forecast sensor. Scores need time to fill: the hour-ahead figures after a
+day, the day-ahead ones after two, the week-ahead table after eight.
 
 ### Actual against forecast on one chart
 

@@ -1,6 +1,7 @@
 """The forecast, published the way the solar forecasts are."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -12,8 +13,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
-from .coordinator import InsightsCoordinator, InsightsData
+from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .insights.profile import Forecast
+from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -23,6 +25,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ForecastEnergySensor(coordinator, entry, "consumption_today", "consumption", "today_kwh"),
         ForecastEnergySensor(coordinator, entry, "consumption_tomorrow", "consumption", "tomorrow_kwh"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
+    ]
+    # Forecast scores: the few numbers worth a card or an alert. Per-device
+    # scores are attributes on the device forecast sensors instead.
+    entities += [
+        ScoreSensor(coordinator, entry, "consumption_error_day_ahead", SITE_KEY, "mae", LEADS["day_ahead"]),
+        ScoreSensor(coordinator, entry, "consumption_bias_day_ahead", SITE_KEY, "bias", LEADS["day_ahead"]),
+        ScoreSensor(coordinator, entry, "consumption_error_hour_ahead", SITE_KEY, "mae", LEADS["hour_ahead"]),
+        DayAheadErrorSensor(coordinator, entry, "consumption_day_ahead_kwh_error", SITE_KEY),
+        ScoreSensor(coordinator, entry, "remainder_error_day_ahead", REMAINDER_KEY, "mae", LEADS["day_ahead"]),
+        ScoreSensor(coordinator, entry, "remainder_bias_day_ahead", REMAINDER_KEY, "bias", LEADS["day_ahead"]),
     ]
     # One per device the Energy dashboard lists, from the site model of the
     # first refresh. A device added to the dashboard later appears after a
@@ -150,6 +162,99 @@ class ForecastEnergySensor(_Base):
         return None if fc is None else round(getattr(fc, self._field), 2)
 
 
+def _score_attrs(led: Optional[Ledger], now) -> dict:
+    """The scoring table for one series, as attributes."""
+    if led is None:
+        return {}
+    out: dict = {"leads": {}}
+    for name, lead in LEADS.items():
+        m = led.metrics(now, lead)
+        out["leads"][name] = {
+            "lead_hours": lead,
+            "n": m["n"],
+            "mae_w": None if m["mae_w"] is None else round(m["mae_w"]),
+            "bias_w": None if m["bias_w"] is None else round(m["bias_w"]),
+        }
+    cov = led.coverage(now)
+    out["band_coverage_day_ahead"] = None if cov is None else round(cov, 3)
+    day = led.last_day()
+    if day:
+        out["last_day"] = {"date": day[0], "actual_kwh": round(day[1], 2), "predicted_kwh": round(day[2], 2)}
+    return out
+
+
+class ScoreSensor(_Base):
+    """A trailing-7-day error figure for one series and one lead, in W."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+    _unrecorded_attributes = frozenset({"recent"})
+
+    def __init__(self, coordinator, entry, key, series_key, metric, lead) -> None:
+        super().__init__(coordinator, entry, key, "consumption")
+        self._series_key = series_key
+        self._metric = metric
+        self._lead = lead
+
+    def _ledger(self) -> Optional[Ledger]:
+        data: Optional[InsightsData] = self.coordinator.data
+        return None if data is None or not data.ledgers else data.ledgers.get(self._series_key)
+
+    @property
+    def available(self) -> bool:
+        led = self._ledger()
+        return CoordinatorEntity.available.fget(self) and led is not None and led.metrics(self.coordinator.data.computed_at, self._lead)["n"] > 0
+
+    @property
+    def native_value(self) -> Optional[float]:
+        led = self._ledger()
+        if led is None:
+            return None
+        m = led.metrics(self.coordinator.data.computed_at, self._lead)
+        v = m["mae_w"] if self._metric == "mae" else m["bias_w"]
+        return None if v is None else round(v)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        led = self._ledger()
+        data: Optional[InsightsData] = self.coordinator.data
+        if led is None or data is None:
+            return {}
+        attrs = _score_attrs(led, data.computed_at)
+        attrs["recent"] = [
+            {"period_start": datetime.fromtimestamp(r["hour_key"], data.computed_at.tzinfo).isoformat(),
+             "actual_kwh": round(r["actual"], 3), "predicted_kwh": round(r["predicted"], 3)}
+            for r in led.recent(data.computed_at, self._lead if self._lead in LEADS_H else BAND_LEAD_H)
+        ]
+        return attrs
+
+
+class DayAheadErrorSensor(ScoreSensor):
+    """Yesterday's headline: actual minus the total the forecast showed for
+    it at noon the day before, in kWh, signed. One number a day."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = None
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry, key, series_key) -> None:
+        super().__init__(coordinator, entry, key, series_key, "day", LEADS["day_ahead"])
+
+    @property
+    def available(self) -> bool:
+        led = self._ledger()
+        return CoordinatorEntity.available.fget(self) and led is not None and led.last_day() is not None
+
+    @property
+    def native_value(self) -> Optional[float]:
+        led = self._ledger()
+        day = led.last_day() if led else None
+        return None if day is None else round(day[1] - day[2], 2)
+
+
 class DeviceForecastSensor(ForecastPowerSensor):
     """The same forecast, for one individually metered device.
 
@@ -181,4 +286,7 @@ class DeviceForecastSensor(ForecastPowerSensor):
             attrs["statistic_id"] = self._energy
             if self._device.included_in:
                 attrs["included_in"] = self._device.included_in
+            data: Optional[InsightsData] = self.coordinator.data
+            if data is not None and data.ledgers and self._energy in data.ledgers:
+                attrs["score"] = _score_attrs(data.ledgers[self._energy], data.computed_at)
         return attrs

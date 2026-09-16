@@ -37,6 +37,24 @@
             },
             "device_forecast": {
                 "name": "Napoved - {device}"
+            },
+            "consumption_error_day_ahead": {
+                "name": "Napaka napovedi, dan vnaprej"
+            },
+            "consumption_bias_day_ahead": {
+                "name": "Odklon napovedi, dan vnaprej"
+            },
+            "consumption_error_hour_ahead": {
+                "name": "Napaka napovedi, uro vnaprej"
+            },
+            "consumption_day_ahead_kwh_error": {
+                "name": "Včerajšnja napaka napovedi dneva"
+            },
+            "remainder_error_day_ahead": {
+                "name": "Napaka napovedi nemerjene porabe, dan vnaprej"
+            },
+            "remainder_bias_day_ahead": {
+                "name": "Odklon napovedi nemerjene porabe, dan vnaprej"
             }
         }
     },
