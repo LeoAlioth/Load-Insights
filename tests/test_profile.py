@@ -116,6 +116,17 @@ def test_today_is_actual_so_far_plus_forecast_for_the_rest():
     assert fc2.today_kwh > expect_today + morning * 0.9
 
 
+def test_history_is_the_last_48_completed_hours_oldest_first():
+    samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]     # plus the hour in progress
+    fc = P.forecast(samples, NOW)
+    assert len(fc.history) == 48
+    assert fc.history[-1][0] == P.floor_hour(NOW) - timedelta(hours=1), "ends with the last COMPLETED hour"
+    assert fc.history[0][0] == P.floor_hour(NOW) - timedelta(hours=48)
+    assert all(fc.history[i][0] < fc.history[i + 1][0] for i in range(47))
+    assert all(math.isclose(v, pattern(t)) for t, v in fc.history)
+    assert P.forecast([], NOW).history == ()
+
+
 def test_horizon_buckets_are_168_real_consecutive_hours_across_dst():
     """Europe/Ljubljana leaves DST on 2026-10-25 03:00 -> 02:00. Wall-clock
     stepping would produce a duplicated hour; UTC stepping must not."""

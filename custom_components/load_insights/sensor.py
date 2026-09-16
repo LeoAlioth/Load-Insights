@@ -82,6 +82,9 @@ class ForecastPowerSensor(_Base):
             return {}
         attrs: dict[str, Any] = {
             "detailedForecast": [{"period_start": t.isoformat(), "kwh": round(v, 3)} for t, v in fc.hourly],
+            # The last two days as they actually happened, same shape, so one
+            # entity feeds both halves of an actual-vs-forecast chart.
+            "history": [{"period_start": t.isoformat(), "kwh": round(v, 3)} for t, v in fc.history],
             "today_kwh": round(fc.today_kwh, 2),
             "tomorrow_kwh": round(fc.tomorrow_kwh, 2),
             "level_correction": round(fc.level, 3),

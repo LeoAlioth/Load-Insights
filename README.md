@@ -13,7 +13,7 @@ statistics for them, and publishes a consumption forecast:
 
 | entity | state | attributes |
 |---|---|---|
-| **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh (the shape the PV forecast integrations use), today/tomorrow kWh, level correction, weeks of data |
+| **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh (the shape the PV forecast integrations use); `history`: the last 48 hours as they happened, same shape; today/tomorrow kWh, level correction, weeks of data |
 | **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
 | **Consumption tomorrow** | kWh | |
 | **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
@@ -25,6 +25,51 @@ dashboard's own signs. A device listed as included in another listed device
 
 A device added to the Energy dashboard later gets its sensor after a reload
 of the integration.
+
+### Actual against forecast on one chart
+
+Every forecast-type sensor carries `history` (the last 48 hours, actual) and
+`detailedForecast` (the next 168, forecast) in the same shape, so a chart card
+that can read attributes draws both from one entity. With
+[Plotly Graph Card](https://github.com/dbuezas/lovelace-plotly-graph-card):
+
+```yaml
+type: custom:plotly-graph
+title: Consumption - actual and forecast
+hours_to_show: 72
+time_offset: 24h
+refresh_interval: 60
+entities:
+  - entity: sensor.kozolec_insights_consumption_forecast
+    name: Actual
+    type: bar
+    filters:
+      - fn: |-
+          ({meta}) => ({
+            xs: meta.attributes.history.map(p => new Date(p.period_start)),
+            ys: meta.attributes.history.map(p => p.kwh),
+          })
+  - entity: sensor.kozolec_insights_consumption_forecast
+    name: Forecast
+    line:
+      width: 2
+      dash: dot
+    filters:
+      - fn: |-
+          ({meta}) => ({
+            xs: meta.attributes.detailedForecast.map(p => new Date(p.period_start)),
+            ys: meta.attributes.detailedForecast.map(p => p.kwh),
+          })
+layout:
+  yaxis:
+    title: kWh / h
+    rangemode: tozero
+```
+
+The same pair works for the unmetered remainder and for any device sensor.
+Note that the forecast drawn over past hours is today's fit, which already
+contains them - a picture of how well the profile explains the week, not a
+test of yesterday's prediction. Scoring stored past forecasts is later work.
 
 The forecast is recomputed on the quarter hours from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight
