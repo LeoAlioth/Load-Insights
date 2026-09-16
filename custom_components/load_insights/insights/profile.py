@@ -30,6 +30,7 @@ DEFAULT_HALF_LIFE_WEEKS = 3.0
 LEVEL_CLAMP = (0.5, 2.0)
 LEVEL_DAMPING = 0.5      # adj = 1 + damping * (ratio - 1)
 LEVEL_MIN_HOURS = 12     # fewer completed hours than this: no correction
+HISTORY_HOURS = 48       # actual hourly kWh carried beside the forecast, for actual-vs-forecast cards
 WEEK_SECONDS = 7 * 86400.0
 
 
@@ -180,6 +181,15 @@ class Forecast:
     level: float
     sample_count: int
     span_weeks: float
+    history: tuple = ()          # last HISTORY_HOURS completed hours, actual kWh
+
+
+def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
+    """The completed hours before ``now``, oldest first, same shape as the
+    forecast so a card can draw actual and forecast off one entity."""
+    end = _key(floor_hour(now))
+    start = end - hours * 3600.0
+    return tuple(sorted(((t, v) for t, v in samples if v is not None and start <= _key(t) < end), key=lambda s: _key(s[0])))
 
 
 def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOURS_PER_WEEK,
@@ -197,4 +207,5 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         level=level,
         sample_count=profile.sample_count,
         span_weeks=profile.span_weeks,
+        history=recent_history(samples, now),
     )
