@@ -135,10 +135,10 @@ jobs:
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN_SET: ${{ secrets.GH_TOKEN != '' }}
+          GH_TOKEN_SET: ${{ secrets.CLASSIC_TOKEN_GITHUB != '' }}
         run: |
           if [ "$GH_TOKEN_SET" != "true" ]; then
-            echo "GH_TOKEN secret not set - skipping the GitHub release (HACS will not see this build)."
+            echo "CLASSIC_TOKEN_GITHUB secret not set - skipping the GitHub release (HACS will not see this build)."
             exit 0
           fi
           echo "Creating GitHub release for tag: $TAG_NAME"
@@ -146,7 +146,7 @@ jobs:
 
           # Check if release already exists for this tag
           EXISTING=$(curl -s \
-            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.CLASSIC_TOKEN_GITHUB }}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${GH_API}/releases/tags/${TAG_NAME}")
@@ -155,7 +155,7 @@ jobs:
           if [ -n "$EXISTING_ID" ]; then
             echo "Deleting existing GitHub release $EXISTING_ID for tag $TAG_NAME"
             curl -s -X DELETE \
-              -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+              -H "Authorization: token ${{ secrets.CLASSIC_TOKEN_GITHUB }}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "${GH_API}/releases/$EXISTING_ID"
@@ -164,7 +164,7 @@ jobs:
           # Create the release
           BODY=$(jq -Rs '.' < /tmp/release_body.md)
           RELEASE_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.CLASSIC_TOKEN_GITHUB }}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -d "{\"tag_name\": \"$TAG_NAME\", \"name\": \"Load Insights $TAG_NAME\", \"body\": $BODY, \"prerelease\": false, \"draft\": false}" \
@@ -181,7 +181,7 @@ jobs:
 
           # Upload the asset to GitHub
           curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.CLASSIC_TOKEN_GITHUB }}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/zip" \
