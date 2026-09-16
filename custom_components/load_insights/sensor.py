@@ -107,6 +107,18 @@ class ForecastPowerSensor(_Base):
             # holidays library is not installed (no Workday integration).
             "holidays_modelled": data.holidays_known,
             "holidays_in_horizon": list(data.holidays_in_horizon),
+            # The temperature response fitted for THIS series, or zeros when
+            # it did not pass the guard (or no pair is configured).
+            "temperature_response": {
+                "engaged": fc.temperature.engaged,
+                "heating_w_per_degree": round(fc.temperature.heating_kwh_per_degh * 1000.0, 1),
+                "cooling_w_per_degree": round(fc.temperature.cooling_kwh_per_degh * 1000.0, 1),
+                "residual_explained": round(fc.temperature.explained, 3),
+                "hours_fitted": fc.temperature.hours,
+                "horizon_hours_with_forecast": fc.hours_with_forecast_temperature,
+                "weather_entity": data.weather_entity,
+                "temperature_entity": data.temperature_entity,
+            },
         }
         if self._which == "remainder":
             attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]

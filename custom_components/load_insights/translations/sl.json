@@ -5,10 +5,14 @@
                 "title": "Load Insights",
                 "description": "Prebere, kar vaša nadzorna plošča Energija že ve, in iz tega napove porabo. Tu se nič ne vnaša znova.\n\nNajdeno v nadzorni plošči Energija: {grid} omrežje, {solar} PV, {battery} baterija, {devices} posameznih naprav, {forecasts} vnosov napovedi PV.",
                 "data": {
-                    "name": "Ime"
+                    "name": "Ime",
+                    "weather_entity": "Vremenska entiteta",
+                    "outdoor_temperature_entity": "Senzor zunanje temperature"
                 },
                 "data_description": {
-                    "name": "Prikazano kot naprava, ki združuje senzorje napovedi."
+                    "name": "Prikazano kot naprava, ki združuje senzorje napovedi.",
+                    "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
+                    "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre."
                 }
             }
         },
@@ -33,6 +37,22 @@
             },
             "device_forecast": {
                 "name": "Napoved - {device}"
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Pojasnjevalni vhodi",
+                "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
+                "data": {
+                    "weather_entity": "Vremenska entiteta",
+                    "outdoor_temperature_entity": "Senzor zunanje temperature"
+                },
+                "data_description": {
+                    "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
+                    "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre."
+                }
             }
         }
     }

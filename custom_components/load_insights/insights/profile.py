@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+
+from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
 
 Sample = Tuple[datetime, float]
 
@@ -185,8 +187,12 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
     )
 
 
-def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime) -> float:
-    """Last 24 completed hours, actual over profile, clamped then damped."""
+def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
+                     response: TemperatureResponse = NO_RESPONSE,
+                     temps: Optional[Dict[float, float]] = None) -> float:
+    """Last 24 completed hours, actual over the (temperature-adjusted)
+    expectation, clamped then damped. Adjusting first is what stops a cold
+    snap being counted twice - once by the response, once as a level."""
     end = _key(floor_hour(now))
     start = end - 24 * 3600.0
     actual = 0.0
@@ -198,6 +204,7 @@ def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime)
         e = profile.slot_kwh(t)
         if e is None:
             continue
+        e = max(0.0, e + response.delta((temps or {}).get(_key(t))))
         actual += v
         expected += e
         hours += 1
@@ -252,6 +259,8 @@ class Forecast:
     span_weeks: float
     history: tuple = ()          # last HISTORY_HOURS completed hours, actual kWh
     bands: tuple = ()            # (p10, p90) per row of ``hourly``, same order
+    temperature: TemperatureResponse = NO_RESPONSE
+    hours_with_forecast_temperature: int = 0
 
 
 def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
@@ -264,11 +273,44 @@ def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTOR
 
 def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOURS_PER_WEEK,
              half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
-             holidays: Optional[Set[date]] = None) -> Forecast:
+             holidays: Optional[Set[date]] = None,
+             temps_history: Optional[Dict[float, float]] = None,
+             temps_forecast: Optional[Dict[float, float]] = None) -> Forecast:
+    """``temps_history`` / ``temps_forecast`` map hour keys (epoch seconds of
+    the period start) to outdoor temperature in C. Absent, the profile stands
+    alone; present, a temperature response is fitted on the residuals and
+    applied to the horizon hours that have a forecast temperature."""
     profile = fit_profile(samples, now, half_life_weeks, holidays)
-    level = level_correction(profile, samples, now)
-    hourly = profile.predict(now, horizon_hours, level)
-    bands = profile.predict_bands(now, horizon_hours, level)
+
+    response = NO_RESPONSE
+    if temps_history:
+        cutoff_k = _key(floor_hour(now))
+        rows = []
+        for t, v in samples:
+            k = _key(t)
+            if v is None or k >= cutoff_k:
+                continue
+            temp = temps_history.get(k)
+            e = profile.slot_kwh(t)
+            if temp is None or e is None:
+                continue
+            w = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
+            rows.append((w, v - e, temp))
+        response = fit_temperature_response(rows)
+
+    level = level_correction(profile, samples, now, response, temps_history)
+    base = profile.predict(now, horizon_hours, 1.0)
+    base_bands = profile.predict_bands(now, horizon_hours, 1.0)
+    hourly = []
+    bands = []
+    with_temp = 0
+    for (t, v), (lo, hi) in zip(base, base_bands):
+        temp = (temps_forecast or {}).get(_key(t))
+        d = response.delta(temp)
+        if temp is not None and response.engaged:
+            with_temp += 1
+        hourly.append((t, max(0.0, (v + d) * level)))
+        bands.append((max(0.0, (lo + d) * level), max(0.0, (hi + d) * level)))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(
@@ -281,4 +323,6 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         span_weeks=profile.span_weeks,
         history=recent_history(samples, now),
         bands=tuple(bands),
+        temperature=response,
+        hours_with_forecast_temperature=with_temp,
     )
