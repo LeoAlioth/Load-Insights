@@ -17,6 +17,15 @@ CONF_CALENDAR_ENTITIES = "calendar_entities"
 # tank level...), for the nowcast of its next hours
 CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
 
+# Detection: the meter's raw per-phase readings. Active power is the one
+# that matters most; PF (or reactive power), current and voltage refine the
+# signatures where the meter publishes them. All optional, per phase.
+CONF_DETECTION = "detection"
+DETECTION_KINDS = ("power", "pf", "current", "voltage")
+DETECTION_INTERVAL_MINUTES = 5
+DETECTION_BACKFILL_DAYS = 10
+DETECTION_SLICE_HOURS = 6
+
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so
 # phase 1 does exactly that and nothing incremental.

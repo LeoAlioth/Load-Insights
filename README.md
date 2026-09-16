@@ -119,6 +119,22 @@ Assistant's Workday integration installs (no Workday, no holidays - the
 sensor's `holidays_modelled` attribute says which). Nothing learned in the
 machine sense; every number is explainable.
 
+## Load detection (phase 2, first stage)
+
+Point the *Load detection* page at the meter's raw per-phase readings -
+active power per phase above all; power factor, current and voltage where the
+meter has them - and Load Insights watches the recorder's raw states at the
+meter's own cadence, incrementally, backfilling its window in slices. A
+phase leaving its idle baseline opens a **session**; sustained changes inside
+it are levels, so a washing machine is one session with a heater level and a
+motor level; sessions that start and end together on several phases are one
+multi-phase load. Closed sessions are matched to **signatures** (phase set,
+watts per phase, duration, PF) and described in words - "6.1 kW on A+C, ~80 s,
+every 3 min, seen 258 times". Two sensors: **Detected loads** (how many are
+on now, with the signature library in its attributes) and **Unknown load
+power**. Naming signatures, explaining them with the dashboard's known
+devices, and feeding them back into the forecast are the next stages.
+
 ## Requirements
 
 - Home Assistant with the Energy dashboard configured, at least a grid source.
