@@ -20,7 +20,8 @@ CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the
 # signatures where the meter publishes them. All optional, per phase.
-CONF_DETECTION = "detection"
+CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a, pf_b, ...
+CONF_SUBMETERS = "submeters"            # name -> the same fields, for downstream 3-phase meters
 DETECTION_KINDS = ("power", "pf", "current", "voltage")
 DETECTION_INTERVAL_MINUTES = 5
 DETECTION_BACKFILL_DAYS = 10

@@ -14,12 +14,13 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DETECTION,
+    CONF_SUBMETERS,
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector
+from .insights.detect import PHASES, Detector, Fleet
 
 _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
@@ -35,7 +36,7 @@ class DetectionRunner:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.detector: Detector = Detector()
+        self.fleet: Fleet = Fleet()
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -50,6 +51,14 @@ class DetectionRunner:
         return dict(self.entry.options.get(CONF_DETECTION) or {})
 
     @property
+    def submeters(self) -> Dict[str, dict]:
+        return dict(self.entry.options.get(CONF_SUBMETERS) or {})
+
+    @property
+    def detector(self) -> Detector:
+        return self.fleet.main
+
+    @property
     def enabled(self) -> bool:
         return any(self.config.get(f"power_{p}") for p in PHASES)
 
@@ -58,8 +67,11 @@ class DetectionRunner:
 
     async def async_start(self) -> None:
         raw = await self._store.async_load() or {}
-        self.detector = Detector.from_dict(raw.get("detector"))
-        self.detector.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+        if raw.get("fleet"):
+            self.fleet = Fleet.from_dict(raw.get("fleet"))
+        else:                                   # a store written before downstream meters existed
+            self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
+        self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         if not self.enabled:
@@ -84,12 +96,19 @@ class DetectionRunner:
             now = dt_util.utcnow()
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples, pf = await self._read(start, end)
-            await self.hass.async_add_executor_job(self.detector.process, samples, pf, end.timestamp())
+            samples, pf = await self._read(start, end, self.config)
+            sub_samples, sub_pf = {}, {}
+            for name, cfg in self.submeters.items():
+                ss, sp = await self._read(start, end, cfg)
+                if ss:
+                    sub_samples[name], sub_pf[name] = ss, sp
+            await self.hass.async_add_executor_job(
+                self.fleet.process, samples, sub_samples, pf, sub_pf, end.timestamp()
+            )
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
             self.last_run = now
-            await self._store.async_save({"detector": self.detector.to_dict(), "last_processed": end.isoformat()})
+            await self._store.async_save({"fleet": self.fleet.to_dict(), "last_processed": end.isoformat()})
             for cb in self._listeners:
                 cb()
             if not self.caught_up:
@@ -100,8 +119,7 @@ class DetectionRunner:
         finally:
             self._running = False
 
-    async def _read(self, start: datetime, end: datetime):
-        cfg = self.config
+    async def _read(self, start: datetime, end: datetime, cfg: dict):
         entities = {}
         for p in PHASES:
             for kind in ("power", "pf"):

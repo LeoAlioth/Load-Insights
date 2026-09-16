@@ -392,9 +392,20 @@ class DetectedLoadsSensor(_DetectionBase):
                 {"id": s.id, "name": s.name, "description": s.describe(tz), "phases": s.phases.upper(),
                  "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
-                 "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen), "hours": s.hours}
+                 "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen), "hours": s.hours,
+                 # the downstream meter that also saw it, or "main" (upstream of every submeter)
+                 "location": s.location, "seen_downstream": dict(s.locations)}
                 for s in sorted(det.signatures, key=lambda x: -x.count)
             ],
+            "submeters": {
+                name: {
+                    "signatures": [{"id": x.id, "description": x.describe(tz), "count": x.count} for x in sorted(d.signatures, key=lambda y: -y.count)],
+                    "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
+                    "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
+                    "active": [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])} for a in d.active(now)],
+                }
+                for name, d in self._runner.fleet.subs.items()
+            },
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
