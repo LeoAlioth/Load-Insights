@@ -1,0 +1,18 @@
+{
+  "domain": "load_insights",
+  "name": "Load Insights",
+  "codeowners": [
+    "@LeoAlioth"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "energy",
+    "recorder"
+  ],
+  "documentation": "https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

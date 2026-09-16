@@ -1,0 +1,36 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Load Insights",
+                "description": "Reads what your Energy dashboard already knows and forecasts consumption from it. Nothing is re-entered here.\n\nFound in the Energy dashboard: {grid} grid, {solar} PV, {battery} battery, {devices} individual devices, {forecasts} PV forecast entries.",
+                "data": {
+                    "name": "Name"
+                },
+                "data_description": {
+                    "name": "Shown as the device that groups the forecast sensors."
+                }
+            }
+        },
+        "abort": {
+            "no_energy_dashboard": "The Energy dashboard has no grid source configured. Set up at least the grid there first; PV, battery and individual devices improve the forecast.",
+            "already_configured": "Load Insights is already set up."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "consumption_forecast": {
+                "name": "Consumption forecast"
+            },
+            "consumption_today": {
+                "name": "Consumption today"
+            },
+            "consumption_tomorrow": {
+                "name": "Consumption tomorrow"
+            },
+            "remainder_forecast": {
+                "name": "Unmetered consumption forecast"
+            }
+        }
+    }
+}
