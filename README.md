@@ -47,6 +47,12 @@ mirrored to `https://github.com/LeoAlioth/Load-Insights`, and every push to
 (integration), install it, restart, then Settings -> Devices & services ->
 Add integration -> Load Insights.
 
+Every dev build can also announce itself to your Home Assistant instances so
+HACS downloads it at once: the release workflow POSTs `{"version", "repository"}`
+to the webhooks in the user-level `HA_WEBHOOK_URLS` secret, and one automation
+per instance routes on the repository - see Load Juggler's
+`dev/HA_AUTO_UPDATE.md`. Restarting is left to you.
+
 ## Development
 
 The model lives in `custom_components/load_insights/insights/` and imports no
