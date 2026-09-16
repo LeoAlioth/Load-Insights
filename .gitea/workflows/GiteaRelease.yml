@@ -1,0 +1,228 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'          # Only trigger on version tags like v1.0.0, v2.1.3
+      - '[0-9]*'      # Or tags starting with numbers like 1.0.0, 2.1.3
+  workflow_dispatch:  # Enables manual trigger
+
+jobs:
+  release:
+    name: Create Gitea Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run test suite
+        # The pure tier needs nothing installed - that is its whole premise.
+        # A Home Assistant-layer rig joins in phase 2.
+        run: python tests/run_all.py
+
+      - name: Set up variables
+        id: vars
+        run: |
+          echo "GITHUB_REF: $GITHUB_REF"
+          echo "GITHUB_REF_NAME: $GITHUB_REF_NAME"
+
+          if echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
+            # Triggered by tag push - use the tag name directly
+            TAG_NAME="$GITHUB_REF_NAME"
+          else
+            # Manual dispatch on a branch - read version from manifest.json
+            TAG_NAME=$(jq -r '.version' custom_components/load_insights/manifest.json)
+            echo "Manual trigger: read version '$TAG_NAME' from manifest.json"
+          fi
+
+          # Validate TAG_NAME looks like a version (starts with v or digit)
+          if ! echo "$TAG_NAME" | grep -qE '^(v?[0-9])'; then
+            echo "ERROR: TAG_NAME '$TAG_NAME' does not look like a version tag - aborting"
+            exit 1
+          fi
+
+          echo "Using tag: $TAG_NAME"
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+      - name: Generate release notes
+        run: |
+          # Extract version from tag (strip leading 'v' if present)
+          VERSION=$(echo "$TAG_NAME" | sed 's/^v//')
+
+          # Extract matching version section from RELEASE_NOTES.md
+          awk -v ver="$VERSION" '
+            BEGIN { found=0 }
+            /^## / {
+              if (found) exit
+              if (index($0, "## " ver) == 1) { found=1; next }
+            }
+            /^---$/ { if (found) exit }
+            found { print }
+          ' RELEASE_NOTES.md > /tmp/release_body.md
+
+          if [ ! -s /tmp/release_body.md ]; then
+            echo "No matching section found for version $VERSION in RELEASE_NOTES.md" > /tmp/release_body.md
+          fi
+
+          echo "--- Release body ---"
+          cat /tmp/release_body.md
+          echo "---"
+
+      - name: Create ZIP archive
+        run: |
+          # Create zip with full path for HACS (content_in_root: false)
+          # HACS expects: /manifest.json
+          cd custom_components/load_insights
+          zip -r load-insights.zip .
+
+      - name: Create Gitea Release
+        run: |
+          echo "Creating Gitea release for tag: $TAG_NAME"
+          GITEA_API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+
+          # Check if release already exists for this tag
+          EXISTING=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            "${GITEA_API}/releases/tags/${TAG_NAME}")
+          EXISTING_ID=$(echo "$EXISTING" | jq -r '.id // empty')
+
+          if [ -n "$EXISTING_ID" ]; then
+            echo "Deleting existing Gitea release $EXISTING_ID for tag $TAG_NAME"
+            curl -s -X DELETE \
+              -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+              "${GITEA_API}/releases/$EXISTING_ID"
+          fi
+
+          # Ensure the tag exists (manual dispatch won't have created one)
+          git config user.name "Gitea Actions"
+          git config user.email "actions@gitea.local"
+          git tag -f "$TAG_NAME"
+          git push origin "$TAG_NAME" --force
+
+          # Create the release
+          BODY=$(jq -Rs '.' < /tmp/release_body.md)
+          RELEASE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\": \"$TAG_NAME\", \"name\": \"Load Insights $TAG_NAME\", \"body\": $BODY, \"prerelease\": false, \"draft\": false}" \
+            "${GITEA_API}/releases")
+
+          echo "Gitea Release response: $RELEASE_RESPONSE"
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          echo "Gitea Release ID: $RELEASE_ID"
+
+          if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "Failed to create Gitea release"
+            exit 1
+          fi
+
+          # Upload the asset
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/zip" \
+            --data-binary @custom_components/load_insights/load-insights.zip \
+            "${GITEA_API}/releases/$RELEASE_ID/assets?name=load-insights.zip"
+
+          echo "Gitea release created successfully!"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN_SET: ${{ secrets.GH_TOKEN != '' }}
+        run: |
+          if [ "$GH_TOKEN_SET" != "true" ]; then
+            echo "GH_TOKEN secret not set - skipping the GitHub release (HACS will not see this build)."
+            exit 0
+          fi
+          echo "Creating GitHub release for tag: $TAG_NAME"
+          GH_API="https://api.github.com/repos/LeoAlioth/Load-Insights"
+
+          # Check if release already exists for this tag
+          EXISTING=$(curl -s \
+            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GH_API}/releases/tags/${TAG_NAME}")
+          EXISTING_ID=$(echo "$EXISTING" | jq -r '.id // empty')
+
+          if [ -n "$EXISTING_ID" ]; then
+            echo "Deleting existing GitHub release $EXISTING_ID for tag $TAG_NAME"
+            curl -s -X DELETE \
+              -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GH_API}/releases/$EXISTING_ID"
+          fi
+
+          # Create the release
+          BODY=$(jq -Rs '.' < /tmp/release_body.md)
+          RELEASE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "{\"tag_name\": \"$TAG_NAME\", \"name\": \"Load Insights $TAG_NAME\", \"body\": $BODY, \"prerelease\": false, \"draft\": false}" \
+            "${GH_API}/releases")
+
+          echo "GitHub Release response: $RELEASE_RESPONSE"
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          echo "GitHub Release ID: $RELEASE_ID"
+
+          if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "Failed to create GitHub release"
+            exit 1
+          fi
+
+          # Upload the asset to GitHub
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/zip" \
+            --data-binary @custom_components/load_insights/load-insights.zip \
+            "https://uploads.github.com/repos/LeoAlioth/Load-Insights/releases/$RELEASE_ID/assets?name=load-insights.zip"
+
+          echo "GitHub release created successfully!"
+
+      - name: Tell Home Assistant to download the new build
+        # Optional - skipped unless a webhook is configured. Fires a webhook per
+        # instance so HACS downloads this exact tag instead of waiting for its own
+        # update check. See dev/HA_AUTO_UPDATE.md for the receiving automation.
+        #
+        # HA_WEBHOOK_URLS holds one URL per line (or space-separated) so several
+        # test systems can be notified; HA_WEBHOOK_URL is still honoured for a
+        # single instance.
+        env:
+          HA_WEBHOOK_URLS: ${{ secrets.HA_WEBHOOK_URLS }}
+          HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
+        run: |
+          URLS="${HA_WEBHOOK_URLS:-$HA_WEBHOOK_URL}"
+          if [ -z "$URLS" ]; then
+            echo "No HA webhook secret set - skipping."
+            exit 0
+          fi
+
+          # The release asset was uploaded a moment ago; give GitHub a beat to
+          # start serving it before HACS asks for it.
+          sleep 5
+
+          # Word-splitting on whitespace/newlines is what lets one secret carry
+          # several URLs. Never fail the release over an unreachable instance
+          # (it may be restarting, or off) - the build itself succeeded.
+          for url in $URLS; do
+            case "$url" in ''|\#*) continue ;; esac
+            host=$(printf '%s' "$url" | sed -E 's#^[a-z]+://([^/]+).*#\1#')
+            if curl -fsS -X POST "$url" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"version\": \"$TAG_NAME\"}"; then
+              echo "Notified $host: $TAG_NAME"
+            else
+              echo "Notify failed for $host - download $TAG_NAME manually in HACS"
+            fi
+          done
