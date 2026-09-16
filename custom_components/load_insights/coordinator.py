@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN, HISTORY_WEEKS, HORIZON_HOURS, REFRESH_MINUTES, REFRESH_SECOND
 from .insights.model import SiteModel
 from .insights.profile import Forecast, forecast
-from .insights.series import combine, subtract_all
+from .insights.series import combine, coverage, subtract_all
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +29,8 @@ class InsightsData:
     consumption: Forecast
     remainder: Optional[Forecast]
     computed_at: datetime
+    remainder_complete_since: Optional[datetime] = None
+    devices_without_statistics: tuple = ()
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -74,6 +76,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("no hourly consumption statistics yet")
         remainder_ids = [d.energy for d in site.remainder_devices()]
         remainder = subtract_all(consumption, series, remainder_ids) if remainder_ids else []
+        complete_since, missing = coverage(series, remainder_ids) if remainder_ids else (None, [])
+        labels = {d.energy: d.label for d in site.devices}
 
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
@@ -82,7 +86,11 @@ class InsightsCoordinator(DataUpdateCoordinator):
             await self.hass.async_add_executor_job(forecast, remainder, now, HORIZON_HOURS)
             if remainder else None
         )
-        return InsightsData(site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now)
+        return InsightsData(
+            site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
+            remainder_complete_since=complete_since,
+            devices_without_statistics=tuple(labels.get(m, m) for m in missing),
+        )
 
 
 def _rows_to_samples(rows: List[dict], tz) -> List[tuple]:

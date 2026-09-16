@@ -84,6 +84,13 @@ class ForecastPowerSensor(_Base):
         }
         if self._which == "remainder":
             attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]
+            # Before this instant at least one device was not yet metered, so
+            # its energy is inside the remainder for those hours - by design.
+            attrs["remainder_complete_since"] = (
+                data.remainder_complete_since.isoformat() if data.remainder_complete_since else None
+            )
+            if data.devices_without_statistics:
+                attrs["devices_without_statistics"] = list(data.devices_without_statistics)
         return attrs
 
 
