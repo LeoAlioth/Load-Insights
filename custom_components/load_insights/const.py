@@ -11,6 +11,8 @@ DEFAULT_NAME = "Home"
 # forecast, which is why they are a pair.
 CONF_WEATHER_ENTITY = "weather_entity"
 CONF_OUTDOOR_TEMPERATURE_ENTITY = "outdoor_temperature_entity"
+# Calendars are linked without saying what they mean; the fit decides.
+CONF_CALENDAR_ENTITIES = "calendar_entities"
 
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so

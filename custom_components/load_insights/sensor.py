@@ -131,6 +131,32 @@ class ForecastPowerSensor(_Base):
                 "weather_entity": data.weather_entity,
                 "temperature_entity": data.temperature_entity,
             },
+            # Each linked calendar's fitted role for THIS series: existence
+            # factors per hour of day (or the single factor), then any title
+            # that earned a factor of its own. Not engaged = no effect.
+            "calendars": [
+                {
+                    "entity": m.entity,
+                    "engaged": m.engaged,
+                    "on_hours_in_window": (data.calendar_on_hours or {}).get(m.entity),
+                    "existence": {
+                        "engaged": m.existence.engaged,
+                        # contrast = while on, relative to while off: 0.4 is
+                        # "the house runs at 40 % while this calendar is on"
+                        "contrast": round(m.existence.contrast, 3),
+                        "contrast_by_hour": [round(m.existence.contrast_at(h), 3) for h in range(24)] if m.existence.engaged else None,
+                        "factor_on": round(m.existence.on, 3),
+                        "factor_off": round(m.existence.off, 3),
+                        "residual_explained": round(m.existence.explained, 3),
+                        "on_hours": m.existence.on_hours,
+                    },
+                    "titles": {
+                        t: {"factor": round(f.on, 3), "residual_explained": round(f.explained, 3), "on_hours": f.on_hours}
+                        for t, f in m.titles.items()
+                    },
+                }
+                for m in fc.calendars
+            ],
         }
         if self._which == "remainder":
             attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]

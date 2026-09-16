@@ -97,7 +97,15 @@ the sensor's past and applied to the weather entity's coming week - and kept
 only if it explains a real share of the residual, so an input that turns out
 not to matter cannot make the forecast worse. Each sensor's
 `temperature_response` attribute says whether it engaged and by how much.
-Public holidays are scored as Sundays, in the
+Link any calendars and Load Insights works out what each one means: from
+its past events an existence signal is fitted on the residuals, per hour of
+day - an away calendar comes out as daytime factors near 0.4 and nights near
+1, a guests calendar as evenings above 1 - and applied to the week where its
+future events fall. Event titles are then fitted on the calendar's own
+on-hours, so a title earns a factor only for how it differs from the
+calendar's average. A calendar that explains nothing is reported and ignored
+(`calendars` attribute on every forecast sensor). Public holidays are scored as
+Sundays, in the
 history and in the week ahead, using the `holidays` library that Home
 Assistant's Workday integration installs (no Workday, no holidays - the
 sensor's `holidays_modelled` attribute says which). Nothing learned in the
