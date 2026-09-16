@@ -78,7 +78,14 @@ hours. Each hour also carries a spread: the weighted 10th and 90th
 percentiles of that slot's samples, so a weekday 10:00 where the car charges
 on some weeks reads "0.4 to 4.0 kWh" rather than an average that never
 happens. `kwh` is the mean, so daily totals add up exactly; percentiles do
-not add, so the daily sensors carry no band. Public holidays are scored as Sundays, in the
+not add, so the daily sensors carry no band. Link a weather entity and an outdoor temperature sensor and the forecast
+responds to the weather: a temperature response (heating and cooling
+degree-hours) is fitted on what the weekly profile leaves unexplained, using
+the sensor's past and applied to the weather entity's coming week - and kept
+only if it explains a real share of the residual, so an input that turns out
+not to matter cannot make the forecast worse. Each sensor's
+`temperature_response` attribute says whether it engaged and by how much.
+Public holidays are scored as Sundays, in the
 history and in the week ahead, using the `holidays` library that Home
 Assistant's Workday integration installs (no Workday, no holidays - the
 sensor's `holidays_modelled` attribute says which). Nothing learned in the

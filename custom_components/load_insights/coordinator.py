@@ -15,9 +15,21 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, HISTORY_WEEKS, HORIZON_HOURS, REFRESH_MINUTES, REFRESH_SECOND
+from homeassistant.const import UnitOfTemperature
+from homeassistant.util.unit_conversion import TemperatureConverter
+
+from .const import (
+    CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_WEATHER_ENTITY,
+    DOMAIN,
+    HISTORY_WEEKS,
+    HORIZON_HOURS,
+    REFRESH_MINUTES,
+    REFRESH_SECOND,
+)
+from .insights.covariates import interpolate_hourly
 from .insights.model import SiteModel
-from .insights.profile import Forecast, forecast
+from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
 from .insights.series import combine, coverage, subtract_all
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +65,10 @@ class InsightsData:
     devices_without_statistics: tuple = ()
     holidays_known: bool = False
     holidays_in_horizon: tuple = ()
+    weather_entity: Optional[str] = None
+    temperature_entity: Optional[str] = None
+    temperature_history_hours: int = 0
+    temperature_forecast_hours: int = 0
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
@@ -101,6 +117,22 @@ class InsightsCoordinator(DataUpdateCoordinator):
         )
         series = {sid: _rows_to_samples(rows.get(sid, []), now.tzinfo) for sid in ids}
 
+        # --- the temperature pair: sensor history, weather-entity horizon ---
+        opts = self.config_entry.options if self.config_entry else {}
+        temp_entity = opts.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
+        weather_entity = opts.get(CONF_WEATHER_ENTITY)
+        temps_hist: Dict[float, float] = {}
+        temps_fc: Dict[float, float] = {}
+        if temp_entity and weather_entity:
+            trows = await get_instance(self.hass).async_add_executor_job(
+                rec_stats.statistics_during_period,
+                self.hass, start, None, {temp_entity}, "hour", {"temperature": UnitOfTemperature.CELSIUS}, {"mean"},
+            )
+            for r in trows.get(temp_entity, []):
+                if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
+                    temps_hist[float(r["start"])] = float(r["mean"])
+            temps_fc = await self._forecast_temperatures(weather_entity, now)
+
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
@@ -112,7 +144,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
         fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
-            forecast, rows, now, HORIZON_HOURS, 3.0, hols
+            forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None
         )
         cons_fc = await fit(consumption)
         rem_fc = await fit(remainder) if remainder else None
@@ -130,7 +162,56 @@ class InsightsCoordinator(DataUpdateCoordinator):
             devices=device_fc,
             holidays_known=hols is not None,
             holidays_in_horizon=tuple(sorted(d.isoformat() for d in (hols or ()) if now.date() <= d <= end_h.date())),
+            weather_entity=weather_entity,
+            temperature_entity=temp_entity,
+            temperature_history_hours=len(temps_hist),
+            temperature_forecast_hours=len(temps_fc),
         )
+
+    async def _forecast_temperatures(self, weather_entity: str, now: datetime) -> Dict[float, float]:
+        """Hour key -> forecast temperature in C over the horizon, from the
+        weather entity's hourly forecast when it has one, else its daily one,
+        interpolated onto every hour of the horizon. A provider that answers
+        neither, or is unavailable, contributes nothing - the profile stands."""
+        points = []
+        state = self.hass.states.get(weather_entity)
+        unit = (state.attributes.get("temperature_unit") if state else None) or UnitOfTemperature.CELSIUS
+        for kind in ("hourly", "daily"):
+            try:
+                resp = await self.hass.services.async_call(
+                    "weather", "get_forecasts", {"type": kind, "entity_id": weather_entity},
+                    blocking=True, return_response=True,
+                )
+            except Exception as exc:  # noqa: BLE001  unsupported type, entity gone
+                _LOGGER.debug("%s forecast from %s unavailable: %s", kind, weather_entity, exc)
+                continue
+            items = ((resp or {}).get(weather_entity) or {}).get("forecast") or []
+            for it in items:
+                t = it.get("datetime")
+                if isinstance(t, str):
+                    t = dt_util.parse_datetime(t)
+                if t is None:
+                    continue
+                if kind == "daily":
+                    # a day's low around 05:00 and high around 15:00 local
+                    lo, hi = it.get("templow"), it.get("temperature")
+                    day = dt_util.as_local(t).replace(hour=0, minute=0, second=0, microsecond=0)
+                    if lo is not None:
+                        points.append((day.replace(hour=5).timestamp(), _to_c(lo, unit)))
+                    if hi is not None:
+                        points.append((day.replace(hour=15).timestamp(), _to_c(hi, unit)))
+                elif it.get("temperature") is not None:
+                    points.append((t.timestamp(), _to_c(it["temperature"], unit)))
+            if points:
+                break
+        if not points:
+            return {}
+        keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
+        return interpolate_hourly(points, keys)
+
+
+def _to_c(value, unit) -> float:
+    return float(TemperatureConverter.convert(float(value), unit, UnitOfTemperature.CELSIUS))
 
 
 def _rows_to_samples(rows: List[dict], tz) -> List[tuple]:

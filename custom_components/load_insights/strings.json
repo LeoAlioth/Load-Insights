@@ -5,10 +5,14 @@
                 "title": "Load Insights",
                 "description": "Reads what your Energy dashboard already knows and forecasts consumption from it. Nothing is re-entered here.\n\nFound in the Energy dashboard: {grid} grid, {solar} PV, {battery} battery, {devices} individual devices, {forecasts} PV forecast entries.",
                 "data": {
-                    "name": "Name"
+                    "name": "Name",
+                    "weather_entity": "Weather entity",
+                    "outdoor_temperature_entity": "Outdoor temperature sensor"
                 },
                 "data_description": {
-                    "name": "Shown as the device that groups the forecast sensors."
+                    "name": "Shown as the device that groups the forecast sensors.",
+                    "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
+                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
                 }
             }
         },
@@ -33,6 +37,22 @@
             },
             "device_forecast": {
                 "name": "{device} forecast"
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Explanatory inputs",
+                "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
+                "data": {
+                    "weather_entity": "Weather entity",
+                    "outdoor_temperature_entity": "Outdoor temperature sensor"
+                },
+                "data_description": {
+                    "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
+                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
+                }
             }
         }
     }
