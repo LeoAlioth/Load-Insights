@@ -57,6 +57,12 @@
             },
             "remainder_bias_day_ahead": {
                 "name": "Odklon napovedi nemerjene porabe, dan vnaprej"
+            },
+            "detected_loads": {
+                "name": "Zaznani porabniki"
+            },
+            "unknown_load_power": {
+                "name": "Moč neznanih porabnikov"
             }
         }
     },
@@ -67,7 +73,8 @@
                 "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
                 "menu_options": {
                     "inputs": "Pojasnjevalni vhodi",
-                    "device_state": "Lastni senzor stanja naprave"
+                    "device_state": "Lastni senzor stanja naprave",
+                    "detection": "Zaznavanje porabnikov"
                 }
             },
             "inputs": {
@@ -90,6 +97,24 @@
                 "data": {
                     "device": "Naprava",
                     "state_entity": "Senzor stanja"
+                }
+            },
+            "detection": {
+                "title": "Zaznavanje porabnikov",
+                "description": "Surove meritve števca po fazah. Najpomembnejša je delovna moč po fazah; faktor moči, tok in napetost izostrijo podpise, kjer jih števec objavlja. Vsa polja so neobvezna. Enofazni števec uporabi le polja A.",
+                "data": {
+                    "power_a": "Delovna moč A",
+                    "power_b": "Delovna moč B",
+                    "power_c": "Delovna moč C",
+                    "pf_a": "Faktor moči A",
+                    "pf_b": "Faktor moči B",
+                    "pf_c": "Faktor moči C",
+                    "current_a": "Tok A",
+                    "current_b": "Tok B",
+                    "current_c": "Tok C",
+                    "voltage_a": "Napetost A",
+                    "voltage_b": "Napetost B",
+                    "voltage_c": "Napetost C"
                 }
             }
         },

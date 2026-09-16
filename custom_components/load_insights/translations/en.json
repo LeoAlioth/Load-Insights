@@ -57,6 +57,12 @@
             },
             "remainder_bias_day_ahead": {
                 "name": "Unmetered forecast bias, day ahead"
+            },
+            "detected_loads": {
+                "name": "Detected loads"
+            },
+            "unknown_load_power": {
+                "name": "Unknown load power"
             }
         }
     },
@@ -67,7 +73,8 @@
                 "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
                 "menu_options": {
                     "inputs": "Explanatory inputs",
-                    "device_state": "A device's own state sensor"
+                    "device_state": "A device's own state sensor",
+                    "detection": "Load detection"
                 }
             },
             "inputs": {
@@ -90,6 +97,24 @@
                 "data": {
                     "device": "Device",
                     "state_entity": "State sensor"
+                }
+            },
+            "detection": {
+                "title": "Load detection",
+                "description": "The meter's raw per-phase readings. Active power per phase is what matters most; power factor, current and voltage refine the signatures where the meter publishes them. Every field is optional. A single-phase meter uses the A fields only.",
+                "data": {
+                    "power_a": "Active power A",
+                    "power_b": "Active power B",
+                    "power_c": "Active power C",
+                    "pf_a": "Power factor A",
+                    "pf_b": "Power factor B",
+                    "pf_c": "Power factor C",
+                    "current_a": "Current A",
+                    "current_b": "Current B",
+                    "current_c": "Current C",
+                    "voltage_a": "Voltage A",
+                    "voltage_b": "Voltage B",
+                    "voltage_c": "Voltage C"
                 }
             }
         },

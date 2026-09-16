@@ -12,7 +12,9 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CALENDAR_ENTITIES,
+    CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
+    DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
@@ -79,13 +81,33 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     """Two pages: the site-level inputs, and one device's own state sensor."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state"])
+        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection"])
+
+    async def async_step_detection(self, user_input: dict[str, Any] | None = None):
+        """The meter's raw per-phase readings for load detection. Active
+        power per phase is what matters; PF, current and voltage refine the
+        signatures where the meter has them. All optional."""
+        if user_input is not None:
+            cfg = {k: v for k, v in user_input.items() if v}
+            options = {**dict(self.config_entry.options), CONF_DETECTION: cfg}
+            return self.async_create_entry(data=options)
+        current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
+        schema = {}
+        classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
+        for kind in DETECTION_KINDS:
+            for p in ("a", "b", "c"):
+                key = f"{kind}_{p}"
+                schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
+                )
+        return self.async_show_form(step_id="detection", data_schema=vol.Schema(schema))
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             # An emptied selector clears the input; only set keys are kept.
             # The per-device map lives on another page and is carried over.
-            keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {})}
+            keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {}),
+                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {})}
             return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):

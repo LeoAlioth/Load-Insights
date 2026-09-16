@@ -1,0 +1,437 @@
+"""Load detection on raw per-phase power. Pure, incremental, persistable.
+
+The unit is the SESSION: everything from the moment a phase leaves its idle
+baseline until it returns. Inside a session every sustained change of level
+is a TRANSITION, so a washing machine is one session with a heater level
+and a motor level, not three loads. Sessions that start and end together on
+several phases are one multi-phase session - a two-phase kiln is 3 kW on A
+and 3 kW on C, and nothing else on the site has that shape.
+
+Closed sessions are matched to SIGNATURES: phase set, dominant power per
+phase (within ~10 % or the noise), duration within a factor, power factor
+when known. No match makes a new signature. Signatures carry counts, typical
+duration and repeat interval, and an hour-of-day histogram - the material
+the naming page describes them with and the forecast will later schedule.
+
+Everything here works sample by sample with a small persisted state per
+phase, so the recorder can be read in slices and the detector resumed from
+where it stopped. Timestamps are epoch seconds; powers are watts.
+"""
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Sequence, Tuple
+
+PHASES = ("a", "b", "c")
+MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
+NOISE_MAD_FACTOR = 4.0
+SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
+SUSTAIN_SECONDS = 5.0          # ...and at least this long
+BASELINE_EMA = 0.02            # idle baseline drifts slowly
+BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
+BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
+MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
+NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
+NOISE_SESSION_S = 20.0
+MATCH_POWER_REL = 0.10
+MATCH_DURATION_FACTOR = 3.0
+MATCH_PF_TOL = 0.15
+MAX_SIGNATURES = 200
+MAX_RECENT_SESSIONS = 200
+HELD_TAIL_S = 60.0             # closed sessions wait this long for a partner on another phase
+
+
+def _median(xs: Sequence[float]) -> float:
+    return statistics.median(xs) if xs else 0.0
+
+
+# ------------------------------------------------------------------ sessions
+@dataclass
+class Session:
+    phases: str                          # "a", "ac", ...
+    start: float
+    end: float
+    levels: Dict[str, List[Tuple[float, float]]]   # phase -> [(since_ts, watts above baseline)]
+    pf: Optional[float] = None           # mean power factor during the session, if known
+
+    @property
+    def duration_s(self) -> float:
+        return self.end - self.start
+
+    def power_by_phase(self) -> Dict[str, float]:
+        """Energy-weighted mean watts per phase - the dominant level."""
+        out = {}
+        for ph, lv in self.levels.items():
+            e = 0.0
+            for i, (since, w) in enumerate(lv):
+                until = lv[i + 1][0] if i + 1 < len(lv) else self.end
+                e += w * max(0.0, until - since)
+            out[ph] = e / self.duration_s if self.duration_s > 0 else 0.0
+        return out
+
+    @property
+    def energy_wh(self) -> float:
+        return sum(p * self.duration_s for p in self.power_by_phase().values()) / 3600.0
+
+    @property
+    def max_w(self) -> float:
+        return sum(max((w for _, w in lv), default=0.0) for lv in self.levels.values())
+
+    @property
+    def level_count(self) -> int:
+        return max((len(lv) for lv in self.levels.values()), default=0)
+
+    def to_dict(self) -> dict:
+        return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
+                "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Session":
+        return cls(phases=d["phases"], start=d["start"], end=d["end"], pf=d.get("pf"),
+                   levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()})
+
+
+# ------------------------------------------------------------------ per-phase tracker
+@dataclass
+class PhaseState:
+    baseline: Optional[float] = None
+    noise: float = MIN_NOISE_W
+    level: Optional[float] = None
+    seed: List[float] = field(default_factory=list)
+    idle_diffs: List[float] = field(default_factory=list)
+    pending: List[Tuple[float, float]] = field(default_factory=list)
+    session_start: Optional[float] = None
+    session_levels: List[Tuple[float, float]] = field(default_factory=list)   # (since, watts above baseline)
+    session_pf: List[float] = field(default_factory=list)
+    last_ts: Optional[float] = None
+
+    def process(self, ts: float, w: float, pf: Optional[float] = None) -> Optional[Session]:
+        """One sample. Returns a Session when one closes."""
+        if self.last_ts is not None and ts <= self.last_ts:
+            return None
+        self.last_ts = ts
+        closed = None
+        if self.baseline is None:
+            self.seed.append(w)
+            if len(self.seed) >= BASELINE_SEED_SAMPLES:
+                ordered = sorted(self.seed)
+                self.baseline = ordered[int(BASELINE_SEED_PERCENTILE * (len(ordered) - 1))]
+                near = [x for x in ordered if x - self.baseline < 2 * MIN_NOISE_W]
+                diffs = [abs(x - self.baseline) for x in near] or [0.0]
+                self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
+                self.level = self.baseline
+                self.seed = []
+            return None
+
+        if abs(w - self.level) < self.noise:
+            self.pending = []
+            if self.session_start is None:
+                # idle: let the baseline and the noise floor follow slowly
+                self.baseline += BASELINE_EMA * (w - self.baseline)
+                self.level = self.baseline
+                self.idle_diffs.append(abs(w - self.baseline))
+                if len(self.idle_diffs) >= 240:
+                    self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(self.idle_diffs))
+                    self.idle_diffs = self.idle_diffs[-120:]
+            elif pf is not None:
+                self.session_pf.append(pf)
+            return None
+
+        self.pending.append((ts, w))
+        if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < SUSTAIN_SECONDS:
+            return None
+        new_level = _median([x for _, x in self.pending])
+        since = self.pending[0][0]
+        self.pending = []
+        if self.session_start is None:
+            if new_level - self.baseline >= self.noise:
+                self.session_start = since
+                self.session_levels = [(since, new_level - self.baseline)]
+                self.session_pf = [pf] if pf is not None else []
+            else:
+                # dropped below the idle level: that WAS the new idle
+                self.baseline = new_level
+        else:
+            if abs(new_level - self.baseline) < self.noise:
+                closed = Session(phases="", start=self.session_start, end=since,
+                                 levels={"": list(self.session_levels)},
+                                 pf=(sum(self.session_pf) / len(self.session_pf)) if self.session_pf else None)
+                self.session_start = None
+                self.session_levels = []
+                self.session_pf = []
+            else:
+                self.session_levels.append((since, new_level - self.baseline))
+        self.level = new_level
+        return closed
+
+    def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
+        """(since, current watts above baseline) while a session is open."""
+        if self.session_start is None or not self.session_levels:
+            return None
+        return self.session_start, self.session_levels[-1][1]
+
+    def to_dict(self) -> dict:
+        return {"baseline": self.baseline, "noise": self.noise, "level": self.level, "seed": self.seed,
+                "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
+                "session_start": self.session_start, "session_levels": [list(x) for x in self.session_levels],
+                "session_pf": self.session_pf[-50:], "last_ts": self.last_ts}
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "PhaseState":
+        if not d:
+            return cls()
+        return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
+                   seed=list(d.get("seed") or []), idle_diffs=list(d.get("idle_diffs") or []),
+                   pending=[tuple(x) for x in d.get("pending") or []], session_start=d.get("session_start"),
+                   session_levels=[tuple(x) for x in d.get("session_levels") or []],
+                   session_pf=list(d.get("session_pf") or []), last_ts=d.get("last_ts"))
+
+
+# ------------------------------------------------------------------ signatures
+@dataclass
+class Signature:
+    id: int
+    phases: str
+    power: Dict[str, float]              # running mean watts per phase
+    duration_s: float                    # running mean
+    pf: Optional[float]
+    count: int
+    first_seen: float
+    last_seen: float
+    interval_s: Optional[float] = None   # running mean START-to-start spacing ("every 5 min")
+    last_start: Optional[float] = None
+    hours: List[int] = field(default_factory=lambda: [0] * 24)
+    level_count: float = 1.0
+    name: Optional[str] = None
+
+    def matches(self, s: Session, noise_w: float) -> Optional[float]:
+        """A score in (0, 1] when ``s`` fits, None when it does not."""
+        if s.phases != self.phases:
+            return None
+        pw = s.power_by_phase()
+        score = 1.0
+        for ph in self.phases:
+            mine, theirs = self.power.get(ph, 0.0), pw.get(ph, 0.0)
+            tol = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
+            if abs(mine - theirs) > tol:
+                return None
+            score *= 1.0 - abs(mine - theirs) / (2 * tol)
+        ratio = max(s.duration_s, 1.0) / max(self.duration_s, 1.0)
+        if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
+            return None
+        if self.pf is not None and s.pf is not None and abs(self.pf - s.pf) > MATCH_PF_TOL:
+            return None
+        return score
+
+    def absorb(self, s: Session, tz) -> None:
+        n = self.count
+        for ph, w in s.power_by_phase().items():
+            self.power[ph] = (self.power.get(ph, w) * n + w) / (n + 1)
+        self.duration_s = (self.duration_s * n + s.duration_s) / (n + 1)
+        self.level_count = (self.level_count * n + s.level_count) / (n + 1)
+        if s.pf is not None:
+            self.pf = s.pf if self.pf is None else (self.pf * n + s.pf) / (n + 1)
+        if self.last_start is not None:
+            gap = s.start - self.last_start
+            if gap > 0:
+                self.interval_s = gap if self.interval_s is None else 0.7 * self.interval_s + 0.3 * gap
+        self.last_start = s.start
+        self.last_seen = max(self.last_seen, s.end)
+        self.hours[datetime.fromtimestamp(s.start, tz).hour] += 1
+        self.count += 1
+
+    def describe(self, tz) -> str:
+        """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen 258 times'."""
+        total = sum(self.power.values())
+        phases = "+".join(p.upper() for p in self.phases)
+        dur = _fmt_s(self.duration_s)
+        gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
+        lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
+        pf = f", PF {self.pf:.2f}" if self.pf is not None else ""
+        return f"{total / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, seen {self.count} times"
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
+                "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
+                "interval_s": self.interval_s, "hours": self.hours, "level_count": self.level_count, "name": self.name,
+                "last_start": self.last_start}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Signature":
+        return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
+                   count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
+                   hours=list(d.get("hours") or [0] * 24), level_count=d.get("level_count", 1.0), name=d.get("name"),
+                   last_start=d.get("last_start"))
+
+
+def _fmt_s(x: Optional[float]) -> str:
+    if x is None:
+        return "?"
+    if x < 90:
+        return f"{x:.0f} s"
+    if x < 5400:
+        return f"{x / 60:.0f} min"
+    return f"{x / 3600:.1f} h"
+
+
+# ------------------------------------------------------------------ the detector
+@dataclass
+class Detector:
+    phases: Dict[str, PhaseState] = field(default_factory=lambda: {p: PhaseState() for p in PHASES})
+    held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
+    signatures: List[Signature] = field(default_factory=list)
+    recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
+    next_id: int = 1
+    tz_offset_s: float = 0.0
+
+    # ------------------------------------------------ ingest
+    def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
+                pf: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None) -> List[Session]:
+        """Feed new (ts, watts) samples per phase, in time order per phase.
+        Returns the multi-phase sessions completed by this batch."""
+        closed: List[Session] = []
+        latest = now_ts or 0.0
+        for ph, rows in samples.items():
+            if ph not in self.phases:
+                continue
+            st = self.phases[ph]
+            pfm = (pf or {}).get(ph) or {}
+            for ts, w in rows:
+                latest = max(latest, ts)
+                s = st.process(ts, w, pfm.get(ts))
+                if s is not None:
+                    s.phases = ph
+                    s.levels = {ph: s.levels.pop("")}
+                    closed.append(s)
+        return self._merge_and_file(closed, latest)
+
+    def _merge_and_file(self, closed: List[Session], latest: float) -> List[Session]:
+        pool = self.held + closed
+        pool.sort(key=lambda s: s.start)
+        groups: List[List[Session]] = []
+        for s in pool:
+            for g in groups:
+                if (abs(g[0].start - s.start) <= MERGE_TOLERANCE_S and abs(g[0].end - s.end) <= MERGE_TOLERANCE_S
+                        and all(s.phases not in m.phases for m in g)):
+                    g.append(s)
+                    break
+            else:
+                groups.append([s])
+        done: List[Session] = []
+        self.held = []
+        for g in groups:
+            # a group still young enough that a partner phase may yet close waits
+            if latest - max(m.end for m in g) < HELD_TAIL_S and len(g) < 3:
+                self.held.extend(g)
+                continue
+            done.append(self._combine(g))
+        out = []
+        for s in done:
+            if s.energy_wh < NOISE_SESSION_WH and s.duration_s < NOISE_SESSION_S:
+                continue
+            self._file(s)
+            out.append(s)
+        return out
+
+    @staticmethod
+    def _combine(g: List[Session]) -> Session:
+        if len(g) == 1:
+            return g[0]
+        levels = {}
+        pfs = []
+        for m in g:
+            levels.update(m.levels)
+            if m.pf is not None:
+                pfs.append(m.pf)
+        return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
+                       levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None)
+
+    def _file(self, s: Session) -> None:
+        tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
+        noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
+        best, best_score = None, 0.0
+        for sig in self.signatures:
+            sc = sig.matches(s, noise)
+            if sc is not None and sc > best_score:
+                best, best_score = sig, sc
+        if best is None:
+            best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
+                             pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count))
+            self.next_id += 1
+            self.signatures.append(best)
+            best.absorb(s, tz)
+            best.count = 1
+        else:
+            best.absorb(s, tz)
+        self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
+                            "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
+        self.recent = self.recent[-MAX_RECENT_SESSIONS:]
+        if len(self.signatures) > MAX_SIGNATURES:
+            self.signatures.sort(key=lambda x: (x.name is None, x.count, x.last_seen))
+            self.signatures = self.signatures[-MAX_SIGNATURES:]
+
+    # ------------------------------------------------ query
+    def active(self, now_ts: float) -> List[dict]:
+        """What is on right now, per phase group, with the best signature guess."""
+        out = []
+        for ph, st in self.phases.items():
+            a = st.active(now_ts)
+            if a is None:
+                continue
+            since, w = a
+            out.append({"phases": ph, "since": since, "watts": round(w), "signature": self._guess(ph, w, now_ts - since)})
+        # phases that started together are one load
+        merged: List[dict] = []
+        for o in sorted(out, key=lambda x: x["since"]):
+            for m in merged:
+                if abs(m["since"] - o["since"]) <= MERGE_TOLERANCE_S:
+                    m["phases"] += o["phases"]
+                    m["watts"] += o["watts"]
+                    m["signature"] = None
+                    break
+            else:
+                merged.append(dict(o))
+        for m in merged:
+            m["phases"] = "".join(sorted(m["phases"]))
+            if m["signature"] is None:
+                m["signature"] = self._guess(m["phases"], m["watts"], now_ts - m["since"], per_phase=None)
+            sig = next((x for x in self.signatures if x.id == m["signature"]), None) if m["signature"] else None
+            m["name"] = sig.name if sig else None
+        return merged
+
+    def _guess(self, phases: str, watts: float, elapsed: float, per_phase=None) -> Optional[int]:
+        best, best_d = None, None
+        for sig in self.signatures:
+            if sig.phases != phases:
+                continue
+            total = sum(sig.power.values())
+            tol = max(MATCH_POWER_REL * max(total, watts), MIN_NOISE_W)
+            if abs(total - watts) <= tol and elapsed <= sig.duration_s * MATCH_DURATION_FACTOR + 60:
+                d = abs(total - watts)
+                if best_d is None or d < best_d:
+                    best, best_d = sig.id, d
+        return best
+
+    def unknown_power(self, now_ts: float) -> float:
+        return float(sum(m["watts"] for m in self.active(now_ts)))
+
+    # ------------------------------------------------ storage
+    def to_dict(self) -> dict:
+        return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
+                "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
+                "tz_offset_s": self.tz_offset_s}
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "Detector":
+        det = cls()
+        if not d:
+            return det
+        det.phases = {p: PhaseState.from_dict((d.get("phases") or {}).get(p)) for p in PHASES}
+        det.held = [Session.from_dict(x) for x in d.get("held") or []]
+        det.signatures = [Signature.from_dict(x) for x in d.get("signatures") or []]
+        det.recent = list(d.get("recent") or [])
+        det.next_id = d.get("next_id", 1)
+        det.tz_offset_s = d.get("tz_offset_s", 0.0)
+        return det

@@ -13,7 +13,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
+from homeassistant.util import dt as dt_util
+
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
+from .detection import DetectionRunner
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -42,6 +45,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     data: InsightsData = coordinator.data
     if data is not None:
         entities += [DeviceForecastSensor(coordinator, entry, d) for d in data.site.devices]
+    detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
+    if detection is not None:
+        entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     add(entities)
 
 
@@ -330,3 +336,86 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
                 }
         return attrs
+
+
+class _DetectionBase(SensorEntity):
+    """Fed by the detection runner rather than the coordinator: its cadence is
+    the meter's, not the statistics'."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, key: str) -> None:
+        self._runner = runner
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+
+    async def async_added_to_hass(self) -> None:
+        self._runner.add_listener(self.async_write_ha_state)
+
+    @property
+    def available(self) -> bool:
+        return self._runner.enabled and self._runner.last_run is not None
+
+
+class DetectedLoadsSensor(_DetectionBase):
+    """State: how many unexplained loads are on right now. Attributes: which,
+    the signature library in words, the last sessions, and where the backfill
+    stands."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+    _unrecorded_attributes = frozenset({"active", "signatures", "recent_sessions"})
+
+    def __init__(self, runner, entry) -> None:
+        super().__init__(runner, entry, "detected_loads")
+
+    @property
+    def native_value(self) -> Optional[int]:
+        return len(self._runner.detector.active(dt_util.utcnow().timestamp()))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        det = self._runner.detector
+        now = dt_util.utcnow().timestamp()
+        tz = dt_util.DEFAULT_TIME_ZONE
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz).isoformat()
+        return {
+            "active": [
+                {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
+                 "signature": a["signature"], "name": a.get("name")}
+                for a in det.active(now)
+            ],
+            "signatures": [
+                {"id": s.id, "name": s.name, "description": s.describe(tz), "phases": s.phases.upper(),
+                 "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
+                 "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
+                 "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen), "hours": s.hours}
+                for s in sorted(det.signatures, key=lambda x: -x.count)
+            ],
+            "recent_sessions": [
+                {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
+            ],
+            "noise_floor_w": {p.upper(): round(st.noise) for p, st in det.phases.items() if st.baseline is not None},
+            "baseline_w": {p.upper(): round(st.baseline) for p, st in det.phases.items() if st.baseline is not None},
+            "processed_until": self._runner.last_processed.isoformat() if self._runner.last_processed else None,
+            "caught_up": self._runner.caught_up,
+        }
+
+
+class UnknownLoadPowerSensor(_DetectionBase):
+    """Power of everything detected as on right now, in W."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runner, entry) -> None:
+        super().__init__(runner, entry, "unknown_load_power")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return round(self._runner.detector.unknown_power(dt_util.utcnow().timestamp()))
