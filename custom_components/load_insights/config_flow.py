@@ -8,7 +8,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
     CONF_CALENDAR_ENTITIES,
@@ -22,7 +22,49 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
+from .insights.discovery import describe_match, match_meter_entities
 from .insights.model import SiteModel
+
+
+def _meter_fields(defaults: dict) -> dict:
+    """The twelve per-phase fields, pre-filled."""
+    classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
+    out = {}
+    for kind in DETECTION_KINDS:
+        for p in ("a", "b", "c"):
+            key = f"{kind}_{p}"
+            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
+            )
+    return out
+
+
+def _device_field(default=None):
+    return {
+        vol.Optional("device", description={"suggested_value": default}): selector.DeviceSelector(
+            selector.DeviceSelectorConfig(
+                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]
+            )
+        )
+    }
+
+
+def _discover(hass, device_id: str) -> dict:
+    """The device's sensors, matched to per-phase fields."""
+    registry = er.async_get(hass)
+    rows = []
+    for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
+        if e.domain != "sensor":
+            continue
+        state = hass.states.get(e.entity_id)
+        device_class = (
+            e.device_class
+            or e.original_device_class
+            or (state.attributes.get("device_class") if state else None)
+        )
+        name = e.name or e.original_name or (state.attributes.get("friendly_name") if state else "") or ""
+        rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name})
+    return match_meter_entities(rows)
 
 
 def _single_weather_entity(hass) -> str | None:
@@ -79,7 +121,11 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
-    """Two pages: the site-level inputs, and one device's own state sensor."""
+    """The site-level inputs, a device's own state sensor, and the meters."""
+
+    def __init__(self) -> None:
+        self._pending_detection: dict | None = None
+        self._pending_submeter: dict | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "submeter"])
@@ -90,45 +136,57 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         meter both see is located here. Edit an existing one by name; a name
         with every field empty removes it."""
         subs = dict(self.config_entry.options.get(CONF_SUBMETERS) or {})
+        pending = dict(self._pending_submeter or {})
+
+        def form(defaults: dict, found_text: str):
+            schema = {vol.Optional("name", description={"suggested_value": defaults.get("name")}): selector.TextSelector()}
+            schema.update(_device_field(defaults.get("device")))
+            schema.update(_meter_fields(defaults))
+            return self.async_show_form(
+                step_id="submeter", data_schema=vol.Schema(schema),
+                description_placeholders={"existing": ", ".join(sorted(subs)) or "-", "found": found_text},
+            )
+
         if user_input is not None:
+            device = user_input.get("device")
+            if device and device != pending.get("device"):
+                found = _discover(self.hass, device)
+                self._pending_submeter = {"name": user_input.get("name") or "", "device": device, **found}
+                return form(self._pending_submeter, describe_match(found))
+            self._pending_submeter = None
             name = (user_input.get("name") or "").strip()
             fields = {k: v for k, v in user_input.items() if k != "name" and v}
             if name:
-                if fields:
+                if any(k != "device" for k in fields):
                     subs[name] = fields
                 else:
                     subs.pop(name, None)
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_SUBMETERS: subs})
-        schema: dict = {vol.Required("name"): selector.TextSelector()}
-        classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
-        for kind in DETECTION_KINDS:
-            for p in ("a", "b", "c"):
-                schema[vol.Optional(f"{kind}_{p}")] = selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
-                )
-        return self.async_show_form(
-            step_id="submeter", data_schema=vol.Schema(schema),
-            description_placeholders={"existing": ", ".join(sorted(subs)) or "-"},
-        )
+        return form(pending, describe_match({k: v for k, v in pending.items() if k not in ("name", "device")}))
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
-        """The meter's raw per-phase readings for load detection. Active
-        power per phase is what matters; PF, current and voltage refine the
-        signatures where the meter has them. All optional."""
+        """The main meter. Pick the DEVICE and its per-phase readings are
+        found for you; the fields below are shown filled in so you can check
+        them before saving, and can be set by hand instead."""
+        current = dict(self._pending_detection or self.config_entry.options.get(CONF_DETECTION) or {})
         if user_input is not None:
-            cfg = {k: v for k, v in user_input.items() if v}
-            options = {**dict(self.config_entry.options), CONF_DETECTION: cfg}
-            return self.async_create_entry(data=options)
-        current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
-        schema = {}
-        classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
-        for kind in DETECTION_KINDS:
-            for p in ("a", "b", "c"):
-                key = f"{kind}_{p}"
-                schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
+            device = user_input.get("device")
+            if device and device != current.get("device"):
+                found = _discover(self.hass, device)
+                self._pending_detection = {"device": device, **found}
+                return self.async_show_form(
+                    step_id="detection",
+                    data_schema=vol.Schema({**_device_field(device), **_meter_fields(self._pending_detection)}),
+                    description_placeholders={"found": describe_match(found)},
                 )
-        return self.async_show_form(step_id="detection", data_schema=vol.Schema(schema))
+            self._pending_detection = None
+            cfg = {k: v for k, v in user_input.items() if v}
+            return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
+        return self.async_show_form(
+            step_id="detection",
+            data_schema=vol.Schema({**_device_field(current.get("device")), **_meter_fields(current)}),
+            description_placeholders={"found": describe_match({k: v for k, v in current.items() if k != "device"})},
+        )
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

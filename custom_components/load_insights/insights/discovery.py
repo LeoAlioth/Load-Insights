@@ -1,0 +1,118 @@
+"""Which of a device's sensors are its per-phase meter readings. Pure.
+
+Picking a meter should be picking a DEVICE - Home Assistant already knows
+which entities belong to the Shelly 3EM - so this reads a device's sensors
+and works out which is the active power on phase A, the power factor on C,
+and so on. Every integration names them differently, and several of the
+names are traps:
+
+  * a LINE-TO-LINE voltage (``..._voltage_ab``) is not phase A's voltage;
+  * a TOTAL (``total_active_power``) is not a phase at all;
+  * ``l1 / l2 / l3`` and ``a / b / c`` are the same three phases;
+  * min / max / peak / daily variants sit beside the live reading.
+
+So a candidate is rejected outright when it is a total or a line-to-line
+pair, and otherwise scored: the plainest name for each (kind, phase) wins.
+What comes out is shown to the user for confirmation, never applied blind.
+"""
+from __future__ import annotations
+
+import re
+from typing import Dict, List, Optional, Sequence
+
+# device_class -> our field prefix
+KIND_BY_DEVICE_CLASS = {
+    "power": "power",
+    "power_factor": "pf",
+    "current": "current",
+    "voltage": "voltage",
+}
+
+# never a per-phase live reading
+REJECT = (
+    "total", "sum", "average", "avg", "combined", "aggregate",
+    "today", "yesterday", "daily", "monthly", "yearly", "lifetime",
+    "min", "max", "peak", "energy", "cost", "frequency", "temperature",
+)
+# line-to-line voltages, and the neutral
+REJECT_PAIRS = ("ab", "bc", "ca", "ac_ab", "l1_l2", "l2_l3", "l3_l1", "ln", "nl")
+# allowed, but a plainer candidate beats them
+PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 20,
+           "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4}
+
+_L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
+_PHASE = re.compile(r"(?:^|[_\s])phase[_\s]?([abc123])(?:$|[_\s])")
+_ABC = re.compile(r"(?:^|[_\s])([abc])(?:$|[_\s])")
+_CH = re.compile(r"(?:^|[_\s])(?:ch|channel)[_\s]?([abc123])(?:$|[_\s])")
+_DIGIT_TO_PHASE = {"1": "a", "2": "b", "3": "c"}
+
+
+def _tokens(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (text or "").lower())
+
+
+def phase_of(text: str) -> Optional[str]:
+    """'a', 'b', 'c' - or None when the name names no single phase."""
+    t = _tokens(text)
+    for pair in REJECT_PAIRS:
+        if re.search(rf"(?:^|_)(?:l{{0,1}}){pair}(?:$|_)", t):
+            return None
+    for rx in (_PHASE, _CH):
+        m = rx.search(t)
+        if m:
+            g = m.group(1)
+            return _DIGIT_TO_PHASE.get(g, g)
+    m = _L.search(t)
+    if m:
+        return _DIGIT_TO_PHASE[m.group(1)]
+    m = _ABC.search(t)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _score(entity_id: str, name: str) -> Optional[int]:
+    t = _tokens(f"{entity_id} {name}")
+    for bad in REJECT:
+        if re.search(rf"(?:^|_){bad}(?:$|_)", t):
+            return None
+    score = 1000 - len(entity_id)
+    for word, cost in PENALTY.items():
+        if re.search(rf"(?:^|_){word}(?:$|_)", t):
+            score -= cost * 10
+    return score
+
+
+def match_meter_entities(entities: Sequence[dict]) -> Dict[str, str]:
+    """``entities`` are dicts with entity_id, device_class and name.
+    Returns {"power_a": entity_id, "pf_c": ..., ...} - only what it is sure of."""
+    best: Dict[str, tuple] = {}
+    for e in entities:
+        kind = KIND_BY_DEVICE_CLASS.get((e.get("device_class") or "").lower())
+        if not kind:
+            continue
+        eid, name = e.get("entity_id") or "", e.get("name") or ""
+        # the phase may be named in either the id or the friendly name
+        phase = phase_of(eid) or phase_of(name)
+        if not phase:
+            continue
+        score = _score(eid, name)
+        if score is None:
+            continue
+        key = f"{kind}_{phase}"
+        if key not in best or score > best[key][0]:
+            best[key] = (score, eid)
+    return {k: v[1] for k, v in sorted(best.items())}
+
+
+def describe_match(found: Dict[str, str]) -> str:
+    """One line for the confirmation form."""
+    if not found:
+        return "no per-phase readings recognised - fill them in below"
+    kinds = {}
+    for key in found:
+        kind, phase = key.rsplit("_", 1)
+        kinds.setdefault(kind, []).append(phase.upper())
+    label = {"power": "power", "pf": "power factor", "current": "current", "voltage": "voltage"}
+    parts = [f"{label.get(k, k)} {'+'.join(sorted(v))}" for k, v in sorted(kinds.items())]
+    return "found " + ", ".join(parts)

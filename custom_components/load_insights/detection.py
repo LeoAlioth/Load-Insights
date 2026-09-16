@@ -123,7 +123,7 @@ class DetectionRunner:
         entities = {}
         for p in PHASES:
             for kind in ("power", "pf"):
-                eid = cfg.get(f"{kind}_{p}")
+                eid = cfg.get(f"{kind}_{p}")      # "device" and the other kinds are not read here
                 if eid:
                     entities[(kind, p)] = eid
         if not entities:
