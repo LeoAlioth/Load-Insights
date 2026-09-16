@@ -64,6 +64,11 @@ class ForecastPowerSensor(_Base):
     Attributes: the 7-day hourly forecast in the shape the solar forecast
     integrations use, so a card built for one plots the other."""
 
+    # ~10 KB of attributes changing every quarter hour on every forecast
+    # sensor would go into the recorder with each state - for nothing, since
+    # nothing reads them back from history. They stay live and on cards.
+    _unrecorded_attributes = frozenset({"detailedForecast", "history"})
+
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -81,7 +86,14 @@ class ForecastPowerSensor(_Base):
         if fc is None or data is None:
             return {}
         attrs: dict[str, Any] = {
-            "detailedForecast": [{"period_start": t.isoformat(), "kwh": round(v, 3)} for t, v in fc.hourly],
+            # kwh is the weighted MEAN (means add up, so the daily totals are
+            # exact); kwh_p10 / kwh_p90 are the slot's weighted percentiles -
+            # the spread, in Solcast's naming convention. Percentiles do not
+            # add, so the daily sensors carry no band.
+            "detailedForecast": [
+                {"period_start": t.isoformat(), "kwh": round(v, 3), "kwh_p10": round(b[0], 3), "kwh_p90": round(b[1], 3)}
+                for (t, v), b in zip(fc.hourly, fc.bands)
+            ],
             # The last two days as they actually happened, same shape, so one
             # entity feeds both halves of an actual-vs-forecast chart.
             "history": [{"period_start": t.isoformat(), "kwh": round(v, 3)} for t, v in fc.history],

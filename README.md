@@ -13,7 +13,7 @@ statistics for them, and publishes a consumption forecast:
 
 | entity | state | attributes |
 |---|---|---|
-| **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh (the shape the PV forecast integrations use); `history`: the last 48 hours as they happened, same shape; today/tomorrow kWh, level correction, weeks of data |
+| **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh with a `kwh_p10`/`kwh_p90` spread (the shape and naming the PV forecast integrations use); `history`: the last 48 hours as they happened, same shape; today/tomorrow kWh, level correction, weeks of data |
 | **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
 | **Consumption tomorrow** | kWh | |
 | **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
@@ -74,7 +74,12 @@ test of yesterday's prediction. Scoring stored past forecasts is later work.
 The forecast is recomputed on the quarter hours from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight
 halves every three weeks) with a damped, clamped correction from the last 24
-hours. Nothing learned in the machine sense; every number is explainable.
+hours. Each hour also carries a spread: the weighted 10th and 90th
+percentiles of that slot's samples, so a weekday 10:00 where the car charges
+on some weeks reads "0.4 to 4.0 kWh" rather than an average that never
+happens. `kwh` is the mean, so daily totals add up exactly; percentiles do
+not add, so the daily sensors carry no band. Nothing learned in the machine
+sense; every number is explainable.
 
 ## Requirements
 

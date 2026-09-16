@@ -116,6 +116,67 @@ def test_today_is_actual_so_far_plus_forecast_for_the_rest():
     assert fc2.today_kwh > expect_today + morning * 0.9
 
 
+def test_weighted_quantile_is_the_inverted_cdf():
+    pairs = [(1.0, 10.0), (1.0, 20.0), (1.0, 30.0), (1.0, 40.0)]
+    assert P.weighted_quantile(pairs, 0.10) == 10.0
+    assert P.weighted_quantile(pairs, 0.50) == 20.0
+    assert P.weighted_quantile(pairs, 0.90) == 40.0
+    # weight moves the quantile: a heavy 40 dominates
+    assert P.weighted_quantile([(1.0, 10.0), (9.0, 40.0)], 0.5) == 40.0
+    assert P.weighted_quantile([], 0.5) is None
+
+
+def test_a_steady_slot_has_no_spread_and_a_bimodal_one_shows_it():
+    """Weeks where the car charged at 10:00 and weeks where it did not: the
+    mean lands in between (a number that never actually happens) and the
+    band says so - p10 at the quiet weeks, p90 at the charging weeks."""
+    samples = weeks_of(NOW, 8)
+    fc = P.forecast(samples, NOW)
+    assert all(math.isclose(b[0], v) and math.isclose(b[1], v) for (t, v), b in zip(fc.hourly, fc.bands)), "steady pattern: band collapses onto the value"
+
+    def car(t):
+        v = pattern(t)
+        # the car: 3 kWh at 10:00 on alternate weeks (isocalendar week parity)
+        if t.hour == 10 and t.isocalendar()[1] % 2 == 0:
+            v += 3.0
+        return v
+    fc2 = P.forecast(weeks_of(NOW, 8, car), NOW)
+    ten = [(t, v, b) for (t, v), b in zip(fc2.hourly, fc2.bands) if t.hour == 10][0]
+    t, v, (lo, hi) = ten
+    assert lo < v < hi, (lo, v, hi)
+    # the band is level-scaled like the value (yesterday's 10:00 was itself a
+    # car week or not, so the level is not 1 here)
+    assert math.isclose(lo, pattern(t) * fc2.level, rel_tol=1e-9), (lo, fc2.level)
+    assert math.isclose(hi, (pattern(t) + 3.0) * fc2.level, rel_tol=1e-9), (hi, fc2.level)
+
+
+def test_the_band_scales_with_the_level_correction():
+    base = weeks_of(NOW, 6)
+    cut = P.floor_hour(NOW) - timedelta(hours=24)
+    up = [(t, v * (1.5 if t >= cut else 1.0)) for t, v in base]
+    fc = P.forecast(up, NOW)
+    # Under 1.25: forecast() fits the profile on these same samples, so the 24
+    # lifted hours already raise their own slots and the ratio reads below 1.5
+    # (level_correction against an UNSCALED profile gives exactly 1.25 - see
+    # test_level_correction_is_clamped_and_damped). Damped twice, by design.
+    assert 1.0 < fc.level < 1.25, fc.level
+    # future rows of an untouched steady slot: value and band are pattern x level
+    far = [(t, v, b) for (t, v), b in zip(fc.hourly, fc.bands) if t > P.floor_hour(NOW) + timedelta(days=2)]
+    t, v, (lo, hi) = far[0]
+    # an untouched steady slot: value and both band edges are pattern x level
+    for x in (lo, v, hi):
+        assert math.isclose(x, pattern(t) * fc.level, rel_tol=1e-9), (lo, v, hi, fc.level)
+
+
+def test_an_unseen_slot_takes_its_band_from_the_fallback_tier():
+    samples = [(t, v) for t, v in weeks_of(NOW, 4) if not (t.weekday() == 0 and t.hour == 3)]
+    prof = P.fit_profile(samples, NOW)
+    monday_3 = next(t for t in P.hour_buckets(P.floor_hour(NOW), 168) if t.weekday() == 0 and t.hour == 3)
+    assert prof.slot_bands[P.slot_of(monday_3)] is None
+    assert prof.slot_band(monday_3) == prof.hod_bands[3] == (0.3, 0.3)
+    assert P.fit_profile([], NOW).slot_band(monday_3) is None
+
+
 def test_history_is_the_last_48_completed_hours_oldest_first():
     samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]     # plus the hour in progress
     fc = P.forecast(samples, NOW)

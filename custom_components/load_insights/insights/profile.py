@@ -31,6 +31,7 @@ LEVEL_CLAMP = (0.5, 2.0)
 LEVEL_DAMPING = 0.5      # adj = 1 + damping * (ratio - 1)
 LEVEL_MIN_HOURS = 12     # fewer completed hours than this: no correction
 HISTORY_HOURS = 48       # actual hourly kWh carried beside the forecast, for actual-vs-forecast cards
+BAND = (0.10, 0.90)      # the spread: weighted 10th and 90th percentiles of each slot's samples
 WEEK_SECONDS = 7 * 86400.0
 
 
@@ -56,13 +57,34 @@ def hour_buckets(start: datetime, hours: int) -> List[datetime]:
     return [(base + timedelta(hours=i)).astimezone(tz) for i in range(hours)]
 
 
+def weighted_quantile(pairs: Sequence[Tuple[float, float]], q: float) -> Optional[float]:
+    """Inverted-CDF weighted quantile of ``(weight, value)`` pairs: the
+    smallest value whose cumulative weight reaches ``q`` of the total. With
+    the ten-odd samples a slot has this is a rough quantile, which is the
+    truth of the matter - scoring checks the band's coverage later."""
+    pairs = [(w, v) for w, v in pairs if w > 0]
+    if not pairs:
+        return None
+    pairs.sort(key=lambda p: p[1])
+    total = sum(w for w, _ in pairs)
+    acc = 0.0
+    for w, v in pairs:
+        acc += w
+        if acc >= q * total - 1e-12:
+            return v
+    return pairs[-1][1]
+
+
 @dataclass(frozen=True)
 class Profile:
-    slots: tuple                 # 168 x Optional[float]  kWh/h
+    slots: tuple                 # 168 x Optional[float]  kWh/h, weighted mean
     hour_of_day: tuple           # 24 x Optional[float]   fallback
     overall: Optional[float]
     sample_count: int
     span_weeks: float
+    slot_bands: tuple = ()       # 168 x Optional[(p10, p90)]
+    hod_bands: tuple = ()        # 24 x Optional[(p10, p90)]
+    overall_band: Optional[tuple] = None
 
     def slot_kwh(self, dt: datetime) -> Optional[float]:
         v = self.slots[slot_of(dt)]
@@ -72,11 +94,27 @@ class Profile:
             v = self.overall
         return v
 
+    def slot_band(self, dt: datetime) -> Optional[tuple]:
+        """The spread from the same tier the point value came from."""
+        if self.slots[slot_of(dt)] is not None:
+            return self.slot_bands[slot_of(dt)]
+        if self.hour_of_day[dt.hour] is not None:
+            return self.hod_bands[dt.hour]
+        return self.overall_band
+
     def predict(self, start: datetime, hours: int, level: float = 1.0) -> List[Sample]:
         out = []
         for t in hour_buckets(floor_hour(start), hours):
             v = self.slot_kwh(t)
             out.append((t, (v if v is not None else 0.0) * level))
+        return out
+
+    def predict_bands(self, start: datetime, hours: int, level: float = 1.0) -> List[tuple]:
+        """(p10, p90) per horizon hour, level-scaled like the point value."""
+        out = []
+        for t in hour_buckets(floor_hour(start), hours):
+            b = self.slot_band(t)
+            out.append((0.0, 0.0) if b is None else (b[0] * level, b[1] * level))
         return out
 
 
@@ -94,6 +132,9 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
     twx = 0.0
     n = 0
     oldest = None
+    slot_pairs = [[] for _ in range(HOURS_PER_WEEK)]   # (weight, value) per slot, for the band
+    hod_pairs = [[] for _ in range(24)]
+    all_pairs = []
     for t, v in samples:
         if v is None or _key(t) >= cutoff_k:
             continue
@@ -107,13 +148,27 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
         tw += w
         twx += w * v
         n += 1
+        slot_pairs[s].append((w, v))
+        hod_pairs[t.hour].append((w, v))
+        all_pairs.append((w, v))
         if oldest is None or _key(t) < _key(oldest):
             oldest = t
     slots = tuple((swx[i] / sw[i]) if sw[i] > 0 else None for i in range(HOURS_PER_WEEK))
     hod = tuple((hwx[i] / hw[i]) if hw[i] > 0 else None for i in range(24))
     overall = (twx / tw) if tw > 0 else None
     span = ((cutoff_k - _key(oldest)) / WEEK_SECONDS) if oldest else 0.0
-    return Profile(slots=slots, hour_of_day=hod, overall=overall, sample_count=n, span_weeks=span)
+
+    def band(pairs):
+        if not pairs:
+            return None
+        return (weighted_quantile(pairs, BAND[0]), weighted_quantile(pairs, BAND[1]))
+
+    return Profile(
+        slots=slots, hour_of_day=hod, overall=overall, sample_count=n, span_weeks=span,
+        slot_bands=tuple(band(p) for p in slot_pairs),
+        hod_bands=tuple(band(p) for p in hod_pairs),
+        overall_band=band(all_pairs),
+    )
 
 
 def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime) -> float:
@@ -182,6 +237,7 @@ class Forecast:
     sample_count: int
     span_weeks: float
     history: tuple = ()          # last HISTORY_HOURS completed hours, actual kWh
+    bands: tuple = ()            # (p10, p90) per row of ``hourly``, same order
 
 
 def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
@@ -197,6 +253,7 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     profile = fit_profile(samples, now, half_life_weeks)
     level = level_correction(profile, samples, now)
     hourly = profile.predict(now, horizon_hours, level)
+    bands = profile.predict_bands(now, horizon_hours, level)
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(
@@ -208,4 +265,5 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         sample_count=profile.sample_count,
         span_weeks=profile.span_weeks,
         history=recent_history(samples, now),
+        bands=tuple(bands),
     )
