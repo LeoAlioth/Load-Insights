@@ -12,6 +12,7 @@ from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -30,7 +31,12 @@ from .const import (
 from .insights.covariates import interpolate_hourly
 from .insights.model import SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
+from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
 from .insights.series import combine, coverage, subtract_all
+
+STORAGE_VERSION = 1
+SITE_KEY = "consumption"
+REMAINDER_KEY = "remainder"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,6 +75,8 @@ class InsightsData:
     temperature_entity: Optional[str] = None
     temperature_history_hours: int = 0
     temperature_forecast_hours: int = 0
+    # series key -> Ledger (site, remainder, each device by statistic id)
+    ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
@@ -85,6 +93,20 @@ class InsightsCoordinator(DataUpdateCoordinator):
         self._unsub = async_track_time_change(
             hass, self._on_quarter, minute=list(REFRESH_MINUTES), second=REFRESH_SECOND
         )
+        # The scoring ledgers persist in .storage: a forecast recorded today is
+        # only scored when its hour arrives, up to a week later.
+        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.scoring")
+        self._ledgers: Optional[Dict[str, Ledger]] = None
+
+    async def _load_ledgers(self) -> Dict[str, Ledger]:
+        if self._ledgers is None:
+            raw = await self._store.async_load() or {}
+            self._ledgers = {k: Ledger.from_dict(v) for k, v in (raw.get("ledgers") or {}).items()}
+        return self._ledgers
+
+    async def _save_ledgers(self) -> None:
+        if self._ledgers is not None:
+            await self._store.async_save({"ledgers": {k: v.to_dict() for k, v in self._ledgers.items()}})
 
     @callback
     def _on_quarter(self, _now: datetime) -> None:
@@ -148,6 +170,18 @@ class InsightsCoordinator(DataUpdateCoordinator):
         )
         cons_fc = await fit(consumption)
         rem_fc = await fit(remainder) if remainder else None
+
+        # --- scoring: settle what has arrived, record what is now predicted ---
+        ledgers = await self._load_ledgers()
+
+        def score(key: str, fc: Forecast, actual) -> None:
+            led = ledgers.setdefault(key, Ledger())
+            led.settle(now, actual)
+            led.record(now, fc.hourly, fc.bands, fc.tomorrow_kwh)
+
+        score(SITE_KEY, cons_fc, consumption)
+        if rem_fc is not None:
+            score(REMAINDER_KEY, rem_fc, remainder)
         # Every listed device, nested ones included - the series are already
         # in hand for the remainder, so this is only the fits.
         device_fc: Dict[str, Forecast] = {}
@@ -155,6 +189,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             rows = series.get(d.energy) or []
             if rows:
                 device_fc[d.energy] = await fit(rows)
+                score(d.energy, device_fc[d.energy], rows)
+        await self._save_ledgers()
         return InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
@@ -166,6 +202,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temperature_entity=temp_entity,
             temperature_history_hours=len(temps_hist),
             temperature_forecast_hours=len(temps_fc),
+            ledgers=dict(ledgers),
         )
 
     async def _forecast_temperatures(self, weather_entity: str, now: datetime) -> Dict[float, float]:

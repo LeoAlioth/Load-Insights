@@ -37,6 +37,24 @@
             },
             "device_forecast": {
                 "name": "{device} forecast"
+            },
+            "consumption_error_day_ahead": {
+                "name": "Forecast error, day ahead"
+            },
+            "consumption_bias_day_ahead": {
+                "name": "Forecast bias, day ahead"
+            },
+            "consumption_error_hour_ahead": {
+                "name": "Forecast error, hour ahead"
+            },
+            "consumption_day_ahead_kwh_error": {
+                "name": "Yesterday's day-ahead error"
+            },
+            "remainder_error_day_ahead": {
+                "name": "Unmetered forecast error, day ahead"
+            },
+            "remainder_bias_day_ahead": {
+                "name": "Unmetered forecast bias, day ahead"
             }
         }
     },
