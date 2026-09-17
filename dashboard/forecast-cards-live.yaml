@@ -13,6 +13,10 @@
 # only what config-template-card watches to know when to redraw - any one of
 # them will do, they all refresh together on the hour.
 #
+# Everything is plotted in W - the unit the sensors themselves report, and
+# the same quantity as the kWh-per-hour the forecast rows carry (1 kWh/h is
+# 1 kW), so the recorded state needs no conversion and only the rows scale.
+#
 # Window: 36 hours back, 36 forward.
 type: custom:config-template-card
 entities:
@@ -35,13 +39,13 @@ card:
     }
     }
     const forecastFn = (e, key) => '({hass}) => {const r = hass.states["' + e +
-    '"].attributes.detailedForecast || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.' +
-    key + ' ?? p.kwh)};}';
-    const lineFn = e => '({xs, states, hass}) => {const past = states.map((s, i) => [xs[i], +s.state / 1000]).filter(r => isFinite(r[1])); ' +
-    'const future = (hass.states["' + e + '"].attributes.detailedForecast || []).map(p => [new Date(p.period_start), p.kwh]); ' +
+    '"].attributes.detailedForecast || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => 1000 * (p.' +
+    key + ' ?? p.kwh))};}';
+    const lineFn = e => '({xs, states, hass}) => {const past = states.map((s, i) => [xs[i], +s.state]).filter(r => isFinite(r[1])); ' +
+    'const future = (hass.states["' + e + '"].attributes.detailedForecast || []).map(p => [new Date(p.period_start), 1000 * p.kwh]); ' +
     'const all = past.concat(future); return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};}';
     const historyFn = e => '({hass}) => {const r = hass.states["' + e +
-    '"].attributes.history || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.kwh)};}';
+    '"].attributes.history || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => 1000 * p.kwh)};}';
     return ids.map(e => {
     const bare = nameOf(e).slice(prefix.length).replace(/ forecast$/i, '');
     return {
@@ -52,7 +56,7 @@ card:
     refresh_interval: 300,
     layout: { height: 260, margin: { t: 30, l: 50, r: 12, b: 30 },
     legend: { orientation: 'h', y: 1.15 },
-    yaxis: { title: 'kWh / h', rangemode: 'tozero' } },
+    yaxis: { title: 'W', rangemode: 'tozero' } },
     entities: [
     { entity: e, name: 'Likely range', showlegend: false, hoverinfo: 'skip',
     line: { width: 0 }, filters: [{ fn: forecastFn(e, 'kwh_p10') }] },

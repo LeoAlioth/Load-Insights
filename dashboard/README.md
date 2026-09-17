@@ -35,8 +35,11 @@ and one per device on the Energy dashboard - and writes one graph for each:
   `history` attribute.
 * **Forecast** (dotted): behind now, the sensor's own recorded state - its
   state IS the forecast for the coming hour, so the recorder already holds
-  the forecast's history (in W, hence the /1000). Ahead of now,
-  `detailedForecast`. One continuous line.
+  the forecast's history. Ahead of now, `detailedForecast`. One continuous
+  line.
+
+Everything is in **W**: what the sensors report, and the same quantity as the
+kWh-per-hour the forecast rows carry, since 1 kWh/h is 1 kW.
 * **Likely range** (shaded): `kwh_p10` to `kwh_p90`, the spread of that hour
   across the weeks behind it. Future only - there is no spread to show for an
   hour that has already happened.
