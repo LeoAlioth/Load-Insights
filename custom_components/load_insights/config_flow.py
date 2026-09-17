@@ -131,10 +131,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "submeter"])
 
     async def async_step_submeter(self, user_input: dict[str, Any] | None = None):
-        """A downstream 3-phase meter - a Shelly 3EM on a subpanel. Same
-        fields as the main meter plus a name. A load the main meter and this
-        meter both see is located here. Edit an existing one by name; a name
-        with every field empty removes it."""
+        """A meter below the main one: a subpanel, or a single circuit. Same
+        fields as the main meter plus a name. A load this meter and the main
+        meter both see is recorded as being on this circuit. Edit an existing
+        one by name; a name with every field cleared removes it."""
         subs = dict(self.config_entry.options.get(CONF_SUBMETERS) or {})
         pending = dict(self._pending_submeter or {})
 

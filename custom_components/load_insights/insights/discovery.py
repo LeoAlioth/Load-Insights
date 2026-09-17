@@ -1,7 +1,7 @@
 """Which of a device's sensors are its per-phase meter readings. Pure.
 
 Picking a meter should be picking a DEVICE - Home Assistant already knows
-which entities belong to the Shelly 3EM - so this reads a device's sensors
+which entities belong to which meter - so this reads a device's sensors
 and works out which is the active power on phase A, the power factor on C,
 and so on. Every integration names them differently, and several of the
 names are traps:
