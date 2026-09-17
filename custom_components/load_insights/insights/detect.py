@@ -44,6 +44,9 @@ SLOW_FOLLOW = 0.02             # the held level follows drift this fast, so a ra
 # on each phase), and three phases are never quite balanced either.
 PV_SHARE_MIN = 0.25
 PV_SHARE_MAX = 1.25
+PV_VISIBLE_R = -0.2            # the reading includes the array when its changes move this much against it
+PV_MIN_SWING_W = 200.0         # below this the sun hardly moved and there is nothing to tell
+PV_MIN_SAMPLES = 30
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
@@ -123,6 +126,45 @@ def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
     return PV_SHARE_MIN <= share <= PV_SHARE_MAX
 
 
+def pv_shows_in(samples: Sequence[Tuple[float, float]],
+                pv_by_ts: Dict[float, float]) -> Optional[bool]:
+    """Does this reading INCLUDE the array? Measured, never assumed.
+
+    A grid meter carries the house MINUS the array, so its changes move
+    against the array's and a cloud must be discounted. An inverter's own AC
+    output on a site whose solar is DC-coupled to the battery does not move
+    with the array at all - Kozolec has no grid and separate MPPTs (Anze,
+    2026-09-17) - and discounting steps against the sun there would throw
+    away real loads that happened to switch as a cloud passed.
+
+    Which of the two a site has is a property of the wiring, not something
+    worth asking about, so it is read off the data: the correlation of the
+    two series' changes. None when the sun hardly moved in this window and
+    the question cannot be answered yet.
+    """
+    xs: List[float] = []
+    ys: List[float] = []
+    prev: Optional[Tuple[float, float]] = None
+    for ts, w in samples:
+        p = pv_by_ts.get(ts)
+        if p is None:
+            continue
+        if prev is not None:
+            xs.append(w - prev[0])
+            ys.append(p - prev[1])
+        prev = (w, p)
+    if len(xs) < PV_MIN_SAMPLES or (max(ys) - min(ys)) < PV_MIN_SWING_W:
+        return None
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
+    sxx = sum((a - mx) ** 2 for a in xs)
+    syy = sum((b - my) ** 2 for b in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return (sxy / math.sqrt(sxx * syy)) <= PV_VISIBLE_R
+
+
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     """The LOAD's power factor, from its OWN step in real and reactive power.
 
@@ -188,12 +230,13 @@ class PhaseState:
     last_ts: Optional[float] = None
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
-                pv: Optional[float] = None) -> Optional[Session]:
+                pv: Optional[float] = None) -> List[Session]:
         """One sample: seconds, watts, reactive VAr where the meter gives
         enough to work it out, and what the array was making at the time.
-        Returns a Session when a step down pairs off."""
+        Returns the sessions this sample closed - more than one when several
+        loads stopped together."""
         if self.last_ts is not None and ts <= self.last_ts:
-            return None
+            return []
         self.last_ts = ts
         if self.baseline is None:
             self.seed.append(w)
@@ -207,7 +250,7 @@ class PhaseState:
                 self.q_level = q
                 self.pv_level = pv
                 self.seed = []
-            return None
+            return []
 
         if self.open_edges and ts - self.open_edges[0].since > MAX_OPEN_S:
             # a start whose stop was never seen: give up rather than pair it
@@ -229,11 +272,11 @@ class PhaseState:
                 if len(self.idle_diffs) >= 240:
                     self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
-            return None
+            return []
 
         self.pending.append((ts, w, q, pv))
         if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < SUSTAIN_SECONDS:
-            return None
+            return []
         new_level = _median([x for _, x, _, _ in self.pending])
         known_q = [x for _, _, x, _ in self.pending if x is not None]
         known_pv = [x for _, _, _, x in self.pending if x is not None]
@@ -250,19 +293,26 @@ class PhaseState:
         if new_pv is not None:
             self.pv_level = new_pv
         if _is_the_sun(step, pv_step):
-            return None
+            return []
         if step > 0:
             self.open_edges.append(_Open(since, step, step_q, [(since, step)]))
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
-            return None
-        return self._pair(since, -step, None if step_q is None else -step_q, new_level)
+            return []
+        closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
+        if self.open_edges and new_level <= self.baseline + self.noise:
+            # back at the idle floor, so whatever was still open has stopped
+            # without us seeing it go. Holding those starts open would have
+            # them pair with an unrelated load hours later, and meanwhile
+            # count as running.
+            self.open_edges = []
+        return closed
 
     def _tol(self, a: float, b: float) -> float:
         return max(self.noise, MATCH_EDGE_REL * max(a, b))
 
     def _pair(self, at: float, watts: float, var: Optional[float],
-              new_level: float) -> Optional[Session]:
+              new_level: float) -> List[Session]:
         """What a step down means, most recent load first.
 
         Either a load STOPPED, in which case the step undoes its own step up
@@ -275,16 +325,34 @@ class PhaseState:
             o = self.open_edges[i]
             if abs(o.watts - watts) <= self._tol(o.watts, watts):
                 self.open_edges.pop(i)
-                return self._close(o, at, watts, var)
+                return [self._close(o, at, watts, var)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if o.watts - watts > self._tol(o.watts, watts):
                 o.watts -= watts
                 o.levels.append((at, o.watts))
-                return None
+                return []
+        # several loads going together - the oven and its fan, a programme
+        # ending - leave one step too big for any of them alone. Take them
+        # largest first while the step still covers them, or nothing.
+        order = sorted(range(len(self.open_edges)), key=lambda i: -self.open_edges[i].watts)
+        taken, left = [], watts
+        for i in order:
+            o = self.open_edges[i]
+            if o.watts <= left + self._tol(o.watts, left):
+                taken.append(i)
+                left -= o.watts
+                if left <= self.noise:
+                    break
+        if len(taken) >= 2 and abs(left) <= self._tol(watts, watts):
+            out = []
+            for i in sorted(taken, reverse=True):
+                o = self.open_edges.pop(i)
+                out.append(self._close(o, at, o.watts, None))
+            return sorted(out, key=lambda x: x.start)
         if not self.open_edges:
             self.baseline = new_level         # nothing was running: the floor itself moved
-        return None
+        return []
 
     def _close(self, o: _Open, at: float, watts: float, var: Optional[float]) -> Session:
         levels = list(o.levels)
@@ -493,8 +561,7 @@ class Detector:
             pvm = (pv or {}).get(ph) or {}
             for ts, w in rows:
                 latest = max(latest, ts)
-                s = st.process(ts, w, qm.get(ts), pvm.get(ts))
-                if s is not None:
+                for s in st.process(ts, w, qm.get(ts), pvm.get(ts)):
                     s.phases = ph
                     s.levels = {ph: s.levels.pop("")}
                     closed.append(s)
@@ -568,8 +635,17 @@ class Detector:
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
+        self._prune()
+
+    def _prune(self) -> None:
+        """Keep the library to its cap, weakest first.
+
+        A NAMED load is never evicted, which the old ordering had exactly
+        backwards: it sorted named signatures to the front and then kept the
+        tail, so the ones the user had taken the trouble to name were the
+        first to go. Among the unnamed the best evidence survives."""
         if len(self.signatures) > MAX_SIGNATURES:
-            self.signatures.sort(key=lambda x: (x.name is None, x.count, x.last_seen))
+            self.signatures.sort(key=lambda x: (x.name is not None, x.evidence, x.count, x.last_seen))
             self.signatures = self.signatures[-MAX_SIGNATURES:]
 
     # ------------------------------------------------ query

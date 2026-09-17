@@ -435,5 +435,77 @@ def test_the_description_offers_a_guess_when_the_factor_allows_one():
     assert "seen 1 times" in words, words
 
 
+def test_two_loads_stopping_together_both_close():
+    """The oven and its fan go at once, leaving one step too big for either
+    alone. Dropping it left both 'running' for the rest of the day."""
+    def two(s):
+        w = 0.0
+        if 300 <= s < 1800:
+            w += 2000.0
+        if 600 <= s < 1800:
+            w += 900.0
+        return w
+    det = D.Detector()
+    det.process({"a": series(2400, two)}, now_ts=T0 + 2500)
+    got = sorted(round(sum(x.power.values())) for x in det.signatures)
+    assert len(det.signatures) == 2, [(x.power, x.duration_s) for x in det.signatures]
+    assert 1900 < got[1] < 2100 and 850 < got[0] < 950, got
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+
+
+def test_back_at_the_idle_floor_nothing_is_left_running():
+    """A stop that was never matched must not leave a load 'on' for hours -
+    at Anze's home meter eight of them had piled up on phase A, adding to
+    an unknown-load figure of nearly 12 kW."""
+    det = D.Detector()
+    rows = series(600, lambda s: 0.0)
+    det.process({"a": rows}, now_ts=T0 + 700)
+    # a start we see, then a stop hidden inside a much larger simultaneous
+    # change, then a long quiet stretch at the floor
+    t = T0 + 600
+    tail = []
+    for i in range(240):
+        tail.append((t, 300.0 + 1500.0)); t += DT
+    for i in range(240):
+        tail.append((t, 300.0)); t += DT
+    det.process({"a": tail}, now_ts=t)
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+    assert det.active(t) == [], det.active(t)
+
+
+def test_a_named_load_is_never_the_first_thing_evicted():
+    det = D.Detector()
+    det.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
+        for i in range(D.MAX_SIGNATURES + 5)
+    ]
+    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
+    det.signatures[0].count = 2
+    det._prune()
+    kept = {s.id for s in det.signatures}
+    assert len(det.signatures) == D.MAX_SIGNATURES
+    assert 0 in kept, "a named load was evicted"
+
+
+def test_whether_the_array_shows_in_the_meter_is_measured():
+    """A grid meter carries the house minus the array. An inverter's own
+    output on a DC-coupled site does not move with the sun at all, and
+    discounting steps against it there would throw real loads away."""
+    import random
+    rnd = random.Random(3)
+    n = 400
+    pv = [1000.0 + 900.0 * (i % 40) / 40.0 for i in range(n)]
+    house = [400.0 + rnd.uniform(-20, 20) for _ in range(n)]
+    grid = [(T0 + i * DT, house[i] - pv[i] / 3.0) for i in range(n)]
+    standalone = [(T0 + i * DT, house[i]) for i in range(n)]
+    pv_map = {T0 + i * DT: pv[i] for i in range(n)}
+    assert D.pv_shows_in(grid, pv_map) is True
+    assert D.pv_shows_in(standalone, pv_map) is False
+    # a flat sun says nothing either way
+    flat = {T0 + i * DT: 1200.0 for i in range(n)}
+    assert D.pv_shows_in(grid, flat) is None
+
+
 if __name__ == "__main__":
     run_main(globals())

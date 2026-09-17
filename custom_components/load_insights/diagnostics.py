@@ -152,6 +152,9 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "config": _jsonable(runner.config),
             "meters": _jsonable(runner.submeters),
             "solar": _jsonable(runner.solar),     # what a cloud is checked against
+            # false where the reading does not include the array at all, so
+            # no step of it is ever put down to the sun
+            "solar_shows_in_meter": dict(runner.pv_visible),
             "processed_until": _jsonable(runner.last_processed),
             "caught_up": runner.caught_up,
             "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
