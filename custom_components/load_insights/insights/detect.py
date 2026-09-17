@@ -449,8 +449,12 @@ class Signature:
             return "main"
         name, n = max(self.locations.items(), key=lambda kv: kv[1])
         return name if n * 2 >= self.count else "main"
-    hours: List[int] = field(default_factory=lambda: [0] * 24)
-    days: List[int] = field(default_factory=lambda: [0] * 7)   # Monday first
+    # Where this load's ENERGY goes, in watt-hours, by hour of day and by
+    # weekday (Monday first). Counting starts answered "how often"; what it
+    # actually costs on a Saturday is its runtime times its draw, and that
+    # is the thing worth looking at (Anze, 2026-09-17).
+    hour_wh: List[float] = field(default_factory=lambda: [0.0] * 24)
+    day_wh: List[float] = field(default_factory=lambda: [0.0] * 7)
     level_count: float = 1.0
     name: Optional[str] = None
     # how much each reading WANDERS between sightings, as a running mean
@@ -518,8 +522,8 @@ class Signature:
             self.pf = (self.pf * a + other.pf * b) / n
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
-        self.hours = [x + y for x, y in zip(self.hours, other.hours)]
-        self.days = [x + y for x, y in zip(self.days, other.days)]
+        self.hour_wh = [x + y for x, y in zip(self.hour_wh, other.hour_wh)]
+        self.day_wh = [x + y for x, y in zip(self.day_wh, other.day_wh)]
         for name, k in other.locations.items():
             self.locations[name] = self.locations.get(name, 0) + k
         self.first_seen = min(self.first_seen, other.first_seen)
@@ -549,9 +553,7 @@ class Signature:
                 self.interval_s = gap if self.interval_s is None else 0.7 * self.interval_s + 0.3 * gap
         self.last_start = s.start
         self.last_seen = max(self.last_seen, s.end)
-        started = datetime.fromtimestamp(s.start, tz)
-        self.hours[started.hour] += 1
-        self.days[started.weekday()] += 1
+        self._spread(s, tz)
         self.count += 1
 
     @property
@@ -581,6 +583,24 @@ class Signature:
         """What KIND of thing this might be. Never a claim - see classify."""
         return classify(self.watts, self.pf, self.level_count, self.duration_s)
 
+    def _spread(self, s: Session, tz) -> None:
+        """Put a session's energy into every hour and day it occupied.
+
+        A run from 23:50 to 03:00 belongs to four hours and two days, not to
+        the one it began in."""
+        watts = sum(s.power_by_phase().values())
+        if watts <= 0 or s.end <= s.start:
+            return
+        t = s.start
+        while t < s.end:
+            moment = datetime.fromtimestamp(t, tz)
+            into = moment.minute * 60 + moment.second + moment.microsecond / 1e6
+            step = min(s.end - t, max(3600.0 - into, 1.0))
+            wh = watts * step / 3600.0
+            self.hour_wh[moment.hour] += wh
+            self.day_wh[moment.weekday()] += wh
+            t += step
+
     def describe(self, tz) -> str:
         """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
         258 times - maybe a heating element (power factor 1.00, one level)'."""
@@ -599,17 +619,17 @@ class Signature:
         """Markdown for the naming form, once one is picked: what it is, when
         it runs, where it is, and how sure each of those is."""
         lines = [f"**{self.describe(tz)}**", ""]
-        bars = hour_histogram(self.hours)
+        bars = hour_histogram(self.hour_wh)
         if bars:
-            lines += [f"When it starts, by hour of day - tallest bar is {max(self.hours)} of "
-                      f"{sum(self.hours)} sightings:",
+            lines += [f"Where its energy goes, by hour of day - tallest bar "
+                      f"{_fmt_wh(max(self.hour_wh))} of {_fmt_wh(sum(self.hour_wh))}:",
                       "", "```", *bars, "```", ""]
-        week = day_histogram(self.days)
+        week = day_histogram(self.day_wh)
         if week:
             # every chart is scaled to its own tallest bar, so without this
             # you cannot tell one sighting from twenty (Anze, 2026-09-17)
-            lines += [f"Which days it starts on - tallest bar is {max(self.days)} of "
-                      f"{sum(self.days)} sightings:", "", "```", *week, "```", ""]
+            lines += [f"And by day of week - tallest bar {_fmt_wh(max(self.day_wh))} "
+                      f"of {_fmt_wh(sum(self.day_wh))}:", "", "```", *week, "```", ""]
         guess = self.guess()
         if guess.kind:
             both = guess.kind if not guess.alternative else f"{guess.kind} or {guess.alternative}"
@@ -625,7 +645,7 @@ class Signature:
     def to_dict(self) -> dict:
         return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
                 "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
-                "interval_s": self.interval_s, "hours": self.hours, "days": self.days,
+                "interval_s": self.interval_s, "hour_wh": self.hour_wh, "day_wh": self.day_wh,
                 "level_count": self.level_count, "name": self.name,
                 "last_start": self.last_start, "locations": self.locations, "power_mad": self.power_mad,
                 "duration_mad": self.duration_mad, "interval_mad": self.interval_mad}
@@ -634,11 +654,16 @@ class Signature:
     def from_dict(cls, d: dict) -> "Signature":
         return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
                    count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
-                   hours=list(d.get("hours") or [0] * 24), days=list(d.get("days") or [0] * 7),
+                   hour_wh=list(d.get("hour_wh") or [0.0] * 24),
+                   day_wh=list(d.get("day_wh") or [0.0] * 7),
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    interval_mad=d.get("interval_mad"))
+
+
+def _fmt_wh(x: float) -> str:
+    return f"{x:.0f} Wh" if x < 1000 else f"{x / 1000:.1f} kWh"
 
 
 def _fmt_s(x: Optional[float]) -> str:

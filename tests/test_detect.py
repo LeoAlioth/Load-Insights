@@ -509,7 +509,7 @@ def test_whether_the_array_shows_in_the_meter_is_measured():
 
 def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
     return D.Signature(id=id, phases="a", power={"a": watts}, duration_s=dur, pf=pf, count=count,
-                       first_seen=0.0, last_seen=float(id), hours=list(hours or [0] * 24),
+                       first_seen=0.0, last_seen=float(id), hour_wh=list(hours or [0.0] * 24),
                        locations=dict(loc or {}), name=name)
 
 
@@ -534,7 +534,7 @@ def test_signatures_that_have_become_alike_are_merged():
     kept = max(det.signatures, key=lambda x: x.count)
     assert kept.id == 1 and kept.count == 416, (kept.id, kept.count)
     assert 1790 < kept.power["a"] < 1815, kept.power
-    assert kept.hours[7] == 5 and kept.hours[8] == 3, kept.hours
+    assert kept.hour_wh[7] == 5 and kept.hour_wh[8] == 3, kept.hour_wh
     assert kept.locations == {"Hiša": 136}, kept.locations
     assert det.recent[0]["signature"] == 1, det.recent        # sessions follow
     assert {x.id for x in det.signatures} == {1, 99}
@@ -566,40 +566,38 @@ def test_the_day_is_drawn_as_a_block_chart():
     assert D.hour_histogram([0] * 24) == []
 
 
-def test_which_days_a_load_runs_on_is_kept():
-    """A washing machine and a dishwasher look alike by the hour and quite
-    different by the week."""
+def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
+    """Runtime times draw, not a count of starts: what a load costs you on a
+    Saturday is the thing worth seeing, and a run from 23:40 to 01:20
+    belongs to three hours and two days (Anze, 2026-09-17)."""
     from datetime import datetime, timezone
     det = D.Detector()
     det.tz_offset_s = 0.0
-    # three runs, all on a Wednesday, one on the Saturday after
-    wed = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc).timestamp()
-    rows = []
-    for day, n in ((wed, 3), (wed + 3 * 86400, 1)):
-        for k in range(n):
-            start = day + k * 7200
-            rows.append((start, start + 600))
-    for start, end in rows:
-        det._file(D.Session(phases="a", start=start, end=end,
-                            levels={"a": [(start, 2000.0)]}, pf=1.0))
+    start = datetime(2026, 9, 18, 23, 40, tzinfo=timezone.utc).timestamp()   # a Friday
+    det._file(D.Session(phases="a", start=start, end=start + 6000,
+                        levels={"a": [(start, 2000.0)]}, pf=1.0))
     sig = det.signatures[0]
-    assert sig.days[2] == 3 and sig.days[5] == 1, sig.days       # Wednesday, Saturday
-    assert sum(sig.days) == sig.count == 4, (sig.days, sig.count)
-    lines = D.day_histogram(sig.days)
+    assert round(sum(sig.hour_wh)) == round(2000 * 6000 / 3600), sig.hour_wh
+    assert round(sig.hour_wh[23]) == 667 and round(sig.hour_wh[0]) == 2000, sig.hour_wh
+    assert round(sig.hour_wh[1]) == 667, sig.hour_wh
+    assert round(sig.day_wh[4]) == 667 and round(sig.day_wh[5]) == 2667, sig.day_wh
+    assert round(sum(sig.day_wh)) == round(sum(sig.hour_wh))
+
+    lines = D.day_histogram(sig.day_wh)
     assert lines[-1].strip().startswith("Mo"), lines[-1]
     assert len(lines) == 5, lines                                 # 3 rows, axis, labels
-    assert D.day_histogram([0] * 7) == []
+    assert D.day_histogram([0.0] * 7) == []
 
 
 def test_merging_two_signatures_adds_their_weeks_together():
     det = D.Detector()
     a = _sig(1, 1800.0, 70.0, 0.97, 10)
     b = _sig(2, 1810.0, 72.0, 0.97, 8)
-    a.days = [1, 2, 3, 0, 0, 0, 4]
-    b.days = [0, 1, 0, 0, 5, 0, 2]
+    a.day_wh = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 4.0]
+    b.day_wh = [0.0, 1.0, 0.0, 0.0, 5.0, 0.0, 2.0]
     det.signatures = [a, b]
     assert det.consolidate(100.0) == 1
-    assert det.signatures[0].days == [1, 3, 3, 0, 5, 0, 6], det.signatures[0].days
+    assert det.signatures[0].day_wh == [1.0, 3.0, 3.0, 0.0, 5.0, 0.0, 6.0], det.signatures[0].day_wh
 
 
 def test_how_the_inverter_and_the_grid_are_wired_is_read_off_the_data():

@@ -37,7 +37,8 @@ STORAGE_VERSION = 1
 # the algorithm changes shape, what it learned before is not comparable with
 # what it learns now, so the library is dropped and the backfill re-run.
 # 2 = sessions are paired edges rather than excursions above the idle floor.
-DETECTOR_GENERATION = 2
+# 3 = the hour and weekday histograms hold ENERGY, not counts of starts.
+DETECTOR_GENERATION = 3
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 
 
