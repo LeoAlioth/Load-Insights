@@ -1,28 +1,20 @@
 # Dashboard
 
-Two ways to get a forecast-vs-actual graph per device. Both draw the same
-thing; they differ in when the list of devices is worked out.
+`forecast-cards.jinja` writes one forecast-vs-actual graph per device, for
+every device on your Energy dashboard. Run it again when that list changes.
 
-| | when the device list is resolved | needs |
-|---|---|---|
-| `forecast-cards-auto.yaml` | **live**, every time the card renders | auto-entities + Plotly |
-| `forecast-cards.jinja` | once, when you run the template | Plotly |
+### Why it is a generator and not a self-updating card
 
-## `forecast-cards-auto.yaml` - the self-updating card
+A card that rebuilds its own list would be nicer, and `auto-entities` looks
+like the tool for it - it is what the "devices with low batteries" cards are
+built from. It cannot do this one. auto-entities produces a list of ENTITY
+configs; `card_param: cards` works in its own example only because a grid
+turns `{entity: x}` into a default entity card. Hand it a full card config -
+even `{'type': 'markdown', 'content': 'hello'}` - and the item is dropped,
+because it has no `entity`. Tested on a live instance, 2026-09-17.
 
-Paste it into a dashboard as a **manual card**. `auto-entities` builds the
-list of cards from a template each render, so adding a device to the Energy
-dashboard makes a graph appear on its own - nothing to re-run.
-
-`card_param: cards` is the part that matters: it tells auto-entities to fill
-a `vertical-stack`'s **cards** rather than an entity list, so each generated
-item is a whole card rather than a row.
-
-The template writes the cards as literal YAML, which is auto-entities' own
-documented style. It is not decoration: Jinja's `tojson` filter is
-HTML-safe, so it escapes `>` and `'` - and the plotting functions are full of
-`=>`, which comes out the other side as `=\u003e` and no longer parses.
-
+`config-template-card` can generate cards from a template and would be the
+tool to try, at the cost of another custom card.
 
 ## `forecast-cards.jinja` - forecast against actual, one graph per thing
 
