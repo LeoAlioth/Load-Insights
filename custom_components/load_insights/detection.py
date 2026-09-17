@@ -52,6 +52,9 @@ class DetectionRunner:
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
         self.pv_visible: Dict[str, bool] = {}
+        # how many meter readings the runs have actually had to work with,
+        # so "no loads found" can be told from "no data"
+        self.samples_read: int = 0
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -223,6 +226,7 @@ class DetectionRunner:
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
+        self.samples_read = 0
         await self._store.async_save(self._snapshot())
         for cb in self._listeners:
             cb()
@@ -272,6 +276,7 @@ class DetectionRunner:
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv
             )
+            self.samples_read += sum(len(rows) for rows in samples.values())
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
             self.last_run = now

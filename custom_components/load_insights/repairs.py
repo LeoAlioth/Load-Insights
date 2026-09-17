@@ -23,6 +23,7 @@ NO_PV_FORECAST = "no_pv_forecast"
 DEVICES_WITHOUT_POWER = "devices_without_power"
 BATTERY_NOT_MODELLED = "battery_not_modelled"
 NO_POWER_FACTOR = "no_power_factor"
+FOUND_NOTHING = "detection_found_nothing"
 
 
 @callback
@@ -71,6 +72,14 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
              if cfg.get(f"power_{p}") and not cfg.get(f"pf_{p}")
              and not (cfg.get(f"current_{p}") and cfg.get(f"voltage_{p}"))]
     _set(hass, entry, NO_POWER_FACTOR, bool(blind), {"phases": ", ".join(blind)})
+
+    # A meter that never moves. Kozolec is off grid, so the MultiPlus AC
+    # INPUT it was pointed at is zero by definition, and ten days of backfill
+    # over a flat line taught it nothing - which looked like a broken
+    # detector rather than the wrong sensor (Anze, 2026-09-17).
+    nothing = bool(cfg) and getattr(runner, "caught_up", False) and not runner.detector.signatures
+    _set(hass, entry, FOUND_NOTHING, nothing,
+         {"samples": str(getattr(runner, "samples_read", 0))})
 
     # A dashboard device whose hardware publishes no power at all cannot be
     # located by detection - hourly energy is far too coarse for a session.

@@ -44,12 +44,15 @@ REJECT_PAIRS = ("ab", "bc", "ca", "ac_ab", "ln", "nl",
                 "l1_l2", "l2_l3", "l3_l1", "l2_l1", "l3_l2", "l1_l3")
 # allowed, but a plainer candidate beats them
 PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 20,
-           "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4}
-# Deliberately NOT preferring an inverter's output over its input. It looks
-# obvious - what the house draws is the load side - but Kozolec's MultiPlus
-# publishes no load-side power at all, and its input is where the grid would
-# connect, so the input is the only and the right reading there (Anze,
-# 2026-09-17). The form shows what was matched and can be changed.
+           "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4,
+           # An inverter publishes both of its sides on one device. What the
+           # house DRAWS is the output; the input is the grid or the
+           # generator. Without this the shorter name simply won, and
+           # Kozolec - which is OFF GRID, so its AC input is zero by
+           # definition - spent its backfill watching a flat line and
+           # learned nothing at all (Anze, 2026-09-17).
+           "input": 8, "ac_in": 8}
+BONUS = {"output": 6, "ac_out": 6, "out": 4, "load": 4, "loads": 4, "consumption": 4}
 
 _L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
 _PHASE = re.compile(r"(?:^|[_\s])phase[_\s]?([abc123])(?:$|[_\s])")
@@ -103,6 +106,9 @@ def _score(entity_id: str, name: str) -> Optional[int]:
     for word, cost in PENALTY.items():
         if re.search(rf"(?:^|_){word}(?:$|_)", t):
             score -= cost * 10
+    for word, gain in BONUS.items():
+        if re.search(rf"(?:^|_){word}(?:$|_)", t):
+            score += gain * 10
     return score
 
 

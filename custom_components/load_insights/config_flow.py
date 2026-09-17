@@ -31,7 +31,7 @@ from .insights.detect import describe_location, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
-from .insights.discovery import describe_match, match_meter_entities
+from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .insights.model import SiteModel
 
 
@@ -56,6 +56,34 @@ def _device_field(default=None):
             )
         )
     }
+
+
+def _disabled_readings(hass, device_id: str) -> int:
+    """How many of the device's electrical readings are disabled.
+
+    A disabled entity has no state and no history, so discovery cannot use
+    it and the device page hides it behind "+N entities not shown". That is
+    how a meter can appear to publish nothing useful while the reading you
+    want is one click from existing (Anze, 2026-09-17)."""
+    registry = er.async_get(hass)
+    wanted = set(KIND_BY_DEVICE_CLASS)
+    return len([
+        e for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=True)
+        if e.disabled and e.domain == "sensor"
+        and (e.device_class or e.original_device_class) in wanted
+    ])
+
+
+def _found_line(hass, cfg: dict) -> str:
+    """What was matched, and what could not be because it is switched off."""
+    line = describe_match({k: v for k, v in cfg.items() if k != "device"})
+    device = cfg.get("device")
+    hidden = _disabled_readings(hass, device) if device else 0
+    if hidden:
+        line += (f" - {hidden} more electrical readings on this device are DISABLED, "
+                 "so nothing can use them; enable them on the device page if the one "
+                 "you want is missing")
+    return line
 
 
 def _discover(hass, device_id: str) -> dict:
@@ -270,14 +298,14 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                     step_id="detection",
                     data_schema=vol.Schema({**_device_field(offer.get("device")), **_meter_fields(offer)}),
                     description_placeholders={
-                        "found": describe_match({k: v for k, v in offer.items() if k != "device"})},
+                        "found": _found_line(self.hass, offer)},
                 )
             cfg = {k: v for k, v in user_input.items() if v}
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         return self.async_show_form(
             step_id="detection",
             data_schema=vol.Schema({**_device_field(current.get("device")), **_meter_fields(current)}),
-            description_placeholders={"found": describe_match({k: v for k, v in current.items() if k != "device"})},
+            description_placeholders={"found": _found_line(self.hass, current)},
         )
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
