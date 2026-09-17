@@ -74,6 +74,17 @@ class _Base(CoordinatorEntity, SensorEntity):
             return None
         return getattr(data, self._which)
 
+    def _ledger_key(self) -> str:
+        """Which scoring ledger belongs to this sensor."""
+        return SITE_KEY if self._which == "consumption" else REMAINDER_KEY
+
+    def _predictions(self) -> dict:
+        data: Optional[InsightsData] = self.coordinator.data
+        if data is None or not data.ledgers:
+            return {}
+        led = data.ledgers.get(self._ledger_key())
+        return led.predictions() if led else {}
+
     @property
     def available(self) -> bool:
         return super().available and self._forecast() is not None
@@ -114,9 +125,16 @@ class ForecastPowerSensor(_Base):
                 {"period_start": t.isoformat(), "kwh": round(v, 3), "kwh_p10": round(b[0], 3), "kwh_p90": round(b[1], 3)}
                 for (t, v), b in zip(fc.hourly, fc.bands)
             ],
-            # The last two days as they actually happened, same shape, so one
-            # entity feeds both halves of an actual-vs-forecast chart.
-            "history": [{"period_start": t.isoformat(), "kwh": round(v, 3)} for t, v in fc.history],
+            # The last two days as they actually happened, each row also
+            # carrying what the forecast said for that hour a DAY BEFORE it -
+            # from the scoring ledger, so it is what was really predicted at
+            # the time, not this morning's fit re-run over its own history.
+            # null until scoring has settled that hour (about two days in).
+            "history": [
+                {"period_start": t.isoformat(), "kwh": round(v, 3),
+                 "predicted": (lambda x: None if x is None else round(x, 3))(self._predictions().get(t.timestamp()))}
+                for t, v in fc.history
+            ],
             "today_kwh": round(fc.today_kwh, 2),
             "tomorrow_kwh": round(fc.tomorrow_kwh, 2),
             "level_correction": round(fc.level, 3),
@@ -315,6 +333,9 @@ class DeviceForecastSensor(ForecastPowerSensor):
         if data is None or not data.devices:
             return None
         return data.devices.get(self._energy)
+
+    def _ledger_key(self) -> str:
+        return self._energy
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

@@ -92,6 +92,21 @@ def test_the_error_window_is_bounded():
     assert len(led.errors[1]) <= S.ERROR_WINDOW_DAYS * 24 + 1
 
 
+def test_past_predictions_are_what_was_said_at_the_time():
+    """The day-ahead prediction for each settled hour, keyed by that hour -
+    what the chart draws behind 'now'."""
+    led, now = run_days(9, lambda t: 1.4, lambda now: 1.0)
+    preds = led.predictions()
+    # every settled day-ahead pair, not just the 7-day metrics window: the
+    # ledger keeps ERROR_WINDOW_DAYS of them and the chart takes what it needs
+    assert len(preds) == len(led.errors[S.LEADS["day_ahead"]]) > 24 * 7
+    assert all(math.isclose(v, 1.0) for v in preds.values()), "the forecast said 1.0, whatever the actual was"
+    # keyed by the hour they were FOR, and inside the settled window
+    keys = sorted(preds)
+    assert keys[-1] < P.floor_hour(now).timestamp()
+    assert S.Ledger().predictions() == {}
+
+
 def test_the_ledger_round_trips_through_json():
     import json
     led, now = run_days(9, lambda t: 1.1, lambda now: 1.0)
