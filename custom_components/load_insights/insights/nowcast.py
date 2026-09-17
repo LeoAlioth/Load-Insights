@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 LEADS = 6                  # the current hour and the five after it
 MIN_HOURS = 336
 MIN_EXPLAINED = 0.03
+MIN_RESIDUAL_MS = 1e-12    # below this the residual is floating point, not a device
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,8 @@ def fit_nowcast(rows: Sequence[Tuple[float, float, Sequence[Optional[float]]]]) 
         sxx = sum(w * x * x for w, x, _ in sub)
         sxr = sum(w * x * r for w, x, r in sub)
         srr = sum(w * r * r for w, _, r in sub)
-        if sxx <= 1e-12 or srr <= 0:
+        w_total = sum(w for w, _, _ in sub)
+        if sxx <= 1e-12 or srr <= 0 or srr < MIN_RESIDUAL_MS * w_total:
             coeffs.append(0.0)
             expl.append(0.0)
             continue

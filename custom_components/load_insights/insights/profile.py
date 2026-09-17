@@ -268,7 +268,7 @@ class Forecast:
     bands: tuple = ()            # (p10, p90) per row of ``hourly``, same order
     temperature: TemperatureResponse = NO_RESPONSE
     hours_with_forecast_temperature: int = 0
-    calendars: tuple = ()        # CalendarModel per linked calendar, this series' own fit
+    calendars: tuple = ()        # CalendarModel per linked signal - calendars and attached sensors alike
     nowcast: Nowcast = NO_NOWCAST
     nowcast_deltas: tuple = ()   # kWh added to the first NOWCAST_LEADS rows
 

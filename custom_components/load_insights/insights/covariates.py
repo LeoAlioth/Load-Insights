@@ -25,6 +25,11 @@ HEATING_BASE_C = 15.0
 COOLING_BASE_C = 24.0
 MIN_HOURS = 336            # two weeks of hours with a covariate value, or no fit
 MIN_EXPLAINED = 0.03       # share of residual variance the fit must remove
+# A residual this small is floating point, not consumption: a mean squared
+# residual of 1e-12 kWh^2 is a mean error under a microwatt-hour. Dividing one
+# piece of dust by another produces a confident number from nothing - see
+# calendars.MIN_RESIDUAL_SHARE for the case that found this.
+MIN_RESIDUAL_MS = 1e-12
 
 
 def hdh(temp_c: float) -> float:
@@ -84,7 +89,7 @@ def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> Temp
         sxr += w * x * r
         syr += w * y * r
         srr += w * r * r
-    if srr <= 0:
+    if srr <= 0 or srr < MIN_RESIDUAL_MS * W:
         return NONE
     det = sxx * syy - sxy * sxy
     if det > 1e-12:

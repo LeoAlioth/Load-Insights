@@ -123,6 +123,15 @@ next six hours and narrows their spread - a cold tank means the boiler is
 about to run. Nothing beyond six hours is touched, because the state has no
 forward source. The `nowcast` attribute on the device sensor shows the fit.
 
+Any entity can be attached as an explanatory input - a tariff block, an
+electricity price, irradiance, an occupancy sensor. It is labelled (its own
+state where it has few values, a quantile band where it is numeric) and
+fitted exactly like a calendar, then carried into the week where the input is
+schedule-like, or held for a few hours where it is not. An input the weekly
+profile already knows - anything that is a pure function of weekday and hour,
+a tariff among them - will not engage, because the 168 slots already contain
+it; such an input earns its place only when its schedule changes.
+
 Link any calendars and Load Insights works out what each one means: from
 its past events an existence signal is fitted on the residuals, per hour of
 day - an away calendar comes out as daytime factors near 0.4 and nights near
