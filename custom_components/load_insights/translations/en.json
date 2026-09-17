@@ -72,9 +72,10 @@
     "options": {
         "step": {
             "init": {
-                "title": "Explanatory inputs",
-                "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
+                "title": "Load Insights",
+                "description": "Pick a page.",
                 "menu_options": {
+                    "overview": "Overview",
                     "inputs": "Explanatory inputs",
                     "device_state": "A device's own state sensor",
                     "detection": "Load detection",
@@ -133,6 +134,23 @@
                 "data": {
                     "signature": "Detected load",
                     "name": "Name"
+                }
+            },
+            "overview": {
+                "title": "Overview",
+                "description": "What Load Insights sees right now.\n\n{overview}",
+                "menu_options": {
+                    "overview": "🔄 Refresh",
+                    "reset_detection": "Reset load detection",
+                    "init": "← Back to menu"
+                }
+            },
+            "reset_detection": {
+                "title": "Reset load detection?",
+                "description": "The signature library and every name in it are forgotten, and the last ten days of the meter are read again from scratch. It runs on its own and takes a while. Do this after a change to the meter, a rewired phase, or an update that changes how loads are found.",
+                "menu_options": {
+                    "reset_confirmed": "Yes, forget everything",
+                    "overview": "← Cancel"
                 }
             }
         },

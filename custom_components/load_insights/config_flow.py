@@ -2,6 +2,8 @@
 explanatory inputs. Options: change the inputs later."""
 from __future__ import annotations
 
+import logging
+
 from typing import Any
 
 import voluptuous as vol
@@ -26,6 +28,9 @@ from .const import (
 from homeassistant.util import dt as dt_util
 
 from .insights.detect import describe_location, suggest_levels
+from .overview import overview_text
+
+_LOGGER = logging.getLogger(__name__)
 from .insights.discovery import describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -134,7 +139,41 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         self._naming_selected: int | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "naming"])
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["overview", "inputs", "device_state", "detection", "naming"],
+        )
+
+    async def async_step_overview(self, user_input: dict[str, Any] | None = None):
+        """What it sees right now, read-only.
+
+        A MENU rather than a form, the way Load Juggler does it: a form's
+        button says Submit, which reads as if something is being saved, while
+        menu options are real labelled buttons - Refresh re-enters this step
+        and rebuilds the text, Reset asks before forgetting anything."""
+        try:
+            text = overview_text(self.hass, self.config_entry.entry_id)
+        except Exception:  # noqa: BLE001 - a display page must never break
+            _LOGGER.exception("Could not build the overview page")
+            text = "Could not read the live data - see the Home Assistant log."
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        options = ["overview"]
+        if runner is not None and runner.enabled:
+            options.append("reset_detection")
+        options.append("init")
+        return self.async_show_menu(step_id="overview", menu_options=options,
+                                    description_placeholders={"overview": text})
+
+    async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
+        """Ask before forgetting: the library and every name in it go."""
+        return self.async_show_menu(step_id="reset_detection",
+                                    menu_options=["reset_confirmed", "overview"])
+
+    async def async_step_reset_confirmed(self, user_input: dict[str, Any] | None = None):
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        if runner is not None:
+            await runner.async_reset()
+        return await self.async_step_overview()
 
     async def async_step_naming(self, user_input: dict[str, Any] | None = None):
         """Name a detected load. One per visit; giving two signatures the same
