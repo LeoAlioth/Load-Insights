@@ -1,12 +1,12 @@
 """The forecast, published the way the solar forecasts are."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,6 +30,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ForecastEnergySensor(coordinator, entry, "consumption_tomorrow", "consumption", "tomorrow_kwh"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
     ]
+    # What the meter will do, and the pack's day.
+    entities += [
+        GridForecastSensor(coordinator, entry, "grid_forecast"),
+        GridEnergySensor(coordinator, entry, "grid_import_tomorrow", "import"),
+        GridEnergySensor(coordinator, entry, "grid_export_tomorrow", "export"),
+        BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"),
+    ]
     # Forecast scores: the few numbers worth a card or an alert. Per-device
     # scores are attributes on the device forecast sensors instead.
     entities += [
@@ -49,6 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if detection is not None:
         entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+        entities += [BaseLoadSensor(detection, entry)]
         entities += [NamedLoadPower(detection, entry, n) for n in sorted(detection.detector.names())]
     add(entities)
 
@@ -460,6 +468,159 @@ class UnknownLoadPowerSensor(_DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         return round(self._runner.detector.unknown_power(dt_util.utcnow().timestamp()))
+
+
+class _GridBase(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry: ConfigEntry, key: str) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+
+    def _grid(self):
+        data: Optional[InsightsData] = self.coordinator.data
+        return None if data is None else data.grid
+
+    @property
+    def available(self) -> bool:
+        g = self._grid()
+        return CoordinatorEntity.available.fget(self) and g is not None and bool(g.hours)
+
+
+class GridForecastSensor(_GridBase):
+    """State: the meter's expected average power over the coming hour, in W -
+    positive importing, negative exporting. Attributes: the hourly detail."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+    _unrecorded_attributes = frozenset({"detailedForecast"})
+
+    @property
+    def native_value(self) -> Optional[float]:
+        g = self._grid()
+        return None if not g or not g.hours else round(1000.0 * g.hours[0].net_kwh)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        g = self._grid()
+        data: Optional[InsightsData] = self.coordinator.data
+        if not g or data is None:
+            return {}
+        return {
+            "detailedForecast": [
+                {"period_start": h.when.isoformat(),
+                 "kwh": round(h.net_kwh, 3),
+                 "consumption_kwh": round(h.consumption_kwh, 3),
+                 "pv_kwh": round(h.pv_kwh, 3),
+                 "battery_kwh": round(h.battery_kwh, 3),
+                 "soc": None if h.soc is None else round(h.soc, 1)}
+                for h in g.hours
+            ],
+            "import_kwh": round(g.import_kwh, 2),
+            "export_kwh": round(g.export_kwh, 2),
+            "battery_modelled": g.battery_modelled,
+            "hours_with_pv_forecast": g.pv_hours,
+            "pv_forecast_entries": list(data.site.solar_forecast_entries),
+        }
+
+
+class GridEnergySensor(_GridBase):
+    """Tomorrow's expected import or export, kWh."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry, key, which) -> None:
+        super().__init__(coordinator, entry, key)
+        self._which = which
+
+    @property
+    def native_value(self) -> Optional[float]:
+        g = self._grid()
+        data: Optional[InsightsData] = self.coordinator.data
+        if not g or data is None:
+            return None
+        day = (data.computed_at + timedelta(days=1)).date()
+        rows = [h.net_kwh for h in g.hours if h.when.date() == day]
+        if not rows:
+            return None
+        return round(sum(max(0.0, v) for v in rows) if self._which == "import"
+                     else sum(max(0.0, -v) for v in rows), 2)
+
+
+class BatterySocForecastSensor(_GridBase):
+    """The pack's expected state of charge at the end of the coming hour."""
+
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+    _unrecorded_attributes = frozenset({"detailedForecast"})
+
+    @property
+    def available(self) -> bool:
+        g = self._grid()
+        return super().available and g.battery_modelled
+
+    @property
+    def native_value(self) -> Optional[float]:
+        g = self._grid()
+        return None if not g or not g.hours or g.hours[0].soc is None else round(g.hours[0].soc)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        g = self._grid()
+        if not g or not g.battery_modelled:
+            return {}
+        socs = [h.soc for h in g.hours if h.soc is not None]
+        return {
+            "detailedForecast": [
+                {"period_start": h.when.isoformat(), "soc": round(h.soc, 1)}
+                for h in g.hours if h.soc is not None
+            ],
+            "minimum": round(min(socs), 1) if socs else None,
+            "maximum": round(max(socs), 1) if socs else None,
+        }
+
+
+class BaseLoadSensor(_DetectionBase):
+    """What the site draws with nothing switched on: the sum of each phase's
+    idle baseline, which the detector tracks anyway to know when a load
+    starts. Creeping upward is the thing to watch."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runner, entry) -> None:
+        super().__init__(runner, entry, "base_load")
+
+    @property
+    def available(self) -> bool:
+        return super().available and any(st.baseline is not None for st in self._runner.detector.phases.values())
+
+    @property
+    def native_value(self) -> Optional[float]:
+        vals = [st.baseline for st in self._runner.detector.phases.values() if st.baseline is not None]
+        return round(sum(vals)) if vals else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        det = self._runner.detector
+        return {
+            "by_phase": {p.upper(): round(st.baseline) for p, st in det.phases.items() if st.baseline is not None},
+            "noise_floor_w": {p.upper(): round(st.noise) for p, st in det.phases.items() if st.baseline is not None},
+            "by_meter": {
+                name: round(sum(st.baseline for st in d.phases.values() if st.baseline is not None))
+                for name, d in self._runner.fleet.subs.items()
+            },
+        }
 
 
 class NamedLoadPower(_DetectionBase):

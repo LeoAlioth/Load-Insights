@@ -16,6 +16,10 @@ statistics for them, and publishes a consumption forecast:
 | **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh with a `kwh_p10`/`kwh_p90` spread (the shape and naming the PV forecast integrations use); `history`: the last 48 hours as they happened, same shape; today/tomorrow kWh, level correction, weeks of data |
 | **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
 | **Consumption tomorrow** | kWh | |
+| **Grid forecast** | what the METER will do over the coming hour, W - positive importing, negative exporting | `detailedForecast` with consumption, PV, battery and SOC per hour; tomorrow's import and export totals |
+| **Grid import / export tomorrow** | kWh | |
+| **Battery SOC forecast** | the pack's expected state of charge at the end of the coming hour, % | hourly SOC, and the day's minimum and maximum |
+| **Base load** | what the site draws with nothing switched on, W | per phase, per meter, and each phase's noise floor |
 | **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
 | **Forecast error / bias, day ahead** and **hour ahead** | trailing 7-day mean absolute error and signed mean error of the site forecast, W | per-lead table (hour, day and week ahead), `band_coverage_day_ahead` (share of actuals inside p10-p90; honest is about 0.8), the last 48 scored hours |
 | **Yesterday's day-ahead error** | actual minus the "tomorrow" total the forecast showed at noon the day before, kWh | |
@@ -154,6 +158,23 @@ words, and type a name. It then gets a **running** binary sensor and a
 on different settings, and the page suggests candidates for that: same phases,
 same power factor, never running at once. Naming signatures, explaining them with the dashboard's known
 devices, and feeding them back into the forecast are the next stages.
+
+## What the meter will do
+
+Consumption answers how much the house needs; the grid forecast answers what
+the meter does about it. PV comes from the forecast integrations your Energy
+dashboard already links to its PV source - the same data it draws as its own
+dashed line - and the battery is simulated in between: surplus charges it
+until full, deficit discharges it until empty, bounded by the pack's rated
+power where that is known.
+
+That model does not know your charge policy, tariff arbitrage or reserves, so
+it answers "if the battery simply follows the house", which is what most
+sites do most of the time. Without a state of charge or a capacity on the
+dashboard no battery is simulated, and the net is reported before it -
+`battery_modelled` says which. `hours_with_pv_forecast` says how far the PV
+forecast reached; beyond it the hours are treated as sunless, so a two-day PV
+forecast leaves the rest of the week reading as pure consumption.
 
 ## Requirements
 

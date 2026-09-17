@@ -61,7 +61,7 @@ def test_no_label_is_empty():
 def test_every_sensor_translation_key_in_code_has_a_name():
     src = (BASE / "sensor.py").read_text(encoding="utf-8")
     import re
-    used = set(re.findall(r'"(consumption_forecast|consumption_today|consumption_tomorrow|remainder_forecast|device_forecast|consumption_error_day_ahead|consumption_bias_day_ahead|consumption_error_hour_ahead|consumption_day_ahead_kwh_error|remainder_error_day_ahead|remainder_bias_day_ahead|detected_loads|unknown_load_power)"', src))
+    used = set(re.findall(r'"(consumption_forecast|consumption_today|consumption_tomorrow|remainder_forecast|device_forecast|consumption_error_day_ahead|consumption_bias_day_ahead|consumption_error_hour_ahead|consumption_day_ahead_kwh_error|remainder_error_day_ahead|remainder_bias_day_ahead|detected_loads|unknown_load_power|grid_forecast|grid_import_tomorrow|grid_export_tomorrow|battery_soc_forecast|base_load)"', src))
     names = set(_load("strings.json")["entity"]["sensor"])
     assert used <= names, used - names
 
