@@ -8,6 +8,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -34,13 +35,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ForecastPowerSensor(coordinator, entry, "consumption_forecast", "consumption"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
         GridForecastSensor(coordinator, entry, "grid_forecast"),
-        BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"),
     ]
     # One per device the Energy dashboard lists, from the site model of the
     # first refresh. A device added to the dashboard later appears after a
     # reload of the integration; a removed one keeps its entity, unavailable.
     data: InsightsData = coordinator.data
     if data is not None:
+        # The state of charge is only forecastable where the Energy dashboard
+        # gives both a battery SOC and a capacity. A site with no battery was
+        # getting the sensor anyway, permanently unavailable (Anze,
+        # 2026-09-17), so it is created only where it can have a value.
+        if data.site.battery_soc and data.site.battery_capacity_kwh:
+            entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
+        else:
+            _forget(hass, entry, "battery_soc_forecast")
         entities += [DeviceForecastSensor(coordinator, entry, d) for d in data.site.devices]
     detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if detection is not None:
@@ -48,6 +56,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         entities += [BaseLoadSensor(detection, entry)]
         entities += [NamedLoadPower(detection, entry, n) for n in sorted(detection.detector.names())]
     add(entities)
+
+
+def _forget(hass: HomeAssistant, entry: ConfigEntry, key: str) -> None:
+    """Drop a sensor this site cannot have, so an install that once created
+    it is not left with an unavailable leftover in the registry."""
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{key}")
+    if entity_id:
+        registry.async_remove(entity_id)
 
 
 class _Base(CoordinatorEntity, SensorEntity):

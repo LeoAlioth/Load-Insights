@@ -143,6 +143,10 @@
             "title": "No PV forecast is linked to the Energy dashboard",
             "description": "This site produces PV, but its Energy dashboard has no forecast integration linked to the solar source. The grid forecast therefore predicts a week of sunless days, and its import figures are badly pessimistic. Link one (Solcast, Forecast.Solar and others) to the PV source in Settings -> Dashboards -> Energy."
         },
+        "battery_not_modelled": {
+            "title": "The battery is not being modelled",
+            "description": "The Energy dashboard has a battery at this site, but not {missing}. Without it the state of charge cannot be forecast, so no SOC forecast sensor is created and the grid forecast is the net BEFORE the battery - it says so in its battery_modelled attribute. Both are optional fields on the battery source in Settings -> Dashboards -> Energy."
+        },
         "devices_without_power": {
             "title": "Some metered devices cannot be detected",
             "description": "{devices} appear on the Energy dashboard but publish no power reading, only energy. Hourly energy is far too coarse to line up with a load switching on, so these devices cannot locate or name anything in load detection. Their forecasts are unaffected."
