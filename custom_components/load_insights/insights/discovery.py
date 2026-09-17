@@ -44,7 +44,14 @@ REJECT_PAIRS = ("ab", "bc", "ca", "ac_ab", "ln", "nl",
                 "l1_l2", "l2_l3", "l3_l1", "l2_l1", "l3_l2", "l1_l3")
 # allowed, but a plainer candidate beats them
 PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 20,
-           "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4}
+           "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4,
+           # an inverter publishes both sides on one device, and what the
+           # house DRAWS is the output. Without this the shorter name simply
+           # won: Kozolec's detector spent ten days watching the MultiPlus's
+           # AC input, which is what the grid feeds in, not what the house
+           # uses (Anze, 2026-09-17).
+           "input": 8, "ac_in": 8, "in": 8}
+BONUS = {"output": 6, "ac_out": 6, "load": 4, "loads": 4, "consumption": 4}
 
 _L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
 _PHASE = re.compile(r"(?:^|[_\s])phase[_\s]?([abc123])(?:$|[_\s])")
@@ -98,6 +105,9 @@ def _score(entity_id: str, name: str) -> Optional[int]:
     for word, cost in PENALTY.items():
         if re.search(rf"(?:^|_){word}(?:$|_)", t):
             score -= cost * 10
+    for word, gain in BONUS.items():
+        if re.search(rf"(?:^|_){word}(?:$|_)", t):
+            score += gain * 10
     return score
 
 

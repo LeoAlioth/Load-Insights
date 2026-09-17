@@ -22,7 +22,7 @@ from .const import (
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector, Fleet, most_specific
+from .insights.detect import PHASES, Detector, Fleet, most_specific, pv_shows_in
 from .insights.discovery import match_meter_entities
 from .insights.model import SiteModel
 
@@ -48,7 +48,10 @@ class DetectionRunner:
         self.entry = entry
         self.submeters = {}
         self.fleet: Fleet = Fleet()
-        self.solar: Dict[str, str] = {}      # the array's power per phase, when it has one
+        self.solar: List[Dict[str, str]] = []   # each array's power per phase
+        # whether the configured reading actually includes the array, read
+        # off the data per phase and remembered once it is conclusive
+        self.pv_visible: Dict[str, bool] = {}
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -115,28 +118,39 @@ class DetectionRunner:
             })
         return rows
 
-    async def _resolve_solar(self) -> Dict[str, str]:
-        """The array's power, per phase where the inverter publishes it.
+    async def _resolve_solar(self) -> List[Dict[str, str]]:
+        """Each array's power, per phase where the inverter publishes it.
 
         A grid meter carries the house MINUS the array, so every cloud is a
         step on it and would be filed as a load switching. An inverter
         usually gives its own per-phase power, which makes that test exact;
         failing that the dashboard's solar power sensor, or the inverter's
-        total, stands in for every phase."""
+        total, stands in for every phase.
+
+        One entry PER SOURCE, because a site with two trackers has two of
+        them (Kozolec has two MPPTs) and reading only the first would leave
+        half of every cloud unexplained."""
         manager = await async_get_manager(self.hass)
         site = SiteModel.from_prefs(manager.data)
         if not site.solar:
-            return {}
+            return []
         registry = er.async_get(self.hass)
-        found: Dict[str, str] = {}
-        entry = registry.async_get(site.solar[0])
-        if entry is not None and entry.device_id:
-            matched = match_meter_entities(self._device_rows(registry, entry.device_id))
-            found = {k: v for k, v in matched.items() if k.startswith("power_")}
-        if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
-            return found
-        total = (site.solar_power[0] if site.solar_power else None) or found.get("power_a")
-        return {f"power_{p}": total for p in PHASES} if total else {}
+        spare = list(site.solar_power)
+        out: List[Dict[str, str]] = []
+        for stat in site.solar:
+            found: Dict[str, str] = {}
+            entry = registry.async_get(stat)
+            if entry is not None and entry.device_id:
+                matched = match_meter_entities(self._device_rows(registry, entry.device_id))
+                found = {k: v for k, v in matched.items() if k.startswith("power_")}
+            if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
+                fields = found
+            else:
+                total = found.get("power_a") or (spare.pop(0) if spare else None)
+                fields = {f"power_{p}": total for p in PHASES} if total else {}
+            if fields and fields not in out:
+                out.append(fields)
+        return out
 
     @property
     def detector(self) -> Detector:
@@ -233,8 +247,21 @@ class DetectionRunner:
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
             samples, q = await self._read(start, end, self.config)
             self.solar = await self._resolve_solar()
-            pv_rows, _ = await self._read(start, end, self.solar) if self.solar else ({}, {})
-            pv = {p: _align(pv_rows[p], samples[p]) for p in samples if pv_rows.get(p)}
+            pv: Dict[str, Dict[float, float]] = {}
+            for fields in self.solar:
+                rows, _ = await self._read(start, end, fields)
+                for p, target in samples.items():
+                    if not rows.get(p):
+                        continue
+                    bucket = pv.setdefault(p, {})
+                    for ts, watts in _align(rows[p], target).items():
+                        bucket[ts] = bucket.get(ts, 0.0) + watts       # every array together
+            for p in list(pv):
+                verdict = pv_shows_in(samples[p], pv[p])
+                if verdict is not None:
+                    self.pv_visible[p] = verdict
+                if self.pv_visible.get(p) is False:
+                    pv.pop(p)         # this reading never sees the sun; leave its steps alone
             self.submeters = await self._resolve_submeters()
             sub_samples, sub_q, agnostic = {}, {}, {}
             for name, meter in self.submeters.items():

@@ -136,5 +136,28 @@ def test_describe_match_says_what_was_recognised():
     assert D.describe_match({}).startswith("no per-phase readings")
 
 
+def test_an_inverter_is_read_on_its_load_side_not_its_input():
+    """A MultiPlus publishes both sides on one device. What the house DRAWS
+    is the output; the input is what the grid feeds in. The shorter name used
+    to win, so Kozolec spent ten days watching the wrong one."""
+    rows = [
+        e("sensor.multiplus_id_276_input_power_l1", "power", "MultiPlus Input Power L1"),
+        e("sensor.multiplus_id_276_output_power_l1", "power", "MultiPlus Output Power L1"),
+        e("sensor.multiplus_id_276_0_line_l2_input_power", "power", "MultiPlus L2 Input Power"),
+        e("sensor.multiplus_id_276_0_line_l2_output_power", "power", "MultiPlus L2 Output Power"),
+        e("sensor.multiplus_id_276_input_voltage_l1", "voltage", "MultiPlus Input Voltage L1"),
+        e("sensor.multiplus_id_276_output_voltage_l1", "voltage", "MultiPlus Output Voltage L1"),
+    ]
+    got = D.match_meter_entities(rows)
+    assert got["power_a"].endswith("output_power_l1"), got["power_a"]
+    assert got["power_b"].endswith("l2_output_power"), got["power_b"]
+    assert got["voltage_a"].endswith("output_voltage_l1"), got["voltage_a"]
+
+
+def test_a_plain_grid_meter_is_unaffected_by_that_preference():
+    got = D.match_meter_entities(SOLAREDGE)
+    assert got["power_a"] == "sensor.solaredge_se17k_m1_ac_power_a", got["power_a"]
+
+
 if __name__ == "__main__":
     run_main(dict(globals()))
