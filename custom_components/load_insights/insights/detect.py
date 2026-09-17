@@ -414,6 +414,7 @@ class Signature:
         name, n = max(self.locations.items(), key=lambda kv: kv[1])
         return name if n * 2 >= self.count else "main"
     hours: List[int] = field(default_factory=lambda: [0] * 24)
+    days: List[int] = field(default_factory=lambda: [0] * 7)   # Monday first
     level_count: float = 1.0
     name: Optional[str] = None
     # how much each reading WANDERS between sightings, as a running mean
@@ -482,6 +483,7 @@ class Signature:
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
         self.hours = [x + y for x, y in zip(self.hours, other.hours)]
+        self.days = [x + y for x, y in zip(self.days, other.days)]
         for name, k in other.locations.items():
             self.locations[name] = self.locations.get(name, 0) + k
         self.first_seen = min(self.first_seen, other.first_seen)
@@ -511,7 +513,9 @@ class Signature:
                 self.interval_s = gap if self.interval_s is None else 0.7 * self.interval_s + 0.3 * gap
         self.last_start = s.start
         self.last_seen = max(self.last_seen, s.end)
-        self.hours[datetime.fromtimestamp(s.start, tz).hour] += 1
+        started = datetime.fromtimestamp(s.start, tz)
+        self.hours[started.hour] += 1
+        self.days[started.weekday()] += 1
         self.count += 1
 
     @property
@@ -563,6 +567,9 @@ class Signature:
         if bars:
             lines += [f"When it runs, by hour of day - tallest bar is {max(self.hours)} sightings:",
                       "", "```", *bars, "```", ""]
+        week = day_histogram(self.days)
+        if week:
+            lines += ["Which days:", "", "```", *week, "```", ""]
         guess = self.guess()
         if guess.kind:
             both = guess.kind if not guess.alternative else f"{guess.kind} or {guess.alternative}"
@@ -578,7 +585,8 @@ class Signature:
     def to_dict(self) -> dict:
         return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
                 "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
-                "interval_s": self.interval_s, "hours": self.hours, "level_count": self.level_count, "name": self.name,
+                "interval_s": self.interval_s, "hours": self.hours, "days": self.days,
+                "level_count": self.level_count, "name": self.name,
                 "last_start": self.last_start, "locations": self.locations, "power_mad": self.power_mad,
                 "duration_mad": self.duration_mad, "interval_mad": self.interval_mad}
 
@@ -586,7 +594,8 @@ class Signature:
     def from_dict(cls, d: dict) -> "Signature":
         return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
                    count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
-                   hours=list(d.get("hours") or [0] * 24), level_count=d.get("level_count", 1.0), name=d.get("name"),
+                   hours=list(d.get("hours") or [0] * 24), days=list(d.get("days") or [0] * 7),
+                   level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    interval_mad=d.get("interval_mad"))
@@ -1029,6 +1038,30 @@ def hour_histogram(counts: Sequence[int], rows: int = HISTOGRAM_ROWS,
             if h * width + i < len(ruler):
                 ruler[h * width + i] = ch
     out.append(" " + "".join(ruler))
+    return out
+
+
+DAY_NAMES = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+
+
+def day_histogram(counts: Sequence[int], rows: int = 3, width: int = 3) -> List[str]:
+    """The week as a block chart, Monday first.
+
+    Which DAYS a load runs on separates a washing machine from a dishwasher
+    far better than the hour does, and the hour histogram alone could not
+    show it (Anze, 2026-09-17)."""
+    top = max(counts) if counts else 0
+    if top <= 0:
+        return []
+    out = []
+    for r in range(rows, 0, -1):
+        line = []
+        for c in counts:
+            level = (c / top) * rows
+            line.append(("█" if level >= r else "▄" if level >= r - 0.5 else " ") * width)
+        out.append("|" + "".join(line))
+    out.append("+" + "-" * (len(counts) * width))
+    out.append(" " + "".join(name[:width].ljust(width) for name in DAY_NAMES[:len(counts)]))
     return out
 
 
