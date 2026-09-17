@@ -131,6 +131,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._pending_detection: dict | None = None
+        self._naming_selected: int | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "naming"])
@@ -148,17 +149,30 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             chosen = int(user_input["signature"])
-            await runner.async_rename(chosen, user_input.get("name"))
+            name = (user_input.get("name") or "").strip()
+            if not name and self._naming_selected != chosen:
+                # picked, but not named yet: show what this one looks like
+                # before asking for a name - a config flow cannot draw a
+                # chart, so the description carries the day's shape and the
+                # three confidences (Anze, 2026-09-17)
+                self._naming_selected = chosen
+                return self._naming_form(runner, candidates, chosen)
+            self._naming_selected = None
+            await runner.async_rename(chosen, name or None)
             # the entry has to change for the entities to be rebuilt
             rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
             return self.async_create_entry(
                 data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
             )
 
+        return self._naming_form(runner, candidates, candidates[0].id)
+
+    def _naming_form(self, runner, candidates: list, selected: int):
+        """The picker, with the selected load spelled out underneath."""
         tz = dt_util.DEFAULT_TIME_ZONE
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
-        options = []
         parents = runner.parents
+        options = []
         for sig in candidates:
             label = sig.describe(tz)
             if sig.locations:
@@ -170,16 +184,17 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             if sig.id in levels:
                 label += f"  [looks like set {levels[sig.id]} of one device]"
             options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
-        current = candidates[0]
+        current = next((s for s in candidates if s.id == selected), candidates[0])
         return self.async_show_form(
             step_id="naming",
             data_schema=vol.Schema({
                 vol.Required("signature", default=str(current.id)): selector.SelectSelector(
                     selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.DROPDOWN)
                 ),
-                vol.Optional("name"): selector.TextSelector(),
+                vol.Optional("name", description={"suggested_value": current.name}): selector.TextSelector(),
             }),
-            description_placeholders={"count": str(len(candidates))},
+            description_placeholders={"count": str(len(candidates)),
+                                      "detail": current.detail(tz, parents)},
         )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):

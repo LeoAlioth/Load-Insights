@@ -22,6 +22,7 @@ HALF_TEMPERATURE = "temperature_pair_incomplete"
 NO_PV_FORECAST = "no_pv_forecast"
 DEVICES_WITHOUT_POWER = "devices_without_power"
 BATTERY_NOT_MODELLED = "battery_not_modelled"
+NO_POWER_FACTOR = "no_power_factor"
 
 
 @callback
@@ -58,6 +59,18 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
             # an external statistic rather than a sensor entity
             lacks.append("a readable state of charge (the statistic it names is not a live sensor)")
     _set(hass, entry, BATTERY_NOT_MODELLED, bool(lacks), {"missing": " and ".join(lacks)})
+
+    # A phase with a power reading but no current AND voltage (and no power
+    # factor sensor) can never tell a heater from a motor: the watts are the
+    # same and only the reactive part separates them. Kozolec has this on two
+    # of its three phases (Anze, 2026-09-17), and it is invisible until you
+    # notice that every guess there is missing.
+    runner = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
+    cfg = (getattr(runner, "config", None) or {}) if getattr(runner, "enabled", False) else {}
+    blind = [p.upper() for p in ("a", "b", "c")
+             if cfg.get(f"power_{p}") and not cfg.get(f"pf_{p}")
+             and not (cfg.get(f"current_{p}") and cfg.get(f"voltage_{p}"))]
+    _set(hass, entry, NO_POWER_FACTOR, bool(blind), {"phases": ", ".join(blind)})
 
     # A dashboard device whose hardware publishes no power at all cannot be
     # located by detection - hourly energy is far too coarse for a session.

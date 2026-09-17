@@ -121,7 +121,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.",
+                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.\n\n{detail}",
                 "data": {
                     "signature": "Zaznan porabnik",
                     "name": "Ime"
@@ -146,6 +146,10 @@
         "battery_not_modelled": {
             "title": "Baterija ni modelirana",
             "description": "Energijska nadzorna plošča ima na tem mestu baterijo, nima pa {missing}. Brez tega napovedi napolnjenosti ni mogoče izračunati, zato senzor napovedi SoC ni ustvarjen, omrežna napoved pa velja PRED baterijo - to pove njen atribut battery_modelled. Obe polji sta neobvezni pri viru baterije v Nastavitve -> Nadzorne plošče -> Energija."
+        },
+        "no_power_factor": {
+            "title": "Na nekaterih fazah ni mogoče ločiti grelca od motorja",
+            "description": "Zaznavanje porabe ima meritev moči na fazi {phases}, nima pa podatkov za izračun faktorja moči: za to potrebuje tok IN napetost te faze ali senzor faktorja moči. Sami vati ne ločijo 2 kW grelca od 2 kW motorja, zato bremena na teh fazah ostanejo brez ugibanja, kaj so. Dodajte jih v Nastavitve -> Zaznavanje porabe."
         },
         "devices_without_power": {
             "title": "Nekaterih merjenih naprav ni mogoče zaznati",
