@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -27,6 +28,12 @@ from .insights.model import SiteModel
 
 _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
+# The DETECTOR's generation, separate from the store's format version: when
+# the algorithm changes shape, what it learned before is not comparable with
+# what it learns now, so the library is dropped and the backfill re-run.
+# 2 = sessions are paired edges rather than excursions above the idle floor.
+DETECTOR_GENERATION = 2
+MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 
 
 class DetectionRunner:
@@ -113,23 +120,32 @@ class DetectionRunner:
         return {name: m["parent"] for name, m in self.submeters.items()}
 
     def unlocated(self) -> list:
-        """Signatures no device meter accounts for - the ones worth naming."""
+        """Signatures no device meter accounts for AND seen more than once -
+        the ones worth naming.
+
+        A load seen a single time may not be a load at all, and naming it
+        teaches the library nothing (Anze, 2026-09-17: "as for signatures only
+        seen once, dont show them"). It keeps its place in the library and
+        appears here as soon as it happens again."""
         parents = self.parents
         return [s for s in sorted(self.detector.signatures, key=lambda x: -x.count)
-                if most_specific(s.locations, s.count, parents) == "main"]
+                if s.count >= MIN_COUNT_TO_NAME
+                and most_specific(s.locations, s.count, parents) == "main"]
 
     async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
         """Name a signature (or clear it) and persist at once - the caller
         bumps the entry so the entities follow."""
         if not self.detector.rename(signature_id, name):
             return False
-        await self._store.async_save(
-            {"fleet": self.fleet.to_dict(),
-             "last_processed": self.last_processed.isoformat() if self.last_processed else None}
-        )
+        await self._store.async_save(self._snapshot())
         for cb in self._listeners:
             cb()
         return True
+
+    def _snapshot(self) -> dict:
+        return {"fleet": self.fleet.to_dict(),
+                "last_processed": self.last_processed.isoformat() if self.last_processed else None,
+                "generation": DETECTOR_GENERATION}
 
     @property
     def enabled(self) -> bool:
@@ -140,6 +156,11 @@ class DetectionRunner:
 
     async def async_start(self) -> None:
         raw = await self._store.async_load() or {}
+        if raw and raw.get("generation") != DETECTOR_GENERATION:
+            _LOGGER.info(
+                "Load detection was learned by an older detector; starting its library again"
+            )
+            raw = {}
         if raw.get("fleet"):
             self.fleet = Fleet.from_dict(raw.get("fleet"))
         else:                                   # a store written before downstream meters existed
@@ -158,7 +179,7 @@ class DetectionRunner:
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
-        await self._store.async_save({"fleet": self.fleet.to_dict(), "last_processed": None})
+        await self._store.async_save(self._snapshot())
         for cb in self._listeners:
             cb()
         self.hass.async_create_task(self._run())
@@ -180,21 +201,21 @@ class DetectionRunner:
             now = dt_util.utcnow()
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples, pf = await self._read(start, end, self.config)
+            samples, q = await self._read(start, end, self.config)
             self.submeters = await self._resolve_submeters()
-            sub_samples, sub_pf, agnostic = {}, {}, {}
+            sub_samples, sub_q, agnostic = {}, {}, {}
             for name, meter in self.submeters.items():
-                ss, sp = await self._read(start, end, meter["fields"])
+                ss, sq = await self._read(start, end, meter["fields"])
                 if ss:
-                    sub_samples[name], sub_pf[name] = ss, sp
+                    sub_samples[name], sub_q[name] = ss, sq
                     agnostic[name] = meter["agnostic"]
             await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, pf, sub_pf, end.timestamp(), agnostic
+                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic
             )
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
             self.last_run = now
-            await self._store.async_save({"fleet": self.fleet.to_dict(), "last_processed": end.isoformat()})
+            await self._store.async_save(self._snapshot())
             for cb in self._listeners:
                 cb()
             if not self.caught_up:
@@ -206,20 +227,25 @@ class DetectionRunner:
             self._running = False
 
     async def _read(self, start: datetime, end: datetime, cfg: dict):
+        """(watts per phase, reactive VAr per phase) over the window.
+
+        Voltage and current were configured but unread until now: with them
+        the REACTIVE power follows, and a load's own power factor is the
+        ratio of how far each moved when it switched - which is what tells a
+        heater from a motor. A power factor entity does instead."""
         entities = {}
         for p in PHASES:
-            for kind in ("power", "pf"):
-                eid = cfg.get(f"{kind}_{p}")      # "device" and the other kinds are not read here
+            for kind in ("power", "pf", "current", "voltage"):
+                eid = cfg.get(f"{kind}_{p}")      # "device" is not read here
                 if eid:
                     entities[(kind, p)] = eid
-        if not entities:
+        if not any(kind == "power" for kind, _ in entities):
             return {}, {}
         states = await get_instance(self.hass).async_add_executor_job(
-            _fetch, self.hass, start, end, list(entities.values())
+            _fetch, self.hass, start, end, list(dict.fromkeys(entities.values()))
         )
-        samples: Dict[str, list] = {}
-        pf: Dict[str, Dict[float, float]] = {}
-        for (kind, p), eid in entities.items():
+        series: Dict[tuple, list] = {}
+        for key, eid in entities.items():
             rows = []
             for st in states.get(eid, []):
                 try:
@@ -227,11 +253,49 @@ class DetectionRunner:
                 except (TypeError, ValueError):
                     continue
                 rows.append((st.last_updated.timestamp(), v))
-            if kind == "power":
-                samples[p] = rows
-            else:
-                pf[p] = {ts: v for ts, v in rows}
-        return samples, pf
+            rows.sort()
+            series[key] = rows
+        samples = {p: series[("power", p)] for p in PHASES if series.get(("power", p))}
+        q: Dict[str, Dict[float, float]] = {}
+        for p, rows in samples.items():
+            var = _reactive(rows, series.get(("voltage", p)), series.get(("current", p)), series.get(("pf", p)))
+            if var:
+                q[p] = var
+        return samples, q
+
+
+def _as_of(rows: list, ts: float, i: int) -> int:
+    """Index of the last row at or before ``ts``, walking forward from ``i``;
+    -1 when the series has not started yet."""
+    if not rows or rows[0][0] > ts:
+        return -1
+    i = max(i, 0)
+    while i + 1 < len(rows) and rows[i + 1][0] <= ts:
+        i += 1
+    return i
+
+
+def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
+              pfs: Optional[list]) -> Dict[float, float]:
+    """Reactive VAr at each power sample.
+
+    Every entity updates at its own moment, so the other readings are taken
+    as of the power sample's time - sample and hold - rather than looked up
+    at the same instant, which almost never matches."""
+    volts, amps, pfs = volts or [], amps or [], pfs or []
+    out: Dict[float, float] = {}
+    vi = ai = fi = 0
+    for ts, p in power_rows:
+        vi, ai, fi = _as_of(volts, ts, vi), _as_of(amps, ts, ai), _as_of(pfs, ts, fi)
+        apparent = None
+        if vi >= 0 and ai >= 0:
+            apparent = volts[vi][1] * amps[ai][1]
+        elif fi >= 0 and pfs[fi][1]:
+            apparent = abs(p) / abs(pfs[fi][1])
+        if apparent is None:
+            continue
+        out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
+    return out
 
 
 def _fetch(hass, start, end, entity_ids):

@@ -254,5 +254,78 @@ def test_overlapping_signatures_are_never_suggested_as_one_device():
     assert D.suggest_levels(sigs, apart) == [[1, 2]]
 
 
+def test_a_load_that_starts_while_another_runs_still_closes():
+    """The regression that made the whole library useless: the phase never
+    returned to its idle floor, so ONE session ran for 155 hours and 778 kWh
+    at Anze's home meter. Each load must close on its own step down."""
+    def two(s):
+        w = 0.0
+        if 300 <= s < 3900:      # the fridge-sized one, an hour
+            w += 900.0
+        if 900 <= s < 1500:      # a kettle-sized one inside it, ten minutes
+            w += 2000.0
+        return w
+    det = D.Detector()
+    det.process({"a": series(4500, two)}, now_ts=T0 + 4600)
+    got = sorted(round(sum(x.power.values())) for x in det.signatures)
+    assert len(det.signatures) == 2, [(x.id, x.power, x.duration_s) for x in det.signatures]
+    assert 1900 < got[1] < 2100 and 850 < got[0] < 950, got
+    durations = sorted(round(x.duration_s) for x in det.signatures)
+    assert 560 < durations[0] < 640 and 3500 < durations[1] < 3700, durations
+
+
+def test_a_slow_ramp_is_not_a_load():
+    """Sunrise on a grid meter moves it by kilowatts over an hour. It has to
+    move the FLOOR, not book itself as four loads - which is where the
+    negative-power signatures in the home dump came from."""
+    det = D.Detector()
+    det.process({"a": series(7200, lambda s: -2500.0 * min(1.0, s / 5400.0), base=3000.0)},
+                now_ts=T0 + 7300)
+    assert det.signatures == [], [(x.power, x.duration_s) for x in det.signatures]
+
+
+def test_a_real_load_is_still_found_while_the_sun_comes_up():
+    det = D.Detector()
+    def ramp_and_load(s):
+        w = -2500.0 * min(1.0, s / 5400.0)
+        return w + (2000.0 if 3000 <= s < 3600 else 0.0)
+    det.process({"a": series(7200, ramp_and_load, base=3000.0)}, now_ts=T0 + 7300)
+    assert len(det.signatures) == 1, [(x.power, x.duration_s) for x in det.signatures]
+    sig = det.signatures[0]
+    assert 1850 < sum(sig.power.values()) < 2150, sig.power
+    assert 550 < sig.duration_s < 650, sig.duration_s
+
+
+def test_the_power_factor_is_the_loads_own_not_the_meters():
+    """A motor and a heater of the same size are the same watts. What tells
+    them apart is how far the REACTIVE power moved with them - and the
+    meter's own factor, dominated by whatever else is running, does not."""
+    def run(var_share):
+        det = D.Detector()
+        rows = series(2400, lambda s: 2000.0 if 600 <= s < 1800 else 0.0)
+        # the site already runs a big reactive load, so the meter's own
+        # factor is poor throughout and says nothing about this one
+        q = {ts: 1500.0 + var_share * max(0.0, w - 400.0) for ts, w in rows}
+        det.process({"a": rows}, {"a": q}, now_ts=T0 + 2500)
+        assert len(det.signatures) == 1, det.signatures
+        return det.signatures[0].pf
+    heater = run(0.0)
+    motor = run(0.75)
+    assert heater is not None and heater > 0.98, heater
+    assert motor is not None and 0.75 < motor < 0.85, motor
+
+
+def test_a_stop_we_never_saw_start_is_dropped():
+    """Half a load is not a load. It must not be pinned on something else."""
+    det = D.Detector()
+    rows = series(1200, lambda s: 0.0)
+    det.process({"a": rows}, now_ts=T0 + 1300)
+    tail = [(T0 + 1200 + i * DT, 300.0 + (2000.0 if i < 60 else 0.0)) for i in range(120)]
+    det.process({"a": tail}, now_ts=T0 + 1900)
+    # the 2 kW start was never seen (the window opens mid-load), so its stop
+    # closes nothing and no phantom signature appears
+    assert all(sum(x.power.values()) > 1500 for x in det.signatures), [x.power for x in det.signatures]
+
+
 if __name__ == "__main__":
     run_main(globals())

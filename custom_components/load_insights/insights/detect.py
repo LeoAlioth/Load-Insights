@@ -1,11 +1,12 @@
 """Load detection on raw per-phase power. Pure, incremental, persistable.
 
-The unit is the SESSION: everything from the moment a phase leaves its idle
-baseline until it returns. Inside a session every sustained change of level
-is a TRANSITION, so a washing machine is one session with a heater level
-and a motor level, not three loads. Sessions that start and end together on
-several phases are one multi-phase session - a two-phase kiln is 3 kW on A
-and 3 kW on C, and nothing else on the site has that shape.
+The unit is the SESSION: one load, from the step up that started it to the
+step down that matched it. Steps, not excursions - on a house main the power
+never returns to its idle floor while anything else is running, and waiting
+for that produced 100-hour "loads" of hundreds of kWh. Other loads may come
+and go in between; the pairing is by size, most recent first. Sessions that
+start and end together on several phases are one multi-phase session - a
+two-phase kiln is 3 kW on A and 3 kW on C, and nothing else has that shape.
 
 Closed sessions are matched to SIGNATURES: phase set, dominant power per
 phase (within ~10 % or the noise), duration within a factor, power factor
@@ -19,6 +20,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 """
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,6 +34,10 @@ SUSTAIN_SECONDS = 5.0          # ...and at least this long
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
+SLOW_FOLLOW = 0.02             # the held level follows drift this fast, so a ramp is never a step
+MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
+MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
+MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
 NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
 NOISE_SESSION_S = 20.0
@@ -94,25 +100,75 @@ class Session:
 
 
 # ------------------------------------------------------------------ per-phase tracker
+def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
+    """The LOAD's power factor, from its OWN step in real and reactive power.
+
+    The meter's power factor is the whole site's and says nothing about the
+    load that just started (Anze, 2026-09-17). Watts and VAr add across loads,
+    a ratio does not, so the load's factor comes from how much each of them
+    moved when it switched - not from how the meter's factor read.
+    """
+    if var is None:
+        return None
+    s = math.hypot(watts, var)
+    return None if s <= 0 else max(0.0, min(1.0, abs(watts) / s))
+
+
+@dataclass
+class _Open:
+    """A load believed to be running: the step that started it, what is still
+    running of it, and every level it has held."""
+    since: float
+    watts: float
+    var: Optional[float]                          # the reactive step it started with
+    levels: List[Tuple[float, float]] = field(default_factory=list)
+
+    def as_list(self) -> list:
+        return [self.since, self.watts, self.var, [list(x) for x in self.levels]]
+
+    @classmethod
+    def of(cls, raw) -> "_Open":
+        since, watts, var = raw[0], raw[1], raw[2]
+        levels = [tuple(x) for x in (raw[3] if len(raw) > 3 else [])] or [(since, watts)]
+        return cls(since=since, watts=watts, var=var, levels=levels)
+
+
 @dataclass
 class PhaseState:
+    """Edges, not excursions.
+
+    A load is a STEP: the phase rises by its power when it starts and falls
+    by the same amount when it stops. Waiting instead for the meter to come
+    back to its idle floor - the first design - only works on a phase that
+    goes quiet between loads, and a house main never does: the kettle starts
+    while the fridge is running, so the excursion that opened at breakfast
+    closed at midnight. Anze's home meter proved it (2026-09-17): 76
+    signatures from 160 sessions, 61 % of them seen once, the longest single
+    "load" 155 hours and 778 kWh, and four with NEGATIVE power because the
+    sun pushed the grid meter below its own floor.
+
+    So each sustained step is recorded as an edge, and a step DOWN is paired
+    with the open step UP that best matches its size, most recent first. That
+    is what survives loads overlapping: A on, B on, B off, A off pairs
+    correctly. A slow drift - sunrise on a grid meter, an element tapering -
+    never becomes a step at all, because the tracked level follows it.
+    """
     baseline: Optional[float] = None
     noise: float = MIN_NOISE_W
-    level: Optional[float] = None
+    level: Optional[float] = None                # what the phase is holding now
+    q_level: Optional[float] = None              # reactive VAr at that level, when known
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
-    pending: List[Tuple[float, float]] = field(default_factory=list)
-    session_start: Optional[float] = None
-    session_levels: List[Tuple[float, float]] = field(default_factory=list)   # (since, watts above baseline)
-    session_pf: List[float] = field(default_factory=list)
+    pending: List[Tuple[float, float, Optional[float]]] = field(default_factory=list)
+    open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
 
-    def process(self, ts: float, w: float, pf: Optional[float] = None) -> Optional[Session]:
-        """One sample. Returns a Session when one closes."""
+    def process(self, ts: float, w: float, q: Optional[float] = None) -> Optional[Session]:
+        """One sample: seconds, watts, and reactive VAr where the meter gives
+        enough to work it out. Returns a Session when a step down pairs off."""
         if self.last_ts is not None and ts <= self.last_ts:
             return None
         self.last_ts = ts
-        closed = None
         if self.baseline is None:
             self.seed.append(w)
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
@@ -122,71 +178,112 @@ class PhaseState:
                 diffs = [abs(x - self.baseline) for x in near] or [0.0]
                 self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
+                self.q_level = q
                 self.seed = []
             return None
 
+        if self.open_edges and ts - self.open_edges[0].since > MAX_OPEN_S:
+            # a start whose stop was never seen: give up rather than pair it
+            # with an unrelated load hours later
+            self.open_edges = [e for e in self.open_edges if ts - e.since <= MAX_OPEN_S]
+
         if abs(w - self.level) < self.noise:
             self.pending = []
-            if self.session_start is None:
-                # idle: let the baseline and the noise floor follow slowly
+            # no step - follow the drift, so a ramp never becomes a load
+            self.level += SLOW_FOLLOW * (w - self.level)
+            if q is not None:
+                self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
+            if not self.open_edges:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
                 self.level = self.baseline
                 self.idle_diffs.append(abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
                     self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
-            elif pf is not None:
-                self.session_pf.append(pf)
             return None
 
-        self.pending.append((ts, w))
+        self.pending.append((ts, w, q))
         if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < SUSTAIN_SECONDS:
             return None
-        new_level = _median([x for _, x in self.pending])
+        new_level = _median([x for _, x, _ in self.pending])
+        known_q = [x for _, _, x in self.pending if x is not None]
+        new_q = _median(known_q) if known_q else None
         since = self.pending[0][0]
         self.pending = []
-        if self.session_start is None:
-            if new_level - self.baseline >= self.noise:
-                self.session_start = since
-                self.session_levels = [(since, new_level - self.baseline)]
-                self.session_pf = [pf] if pf is not None else []
-            else:
-                # dropped below the idle level: that WAS the new idle
-                self.baseline = new_level
-        else:
-            if abs(new_level - self.baseline) < self.noise:
-                closed = Session(phases="", start=self.session_start, end=since,
-                                 levels={"": list(self.session_levels)},
-                                 pf=(sum(self.session_pf) / len(self.session_pf)) if self.session_pf else None)
-                self.session_start = None
-                self.session_levels = []
-                self.session_pf = []
-            else:
-                self.session_levels.append((since, new_level - self.baseline))
+        step = new_level - self.level
+        step_q = None if (new_q is None or self.q_level is None) else new_q - self.q_level
         self.level = new_level
-        return closed
+        if new_q is not None:
+            self.q_level = new_q
+        if step > 0:
+            self.open_edges.append(_Open(since, step, step_q, [(since, step)]))
+            if len(self.open_edges) > MAX_OPEN_EDGES:
+                self.open_edges.pop(0)
+            return None
+        return self._pair(since, -step, None if step_q is None else -step_q, new_level)
+
+    def _tol(self, a: float, b: float) -> float:
+        return max(self.noise, MATCH_EDGE_REL * max(a, b))
+
+    def _pair(self, at: float, watts: float, var: Optional[float],
+              new_level: float) -> Optional[Session]:
+        """What a step down means, most recent load first.
+
+        Either a load STOPPED, in which case the step undoes its own step up
+        and the session closes; or a load STEPPED DOWN to a lower level and
+        is still running - a washer leaving its heater for its motor - in
+        which case the level is recorded and the session stays open. Anything
+        else is a stop we never saw start, and is dropped rather than pinned
+        on an unrelated load."""
+        for i in range(len(self.open_edges) - 1, -1, -1):
+            o = self.open_edges[i]
+            if abs(o.watts - watts) <= self._tol(o.watts, watts):
+                self.open_edges.pop(i)
+                return self._close(o, at, watts, var)
+        for i in range(len(self.open_edges) - 1, -1, -1):
+            o = self.open_edges[i]
+            if o.watts - watts > self._tol(o.watts, watts):
+                o.watts -= watts
+                o.levels.append((at, o.watts))
+                return None
+        if not self.open_edges:
+            self.baseline = new_level         # nothing was running: the floor itself moved
+        return None
+
+    def _close(self, o: _Open, at: float, watts: float, var: Optional[float]) -> Session:
+        levels = list(o.levels)
+        if len(levels) == 1:
+            # one level throughout: both steps measure the same load, so
+            # average them, and its power factor with them
+            levels = [(o.since, 0.5 * (levels[0][1] + watts))]
+            known = [abs(x) for x in (o.var, var) if x is not None]
+            q = sum(known) / len(known) if known else None
+        else:
+            q = o.var                         # the factor of the level it started at
+        return Session(phases="", start=o.since, end=at, levels={"": levels},
+                       pf=_pf_from(levels[0][1], q))
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
-        """(since, current watts above baseline) while a session is open."""
-        if self.session_start is None or not self.session_levels:
+        """(since, watts) of everything believed to be running on this phase."""
+        if not self.open_edges:
             return None
-        return self.session_start, self.session_levels[-1][1]
+        return min(o.since for o in self.open_edges), sum(o.watts for o in self.open_edges)
 
     def to_dict(self) -> dict:
-        return {"baseline": self.baseline, "noise": self.noise, "level": self.level, "seed": self.seed,
+        return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
+                "q_level": self.q_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
-                "session_start": self.session_start, "session_levels": [list(x) for x in self.session_levels],
-                "session_pf": self.session_pf[-50:], "last_ts": self.last_ts}
+                "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "PhaseState":
         if not d:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
-                   seed=list(d.get("seed") or []), idle_diffs=list(d.get("idle_diffs") or []),
-                   pending=[tuple(x) for x in d.get("pending") or []], session_start=d.get("session_start"),
-                   session_levels=[tuple(x) for x in d.get("session_levels") or []],
-                   session_pf=list(d.get("session_pf") or []), last_ts=d.get("last_ts"))
+                   q_level=d.get("q_level"), seed=list(d.get("seed") or []),
+                   idle_diffs=list(d.get("idle_diffs") or []),
+                   pending=[tuple(x) for x in d.get("pending") or []],
+                   open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
 
 
 # ------------------------------------------------------------------ signatures
@@ -298,19 +395,20 @@ class Detector:
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
-                pf: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None) -> List[Session]:
+                q: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None) -> List[Session]:
         """Feed new (ts, watts) samples per phase, in time order per phase.
-        Returns the multi-phase sessions completed by this batch."""
+        ``q`` is reactive VAr keyed by the SAME timestamps, where the meter
+        gives enough to work it out. Returns the sessions this batch closed."""
         closed: List[Session] = []
         latest = now_ts or 0.0
         for ph, rows in samples.items():
             if ph not in self.phases:
                 continue
             st = self.phases[ph]
-            pfm = (pf or {}).get(ph) or {}
+            qm = (q or {}).get(ph) or {}
             for ts, w in rows:
                 latest = max(latest, ts)
-                s = st.process(ts, w, pfm.get(ts))
+                s = st.process(ts, w, qm.get(ts))
                 if s is not None:
                     s.phases = ph
                     s.levels = {ph: s.levels.pop("")}
@@ -494,17 +592,17 @@ class Fleet:
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
-                main_pf=None, sub_pf=None, now_ts: Optional[float] = None,
+                main_q=None, sub_q=None, now_ts: Optional[float] = None,
                 agnostic: Optional[Dict[str, bool]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
-        closed_main = self.main.process(main_samples, main_pf, now_ts)
+        closed_main = self.main.process(main_samples, main_q, now_ts)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
-            closed_sub[name] = det.process(samples, (sub_pf or {}).get(name), now_ts)
+            closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts)
         self._locate(closed_main, closed_sub, latest)
 
     def _locate(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]], latest: float) -> None:
