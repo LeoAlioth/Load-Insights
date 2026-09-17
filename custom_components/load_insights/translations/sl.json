@@ -124,7 +124,7 @@
             },
             "submeter": {
                 "title": "Podštevec",
-                "description": "Trifazni števec pod glavnim - Shelly 3EM na podrazdelilniku. Dajte mu ime in izberite napravo; porabnik, ki ga vidita glavni in ta števec, je lociran tu, tisti, ki ga vidi le glavni, pa je nad vsemi podštevci. Obstoječi: {existing}. Za odstranitev vnesite ime in izpraznite vsa polja.\n\n{found}",
+                "description": "Števec pod glavnim, na podrazdelilniku ali posameznem tokokrogu. Dajte mu ime in izberite napravo. Porabnik, ki ga vidita ta in glavni števec, se zabeleži kot porabnik tega tokokroga.\n\nObstoječi: {existing}. Za odstranitev vnesite ime in izpraznite vsa polja.\n\n{found}",
                 "data": {
                     "name": "Ime",
                     "device": "Naprava števca",

@@ -124,7 +124,7 @@
             },
             "submeter": {
                 "title": "Downstream meter",
-                "description": "A 3-phase meter below the main one - a Shelly 3EM on a subpanel. Give it a name and pick the device; a load the main meter and this meter both see is located here, and one only the main meter sees is upstream of every downstream meter. Existing: {existing}. To remove one, enter its name and clear every field.\n\n{found}",
+                "description": "A meter below the main one, on a subpanel or a single circuit. Give it a name and pick the device. A load that this meter and the main meter both see is recorded as being on this circuit.\n\nExisting: {existing}. To remove one, enter its name and clear every field.\n\n{found}",
                 "data": {
                     "name": "Name",
                     "device": "Meter device",
