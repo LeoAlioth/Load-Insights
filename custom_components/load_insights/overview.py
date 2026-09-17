@@ -98,6 +98,10 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
     idle = [st.baseline for st in det.phases.values() if st.baseline is not None]
     if idle:
         lines.append(f"- Base load {_w(sum(idle))} across {len(idle)} phases.")
+    if runner.layout:
+        modes = set(runner.layout.values())
+        lines.append("- The grid reading is " + ("added to the load one (grid-tied)."
+                     if modes == {"parallel"} else "kept out of the load one (it already comes through the inverter)."))
     if runner.solar:
         seen = runner.pv_visible
         verdict = ("it shows in the meter" if any(seen.values())

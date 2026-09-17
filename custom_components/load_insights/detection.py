@@ -16,13 +16,18 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_GRID_PREFIX,
+    CONF_LAYOUT,
+    LAYOUT_AUTO,
+    LAYOUT_PARALLEL,
+    LAYOUT_SEPARATE,
     CONF_DETECTION,
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector, Fleet, most_specific, pv_shows_in
+from .insights.detect import PHASES, Detector, Fleet, looks_parallel, most_specific, pv_shows_in
 from .insights.discovery import match_meter_entities
 from .insights.model import SiteModel
 
@@ -55,6 +60,9 @@ class DetectionRunner:
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
+        # how the grid reading relates to the load one, per phase, worked out
+        # from the data unless the user says otherwise
+        self.layout: Dict[str, str] = {}
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -120,6 +128,44 @@ class DetectionRunner:
                 "name": e.name or e.original_name or "",
             })
         return rows
+
+    async def _add_the_grid(self, start: datetime, end: datetime, samples: dict) -> dict:
+        """Complete the load signal with the grid connection, where it helps.
+
+        A site whose inverter feeds the loads in PARALLEL with the grid has
+        its house load split between the two readings - the meter carries the
+        house minus what the inverter makes - so neither alone is what the
+        detector wants and their sum is. Behind a transfer switch, or off
+        grid, everything already comes through the inverter and adding the
+        grid would count the pass-through twice.
+
+        Which one a site has is read off the data, since it is a fact about
+        the wiring rather than a preference, and the setting can override it.
+        """
+        cfg = {f"power_{p}": self.config.get(f"{CONF_GRID_PREFIX}{p}") for p in PHASES}
+        cfg = {k: v for k, v in cfg.items() if v}
+        if not cfg or not samples:
+            return samples
+        grid_rows, _ = await self._read(start, end, cfg)
+        mode = self.config.get(CONF_LAYOUT) or LAYOUT_AUTO
+        out = dict(samples)
+        for p, rows in samples.items():
+            if not grid_rows.get(p):
+                continue
+            aligned = _align(grid_rows[p], rows)
+            if mode == LAYOUT_AUTO:
+                verdict = looks_parallel(rows, aligned)
+                if verdict is not None:
+                    self.layout[p] = LAYOUT_PARALLEL if verdict else LAYOUT_SEPARATE
+                # unsure means DON'T add: a wrong sum corrupts every reading,
+                # while leaving it out only keeps what we had before
+                use = self.layout.get(p, LAYOUT_SEPARATE)
+            else:
+                use = mode
+                self.layout[p] = mode
+            if use == LAYOUT_PARALLEL:
+                out[p] = [(ts, w + aligned.get(ts, 0.0)) for ts, w in rows]
+        return out
 
     async def _resolve_solar(self) -> List[Dict[str, str]]:
         """Each array's power, per phase where the inverter publishes it.
@@ -250,6 +296,7 @@ class DetectionRunner:
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
             samples, q = await self._read(start, end, self.config)
+            samples = await self._add_the_grid(start, end, samples)
             self.solar = await self._resolve_solar()
             pv: Dict[str, Dict[float, float]] = {}
             for fields in self.solar:

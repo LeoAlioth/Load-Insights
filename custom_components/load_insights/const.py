@@ -25,6 +25,19 @@ CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
 # that matters most; PF (or reactive power), current and voltage refine the
 # signatures where the meter publishes them. All optional, per phase.
 CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a, pf_b, ...
+# Inside that same dict, the GRID connection's per-phase power and how it
+# relates to the load reading. Two readings of one site are not
+# interchangeable: grid-tied, the meter carries the house MINUS what the
+# inverter makes, so the load is their sum; behind a transfer switch or off
+# grid, everything reaches the loads through the inverter and adding the
+# grid would count the pass-through twice.
+CONF_GRID_PREFIX = "grid_power_"
+CONF_GRID_DEVICE = "grid_device"
+CONF_LAYOUT = "layout"
+LAYOUT_AUTO = "auto"
+LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid
+LAYOUT_SEPARATE = "separate"          # load = inverter output alone
+LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SEPARATE)
 # Meters BELOW the main one are not configured: the Energy dashboard already
 # lists every individually metered device and, through included_in_stat, how
 # they nest. Load Insights resolves each one to its Home Assistant device and

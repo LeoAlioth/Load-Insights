@@ -79,7 +79,8 @@
                     "inputs": "Pojasnjevalni vhodi",
                     "device_state": "Lastni senzor stanja naprave",
                     "detection": "Zaznavanje porabnikov",
-                    "naming": "Poimenuj zaznan porabnik"
+                    "naming": "Poimenuj zaznan porabnik",
+                    "grid": "Priključek na omrežje"
                 }
             },
             "inputs": {
@@ -152,6 +153,21 @@
                     "reset_confirmed": "Da, pozabi vse",
                     "overview": "← Prekliči"
                 }
+            },
+            "grid": {
+                "title": "Priključek na omrežje",
+                "description": "Kje se objekt stika z omrežjem, po fazah. To je druga VLOGA od zgornje strani, ne drug števec: isti razsmernik navadno objavlja obe strani, ta stran pa daje prednost meritvam vhoda, omrežja in dovoda, ki jih druga odriva.\n\nNamenjena je dopolnitvi signala porabe. Kjer razsmernik napaja bremena vzporedno z omrežjem, števec nosi hišo MINUS to, kar naredi razsmernik, zato nobena meritev sama ni poraba hiše, njuna vsota pa je. Za preklopnim stikalom ali v otočnem sistemu gre vse skozi razsmernik in prištevanje omrežja bi pretok štelo dvakrat.\n\n{found}",
+                "data": {
+                    "grid_device": "Naprava števca omrežja",
+                    "grid_power_a": "Moč omrežja A",
+                    "grid_power_b": "Moč omrežja B",
+                    "grid_power_c": "Moč omrežja C",
+                    "layout": "Vezava"
+                },
+                "data_description": {
+                    "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
+                    "layout": "Pustite na samodejno in se prebere iz podatkov: meritev omrežja, ki se giblje nasproti razsmerniku, je z njim vzporedna. Ročno nastavite tam, kjer podatki ne morejo odgovoriti, na primer kjer objekt nikoli ne oddaja."
+                }
             }
         },
         "abort": {
@@ -184,6 +200,15 @@
         "devices_without_power": {
             "title": "Nekaterih merjenih naprav ni mogoče zaznati",
             "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
+        }
+    },
+    "selector": {
+        "layout": {
+            "options": {
+                "auto": "Ugotovi iz podatkov",
+                "parallel": "Razsmernik napaja vzporedno z omrežjem",
+                "separate": "Vse gre skozi razsmernik"
+            }
         }
     }
 }

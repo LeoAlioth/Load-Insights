@@ -13,6 +13,11 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
+    CONF_GRID_DEVICE,
+    CONF_GRID_PREFIX,
+    CONF_LAYOUT,
+    LAYOUTS,
+    LAYOUT_AUTO,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
@@ -45,6 +50,21 @@ def _meter_fields(defaults: dict) -> dict:
             out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
             )
+    return out
+
+
+def _grid_fields(defaults: dict) -> dict:
+    """The grid connection: per-phase power, and how it is wired."""
+    out = {vol.Optional(CONF_GRID_DEVICE, description={"suggested_value": defaults.get(CONF_GRID_DEVICE)}):
+           selector.DeviceSelector(selector.DeviceSelectorConfig(
+               entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
+    for p in ("a", "b", "c"):
+        key = f"{CONF_GRID_PREFIX}{p}"
+        out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+    out[vol.Optional(CONF_LAYOUT, default=defaults.get(CONF_LAYOUT, LAYOUT_AUTO))] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=list(LAYOUTS), translation_key=CONF_LAYOUT,
+                                      mode=selector.SelectSelectorMode.DROPDOWN))
     return out
 
 
@@ -86,7 +106,7 @@ def _found_line(hass, cfg: dict) -> str:
     return line
 
 
-def _discover(hass, device_id: str) -> dict:
+def _discover(hass, device_id: str, role: str = "load") -> dict:
     """The device's sensors, matched to per-phase fields."""
     registry = er.async_get(hass)
     rows = []
@@ -101,7 +121,7 @@ def _discover(hass, device_id: str) -> dict:
         )
         name = e.name or e.original_name or (state.attributes.get("friendly_name") if state else "") or ""
         rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name})
-    return match_meter_entities(rows)
+    return match_meter_entities(rows, role)
 
 
 def _single_weather_entity(hass) -> str | None:
@@ -165,11 +185,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
         self._pending_detection: dict | None = None
         self._naming_selected: int | None = None
+        self._pending_grid: dict | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "device_state", "detection", "naming"],
+            menu_options=["overview", "inputs", "device_state", "detection", "grid", "naming"],
         )
 
     async def async_step_overview(self, user_input: dict[str, Any] | None = None):
@@ -191,6 +212,46 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         options.append("init")
         return self.async_show_menu(step_id="overview", menu_options=options,
                                     description_placeholders={"overview": text})
+
+    async def async_step_grid(self, user_input: dict[str, Any] | None = None):
+        """The grid connection, which completes the load signal.
+
+        Its own page because it is a different ROLE, not a different meter:
+        the same inverter usually publishes both sides, and which one is
+        wanted depends on the question. Matching here prefers the input,
+        grid and mains names that the load page pushes away."""
+        detection = dict(self.config_entry.options.get(CONF_DETECTION) or {})
+        if user_input is not None:
+            device = user_input.get(CONF_GRID_DEVICE)
+            pending, self._pending_grid = self._pending_grid, None
+            if device and pending is None:
+                found = {f"{CONF_GRID_PREFIX}{p}": v for k, v in
+                         _discover(self.hass, device, role="grid").items()
+                         for p in [k.rsplit("_", 1)[1]] if k.startswith("power_")}
+                typed = {k: v for k, v in user_input.items() if v}
+                merged = {**found, **typed}
+                if device != detection.get(CONF_GRID_DEVICE) or merged != typed:
+                    self._pending_grid = merged
+                    return self.async_show_form(
+                        step_id="grid", data_schema=vol.Schema(_grid_fields(merged)),
+                        description_placeholders={"found": _found_line(self.hass, {
+                            **{k.replace(CONF_GRID_PREFIX, "power_"): v for k, v in merged.items()
+                               if k.startswith(CONF_GRID_PREFIX)},
+                            "device": device})},
+                    )
+            keep = {k: v for k, v in detection.items()
+                    if not k.startswith(CONF_GRID_PREFIX) and k not in (CONF_GRID_DEVICE, CONF_LAYOUT)}
+            cfg = {**keep, **{k: v for k, v in user_input.items() if v}}
+            return self.async_create_entry(
+                data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
+        current = dict(self._pending_grid or detection)
+        return self.async_show_form(
+            step_id="grid", data_schema=vol.Schema(_grid_fields(current)),
+            description_placeholders={"found": _found_line(self.hass, {
+                **{k.replace(CONF_GRID_PREFIX, "power_"): v for k, v in current.items()
+                   if k.startswith(CONF_GRID_PREFIX)},
+                "device": current.get(CONF_GRID_DEVICE)})},
+        )
 
     async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
         """Ask before forgetting: the library and every name in it go."""

@@ -79,7 +79,8 @@
                     "inputs": "Explanatory inputs",
                     "device_state": "A device's own state sensor",
                     "detection": "Load detection",
-                    "naming": "Name a detected load"
+                    "naming": "Name a detected load",
+                    "grid": "Grid connection"
                 }
             },
             "inputs": {
@@ -152,6 +153,21 @@
                     "reset_confirmed": "Yes, forget everything",
                     "overview": "← Cancel"
                 }
+            },
+            "grid": {
+                "title": "Grid connection",
+                "description": "Where the site meets the utility, per phase. This is a different ROLE from the page above, not a different meter: the same inverter usually publishes both sides, and this page prefers the input, grid and mains readings that the other one pushes away.\n\nIt is here to complete the load signal. Where the inverter feeds the loads in parallel with the grid, the meter carries the house minus what the inverter makes, so neither reading alone is what the house draws and their sum is. Behind a transfer switch, or off grid, everything already comes through the inverter and adding the grid would count the pass-through twice.\n\n{found}",
+                "data": {
+                    "grid_device": "Grid meter device",
+                    "grid_power_a": "Grid power A",
+                    "grid_power_b": "Grid power B",
+                    "grid_power_c": "Grid power C",
+                    "layout": "Wiring"
+                },
+                "data_description": {
+                    "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
+                    "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports."
+                }
             }
         },
         "abort": {
@@ -184,6 +200,15 @@
         "devices_without_power": {
             "title": "Some metered devices cannot be detected",
             "description": "{devices} appear on the Energy dashboard but publish no power reading, only energy. Hourly energy is far too coarse to line up with a load switching on, so these devices cannot locate or name anything in load detection. Their forecasts are unaffected."
+        }
+    },
+    "selector": {
+        "layout": {
+            "options": {
+                "auto": "Work it out from the data",
+                "parallel": "Inverter feeds in parallel with the grid",
+                "separate": "Everything comes through the inverter"
+            }
         }
     }
 }

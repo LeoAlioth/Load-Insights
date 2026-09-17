@@ -158,6 +158,8 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "processed_until": _jsonable(runner.last_processed),
             "caught_up": runner.caught_up,
             "samples_read": runner.samples_read,
+            # per phase: whether the grid reading was added to the load one
+            "layout": dict(runner.layout),
             "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
                            # the loads believed to be running, and what each
                            # is still drawing: an edge that never pairs off
