@@ -36,6 +36,14 @@
                     "on": "mdi:power-plug"
                 }
             }
+        },
+        "button": {
+            "refresh": {
+                "default": "mdi:refresh"
+            },
+            "reset_detection": {
+                "default": "mdi:broom"
+            }
         }
     }
 }

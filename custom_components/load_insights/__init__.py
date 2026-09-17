@@ -16,7 +16,7 @@ from .const import (
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
 
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 
 async def _async_for_each_entry(hass: HomeAssistant, fn) -> None:

@@ -59,6 +59,14 @@
             "named_load_running": {
                 "name": "Deluje"
             }
+        },
+        "button": {
+            "refresh": {
+                "name": "Osveži napovedi"
+            },
+            "reset_detection": {
+                "name": "Ponastavi zaznavanje porabe"
+            }
         }
     },
     "options": {
