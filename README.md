@@ -40,6 +40,11 @@ day, the day-ahead ones after two, the week-ahead table after eight.
 
 ### Actual against forecast on one chart
 
+`dashboard/forecast-cards.jinja` writes the whole dashboard for you: paste it
+into Developer Tools -> Template and it prints one graph per forecast sensor -
+actual, forecast and the likely range - for every device on your Energy
+dashboard. The rest of this section is the hand-written version of one card.
+
 Every forecast-type sensor carries `history` (the last 48 hours, actual) and
 `detailedForecast` (the next 168, forecast) in the same shape, so a chart card
 that can read attributes draws both from one entity. With
