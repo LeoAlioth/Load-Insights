@@ -21,7 +21,7 @@ from .const import (
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector, Fleet
+from .insights.detect import PHASES, Detector, Fleet, most_specific
 from .insights.discovery import match_meter_entities
 from .insights.model import SiteModel
 
@@ -111,6 +111,25 @@ class DetectionRunner:
     def parents(self) -> Dict[str, Optional[str]]:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
+
+    def unlocated(self) -> list:
+        """Signatures no device meter accounts for - the ones worth naming."""
+        parents = self.parents
+        return [s for s in sorted(self.detector.signatures, key=lambda x: -x.count)
+                if most_specific(s.locations, s.count, parents) == "main"]
+
+    async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
+        """Name a signature (or clear it) and persist at once - the caller
+        bumps the entry so the entities follow."""
+        if not self.detector.rename(signature_id, name):
+            return False
+        await self._store.async_save(
+            {"fleet": self.fleet.to_dict(),
+             "last_processed": self.last_processed.isoformat() if self.last_processed else None}
+        )
+        for cb in self._listeners:
+            cb()
+        return True
 
     @property
     def enabled(self) -> bool:

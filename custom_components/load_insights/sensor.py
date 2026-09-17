@@ -17,7 +17,7 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
-from .insights.detect import most_specific
+from .insights.detect import most_specific, suggest_levels
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -49,6 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if detection is not None:
         entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+        entities += [NamedLoadPower(detection, entry, n) for n in sorted(detection.detector.names())]
     add(entities)
 
 
@@ -409,6 +410,8 @@ class DetectedLoadsSensor(_DetectionBase):
                 for name, d in self._runner.fleet.subs.items()
             },
             "meter_hierarchy": self._runner.parents,
+            "named_loads": self._runner.detector.names(),
+            "looks_like_one_device": suggest_levels(det.signatures, det.recent),
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
@@ -433,3 +436,22 @@ class UnknownLoadPowerSensor(_DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         return round(self._runner.detector.unknown_power(dt_util.utcnow().timestamp()))
+
+
+class NamedLoadPower(_DetectionBase):
+    """Watts a named load is drawing right now, 0 when it is off."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
+        super().__init__(runner, entry, "named_load_power")
+        self._name = name
+        self._attr_name = f"{name} power"
+        self._attr_unique_id = f"{entry.entry_id}_load_power_{name.lower().replace(' ', '_')}"
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return round(self._runner.detector.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0))

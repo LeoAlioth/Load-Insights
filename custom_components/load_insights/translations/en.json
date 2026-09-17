@@ -74,7 +74,8 @@
                 "menu_options": {
                     "inputs": "Explanatory inputs",
                     "device_state": "A device's own state sensor",
-                    "detection": "Load detection"
+                    "detection": "Load detection",
+                    "naming": "Name a detected load"
                 }
             },
             "inputs": {
@@ -120,10 +121,20 @@
                 "data_description": {
                     "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand."
                 }
+            },
+            "naming": {
+                "title": "Name a detected load",
+                "description": "Loads no device meter accounts for - {count} of them. Pick one and give it a name; it then gets its own entities. Give two of them the SAME name to say they are one device on different settings, and clear a name to forget it.\n\nLoads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
+                "data": {
+                    "signature": "Detected load",
+                    "name": "Name"
+                }
             }
         },
         "abort": {
-            "no_devices": "The Energy dashboard lists no individual devices."
+            "no_devices": "The Energy dashboard lists no individual devices.",
+            "no_detection": "Load detection is not set up: choose the main meter first.",
+            "nothing_to_name": "Nothing to name yet - either no loads have been detected, or every one is already accounted for by a device meter."
         }
     }
 }

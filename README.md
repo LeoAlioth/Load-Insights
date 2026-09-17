@@ -138,8 +138,15 @@ both see is **located and named** at once. `included_in_stat` supplies the
 nesting, so a load seen by both the workshop's meter and the boiler's belongs
 to the boiler; a signature's `location` says which, or `main` when no device
 meter saw it. Two sensors: **Detected loads** (how many are on now, with the signature
-library and every downstream meter's in its attributes) and **Unknown load
-power**. Naming signatures, explaining them with the dashboard's known
+library and every device meter's in its attributes) and **Unknown load
+power**.
+
+What is left over - the loads no device meter accounts for - is named by you,
+once, on the *Name a detected load* page: pick one from the list, described in
+words, and type a name. It then gets a **running** binary sensor and a
+**power** sensor of its own. Two signatures given the same name are one device
+on different settings, and the page suggests candidates for that: same phases,
+same power factor, never running at once. Naming signatures, explaining them with the dashboard's known
 devices, and feeding them back into the forecast are the next stages.
 
 ## Requirements
