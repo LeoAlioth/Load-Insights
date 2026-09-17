@@ -116,7 +116,7 @@
                     "voltage_c": "Voltage C"
                 },
                 "data_description": {
-                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand."
+                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand. Submitting the same meter again fills in any field still empty, and never changes one you set yourself."
                 }
             },
             "naming": {

@@ -180,19 +180,35 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """The main meter. Pick the DEVICE and its per-phase readings are
         found for you; the fields below are shown filled in so you can check
-        them before saving, and can be set by hand instead."""
+        them before saving, and can be set by hand instead.
+
+        Re-submitting the SAME meter offers whatever is still empty, which is
+        how a site set up before a naming was recognised picks it up - what is
+        already filled in is never touched, by discovery or by a later run."""
         current = dict(self._pending_detection or self.config_entry.options.get(CONF_DETECTION) or {})
         if user_input is not None:
             device = user_input.get("device")
-            if device and device != current.get("device"):
+            # consumed here, so the form we may show below is saved on its
+            # own submit rather than re-offered forever
+            pending, self._pending_detection = self._pending_detection, None
+            offer = None
+            if device and pending is None:
                 found = _discover(self.hass, device)
-                self._pending_detection = {"device": device, **found}
+                if device != current.get("device"):
+                    offer = {"device": device, **found}  # another meter, its own readings
+                else:
+                    typed = {k: v for k, v in user_input.items() if v}
+                    merged = {**found, **typed}  # what the user set wins
+                    if merged != typed:
+                        offer = merged
+            if offer is not None:
+                self._pending_detection = offer
                 return self.async_show_form(
                     step_id="detection",
-                    data_schema=vol.Schema({**_device_field(device), **_meter_fields(self._pending_detection)}),
-                    description_placeholders={"found": describe_match(found)},
+                    data_schema=vol.Schema({**_device_field(offer.get("device")), **_meter_fields(offer)}),
+                    description_placeholders={
+                        "found": describe_match({k: v for k, v in offer.items() if k != "device"})},
                 )
-            self._pending_detection = None
             cfg = {k: v for k, v in user_input.items() if v}
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         return self.async_show_form(

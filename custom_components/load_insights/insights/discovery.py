@@ -6,7 +6,10 @@ and works out which is the active power on phase A, the power factor on C,
 and so on. Every integration names them differently, and several of the
 names are traps:
 
-  * a LINE-TO-LINE voltage (``..._voltage_ab``) is not phase A's voltage;
+  * a LINE-TO-LINE voltage (``..._voltage_ab``) is phase A's voltage as much
+    as phase B's, so it is neither's - but the LINE-TO-NEUTRAL one beside it
+    (``..._voltage_an``) is exactly phase A's own voltage, and a SolarEdge
+    meter publishes both sets;
   * a TOTAL (``total_active_power``) is not a phase at all;
   * ``l1 / l2 / l3`` and ``a / b / c`` are the same three phases;
   * min / max / peak / daily variants sit beside the live reading.
@@ -34,8 +37,11 @@ REJECT = (
     "today", "yesterday", "daily", "monthly", "yearly", "lifetime",
     "min", "max", "peak", "energy", "cost", "frequency", "temperature",
 )
-# line-to-line voltages, and the neutral
-REJECT_PAIRS = ("ab", "bc", "ca", "ac_ab", "l1_l2", "l2_l3", "l3_l1", "ln", "nl")
+# two phases named at once, plus a neutral that names none. "ac" is
+# deliberately absent: SolarEdge prefixes every reading with it ("AC Current
+# A"), so it means alternating current far more often than phases A-to-C.
+REJECT_PAIRS = ("ab", "bc", "ca", "ac_ab", "ln", "nl",
+                "l1_l2", "l2_l3", "l3_l1", "l2_l1", "l3_l2", "l1_l3")
 # allowed, but a plainer candidate beats them
 PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 20,
            "apparent": 20, "fundamental": 10, "harmonic": 20, "raw": 4, "filtered": 4}
@@ -44,6 +50,12 @@ _L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
 _PHASE = re.compile(r"(?:^|[_\s])phase[_\s]?([abc123])(?:$|[_\s])")
 _ABC = re.compile(r"(?:^|[_\s])([abc])(?:$|[_\s])")
 _CH = re.compile(r"(?:^|[_\s])(?:ch|channel)[_\s]?([abc123])(?:$|[_\s])")
+# line to NEUTRAL: one phase against the star point, which is that phase's
+# own voltage - "an" -> a, "l1n" -> a
+_AN = re.compile(r"(?:^|[_\s])([abc])n(?:$|[_\s])")
+_LN = re.compile(r"(?:^|[_\s])l([123])n(?:$|[_\s])")
+# the separated spelling of a line-to-line pair, "a_b" beside "ab"
+_SEP_PAIR = re.compile(r"(?:^|_)l?([abc])_l?([abc])(?:$|_)")
 _DIGIT_TO_PHASE = {"1": "a", "2": "b", "3": "c"}
 
 
@@ -57,14 +69,20 @@ def phase_of(text: str) -> Optional[str]:
     for pair in REJECT_PAIRS:
         if re.search(rf"(?:^|_)(?:l{{0,1}}){pair}(?:$|_)", t):
             return None
+    if _SEP_PAIR.search(t):
+        return None
     for rx in (_PHASE, _CH):
         m = rx.search(t)
         if m:
             g = m.group(1)
             return _DIGIT_TO_PHASE.get(g, g)
-    m = _L.search(t)
+    m = _AN.search(t)
     if m:
-        return _DIGIT_TO_PHASE[m.group(1)]
+        return m.group(1)
+    for rx in (_L, _LN):
+        m = rx.search(t)
+        if m:
+            return _DIGIT_TO_PHASE[m.group(1)]
     m = _ABC.search(t)
     if m:
         return m.group(1)
