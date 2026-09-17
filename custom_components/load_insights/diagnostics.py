@@ -151,6 +151,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "enabled": runner.enabled,
             "config": _jsonable(runner.config),
             "meters": _jsonable(runner.submeters),
+            "solar": _jsonable(runner.solar),     # what a cloud is checked against
             "processed_until": _jsonable(runner.last_processed),
             "caught_up": runner.caught_up,
             "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,

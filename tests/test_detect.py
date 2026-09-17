@@ -327,5 +327,41 @@ def test_a_stop_we_never_saw_start_is_dropped():
     assert all(sum(x.power.values()) > 1500 for x in det.signatures), [x.power for x in det.signatures]
 
 
+def test_a_cloud_is_the_sun_not_a_load():
+    """A 6 kW array dropping into cloud lifts the grid meter by 2 kW on each
+    phase, which is exactly the shape of a load switching on - and of one
+    switching off again when it clears."""
+    def pv(s):
+        return 200.0 if 1800 <= s < 2400 else 2000.0        # this phase's share
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - pv(i * DT)) for i in range(n)]
+    own = {T0 + i * DT: pv(i * DT) for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert det.signatures == [], [(x.power, x.duration_s) for x in det.signatures]
+
+    # the same, with only the inverter's TOTAL to go on: a third each
+    total = {T0 + i * DT: 3 * pv(i * DT) for i in range(n)}
+    det2 = D.Detector()
+    det2.process({"a": grid}, None, T0 + 3700, {"a": total})
+    assert det2.signatures == [], [(x.power, x.duration_s) for x in det2.signatures]
+
+    # and without the array to explain it, the cloud IS filed as a load -
+    # which is what the whole test is about
+    blind = D.Detector()
+    blind.process({"a": grid}, now_ts=T0 + 3700)
+    assert blind.signatures, "a cloud with no PV series to explain it should still be detected"
+
+
+def test_a_load_is_still_found_under_a_steady_sun():
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - 2000.0 + (2200.0 if 600 <= i * DT < 1800 else 0.0)) for i in range(n)]
+    own = {T0 + i * DT: 2000.0 for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert len(det.signatures) == 1, [(x.power, x.duration_s) for x in det.signatures]
+    assert 2050 < sum(det.signatures[0].power.values()) < 2350, det.signatures[0].power
+
+
 if __name__ == "__main__":
     run_main(globals())
