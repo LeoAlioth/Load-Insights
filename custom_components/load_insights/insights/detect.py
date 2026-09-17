@@ -458,7 +458,7 @@ class Detector:
 @dataclass
 class Fleet:
     """One detector per meter. The MAIN meter sees everything; a DOWNSTREAM
-    meter (a Shelly 3EM on a subpanel) sees only its own circuit. A main-meter
+    meter sees only its own subpanel or circuit. A main-meter
     session that a downstream meter also saw - same start, same end, same
     phases, same size - is located there; one that none saw is upstream of
     them all. Locations accumulate per signature, so the answer sharpens

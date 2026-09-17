@@ -130,8 +130,8 @@ it are levels, so a washing machine is one session with a heater level and a
 motor level; sessions that start and end together on several phases are one
 multi-phase load. Closed sessions are matched to **signatures** (phase set,
 watts per phase, duration, PF) and described in words - "6.1 kW on A+C, ~80 s,
-every 3 min, seen 258 times". Downstream 3-phase meters (a Shelly 3EM on a subpanel) go on the *Downstream
-meter* page, each with a name: they run their own detectors, and a load the
+every 3 min, seen 258 times". Meters below the main one - a subpanel, or a single circuit - go on the
+*Downstream meter* page, each with a name: they run their own detectors, and a load the
 main meter and a downstream one both see is **located** there - a signature's
 `location` says which subpanel it lives on, or `main` for upstream of them
 all. Two sensors: **Detected loads** (how many are on now, with the signature
