@@ -121,7 +121,7 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for - {count} of them. Pick one and give it a name; it then gets its own entities. Give two of them the SAME name to say they are one device on different settings, and clear a name to forget it.\n\nLoads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
+                "description": "Loads no device meter accounts for - {count} of them. Pick one and give it a name; it then gets its own entities. Give two of them the SAME name to say they are one device on different settings, and clear a name to forget it.\n\nLoads that a device meter already accounts for are named by the Energy dashboard and are not listed here.\n\n{detail}",
                 "data": {
                     "signature": "Detected load",
                     "name": "Name"
@@ -146,6 +146,10 @@
         "battery_not_modelled": {
             "title": "The battery is not being modelled",
             "description": "The Energy dashboard has a battery at this site, but not {missing}. Without it the state of charge cannot be forecast, so no SOC forecast sensor is created and the grid forecast is the net BEFORE the battery - it says so in its battery_modelled attribute. Both are optional fields on the battery source in Settings -> Dashboards -> Energy."
+        },
+        "no_power_factor": {
+            "title": "Some phases cannot tell a heater from a motor",
+            "description": "Load detection has a power reading on phase {phases} but no way to work out a power factor there: that needs the phase's current AND voltage, or a power factor sensor. Watts alone cannot separate a 2 kW heater from a 2 kW motor, so detected loads on those phases get no guess at what they are. Add them under Configure -> Load detection."
         },
         "devices_without_power": {
             "title": "Some metered devices cannot be detected",

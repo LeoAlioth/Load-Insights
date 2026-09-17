@@ -507,6 +507,25 @@ class Signature:
         # levels and the size the guess rests on
         return f"{line} - {guess.short}" if guess.kind else line
 
+    def detail(self, tz, parents: Optional[Dict[str, Optional[str]]] = None) -> str:
+        """Markdown for the naming form, once one is picked: what it is, when
+        it runs, where it is, and how sure each of those is."""
+        lines = [f"**{self.describe(tz)}**", ""]
+        bars = sparkline(self.hours)
+        if bars:
+            lines += ["When it runs, midnight to midnight:", "", f"`{bars}`", f"`{hour_ruler()}`", ""]
+        guess = self.guess()
+        if guess.kind:
+            both = guess.kind if not guess.alternative else f"{guess.kind} or {guess.alternative}"
+            lines.append(f"Looks like {both} - {', '.join(guess.because)} "
+                         f"(confidence {guess.confidence:.2f}).")
+        elif guess.because:
+            lines.append(guess.because[0].capitalize() + ".")
+        lines.append(f"Where: {describe_location(self.locations, self.count, parents, self.phases)}.")
+        clock = " It comes back on a clock." if self.regular else ""
+        lines.append(f"Confidence that this is a real repeating load: {self.evidence:.2f}.{clock}")
+        return "\n".join(lines)
+
     def to_dict(self) -> dict:
         return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
                 "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
@@ -895,6 +914,29 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
 
     deepest = [n for n in seen if not any(n in ancestors(m) for m in seen if m != n)]
     return sorted(deepest or seen)[0]
+
+
+_BARS = " ▁▂▃▄▅▆▇█"
+
+
+def sparkline(counts: Sequence[int]) -> str:
+    """The 24 hours as one line of bars. A config flow cannot draw a chart -
+    it renders markdown - but the shape of the day is most of what a chart
+    would have said, and it fits on a line."""
+    top = max(counts) if counts else 0
+    if top <= 0:
+        return ""
+    return "".join(_BARS[0] if not c else _BARS[min(8, max(1, round(8 * c / top)))] for c in counts)
+
+
+def hour_ruler() -> str:
+    """A 24-character ruler that lines up under the bars."""
+    out = [" "] * 24
+    for h in (0, 6, 12, 18):
+        for i, ch in enumerate(str(h)):
+            if h + i < 24:
+                out[h + i] = ch
+    return "".join(out)
 
 
 def _and(names: Sequence[str]) -> str:
