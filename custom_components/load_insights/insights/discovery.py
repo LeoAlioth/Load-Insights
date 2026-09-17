@@ -53,6 +53,14 @@ PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 
            # learned nothing at all (Anze, 2026-09-17).
            "input": 8, "ac_in": 8}
 BONUS = {"output": 6, "ac_out": 6, "out": 4, "load": 4, "loads": 4, "consumption": 4}
+# The same device usually publishes both sides, so which one is wanted
+# depends on what it is being asked for: picking the meter for the GRID
+# connection wants the opposite preference to picking it for the house.
+ROLES = {
+    "load": (PENALTY, BONUS),
+    "grid": ({k: v for k, v in PENALTY.items() if k not in ("input", "ac_in")},
+             {"input": 6, "ac_in": 6, "grid": 6, "mains": 4, "utility": 4}),
+}
 
 _L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
 _PHASE = re.compile(r"(?:^|[_\s])phase[_\s]?([abc123])(?:$|[_\s])")
@@ -97,24 +105,28 @@ def phase_of(text: str) -> Optional[str]:
     return None
 
 
-def _score(entity_id: str, name: str) -> Optional[int]:
+def _score(entity_id: str, name: str, role: str = "load") -> Optional[int]:
     t = _tokens(f"{entity_id} {name}")
     for bad in REJECT:
         if re.search(rf"(?:^|_){bad}(?:$|_)", t):
             return None
+    penalty, bonus = ROLES.get(role, ROLES["load"])
     score = 1000 - len(entity_id)
-    for word, cost in PENALTY.items():
+    for word, cost in penalty.items():
         if re.search(rf"(?:^|_){word}(?:$|_)", t):
             score -= cost * 10
-    for word, gain in BONUS.items():
+    for word, gain in bonus.items():
         if re.search(rf"(?:^|_){word}(?:$|_)", t):
             score += gain * 10
     return score
 
 
-def match_meter_entities(entities: Sequence[dict]) -> Dict[str, str]:
+def match_meter_entities(entities: Sequence[dict], role: str = "load") -> Dict[str, str]:
     """``entities`` are dicts with entity_id, device_class and name.
-    Returns {"power_a": entity_id, "pf_c": ..., ...} - only what it is sure of."""
+    Returns {"power_a": entity_id, "pf_c": ..., ...} - only what it is sure of.
+
+    ``role`` says which side of an inverter is wanted: "load" for what the
+    house draws, "grid" for the connection to the utility."""
     best: Dict[str, tuple] = {}
     for e in entities:
         kind = KIND_BY_DEVICE_CLASS.get((e.get("device_class") or "").lower())
@@ -125,7 +137,7 @@ def match_meter_entities(entities: Sequence[dict]) -> Dict[str, str]:
         phase = phase_of(eid) or phase_of(name)
         if not phase:
             continue
-        score = _score(eid, name)
+        score = _score(eid, name, role)
         if score is None:
             continue
         key = f"{kind}_{phase}"

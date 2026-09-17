@@ -47,6 +47,7 @@ PV_SHARE_MAX = 1.25
 PV_VISIBLE_R = -0.2            # the reading includes the array when its changes move this much against it
 PV_MIN_SWING_W = 200.0         # below this the sun hardly moved and there is nothing to tell
 PV_MIN_SAMPLES = 30
+LAYOUT_R = -0.2                # below this the grid moves against the inverter: they are in parallel
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
@@ -126,6 +127,60 @@ def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
     return PV_SHARE_MIN <= share <= PV_SHARE_MAX
 
 
+def delta_correlation(samples: Sequence[Tuple[float, float]],
+                      other_by_ts: Dict[float, float],
+                      min_swing_w: float = PV_MIN_SWING_W) -> Optional[float]:
+    """How the two series' CHANGES move together, between -1 and 1.
+
+    Levels would say almost nothing - two readings of one site are both
+    large and both wander - while their changes say exactly how one responds
+    to the other. None when the second series hardly moved."""
+    xs: List[float] = []
+    ys: List[float] = []
+    prev: Optional[Tuple[float, float]] = None
+    for ts, w in samples:
+        p = other_by_ts.get(ts)
+        if p is None:
+            continue
+        if prev is not None:
+            xs.append(w - prev[0])
+            ys.append(p - prev[1])
+        prev = (w, p)
+    if len(xs) < PV_MIN_SAMPLES or (max(ys) - min(ys)) < min_swing_w:
+        return None
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
+    sxx = sum((a - mx) ** 2 for a in xs)
+    syy = sum((b - my) ** 2 for b in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return sxy / math.sqrt(sxx * syy)
+
+
+def looks_parallel(load_rows: Sequence[Tuple[float, float]],
+                   grid_by_ts: Dict[float, float]) -> Optional[bool]:
+    """Is the inverter feeding the loads IN PARALLEL with the grid?
+
+    It decides which arithmetic gives the house's load, and the two are not
+    interchangeable:
+
+      * PARALLEL, the grid-tied case. The grid meter reads the house MINUS
+        what the inverter makes, so the two move against each other and the
+        load is their SUM.
+      * SEPARATE, a transfer switch or an off-grid site. Everything reaches
+        the loads through the inverter's output, the grid sits upstream of
+        it, and adding the two would count the pass-through twice. The load
+        is the output alone.
+
+    Which one a site has is a fact about its wiring, so it is read off the
+    data rather than asked about - with an override for when the data cannot
+    say, such as a site that never exports. None when the grid hardly
+    moved, which is itself the off-grid answer."""
+    r = delta_correlation(load_rows, grid_by_ts)
+    return None if r is None else r <= LAYOUT_R
+
+
 def pv_shows_in(samples: Sequence[Tuple[float, float]],
                 pv_by_ts: Dict[float, float]) -> Optional[bool]:
     """Does this reading INCLUDE the array? Measured, never assumed.
@@ -142,27 +197,8 @@ def pv_shows_in(samples: Sequence[Tuple[float, float]],
     two series' changes. None when the sun hardly moved in this window and
     the question cannot be answered yet.
     """
-    xs: List[float] = []
-    ys: List[float] = []
-    prev: Optional[Tuple[float, float]] = None
-    for ts, w in samples:
-        p = pv_by_ts.get(ts)
-        if p is None:
-            continue
-        if prev is not None:
-            xs.append(w - prev[0])
-            ys.append(p - prev[1])
-        prev = (w, p)
-    if len(xs) < PV_MIN_SAMPLES or (max(ys) - min(ys)) < PV_MIN_SWING_W:
-        return None
-    n = len(xs)
-    mx, my = sum(xs) / n, sum(ys) / n
-    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
-    sxx = sum((a - mx) ** 2 for a in xs)
-    syy = sum((b - my) ** 2 for b in ys)
-    if sxx <= 0 or syy <= 0:
-        return None
-    return (sxy / math.sqrt(sxx * syy)) <= PV_VISIBLE_R
+    r = delta_correlation(samples, pv_by_ts)
+    return None if r is None else r <= PV_VISIBLE_R
 
 
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:

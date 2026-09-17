@@ -602,5 +602,29 @@ def test_merging_two_signatures_adds_their_weeks_together():
     assert det.signatures[0].days == [1, 3, 3, 0, 5, 0, 6], det.signatures[0].days
 
 
+def test_how_the_inverter_and_the_grid_are_wired_is_read_off_the_data():
+    """Grid-tied, the meter carries the house MINUS what the inverter makes,
+    so the two move against each other and the load is their sum. Behind a
+    transfer switch the grid follows the load instead, and adding it would
+    count the pass-through twice."""
+    import random
+    rnd = random.Random(11)
+    n = 400
+    pv = [1500.0 + 1200.0 * ((i % 60) / 60.0) for i in range(n)]
+    house = [600.0 + (900.0 if (i // 37) % 3 == 0 else 0.0) + rnd.uniform(-40, 40) for i in range(n)]
+    out = [(T0 + i * DT, pv[i]) for i in range(n)]
+    parallel = {T0 + i * DT: house[i] - pv[i] for i in range(n)}
+    assert D.looks_parallel(out, parallel) is True
+
+    # a transfer switch: the inverter's output IS the house, and the grid
+    # upstream of it rises and falls WITH the load
+    loads = [(T0 + i * DT, house[i]) for i in range(n)]
+    behind = {T0 + i * DT: max(0.0, house[i] - 150.0) for i in range(n)}
+    assert D.looks_parallel(loads, behind) is False
+
+    # off grid: the connection never moves, so the question cannot be answered
+    assert D.looks_parallel(loads, {T0 + i * DT: 0.0 for i in range(n)}) is None
+
+
 if __name__ == "__main__":
     run_main(globals())
