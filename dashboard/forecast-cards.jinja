@@ -21,13 +21,16 @@
 {#- every name begins with the integration's device name ("Home Insights
     Boiler forecast"); drop the words they all share so the titles read
     "Boiler", "Consumption", "Unmetered consumption". -#}
-{%- set ns = namespace(prefix=[]) -%}
+{%- set ns = namespace(prefix=[], hits=0) -%}
 {%- if sensors | count > 1 -%}
   {%- set first = sensors[0].name.split(' ') -%}
   {%- for i in range(first | count) -%}
-    {%- if sensors | map(attribute='name') | select('match', (ns.prefix + [first[i]]) | join(' ') + ' ') | list | count == sensors | count -%}
-      {%- set ns.prefix = ns.prefix + [first[i]] -%}
-    {%- endif -%}
+    {%- set cand = (ns.prefix + [first[i]]) | join(' ') + ' ' -%}
+    {%- set ns.hits = 0 -%}
+    {%- for n in sensors | map(attribute='name') -%}
+      {%- if n.startswith(cand) -%}{%- set ns.hits = ns.hits + 1 -%}{%- endif -%}
+    {%- endfor -%}
+    {%- if ns.hits == (sensors | count) -%}{%- set ns.prefix = ns.prefix + [first[i]] -%}{%- endif -%}
   {%- endfor -%}
 {%- endif -%}
 {%- set prefix = (ns.prefix | join(' ') + ' ') if ns.prefix else '' -%}
