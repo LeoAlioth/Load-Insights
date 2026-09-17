@@ -601,11 +601,15 @@ class Signature:
         lines = [f"**{self.describe(tz)}**", ""]
         bars = hour_histogram(self.hours)
         if bars:
-            lines += [f"When it runs, by hour of day - tallest bar is {max(self.hours)} sightings:",
+            lines += [f"When it starts, by hour of day - tallest bar is {max(self.hours)} of "
+                      f"{sum(self.hours)} sightings:",
                       "", "```", *bars, "```", ""]
         week = day_histogram(self.days)
         if week:
-            lines += ["Which days:", "", "```", *week, "```", ""]
+            # every chart is scaled to its own tallest bar, so without this
+            # you cannot tell one sighting from twenty (Anze, 2026-09-17)
+            lines += [f"Which days it starts on - tallest bar is {max(self.days)} of "
+                      f"{sum(self.days)} sightings:", "", "```", *week, "```", ""]
         guess = self.guess()
         if guess.kind:
             both = guess.kind if not guess.alternative else f"{guess.kind} or {guess.alternative}"
