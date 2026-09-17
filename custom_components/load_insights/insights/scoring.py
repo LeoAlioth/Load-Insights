@@ -144,6 +144,12 @@ class Ledger:
     def last_day(self) -> Optional[Tuple[str, float, float]]:
         return self.day_errors[-1] if self.day_errors else None
 
+    def predictions(self, lead: int = BAND_LEAD_H) -> Dict[float, float]:
+        """hour key -> what the forecast said for that hour, ``lead`` hours
+        before it. Settled pairs only, so this is what was actually predicted
+        at the time - not the current fit re-run over its own history."""
+        return {k: p for k, _, p in self.errors.get(lead, [])}
+
     def recent(self, now: datetime, lead: int = BAND_LEAD_H, hours: int = 48) -> List[dict]:
         since = _key(floor_hour(now)) - hours * 3600.0
         return [{"hour_key": k, "actual": a, "predicted": p} for k, a, p in self.errors.get(lead, []) if k >= since]

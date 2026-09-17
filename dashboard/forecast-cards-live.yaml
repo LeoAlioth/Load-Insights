@@ -37,6 +37,10 @@ card:
     const forecastFn = (e, key) => '({hass}) => {const r = hass.states["' + e +
     '"].attributes.detailedForecast || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.' +
     key + ' ?? p.kwh)};}';
+    const lineFn = e => '({hass}) => {const a = hass.states["' + e +
+    '"].attributes; const past = (a.history || []).filter(p => p.predicted != null).map(p => [new Date(p.period_start), p.predicted]); ' +
+    'const future = (a.detailedForecast || []).map(p => [new Date(p.period_start), p.kwh]); const all = past.concat(future); ' +
+    'return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};}';
     const historyFn = e => '({hass}) => {const r = hass.states["' + e +
     '"].attributes.history || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.kwh)};}';
     return ids.map(e => {
@@ -57,7 +61,7 @@ card:
     fillcolor: 'rgba(130,130,190,0.18)', line: { width: 0 },
     filters: [{ fn: forecastFn(e, 'kwh_p90') }] },
     { entity: e, name: 'Forecast', line: { width: 2, dash: 'dot' },
-    filters: [{ fn: forecastFn(e, 'kwh') }] },
+    filters: [{ fn: lineFn(e) }] },
     { entity: e, name: 'Actual', type: 'bar',
     marker: { color: 'rgba(120,170,120,0.65)' },
     filters: [{ fn: historyFn(e) }] }
