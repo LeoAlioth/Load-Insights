@@ -1,0 +1,89 @@
+{#-
+  Load Insights - one forecast-vs-actual graph per thing it forecasts.
+
+  Paste this whole block into Developer Tools -> Template. It reads every
+  Load Insights forecast sensor on this instance - the site total, the
+  unmetered remainder, and one per device on your Energy dashboard - and
+  prints the YAML for a dashboard. Copy the OUTPUT (the right-hand pane),
+  then: dashboard -> edit -> three dots -> Raw configuration editor, and
+  paste it under `views:` as a new view, or add the cards to an existing one.
+
+  Re-run it whenever you add a device to the Energy dashboard, or enable
+  another device forecast sensor (they ship disabled - enable the ones you
+  want on the Load Insights device page).
+
+  Needs the Plotly Graph Card from HACS.
+
+  The window is the last 24 hours and the next 48: yesterday, today and
+  tomorrow, rolling rather than pinned to midnight.
+-#}
+{%- set sensors = states.sensor
+      | selectattr('attributes.detailedForecast', 'defined')
+      | rejectattr('state', 'in', ['unavailable', 'unknown'])
+      | sort(attribute='name') | list -%}
+{%- if sensors | count == 0 -%}
+# No Load Insights forecast sensors found on this instance.
+# If the device ones are missing, enable them on the Load Insights device page.
+{%- else -%}
+type: vertical-stack
+cards:
+{%- for s in sensors %}
+  - type: custom:plotly-graph
+    title: {{ (s.name | replace(' forecast', '') | replace(' Forecast', '')) }}
+    hours_to_show: 72
+    time_offset: 48h
+    refresh_interval: 300
+    layout:
+      height: 260
+      margin: {t: 30, l: 50, r: 12, b: 30}
+      legend: {orientation: h, y: 1.15}
+      yaxis: {title: kWh / h, rangemode: tozero}
+    entities:
+      - entity: {{ s.entity_id }}
+        name: Likely range
+        showlegend: false
+        line: {width: 0}
+        hoverinfo: skip
+        filters:
+          - fn: |-
+              ({hass}) => {
+                const r = hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [];
+                return {xs: r.map(p => new Date(p.period_start)),
+                        ys: r.map(p => p.kwh_p10 ?? p.kwh)};
+              }
+      - entity: {{ s.entity_id }}
+        name: Likely range
+        fill: tonexty
+        fillcolor: rgba(130,130,190,0.18)
+        line: {width: 0}
+        hoverinfo: skip
+        filters:
+          - fn: |-
+              ({hass}) => {
+                const r = hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [];
+                return {xs: r.map(p => new Date(p.period_start)),
+                        ys: r.map(p => p.kwh_p90 ?? p.kwh)};
+              }
+      - entity: {{ s.entity_id }}
+        name: Forecast
+        line: {width: 2, dash: dot}
+        filters:
+          - fn: |-
+              ({hass}) => {
+                const r = hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [];
+                return {xs: r.map(p => new Date(p.period_start)),
+                        ys: r.map(p => p.kwh)};
+              }
+      - entity: {{ s.entity_id }}
+        name: Actual
+        type: bar
+        marker: {color: rgba(120,170,120,0.65)}
+        filters:
+          - fn: |-
+              ({hass}) => {
+                const r = hass.states["{{ s.entity_id }}"].attributes.history || [];
+                return {xs: r.map(p => new Date(p.period_start)),
+                        ys: r.map(p => p.kwh)};
+              }
+{%- endfor %}
+{%- endif -%}
