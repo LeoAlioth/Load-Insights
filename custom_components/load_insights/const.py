@@ -13,6 +13,10 @@ CONF_WEATHER_ENTITY = "weather_entity"
 CONF_OUTDOOR_TEMPERATURE_ENTITY = "outdoor_temperature_entity"
 # Calendars are linked without saying what they mean; the fit decides.
 CONF_CALENDAR_ENTITIES = "calendar_entities"
+# Any other entity worth trying as an explanation - a tariff block, a price,
+# irradiance, an occupancy sensor. Fitted like a calendar and kept only if it
+# explains something.
+CONF_INPUT_ENTITIES = "input_entities"
 # device statistic id -> the device's own state sensor (tank temperature,
 # tank level...), for the nowcast of its next hours
 CONF_DEVICE_STATE_SENSORS = "device_state_sensors"

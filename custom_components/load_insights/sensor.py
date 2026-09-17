@@ -8,7 +8,6 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -63,7 +62,7 @@ class _Base(CoordinatorEntity, SensorEntity):
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.data.get(CONF_NAME, DEFAULT_NAME),
             manufacturer="Load Insights",
-            model="Consumption forecast",
+            model="Site",
         )
 
     def _forecast(self) -> Optional[Forecast]:
@@ -156,12 +155,15 @@ class ForecastPowerSensor(_Base):
                 "weather_entity": data.weather_entity,
                 "temperature_entity": data.temperature_entity,
             },
-            # Each linked calendar's fitted role for THIS series: existence
-            # factors per hour of day (or the single factor), then any title
-            # that earned a factor of its own. Not engaged = no effect.
-            "calendars": [
+            # Every explanatory signal's fitted role for THIS series - linked
+            # calendars and attached sensors alike. A sensor's "titles" are
+            # its states, or its quantile bands when it is numeric with many
+            # values. Not engaged = no effect on the forecast.
+            "signals": [
                 {
                     "entity": m.entity,
+                    "kind": next((g.kind for g in (data.calendar_signals or ()) if g.entity == m.entity), "calendar"),
+                    "reading": (data.input_kinds or {}).get(m.entity),
                     "engaged": m.engaged,
                     "on_hours_in_window": (data.calendar_on_hours or {}).get(m.entity),
                     "existence": {
@@ -235,9 +237,14 @@ class DeviceForecastSensor(ForecastPowerSensor):
         self._energy = device.energy
         self._device = device
         self._attr_unique_id = f"{entry.entry_id}_device_{device.energy.replace('.', '_')}"
-        # its own device, hanging off the site's, so the site page is not a
-        # list of twenty forecasts
-        self._attr_device_info = _attach_to_source(coordinator.hass, entry, device)
+        # Its own device, named after the dashboard's device and hanging off
+        # the site's. Putting the forecast ON the real device (by reusing that
+        # device's identifiers) is nicer and was tried on 2026-09-17: it
+        # produced nine unnamed devices instead of merging, so it is out until
+        # it can be tested against a live registry rather than reasoned about.
+        self._attr_device_info = _child_device(
+            coordinator.hass, entry, f"device_{device.energy}", device.label, "Device forecast"
+        )
 
     def _forecast(self) -> Optional[Forecast]:
         data: Optional[InsightsData] = self.coordinator.data
@@ -273,27 +280,6 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
                 }
         return attrs
-
-
-def _attach_to_source(hass, entry: ConfigEntry, device) -> DeviceInfo:
-    """Put a device's forecast ON that device, where Home Assistant has one.
-
-    The dashboard's statistic id is the energy entity's id, so the entity
-    registry gives the device behind it. Reusing that device's own
-    identifiers attaches this entity to it - the boiler's forecast then sits
-    on the boiler, beside its own sensors, rather than on a parallel device
-    of ours. Only the identifiers are passed: name, manufacturer and model
-    belong to whoever created it.
-
-    Where no device can be resolved - a statistic from a template or a helper,
-    say - the forecast falls back to a device of our own."""
-    registry = er.async_get(hass)
-    reg_entry = registry.async_get(device.energy)
-    if reg_entry is not None and reg_entry.device_id:
-        source = dr.async_get(hass).async_get(reg_entry.device_id)
-        if source is not None and source.identifiers:
-            return DeviceInfo(identifiers=set(source.identifiers))
-    return _child_device(hass, entry, f"device_{device.energy}", device.label, "Device forecast")
 
 
 def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:

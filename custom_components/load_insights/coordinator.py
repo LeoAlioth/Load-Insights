@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Set
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.energy.websocket_api import async_get_energy_platforms
-from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -23,6 +23,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DEVICE_STATE_SENSORS,
+    CONF_INPUT_ENTITIES,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
     DOMAIN,
@@ -32,6 +33,7 @@ from .const import (
     REFRESH_SECOND,
 )
 from .insights.calendars import CalendarSignals
+from .insights.inputs import label_history, project, usable
 from .insights.covariates import interpolate_hourly
 from .insights.grid import GridForecast, build as build_grid
 from .insights.model import SiteModel
@@ -81,6 +83,9 @@ class InsightsData:
     temperature_history_hours: int = 0
     temperature_forecast_hours: int = 0
     calendar_entities: tuple = ()
+    input_entities: tuple = ()
+    input_kinds: Dict[str, str] = None  # type: ignore[assignment]
+    calendar_signals: tuple = ()
     calendar_on_hours: Dict[str, int] = None  # type: ignore[assignment]
     device_state_sensors: Dict[str, str] = None  # type: ignore[assignment]
     device_state_now: Dict[str, Optional[float]] = None  # type: ignore[assignment]
@@ -173,6 +178,30 @@ class InsightsCoordinator(DataUpdateCoordinator):
             events = await self._calendar_events(cal, start, end_h)
             cal_signals.append(CalendarSignals.from_events(cal, events, hour_keys))
 
+        # --- any other attached entity, fitted the same way ---
+        input_entities = tuple(opts.get(CONF_INPUT_ENTITIES) or ())
+        input_kinds: Dict[str, str] = {}
+        tz_offset = now.utcoffset().total_seconds() if now.utcoffset() else 0.0
+        horizon_keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
+        for eid in input_entities:
+            raw = await self._input_history(eid, start, now)
+            labels, kind = await self.hass.async_add_executor_job(label_history, raw)
+            input_kinds[eid] = kind
+            if not usable(labels):
+                input_kinds[eid] = f"{kind} (too little history)" if kind in ("categorical", "banded") else kind
+                continue
+            st = self.hass.states.get(eid)
+            current = labels.get(max(labels)) if labels else None
+            if st is not None and st.state not in ("unknown", "unavailable", ""):
+                # the label the CURRENT state falls under, for the hold window
+                current = (await self.hass.async_add_executor_job(
+                    label_history, {max(labels) if labels else 0.0: st.state}
+                ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
+            future = await self.hass.async_add_executor_job(project, labels, horizon_keys, tz_offset, current)
+            merged = dict(labels)
+            merged.update(future)
+            cal_signals.append(CalendarSignals.from_labels(eid, merged))
+
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
@@ -256,6 +285,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
             ledgers=dict(ledgers),
             grid=grid,
             calendar_entities=cal_entities,
+            input_entities=input_entities,
+            input_kinds=input_kinds,
+            calendar_signals=tuple(cal_signals),
             calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
             device_state_sensors=state_map,
             device_state_now=state_now,
@@ -289,6 +321,41 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 k = floor_hour(dt_util.as_local(t)).timestamp()
                 # several arrays on one site sum, as the dashboard sums them
                 out[k] = out.get(k, 0.0) + float(wh) / 1000.0
+        return out
+
+    async def _input_history(self, entity_id: str, start: datetime, end: datetime) -> Dict[float, object]:
+        """hour key -> the entity's value in that hour. Hourly statistics when
+        it has them (years of history), otherwise the recorder's raw states,
+        taking the state that was in force at the top of each hour - which is
+        what a schedule-like input needs and what the recorder can give for a
+        sensor with no statistics."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.statistics_during_period,
+            self.hass, start, None, {entity_id}, "hour", None, {"mean"},
+        )
+        out: Dict[float, object] = {}
+        for r in rows.get(entity_id, []):
+            if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
+                out[float(r["start"])] = float(r["mean"])
+        if out:
+            return out
+        states = await get_instance(self.hass).async_add_executor_job(
+            history.state_changes_during_period, self.hass, start, end, entity_id, True, False, None, True,
+        )
+        changes = [(st.last_updated.timestamp(), st.state) for st in states.get(entity_id, [])
+                   if st.state not in ("unknown", "unavailable", "")]
+        changes.sort()
+        if not changes:
+            return {}
+        i = 0
+        current = changes[0][1]
+        for b in hour_buckets(floor_hour(start), int((end - floor_hour(start)).total_seconds() // 3600) + 1):
+            k = b.timestamp()
+            while i < len(changes) and changes[i][0] <= k:
+                current = changes[i][1]
+                i += 1
+            if k >= changes[0][0]:
+                out[k] = current
         return out
 
     async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:

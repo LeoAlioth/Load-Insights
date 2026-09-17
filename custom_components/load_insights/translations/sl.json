@@ -8,13 +8,15 @@
                     "name": "Ime",
                     "weather_entity": "Vremenska entiteta",
                     "outdoor_temperature_entity": "Senzor zunanje temperature",
-                    "calendar_entities": "Koledarji"
+                    "calendar_entities": "Koledarji",
+                    "input_entities": "Drugi vhodi"
                 },
                 "data_description": {
                     "name": "Prikazano kot naprava, ki združuje senzorje napovedi.",
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
-                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja."
+                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
                 }
             }
         },
@@ -77,12 +79,14 @@
                 "data": {
                     "weather_entity": "Vremenska entiteta",
                     "outdoor_temperature_entity": "Senzor zunanje temperature",
-                    "calendar_entities": "Koledarji"
+                    "calendar_entities": "Koledarji",
+                    "input_entities": "Drugi vhodi"
                 },
                 "data_description": {
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
-                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja."
+                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
                 }
             },
             "device_state": {

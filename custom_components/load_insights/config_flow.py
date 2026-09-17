@@ -14,6 +14,7 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
+    CONF_INPUT_ENTITIES,
     CONF_SIGNATURE_REVISION,
     DETECTION_KINDS,
     CONF_NAME,
@@ -85,6 +86,8 @@ def _inputs_schema(defaults: dict) -> dict:
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature")),
         vol.Optional(CONF_CALENDAR_ENTITIES, description={"suggested_value": defaults.get(CONF_CALENDAR_ENTITIES) or []}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="calendar", multiple=True)),
+        vol.Optional(CONF_INPUT_ENTITIES, description={"suggested_value": defaults.get(CONF_INPUT_ENTITIES) or []}):
+            selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
     }
 
 
@@ -107,7 +110,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             data = {CONF_NAME: user_input[CONF_NAME]}
-            options = {k: v for k, v in user_input.items() if k in (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES) and v}
+            options = {k: v for k, v in user_input.items() if k in (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES, CONF_INPUT_ENTITIES) and v}
             return self.async_create_entry(title=data[CONF_NAME], data=data, options=options)
 
         s = site.summary()

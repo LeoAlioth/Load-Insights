@@ -25,6 +25,14 @@ MIN_ON_HOURS = 24          # a calendar (or title) on for less than a day in the
 MIN_OFF_HOURS = 24
 MIN_PER_HOUR_OF_DAY = 5    # on-hours at one hour of day, else the single factor stands in
 MIN_EXPLAINED = 0.03
+# The residual must be REAL before any share of it means anything. Where the
+# profile already explains an input exactly - a tariff is a function of
+# weekday and hour, which is what the 168 slots are - the residual is
+# floating-point dust, and 1 - after/before on dust returns whatever it likes
+# (measured: 3.4 % "explained" from a residual of 1e-29 against a signal of
+# 862, 2026-09-17). Below this share of the expectation there is nothing to
+# explain and no fit is offered.
+MIN_RESIDUAL_SHARE = 1e-9
 FACTOR_CLAMP = (0.1, 5.0)
 
 
@@ -34,11 +42,26 @@ def _norm_title(title: Optional[str]) -> str:
 
 @dataclass
 class CalendarSignals:
-    """Hour keys (epoch seconds of the period start) an event is active in,
-    over history AND horizon, for one calendar; titles are subsets."""
+    """Hour keys (epoch seconds of the period start) a signal is active in,
+    over history AND horizon; ``titles`` are subsets of it.
+
+    A calendar fills this from its events. An attached SENSOR fills it from
+    its labels - existence is every hour whose state is known, and each
+    distinct state is a title - so both are fitted by exactly the same code.
+    ``kind`` only says which, for the attributes."""
     entity: str
     existence: Set[float] = field(default_factory=set)
     titles: Dict[str, Set[float]] = field(default_factory=dict)
+    kind: str = "calendar"
+
+    @classmethod
+    def from_labels(cls, entity: str, labels: Dict[float, str]) -> "CalendarSignals":
+        """One label per hour - a sensor's state, or its quantile band."""
+        sig = cls(entity=entity, kind="sensor")
+        for k, lab in labels.items():
+            sig.existence.add(k)
+            sig.titles.setdefault(lab, set()).add(k)
+        return sig
 
     @classmethod
     def from_events(cls, entity: str, events: Iterable[Tuple[float, float, str]], hour_keys: Sequence[float]) -> "CalendarSignals":
@@ -135,10 +158,12 @@ def fit_factors(rows: Sequence[Tuple[float, int, float, float, float]], on: Set[
                    on_hours=len(on_rows), engaged=True)
 
     # the guard: the residual over the hours the signal touches must shrink
-    before = sum(w * (a - e) ** 2 for _, _, w, a, e in on_rows + (off_rows if scale_off else []))
+    touched = on_rows + (off_rows if scale_off else [])
+    before = sum(w * (a - e) ** 2 for _, _, w, a, e in touched)
     after = (sum(w * (a - e * cand.at(h, True)) ** 2 for _, h, w, a, e in on_rows)
              + (sum(w * (a - e * cand.at(h, False)) ** 2 for _, h, w, a, e in off_rows) if scale_off else 0.0))
-    if before <= 0:
+    scale = sum(w * e * e for _, _, w, _, e in touched)
+    if before <= 0 or before < MIN_RESIDUAL_SHARE * scale:
         return NO_FACTORS
     explained = 1.0 - after / before
     if explained < MIN_EXPLAINED:
