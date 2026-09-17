@@ -170,7 +170,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
                  "where": describe_location(sig.locations, sig.count, parents, sig.phases),
                  "where_confidence": location_confidence(sig.locations, sig.count, parents),
                  "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict()}
-                for sig in sorted(det.signatures, key=lambda x: -x.count)
+                for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
             ],
             "recent_sessions": det.recent[-60:],
             "submeter_signatures": {

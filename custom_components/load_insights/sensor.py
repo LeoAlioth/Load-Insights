@@ -381,7 +381,8 @@ class DetectedLoadsSensor(_DetectionBase):
                  "evidence": s.evidence, "regular": s.regular,
                  "guess": s.guess().to_dict(),
                  "where_confidence": location_confidence(s.locations, s.count, self._runner.parents)}
-                for s in sorted(det.signatures, key=lambda x: -x.count)
+                # same order as the naming page: best evidence first
+                for s in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
             ],
             "meters": {
                 name: {

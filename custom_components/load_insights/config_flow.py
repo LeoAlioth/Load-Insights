@@ -183,6 +183,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 label = f"{sig.name} - {label}"
             if sig.id in levels:
                 label += f"  [looks like set {levels[sig.id]} of one device]"
+            # the list is ordered by this, so it has to be visible - otherwise
+            # it reads as no order at all (Anze, 2026-09-17)
+            label = f"[{sig.evidence:.2f}] {label}"
             options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
         current = next((s for s in candidates if s.id == selected), candidates[0])
         return self.async_show_form(

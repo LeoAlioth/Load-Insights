@@ -59,6 +59,14 @@
             "named_load_running": {
                 "name": "Running"
             }
+        },
+        "button": {
+            "refresh": {
+                "name": "Refresh forecasts"
+            },
+            "reset_detection": {
+                "name": "Reset load detection"
+            }
         }
     },
     "options": {
