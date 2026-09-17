@@ -20,7 +20,7 @@ statistics for them, and publishes a consumption forecast:
 | **Forecast error / bias, day ahead** and **hour ahead** | trailing 7-day mean absolute error and signed mean error of the site forecast, W | per-lead table (hour, day and week ahead), `band_coverage_day_ahead` (share of actuals inside p10-p90; honest is about 0.8), the last 48 scored hours |
 | **Yesterday's day-ahead error** | actual minus the "tomorrow" total the forecast showed at noon the day before, kWh | |
 | **Unmetered forecast error / bias, day ahead** | the same for the remainder | |
-| **\<device\> forecast**, one per individually metered device | as the first, for that device alone | `statistic_id`; **disabled by default** - enable the ones you want from the device page |
+| **\<device\> forecast**, one per individually metered device | as the first, for that device alone | `statistic_id`, plus that device's own `score` and `nowcast` |
 
 Consumption is `grid in - grid out + PV + battery out - battery in`, the
 dashboard's own signs. A device listed as included in another listed device

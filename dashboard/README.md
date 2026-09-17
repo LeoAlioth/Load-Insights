@@ -19,9 +19,7 @@ tomorrow, rolling rather than pinned to midnight, because the card's window is
 relative to now.
 
 Requires the [Plotly Graph Card](https://github.com/dbuezas/lovelace-plotly-graph-card)
-from HACS. Re-run the template after adding a device to the Energy dashboard,
-or after enabling a device forecast sensor - those ship disabled, and are
-enabled on the Load Insights device page.
+from HACS. Re-run the template after adding a device to your Energy dashboard.
 
 Device forecast sensors are recognised by carrying a `statistic_id`
 attribute; every forecast sensor carries `detailedForecast`, which is what
