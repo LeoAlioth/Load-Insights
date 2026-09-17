@@ -1,5 +1,24 @@
 # Dashboard
 
+Two ways to get a forecast-vs-actual graph per device. Both draw the same
+thing; they differ in when the list of devices is worked out.
+
+| | when the device list is resolved | needs |
+|---|---|---|
+| `forecast-cards-auto.yaml` | **live**, every time the card renders | auto-entities + Plotly |
+| `forecast-cards.jinja` | once, when you run the template | Plotly |
+
+## `forecast-cards-auto.yaml` - the self-updating card
+
+Paste it into a dashboard as a **manual card**. `auto-entities` builds the
+list of cards from a template each render, so adding a device to the Energy
+dashboard makes a graph appear on its own - nothing to re-run.
+
+`card_param: cards` is the part that matters: it tells auto-entities to fill
+a `vertical-stack`'s **cards** rather than an entity list, so each generated
+item is a whole card rather than a row.
+
+
 ## `forecast-cards.jinja` - forecast against actual, one graph per thing
 
 Paste the template into **Developer Tools -> Template**; copy what it prints
