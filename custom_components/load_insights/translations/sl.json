@@ -143,6 +143,10 @@
             "title": "Na nadzorni plošči Energija ni povezane napovedi PV",
             "description": "Ta lokacija proizvaja PV, a nadzorna plošča Energija nima nobene integracije napovedi, povezane s sončnim virom. Napoved omrežja zato predvideva teden brez sonca, njene vrednosti uvoza pa so močno pesimistične. Povežite eno (Solcast, Forecast.Solar in druge) z virom PV v Nastavitve -> Nadzorne plošče -> Energija."
         },
+        "battery_not_modelled": {
+            "title": "Baterija ni modelirana",
+            "description": "Energijska nadzorna plošča ima na tem mestu baterijo, nima pa {missing}. Brez tega napovedi napolnjenosti ni mogoče izračunati, zato senzor napovedi SoC ni ustvarjen, omrežna napoved pa velja PRED baterijo - to pove njen atribut battery_modelled. Obe polji sta neobvezni pri viru baterije v Nastavitve -> Nadzorne plošče -> Energija."
+        },
         "devices_without_power": {
             "title": "Nekaterih merjenih naprav ni mogoče zaznati",
             "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
