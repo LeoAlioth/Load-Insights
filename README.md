@@ -40,10 +40,12 @@ day, the day-ahead ones after two, the week-ahead table after eight.
 
 ### Actual against forecast on one chart
 
-`dashboard/forecast-cards.jinja` writes the whole dashboard for you: paste it
-into Developer Tools -> Template and it prints one graph per forecast sensor -
-actual, forecast and the likely range - for every device on your Energy
-dashboard. Run it again when that list changes. The rest of this section is
+`dashboard/forecast-cards-live.yaml` is a card that builds itself: paste it
+into a dashboard and it draws one graph per forecast sensor - actual, forecast
+and the likely range - finding them again on every render, so a device added
+to the Energy dashboard just appears (needs config-template-card beside
+Plotly). `dashboard/forecast-cards.jinja` does the same once, through
+Developer Tools -> Template, with Plotly alone. The rest of this section is
 the hand-written version of one card.
 
 Every forecast-type sensor carries `history` (the last 48 hours, actual) and

@@ -1,0 +1,65 @@
+# Load Insights - live forecast-vs-actual cards, one per thing it forecasts.
+#
+# Paste the whole file into a dashboard as a manual card. It rebuilds its own
+# list every render, so a device added to the Energy dashboard gets a graph
+# without anything being re-run.
+#
+# Needs two cards from HACS:
+#   * config-template-card (github.com/iantrich/config-template-card)
+#   * Plotly Graph Card    (github.com/dbuezas/lovelace-plotly-graph-card)
+#
+# It finds its own sensors: every sensor carrying a detailedForecast attribute,
+# which is exactly the Load Insights forecast sensors. `entities:` below is
+# only what config-template-card watches to know when to redraw - any one of
+# them will do, they all refresh together on the hour.
+#
+# Window: 36 hours back, 36 forward.
+type: custom:config-template-card
+entities:
+  - sensor.kozolec_insights_consumption_forecast
+card:
+  type: vertical-stack
+  cards: >-
+    ${ (() => {
+    const ids = Object.keys(states).filter(e =>
+    e.startsWith('sensor.') && states[e].attributes &&
+    states[e].attributes.detailedForecast);
+    const nameOf = e => states[e].attributes.friendly_name || e;
+    ids.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    let prefix = '';
+    if (ids.length > 1) {
+    const first = nameOf(ids[0]).split(' ');
+    for (let i = 0; i < first.length; i++) {
+    const cand = prefix + first[i] + ' ';
+    if (ids.every(e => nameOf(e).startsWith(cand))) { prefix = cand; } else { break; }
+    }
+    }
+    const forecastFn = (e, key) => '({hass}) => {const r = hass.states["' + e +
+    '"].attributes.detailedForecast || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.' +
+    key + ' ?? p.kwh)};}';
+    const historyFn = e => '({hass}) => {const r = hass.states["' + e +
+    '"].attributes.history || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.kwh)};}';
+    return ids.map(e => {
+    const bare = nameOf(e).slice(prefix.length).replace(/ forecast$/i, '');
+    return {
+    type: 'custom:plotly-graph',
+    title: bare.charAt(0).toUpperCase() + bare.slice(1),
+    hours_to_show: 72,
+    time_offset: '36h',
+    refresh_interval: 300,
+    layout: { height: 260, margin: { t: 30, l: 50, r: 12, b: 30 },
+    legend: { orientation: 'h', y: 1.15 },
+    yaxis: { title: 'kWh / h', rangemode: 'tozero' } },
+    entities: [
+    { entity: e, name: 'Likely range', showlegend: false, hoverinfo: 'skip',
+    line: { width: 0 }, filters: [{ fn: forecastFn(e, 'kwh_p10') }] },
+    { entity: e, name: 'Likely range', fill: 'tonexty', hoverinfo: 'skip',
+    fillcolor: 'rgba(130,130,190,0.18)', line: { width: 0 },
+    filters: [{ fn: forecastFn(e, 'kwh_p90') }] },
+    { entity: e, name: 'Forecast', line: { width: 2, dash: 'dot' },
+    filters: [{ fn: forecastFn(e, 'kwh') }] },
+    { entity: e, name: 'Actual', type: 'bar',
+    marker: { color: 'rgba(120,170,120,0.65)' },
+    filters: [{ fn: historyFn(e) }] }
+    ] };
+    }); })() }
