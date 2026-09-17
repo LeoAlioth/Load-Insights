@@ -5,15 +5,20 @@ but the wrong shape for a person: resetting load detection meant opening
 Developer Tools and finding an action by name. These sit on the site's own
 device page, beside the diagnostics download (Anze, 2026-09-17).
 
-Reset is destructive - the signature library and the names given to it go -
-so it is a CONFIG entity rather than a control, and it is the one button
-worth thinking before pressing.
+Home Assistant gives an integration no way to add a link beside "Download
+diagnostics" on the device info card, which is where Anze looked for this
+twice. A button entity on the same page is as close as it allows, so both
+sit in CONTROLS - the card directly beside device info - rather than in the
+configuration card further down.
+
+Reset is destructive: the signature library and the names given to it go,
+and a button fires on one click with no confirmation. The same action sits
+behind a confirmation on the overview page for anyone who wants that.
 """
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -34,7 +39,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
 
 class _Base(ButtonEntity):
     _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, entry: ConfigEntry, key: str) -> None:
         self._attr_translation_key = key
