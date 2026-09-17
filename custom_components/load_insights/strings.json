@@ -74,8 +74,7 @@
                 "menu_options": {
                     "inputs": "Explanatory inputs",
                     "device_state": "A device's own state sensor",
-                    "detection": "Load detection",
-                    "submeter": "Downstream meter"
+                    "detection": "Load detection"
                 }
             },
             "inputs": {
@@ -102,31 +101,8 @@
             },
             "detection": {
                 "title": "Load detection",
-                "description": "The main meter's raw per-phase readings. Active power per phase is what matters most; power factor, current and voltage refine the signatures where the meter publishes them. Every field is optional; a single-phase meter uses the A fields only.\n\n{found}",
+                "description": "The main meter's raw per-phase readings. Active power per phase is what matters most; power factor, current and voltage refine the signatures where the meter publishes them. Every field is optional; a single-phase meter uses the A fields only.\n\nMeters below this one need no setting up: the devices on your Energy dashboard are used automatically, nesting and all.\n\n{found}",
                 "data": {
-                    "device": "Meter device",
-                    "power_a": "Active power A",
-                    "power_b": "Active power B",
-                    "power_c": "Active power C",
-                    "pf_a": "Power factor A",
-                    "pf_b": "Power factor B",
-                    "pf_c": "Power factor C",
-                    "current_a": "Current A",
-                    "current_b": "Current B",
-                    "current_c": "Current C",
-                    "voltage_a": "Voltage A",
-                    "voltage_b": "Voltage B",
-                    "voltage_c": "Voltage C"
-                },
-                "data_description": {
-                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand."
-                }
-            },
-            "submeter": {
-                "title": "Downstream meter",
-                "description": "A meter below the main one, on a subpanel or a single circuit. Give it a name and pick the device. A load that this meter and the main meter both see is recorded as being on this circuit.\n\nExisting: {existing}. To remove one, enter its name and clear every field.\n\n{found}",
-                "data": {
-                    "name": "Name",
                     "device": "Meter device",
                     "power_a": "Active power A",
                     "power_b": "Active power B",

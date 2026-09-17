@@ -127,6 +127,44 @@ def test_active_reports_what_is_on_now_and_merges_phases_started_together():
     assert 5600 < det.unknown_power(T0 + 400) < 6400
 
 
+def test_the_deepest_meter_that_saw_a_load_is_where_it_lives():
+    """The Energy dashboard nests devices: the boiler sits inside the
+    workshop. A load both meters saw belongs to the boiler, not the workshop."""
+    parents = {"boiler": "workshop", "workshop": None}
+    assert D.most_specific({"workshop": 10, "boiler": 10}, 10, parents) == "boiler"
+    assert D.most_specific({"workshop": 10}, 10, parents) == "workshop"
+    assert D.most_specific({}, 10, parents) == "main"
+    # a meter that saw only a few of the sessions does not claim the load
+    assert D.most_specific({"boiler": 2}, 10, parents) == "main"
+    # two unrelated meters, neither inside the other: a stable answer, not a coin toss
+    assert D.most_specific({"garage": 9, "workshop": 9}, 10, {}) == "garage"
+    # a cycle in the hierarchy must not hang
+    assert D.most_specific({"x": 9, "y": 9}, 10, {"x": "y", "y": "x"}) in ("x", "y")
+
+
+def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
+    """Most device meters report one total, not three phases - they cannot
+    say which phase the load is on, so only the magnitude is compared, and
+    the main meter's session supplies the phase."""
+    fleet = D.Fleet()
+    hours = 2
+    end = T0 + hours * 3600 + 200
+    main_b = series(hours * 3600, kiln(period=900.0, on=240.0, watts=2100.0))
+    main_a = series(hours * 3600, lambda s: 0.0, seed=8)
+    # the boiler's own meter: one total channel, fed into phase "a" of its detector
+    boiler = series(hours * 3600, kiln(period=900.0, on=240.0, watts=2100.0), seed=9, base=0.0, noise=5.0)
+    n = len(main_b)
+    for i in range(0, n, 300):
+        j = min(i + 300, n)
+        fleet.process({"a": main_a[i:j], "b": main_b[i:j]}, {"boiler": {"a": boiler[i:j]}},
+                      now_ts=main_b[j - 1][0], agnostic={"boiler": True})
+    fleet.process({}, {}, now_ts=end)
+    sig = fleet.main.signatures[0]
+    assert sig.phases == "b", sig.phases          # the main meter knows the phase
+    assert sig.location == "boiler", sig.locations
+    assert sig.locations["boiler"] >= sig.count * 0.8, (sig.locations, sig.count)
+
+
 def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     fleet = D.Fleet()
     hours = 2

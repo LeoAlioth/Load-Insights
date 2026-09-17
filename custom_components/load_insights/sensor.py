@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
+from .insights.detect import most_specific
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -394,10 +395,11 @@ class DetectedLoadsSensor(_DetectionBase):
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
                  "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen), "hours": s.hours,
                  # the downstream meter that also saw it, or "main" (upstream of every submeter)
-                 "location": s.location, "seen_downstream": dict(s.locations)}
+                 "location": most_specific(s.locations, s.count, self._runner.parents),
+                 "seen_by": dict(s.locations)}
                 for s in sorted(det.signatures, key=lambda x: -x.count)
             ],
-            "submeters": {
+            "meters": {
                 name: {
                     "signatures": [{"id": x.id, "description": x.describe(tz), "count": x.count} for x in sorted(d.signatures, key=lambda y: -y.count)],
                     "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
@@ -406,6 +408,7 @@ class DetectedLoadsSensor(_DetectionBase):
                 }
                 for name, d in self._runner.fleet.subs.items()
             },
+            "meter_hierarchy": self._runner.parents,
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
