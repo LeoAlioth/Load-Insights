@@ -1,0 +1,41 @@
+{
+    "entity": {
+        "sensor": {
+            "consumption_forecast": {
+                "default": "mdi:chart-timeline-variant"
+            },
+            "remainder_forecast": {
+                "default": "mdi:chart-timeline-variant-shimmer"
+            },
+            "device_forecast": {
+                "default": "mdi:chart-timeline-variant"
+            },
+            "grid_forecast": {
+                "default": "mdi:transmission-tower"
+            },
+            "battery_soc_forecast": {
+                "default": "mdi:battery-clock"
+            },
+            "base_load": {
+                "default": "mdi:home-lightning-bolt-outline"
+            },
+            "detected_loads": {
+                "default": "mdi:magnify-scan"
+            },
+            "unknown_load_power": {
+                "default": "mdi:help-circle-outline"
+            },
+            "named_load_power": {
+                "default": "mdi:flash"
+            }
+        },
+        "binary_sensor": {
+            "named_load_running": {
+                "default": "mdi:power-plug-off",
+                "state": {
+                    "on": "mdi:power-plug"
+                }
+            }
+        }
+    }
+}

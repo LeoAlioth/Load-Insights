@@ -133,5 +133,19 @@
             "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
             "nothing_to_name": "Zaenkrat ni kaj poimenovati - ali ni bil zaznan noben porabnik ali pa vse pojasnijo števci naprav."
         }
+    },
+    "issues": {
+        "temperature_pair_incomplete": {
+            "title": "Odziv na vreme potrebuje oba dela",
+            "description": "Load Insights ima {have}, nima pa {missing}. Temperaturni odziv se umeri na zabeleženi preteklosti senzorja in uporabi na prihodnjem tednu vremenske entitete, zato eno brez drugega ne more delovati. Manjkajoče dodajte v Nastavitve -> Pojasnjevalni vhodi ali izbrišite oboje."
+        },
+        "no_pv_forecast": {
+            "title": "Na nadzorni plošči Energija ni povezane napovedi PV",
+            "description": "Ta lokacija proizvaja PV, a nadzorna plošča Energija nima nobene integracije napovedi, povezane s sončnim virom. Napoved omrežja zato predvideva teden brez sonca, njene vrednosti uvoza pa so močno pesimistične. Povežite eno (Solcast, Forecast.Solar in druge) z virom PV v Nastavitve -> Nadzorne plošče -> Energija."
+        },
+        "devices_without_power": {
+            "title": "Nekaterih merjenih naprav ni mogoče zaznati",
+            "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
+        }
     }
 }

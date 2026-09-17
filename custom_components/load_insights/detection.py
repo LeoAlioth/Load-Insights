@@ -152,6 +152,17 @@ class DetectionRunner:
         self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=DETECTION_INTERVAL_MINUTES))
         self.hass.async_create_task(self._run())
 
+    async def async_reset(self) -> None:
+        """Forget everything learned and start the backfill again."""
+        self.fleet = Fleet()
+        self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+        self.last_processed = None
+        self.caught_up = False
+        await self._store.async_save({"fleet": self.fleet.to_dict(), "last_processed": None})
+        for cb in self._listeners:
+            cb()
+        self.hass.async_create_task(self._run())
+
     async def async_stop(self) -> None:
         if self._unsub:
             self._unsub()

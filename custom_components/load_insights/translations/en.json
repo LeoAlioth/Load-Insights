@@ -133,5 +133,19 @@
             "no_detection": "Load detection is not set up: choose the main meter first.",
             "nothing_to_name": "Nothing to name yet - either no loads have been detected, or every one is already accounted for by a device meter."
         }
+    },
+    "issues": {
+        "temperature_pair_incomplete": {
+            "title": "The weather response needs both halves",
+            "description": "Load Insights has the {have} but not the {missing}. The temperature response is fitted on the sensor's recorded past and applied to the weather entity's coming week, so one without the other can never take effect. Add the missing one under Configure -> Explanatory inputs, or clear both."
+        },
+        "no_pv_forecast": {
+            "title": "No PV forecast is linked to the Energy dashboard",
+            "description": "This site produces PV, but its Energy dashboard has no forecast integration linked to the solar source. The grid forecast therefore predicts a week of sunless days, and its import figures are badly pessimistic. Link one (Solcast, Forecast.Solar and others) to the PV source in Settings -> Dashboards -> Energy."
+        },
+        "devices_without_power": {
+            "title": "Some metered devices cannot be detected",
+            "description": "{devices} appear on the Energy dashboard but publish no power reading, only energy. Hourly energy is far too coarse to line up with a load switching on, so these devices cannot locate or name anything in load detection. Their forecasts are unaffected."
+        }
     }
 }
