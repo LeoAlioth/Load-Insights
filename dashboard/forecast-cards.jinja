@@ -12,6 +12,9 @@
 
   Needs the Plotly Graph Card from HACS.
 
+  Everything is plotted in W - what the sensors report, and the same
+  quantity as the forecast rows' kWh per hour (1 kWh/h is 1 kW).
+
   The window is 36 hours back and 36 hours forward.
 -#}
 {%- set sensors = states.sensor
@@ -50,7 +53,7 @@ cards:
       height: 260
       margin: {t: 30, l: 50, r: 12, b: 30}
       legend: {orientation: h, y: 1.15}
-      yaxis: {title: kWh / h, rangemode: tozero}
+      yaxis: {title: W, rangemode: tozero}
     entities:
       - entity: {{ s.entity_id }}
         name: Likely range
@@ -62,7 +65,7 @@ cards:
               ({hass}) => {
                 const r = hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [];
                 return {xs: r.map(p => new Date(p.period_start)),
-                        ys: r.map(p => p.kwh_p10 ?? p.kwh)};
+                        ys: r.map(p => 1000 * (p.kwh_p10 ?? p.kwh))};
               }
       - entity: {{ s.entity_id }}
         name: Likely range
@@ -75,7 +78,7 @@ cards:
               ({hass}) => {
                 const r = hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [];
                 return {xs: r.map(p => new Date(p.period_start)),
-                        ys: r.map(p => p.kwh_p90 ?? p.kwh)};
+                        ys: r.map(p => 1000 * (p.kwh_p90 ?? p.kwh))};
               }
       - entity: {{ s.entity_id }}
         name: Forecast
@@ -84,11 +87,11 @@ cards:
           - fn: |-
               ({xs, states, hass}) => {
                 // the past is the sensor's own recorded state - it IS the
-                // forecast for the coming hour - in W, so /1000 for kWh/h
-                const past = states.map((s, i) => [xs[i], +s.state / 1000])
+                // forecast for the coming hour, already in W
+                const past = states.map((s, i) => [xs[i], +s.state])
                                    .filter(r => isFinite(r[1]));
                 const future = (hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [])
-                                   .map(p => [new Date(p.period_start), p.kwh]);
+                                   .map(p => [new Date(p.period_start), 1000 * p.kwh]);
                 const all = past.concat(future);
                 return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};
               }
@@ -101,7 +104,7 @@ cards:
               ({hass}) => {
                 const r = hass.states["{{ s.entity_id }}"].attributes.history || [];
                 return {xs: r.map(p => new Date(p.period_start)),
-                        ys: r.map(p => p.kwh)};
+                        ys: r.map(p => 1000 * p.kwh)};
               }
 {%- endfor %}
 {%- endif -%}
