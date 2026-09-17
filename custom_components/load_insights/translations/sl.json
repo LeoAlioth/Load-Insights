@@ -72,9 +72,10 @@
     "options": {
         "step": {
             "init": {
-                "title": "Pojasnjevalni vhodi",
-                "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
+                "title": "Load Insights",
+                "description": "Izberite stran.",
                 "menu_options": {
+                    "overview": "Pregled",
                     "inputs": "Pojasnjevalni vhodi",
                     "device_state": "Lastni senzor stanja naprave",
                     "detection": "Zaznavanje porabnikov",
@@ -133,6 +134,23 @@
                 "data": {
                     "signature": "Zaznan porabnik",
                     "name": "Ime"
+                }
+            },
+            "overview": {
+                "title": "Pregled",
+                "description": "Kaj Load Insights vidi zdaj.\n\n{overview}",
+                "menu_options": {
+                    "overview": "🔄 Osveži",
+                    "reset_detection": "Ponastavi zaznavanje porabe",
+                    "init": "← Nazaj na meni"
+                }
+            },
+            "reset_detection": {
+                "title": "Ponastavim zaznavanje porabe?",
+                "description": "Knjižnica zaznanih bremen in vsa imena v njej bodo pozabljena, zadnjih deset dni meritev pa se prebere znova. Teče samodejno in traja nekaj časa. Uporabite po zamenjavi števca, prevezavi faze ali posodobitvi, ki spremeni način zaznavanja.",
+                "menu_options": {
+                    "reset_confirmed": "Da, pozabi vse",
+                    "overview": "← Prekliči"
                 }
             }
         },
