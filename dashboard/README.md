@@ -1,20 +1,28 @@
 # Dashboard
 
-`forecast-cards.jinja` writes one forecast-vs-actual graph per device, for
-every device on your Energy dashboard. Run it again when that list changes.
+Both files draw the same thing: one forecast-vs-actual graph per device, for
+every device on your Energy dashboard.
 
-### Why it is a generator and not a self-updating card
+| | when the list of devices is worked out | needs |
+|---|---|---|
+| `forecast-cards-live.yaml` | **every render** - a device added to the dashboard just appears | config-template-card + Plotly |
+| `forecast-cards.jinja` | once, when you run the template | Plotly |
 
-A card that rebuilds its own list would be nicer, and `auto-entities` looks
-like the tool for it - it is what the "devices with low batteries" cards are
-built from. It cannot do this one. auto-entities produces a list of ENTITY
-configs; `card_param: cards` works in its own example only because a grid
-turns `{entity: x}` into a default entity card. Hand it a full card config -
-even `{'type': 'markdown', 'content': 'hello'}` - and the item is dropped,
-because it has no `entity`. Tested on a live instance, 2026-09-17.
+## `forecast-cards-live.yaml` - the self-updating card
 
-`config-template-card` can generate cards from a template and would be the
-tool to try, at the cost of another custom card.
+Paste it into a dashboard as a **manual card**. Its `cards:` is a single
+JavaScript expression that finds every sensor carrying a `detailedForecast`
+attribute - exactly the Load Insights forecast sensors - and returns a card
+for each. `entities:` is only what config-template-card watches to know when
+to redraw; any one forecast sensor will do, since they all refresh together.
+
+### Not auto-entities
+
+`auto-entities` is the obvious candidate and cannot do this: it produces a
+list of ENTITY configs, and its own `card_param: cards` example works only
+because a grid turns `{entity: x}` into a default entity card. Hand it a whole
+card config - even `{'type': 'markdown', 'content': 'hello'}` - and the item
+is dropped for having no `entity`. Tested on a live instance, 2026-09-17.
 
 ## `forecast-cards.jinja` - forecast against actual, one graph per thing
 
