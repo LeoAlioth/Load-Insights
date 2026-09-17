@@ -8,6 +8,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -24,28 +25,17 @@ from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coordinator: InsightsCoordinator = hass.data[DOMAIN][entry.entry_id]
+    # One sensor per thing forecast: the state is the prediction for the
+    # coming hour, the attributes carry the rest - the horizon, the spread,
+    # the recent actuals, the score. Daily totals, import and export figures
+    # and the individual score numbers were sensors of their own once; they
+    # are all attributes already, and a template sensor makes one where a
+    # dashboard wants it (Anze, 2026-09-17).
     entities = [
         ForecastPowerSensor(coordinator, entry, "consumption_forecast", "consumption"),
-        ForecastEnergySensor(coordinator, entry, "consumption_today", "consumption", "today_kwh"),
-        ForecastEnergySensor(coordinator, entry, "consumption_tomorrow", "consumption", "tomorrow_kwh"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
-    ]
-    # What the meter will do, and the pack's day.
-    entities += [
         GridForecastSensor(coordinator, entry, "grid_forecast"),
-        GridEnergySensor(coordinator, entry, "grid_import_tomorrow", "import"),
-        GridEnergySensor(coordinator, entry, "grid_export_tomorrow", "export"),
         BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"),
-    ]
-    # Forecast scores: the few numbers worth a card or an alert. Per-device
-    # scores are attributes on the device forecast sensors instead.
-    entities += [
-        ScoreSensor(coordinator, entry, "consumption_error_day_ahead", SITE_KEY, "mae", LEADS["day_ahead"]),
-        ScoreSensor(coordinator, entry, "consumption_bias_day_ahead", SITE_KEY, "bias", LEADS["day_ahead"]),
-        ScoreSensor(coordinator, entry, "consumption_error_hour_ahead", SITE_KEY, "mae", LEADS["hour_ahead"]),
-        DayAheadErrorSensor(coordinator, entry, "consumption_day_ahead_kwh_error", SITE_KEY),
-        ScoreSensor(coordinator, entry, "remainder_error_day_ahead", REMAINDER_KEY, "mae", LEADS["day_ahead"]),
-        ScoreSensor(coordinator, entry, "remainder_bias_day_ahead", REMAINDER_KEY, "bias", LEADS["day_ahead"]),
     ]
     # One per device the Energy dashboard lists, from the site model of the
     # first refresh. A device added to the dashboard later appears after a
@@ -151,6 +141,7 @@ class ForecastPowerSensor(_Base):
             "computed_at": data.computed_at.isoformat(),
             # Public holidays are scored as Sundays; None here means the
             # holidays library is not installed (no Workday integration).
+            "score": _score_attrs((data.ledgers or {}).get(self._ledger_key()), data.computed_at),
             "holidays_modelled": data.holidays_known,
             "holidays_in_horizon": list(data.holidays_in_horizon),
             # The temperature response fitted for THIS series, or zeros when
@@ -204,24 +195,6 @@ class ForecastPowerSensor(_Base):
         return attrs
 
 
-class ForecastEnergySensor(_Base):
-    """Today's or tomorrow's total: actual for the completed hours, forecast
-    for the rest. No state_class on purpose - it is a forecast, not a meter."""
-
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_suggested_display_precision = 1
-
-    def __init__(self, coordinator, entry, key, which, field) -> None:
-        super().__init__(coordinator, entry, key, which)
-        self._field = field
-
-    @property
-    def native_value(self) -> Optional[float]:
-        fc = self._forecast()
-        return None if fc is None else round(getattr(fc, self._field), 2)
-
-
 def _score_attrs(led: Optional[Ledger], now) -> dict:
     """The scoring table for one series, as attributes."""
     if led is None:
@@ -243,78 +216,6 @@ def _score_attrs(led: Optional[Ledger], now) -> dict:
     return out
 
 
-class ScoreSensor(_Base):
-    """A trailing-7-day error figure for one series and one lead, in W."""
-
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
-    _unrecorded_attributes = frozenset({"recent"})
-
-    def __init__(self, coordinator, entry, key, series_key, metric, lead) -> None:
-        super().__init__(coordinator, entry, key, "consumption")
-        self._series_key = series_key
-        self._metric = metric
-        self._lead = lead
-
-    def _ledger(self) -> Optional[Ledger]:
-        data: Optional[InsightsData] = self.coordinator.data
-        return None if data is None or not data.ledgers else data.ledgers.get(self._series_key)
-
-    @property
-    def available(self) -> bool:
-        led = self._ledger()
-        return CoordinatorEntity.available.fget(self) and led is not None and led.metrics(self.coordinator.data.computed_at, self._lead)["n"] > 0
-
-    @property
-    def native_value(self) -> Optional[float]:
-        led = self._ledger()
-        if led is None:
-            return None
-        m = led.metrics(self.coordinator.data.computed_at, self._lead)
-        v = m["mae_w"] if self._metric == "mae" else m["bias_w"]
-        return None if v is None else round(v)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        led = self._ledger()
-        data: Optional[InsightsData] = self.coordinator.data
-        if led is None or data is None:
-            return {}
-        attrs = _score_attrs(led, data.computed_at)
-        attrs["recent"] = [
-            {"period_start": datetime.fromtimestamp(r["hour_key"], data.computed_at.tzinfo).isoformat(),
-             "actual_kwh": round(r["actual"], 3), "predicted_kwh": round(r["predicted"], 3)}
-            for r in led.recent(data.computed_at, self._lead if self._lead in LEADS_H else BAND_LEAD_H)
-        ]
-        return attrs
-
-
-class DayAheadErrorSensor(ScoreSensor):
-    """Yesterday's headline: actual minus the total the forecast showed for
-    it at noon the day before, in kWh, signed. One number a day."""
-
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_state_class = None
-    _attr_suggested_display_precision = 1
-
-    def __init__(self, coordinator, entry, key, series_key) -> None:
-        super().__init__(coordinator, entry, key, series_key, "day", LEADS["day_ahead"])
-
-    @property
-    def available(self) -> bool:
-        led = self._ledger()
-        return CoordinatorEntity.available.fget(self) and led is not None and led.last_day() is not None
-
-    @property
-    def native_value(self) -> Optional[float]:
-        led = self._ledger()
-        day = led.last_day() if led else None
-        return None if day is None else round(day[1] - day[2], 2)
-
-
 class DeviceForecastSensor(ForecastPowerSensor):
     """The same forecast, for one individually metered device.
 
@@ -334,7 +235,9 @@ class DeviceForecastSensor(ForecastPowerSensor):
         self._energy = device.energy
         self._device = device
         self._attr_unique_id = f"{entry.entry_id}_device_{device.energy.replace('.', '_')}"
-        self._attr_translation_placeholders = {"device": device.label}
+        # its own device, hanging off the site's, so the site page is not a
+        # list of twenty forecasts
+        self._attr_device_info = _attach_to_source(coordinator.hass, entry, device)
 
     def _forecast(self) -> Optional[Forecast]:
         data: Optional[InsightsData] = self.coordinator.data
@@ -370,6 +273,44 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
                 }
         return attrs
+
+
+def _attach_to_source(hass, entry: ConfigEntry, device) -> DeviceInfo:
+    """Put a device's forecast ON that device, where Home Assistant has one.
+
+    The dashboard's statistic id is the energy entity's id, so the entity
+    registry gives the device behind it. Reusing that device's own
+    identifiers attaches this entity to it - the boiler's forecast then sits
+    on the boiler, beside its own sensors, rather than on a parallel device
+    of ours. Only the identifiers are passed: name, manufacturer and model
+    belong to whoever created it.
+
+    Where no device can be resolved - a statistic from a template or a helper,
+    say - the forecast falls back to a device of our own."""
+    registry = er.async_get(hass)
+    reg_entry = registry.async_get(device.energy)
+    if reg_entry is not None and reg_entry.device_id:
+        source = dr.async_get(hass).async_get(reg_entry.device_id)
+        if source is not None and source.identifiers:
+            return DeviceInfo(identifiers=set(source.identifiers))
+    return _child_device(hass, entry, f"device_{device.energy}", device.label, "Device forecast")
+
+
+def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:
+    """A device of its own, pointed at the site device by the registry id.
+
+    ``via_device_id`` rather than the ``via_device`` tuple: the tuple form is
+    deprecated and stops working in Home Assistant 2027.8."""
+    info = DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_{key}")},
+        name=name,
+        manufacturer="Load Insights",
+        model=model,
+    )
+    parent = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_site_device")
+    if parent:
+        info["via_device_id"] = parent
+    return info
 
 
 class _DetectionBase(SensorEntity):
@@ -528,31 +469,6 @@ class GridForecastSensor(_GridBase):
         }
 
 
-class GridEnergySensor(_GridBase):
-    """Tomorrow's expected import or export, kWh."""
-
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_suggested_display_precision = 1
-
-    def __init__(self, coordinator, entry, key, which) -> None:
-        super().__init__(coordinator, entry, key)
-        self._which = which
-
-    @property
-    def native_value(self) -> Optional[float]:
-        g = self._grid()
-        data: Optional[InsightsData] = self.coordinator.data
-        if not g or data is None:
-            return None
-        day = (data.computed_at + timedelta(days=1)).date()
-        rows = [h.net_kwh for h in g.hours if h.when.date() == day]
-        if not rows:
-            return None
-        return round(sum(max(0.0, v) for v in rows) if self._which == "import"
-                     else sum(max(0.0, -v) for v in rows), 2)
-
-
 class BatterySocForecastSensor(_GridBase):
     """The pack's expected state of charge at the end of the coming hour."""
 
@@ -634,8 +550,8 @@ class NamedLoadPower(_DetectionBase):
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
         super().__init__(runner, entry, "named_load_power")
         self._name = name
-        self._attr_name = f"{name} power"
         self._attr_unique_id = f"{entry.entry_id}_load_power_{name.lower().replace(' ', '_')}"
+        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
 
     @property
     def native_value(self) -> Optional[float]:
