@@ -63,6 +63,21 @@
             },
             "unknown_load_power": {
                 "name": "Moč neznanih porabnikov"
+            },
+            "grid_forecast": {
+                "name": "Napoved omrežja"
+            },
+            "grid_import_tomorrow": {
+                "name": "Uvoz iz omrežja jutri"
+            },
+            "grid_export_tomorrow": {
+                "name": "Izvoz v omrežje jutri"
+            },
+            "battery_soc_forecast": {
+                "name": "Napoved SOC baterije"
+            },
+            "base_load": {
+                "name": "Osnovna poraba"
             }
         }
     },

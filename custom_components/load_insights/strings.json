@@ -63,6 +63,21 @@
             },
             "unknown_load_power": {
                 "name": "Unknown load power"
+            },
+            "grid_forecast": {
+                "name": "Grid forecast"
+            },
+            "grid_import_tomorrow": {
+                "name": "Grid import tomorrow"
+            },
+            "grid_export_tomorrow": {
+                "name": "Grid export tomorrow"
+            },
+            "battery_soc_forecast": {
+                "name": "Battery SOC forecast"
+            },
+            "base_load": {
+                "name": "Base load"
             }
         }
     },

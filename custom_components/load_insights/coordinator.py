@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Set
 
 from homeassistant.components.energy.data import async_get_manager
+from homeassistant.components.energy.websocket_api import async_get_energy_platforms
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
@@ -32,6 +33,7 @@ from .const import (
 )
 from .insights.calendars import CalendarSignals
 from .insights.covariates import interpolate_hourly
+from .insights.grid import GridForecast, build as build_grid
 from .insights.model import SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
 from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
@@ -84,6 +86,7 @@ class InsightsData:
     device_state_now: Dict[str, Optional[float]] = None  # type: ignore[assignment]
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
+    grid: Optional[GridForecast] = None
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
@@ -231,6 +234,14 @@ class InsightsCoordinator(DataUpdateCoordinator):
             )
             score(d.energy, device_fc[d.energy], rows)
         await self._save_ledgers()
+
+        # --- what the meter will do: consumption less the PV the dashboard's
+        # own forecast integrations predict, then the battery in between ---
+        pv = await self._solar_forecast(site, now)
+        soc = _read_number(self.hass, site.battery_soc)
+        grid = await self.hass.async_add_executor_job(
+            build_grid, cons_fc.hourly, pv, soc, site.battery_capacity_kwh,
+        )
         return InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
@@ -243,11 +254,42 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temperature_history_hours=len(temps_hist),
             temperature_forecast_hours=len(temps_fc),
             ledgers=dict(ledgers),
+            grid=grid,
             calendar_entities=cal_entities,
             calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
             device_state_sensors=state_map,
             device_state_now=state_now,
         )
+
+    async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:
+        """Hour key -> forecast PV kWh, from the forecast integrations the
+        Energy dashboard already links to the PV source. This is the same
+        data the dashboard draws as its dashed line, asked for the same way."""
+        if not site.solar_forecast_entries:
+            return {}
+        try:
+            platforms = await async_get_energy_platforms(self.hass)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Solar forecast platforms unavailable: %s", exc)
+            return {}
+        out: Dict[float, float] = {}
+        for entry_id in site.solar_forecast_entries:
+            entry = self.hass.config_entries.async_get_entry(entry_id)
+            if entry is None or entry.domain not in platforms:
+                continue
+            try:
+                fc = await platforms[entry.domain](self.hass, entry_id)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Solar forecast from %s failed: %s", entry.domain, exc)
+                continue
+            for iso, wh in ((fc or {}).get("wh_hours") or {}).items():
+                t = dt_util.parse_datetime(iso)
+                if t is None:
+                    continue
+                k = floor_hour(dt_util.as_local(t)).timestamp()
+                # several arrays on one site sum, as the dashboard sums them
+                out[k] = out.get(k, 0.0) + float(wh) / 1000.0
+        return out
 
     async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:
         """(start_key, end_key, title) for every event of a calendar between
@@ -320,6 +362,19 @@ class InsightsCoordinator(DataUpdateCoordinator):
             return {}
         keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
         return interpolate_hourly(points, keys)
+
+
+def _read_number(hass, entity_ids) -> Optional[float]:
+    """The first readable numeric state among ``entity_ids``."""
+    for eid in entity_ids or ():
+        st = hass.states.get(eid)
+        if st is None:
+            continue
+        try:
+            return float(st.state)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _to_c(value, unit) -> float:
