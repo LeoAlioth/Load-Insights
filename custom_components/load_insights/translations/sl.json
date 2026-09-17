@@ -116,7 +116,7 @@
                     "voltage_c": "Napetost C"
                 },
                 "data_description": {
-                    "device": "Izberite števec in meritve po fazah se izpolnijo spodaj, da jih preverite. Pustite prazno za ročno izbiro entitet."
+                    "device": "Izberite števec in meritve po fazah se izpolnijo spodaj, da jih preverite. Pustite prazno za ročno izbiro entitet. Ponovna potrditev istega števca izpolni še prazna polja, izpolnjenih pa ne spremeni."
                 }
             },
             "naming": {
