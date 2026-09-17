@@ -129,7 +129,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.\n\n{detail}",
+                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.\n\nIzberite eno in pritisnite Potrdi s praznim imenom, da si jo ogledate podrobneje; obrazec se med brskanjem po seznamu ne more osvežiti. Za shranitev vpišite ime.\n\n{detail}",
                 "data": {
                     "signature": "Zaznan porabnik",
                     "name": "Ime"

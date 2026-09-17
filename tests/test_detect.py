@@ -507,5 +507,64 @@ def test_whether_the_array_shows_in_the_meter_is_measured():
     assert D.pv_shows_in(grid, flat) is None
 
 
+def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
+    return D.Signature(id=id, phases="a", power={"a": watts}, duration_s=dur, pf=pf, count=count,
+                       first_seen=0.0, last_seen=float(id), hours=list(hours or [0] * 24),
+                       locations=dict(loc or {}), name=name)
+
+
+def test_signatures_that_have_become_alike_are_merged():
+    """Power and duration are running MEANS, so two signatures indistinguish-
+    able today need not have been when the second was created. Kozolec had
+    one 1.8 kW load split five ways - 230, 136, 50, 27 and 18 sightings, all
+    within 4 % of each other."""
+    det = D.Detector()
+    h1 = [0] * 24; h1[7] = 5
+    h2 = [0] * 24; h2[8] = 3
+    det.signatures = [
+        _sig(1, 1784.0, 69.0, 0.97, 230, h1, {"Hiša": 100}),
+        _sig(37, 1824.0, 89.0, 0.96, 136, h2, {"Hiša": 36}),
+        _sig(70, 1858.0, 78.0, 0.93, 50),
+        _sig(99, 900.0, 70.0, 0.97, 40),          # half the size: a different load
+    ]
+    det.recent = [{"start": 0.0, "end": 1.0, "phases": "a", "kwh": 0.1, "max_w": 1800,
+                   "levels": 1, "signature": 37}]
+    gone = det.consolidate(100.0)
+    assert gone == 2, [(x.id, x.count) for x in det.signatures]
+    kept = max(det.signatures, key=lambda x: x.count)
+    assert kept.id == 1 and kept.count == 416, (kept.id, kept.count)
+    assert 1790 < kept.power["a"] < 1815, kept.power
+    assert kept.hours[7] == 5 and kept.hours[8] == 3, kept.hours
+    assert kept.locations == {"Hiša": 136}, kept.locations
+    assert det.recent[0]["signature"] == 1, det.recent        # sessions follow
+    assert {x.id for x in det.signatures} == {1, 99}
+
+
+def test_loads_named_differently_are_never_merged():
+    det = D.Detector()
+    det.signatures = [_sig(1, 1800.0, 70.0, 0.97, 10, name="Kettle"),
+                      _sig(2, 1810.0, 72.0, 0.97, 8, name="Toaster")]
+    assert det.consolidate(100.0) == 0
+    assert len(det.signatures) == 2
+
+
+def test_an_unnamed_twin_joins_the_named_one_and_keeps_the_name():
+    det = D.Detector()
+    det.signatures = [_sig(1, 1800.0, 70.0, 0.97, 10, name="Kettle"),
+                      _sig(2, 1810.0, 72.0, 0.97, 8)]
+    assert det.consolidate(100.0) == 1
+    assert det.signatures[0].name == "Kettle" and det.signatures[0].count == 18
+
+
+def test_the_day_is_drawn_as_a_block_chart():
+    hours = [0] * 24
+    hours[7], hours[8], hours[20] = 6, 3, 2
+    lines = D.hour_histogram(hours)
+    assert len(lines) == D.HISTOGRAM_ROWS + 2, lines          # bars, axis, ruler
+    assert all(len(x) == 24 * D.HISTOGRAM_COL + 1 for x in lines[:-1]), [len(x) for x in lines]
+    assert "█" in lines[0] and lines[0].index("█") // D.HISTOGRAM_COL == 7, lines[0]
+    assert D.hour_histogram([0] * 24) == []
+
+
 if __name__ == "__main__":
     run_main(globals())
