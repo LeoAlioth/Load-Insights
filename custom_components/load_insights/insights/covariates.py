@@ -48,6 +48,12 @@ class TemperatureResponse:
     cdh_mean: float
     explained: float                # share of residual variance removed (0 when not engaged)
     hours: int                      # hours the fit saw
+    # Why it is not engaged, in words. Every rejection used to return the
+    # same row of zeros, so a site whose forecast ignored the weather could
+    # not tell "no overlapping history" from "the fit ran and explained
+    # nothing" - which at a mid-September site are very different answers
+    # (Anze, 2026-09-17).
+    reason: str = ""
 
     @property
     def engaged(self) -> bool:
@@ -61,7 +67,12 @@ class TemperatureResponse:
                 + self.cooling_kwh_per_degh * (cdh(temp_c) - self.cdh_mean))
 
 
-NONE = TemperatureResponse(0.0, 0.0, 0.0, 0.0, 0.0, 0)
+NONE = TemperatureResponse(0.0, 0.0, 0.0, 0.0, 0.0, 0, "not fitted")
+
+
+def _no(reason: str, hours: int = 0, explained: float = 0.0) -> TemperatureResponse:
+    """A response that does nothing, and says why."""
+    return TemperatureResponse(0.0, 0.0, 0.0, 0.0, explained, hours, reason)
 
 
 def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> TemperatureResponse:
@@ -70,11 +81,12 @@ def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> Temp
     Weighted least squares without intercept on the centred features. A
     negative coefficient (consumption FALLING as it gets colder) is not a
     heating response and is clipped to zero; if both are zero or the guard
-    fails, the result is NONE.
+    fails, the result does nothing and carries the reason in words.
     """
     rows = [(w, r, t) for w, r, t in rows if w > 0 and t is not None and r is not None]
     if len(rows) < MIN_HOURS:
-        return NONE
+        return _no(f"{len(rows)} hours have both a residual and a temperature, "
+                   f"{MIN_HOURS} needed", hours=len(rows))
     W = sum(w for w, _, _ in rows)
     h_mean = sum(w * hdh(t) for w, _, t in rows) / W
     c_mean = sum(w * cdh(t) for w, _, t in rows) / W
@@ -90,7 +102,8 @@ def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> Temp
         syr += w * y * r
         srr += w * r * r
     if srr <= 0 or srr < MIN_RESIDUAL_MS * W:
-        return NONE
+        return _no("the residual is numerically nothing - the profile already "
+                   "accounts for this series", hours=len(rows))
     det = sxx * syy - sxy * sxy
     if det > 1e-12:
         a = (sxr * syy - syr * sxy) / det
@@ -101,7 +114,8 @@ def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> Temp
     a = max(0.0, a)
     b = max(0.0, b)
     if a == 0.0 and b == 0.0:
-        return NONE
+        return _no("consumption does not rise with cold or with heat here",
+                   hours=len(rows))
     # residual variance after the (clipped) fit
     ssr = 0.0
     for w, r, t in rows:
@@ -109,7 +123,8 @@ def fit_temperature_response(rows: Sequence[Tuple[float, float, float]]) -> Temp
         ssr += w * e * e
     explained = 1.0 - ssr / srr
     if explained < MIN_EXPLAINED:
-        return NONE
+        return _no(f"the fit explains {explained:.1%} of what the profile leaves over, "
+                   f"{MIN_EXPLAINED:.0%} needed", hours=len(rows), explained=explained)
     return TemperatureResponse(a, b, h_mean, c_mean, explained, len(rows))
 
 

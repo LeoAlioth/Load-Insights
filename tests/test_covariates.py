@@ -93,5 +93,23 @@ def test_a_negative_coefficient_is_not_a_heating_response():
     assert not P.forecast(samples, NOW, temps_history=temps).temperature.engaged
 
 
+def test_a_response_that_does_nothing_says_why():
+    """The reason is the whole point of the dump: at a September site the
+    fit runs on plenty of hours and explains nothing, which reads very
+    differently from having no history at all."""
+    short = C.fit_temperature_response([(1.0, 0.5, 10.0)] * 10)
+    assert not short.engaged and short.hours == 10 and "336 needed" in short.reason, short
+
+    rnd = random.Random(7)
+    # temperature that varies, consumption that ignores it
+    rows = [(1.0, rnd.uniform(-0.2, 0.2), rnd.uniform(0.0, 30.0)) for _ in range(C.MIN_HOURS + 50)]
+    weak = C.fit_temperature_response(rows)
+    assert not weak.engaged, weak
+    assert weak.hours == len(rows), weak
+    assert "needed" in weak.reason or "does not rise" in weak.reason, weak.reason
+
+    assert C.NONE.reason == "not fitted"
+
+
 if __name__ == "__main__":
     run_main(globals())
