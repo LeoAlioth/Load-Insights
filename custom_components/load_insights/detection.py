@@ -156,7 +156,9 @@ class DetectionRunner:
         seen once, dont show them"). It keeps its place in the library and
         appears here as soon as it happens again."""
         parents = self.parents
-        return [s for s in sorted(self.detector.signatures, key=lambda x: -x.count)
+        # best evidence first: the loads most worth naming, not merely the
+        # most frequent
+        return [s for s in sorted(self.detector.signatures, key=lambda x: (-x.evidence, -x.count))
                 if s.count >= MIN_COUNT_TO_NAME
                 and most_specific(s.locations, s.count, parents) == "main"]
 

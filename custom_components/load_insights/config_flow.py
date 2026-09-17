@@ -25,7 +25,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import suggest_levels
+from .insights.detect import describe_location, suggest_levels
 from .insights.discovery import describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -158,8 +158,13 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         tz = dt_util.DEFAULT_TIME_ZONE
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
         options = []
+        parents = runner.parents
         for sig in candidates:
             label = sig.describe(tz)
+            if sig.locations:
+                # nothing owns these - they are all "main" - but a meter that
+                # saw it SOMETIMES still narrows where it is
+                label += f", {describe_location(sig.locations, sig.count, parents, sig.phases)}"
             if sig.name:
                 label = f"{sig.name} - {label}"
             if sig.id in levels:

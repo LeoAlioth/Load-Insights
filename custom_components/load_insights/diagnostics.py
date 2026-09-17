@@ -37,7 +37,7 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
-from .insights.detect import most_specific
+from .insights.detect import describe_location, location_confidence, most_specific
 
 HORIZON_SAMPLE = 24        # hours of the horizon worth dumping; the rest is more of the same
 _MAX_DEPTH = 6
@@ -162,7 +162,11 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
                                         "levels": len(o.levels)} for o in st.open_edges]}
                        for p, st in det.phases.items()},
             "signatures": [
-                {**_jsonable(sig.to_dict()), "location": most_specific(sig.locations, sig.count, parents)}
+                {**_jsonable(sig.to_dict()),
+                 "location": most_specific(sig.locations, sig.count, parents),
+                 "where": describe_location(sig.locations, sig.count, parents, sig.phases),
+                 "where_confidence": location_confidence(sig.locations, sig.count, parents),
+                 "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict()}
                 for sig in sorted(det.signatures, key=lambda x: -x.count)
             ],
             "recent_sessions": det.recent[-60:],

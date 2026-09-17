@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from .classify import Guess, classify
+
 PHASES = ("a", "b", "c")
 MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
 NOISE_MAD_FACTOR = 4.0
@@ -346,6 +348,13 @@ class Signature:
     hours: List[int] = field(default_factory=lambda: [0] * 24)
     level_count: float = 1.0
     name: Optional[str] = None
+    # how much each reading WANDERS between sightings, as a running mean
+    # absolute deviation. A load that repeats to within a few per cent is a
+    # real device; one whose power and duration are all over the place is
+    # the detector pairing unrelated edges, and the evidence score says so.
+    power_mad: float = 0.0
+    duration_mad: float = 0.0
+    interval_mad: Optional[float] = None
 
     def matches(self, s: Session, noise_w: float) -> Optional[float]:
         """A score in (0, 1] when ``s`` fits, None when it does not."""
@@ -368,6 +377,9 @@ class Signature:
 
     def absorb(self, s: Session, tz) -> None:
         n = self.count
+        pw = s.power_by_phase()
+        self.power_mad = (self.power_mad * n + abs(sum(pw.values()) - sum(self.power.values()))) / (n + 1)
+        self.duration_mad = (self.duration_mad * n + abs(s.duration_s - self.duration_s)) / (n + 1)
         for ph, w in s.power_by_phase().items():
             self.power[ph] = (self.power.get(ph, w) * n + w) / (n + 1)
         self.duration_s = (self.duration_s * n + s.duration_s) / (n + 1)
@@ -377,34 +389,71 @@ class Signature:
         if self.last_start is not None:
             gap = s.start - self.last_start
             if gap > 0:
+                if self.interval_s is not None:
+                    self.interval_mad = (abs(gap - self.interval_s) if self.interval_mad is None
+                                         else 0.7 * self.interval_mad + 0.3 * abs(gap - self.interval_s))
                 self.interval_s = gap if self.interval_s is None else 0.7 * self.interval_s + 0.3 * gap
         self.last_start = s.start
         self.last_seen = max(self.last_seen, s.end)
         self.hours[datetime.fromtimestamp(s.start, tz).hour] += 1
         self.count += 1
 
+    @property
+    def watts(self) -> float:
+        return sum(self.power.values())
+
+    @property
+    def evidence(self) -> float:
+        """How sure we are this is a REAL repeating load rather than a pair
+        of unrelated edges: how often it has been seen, and how tightly its
+        power and duration repeat. This is the score that decides whether it
+        is worth putting in front of anyone."""
+        seen = min(1.0, (self.count - 1) / 4.0)          # five sightings is plenty
+        if self.count < 3:
+            return round(0.4 * seen, 2)                  # nothing has repeated enough to measure
+        tight_w = 1.0 - min(1.0, (self.power_mad / max(abs(self.watts), 1.0)) / 0.15)
+        tight_d = 1.0 - min(1.0, (self.duration_mad / max(self.duration_s, 1.0)) / 0.5)
+        return round(0.5 * seen + 0.3 * tight_w + 0.2 * tight_d, 2)
+
+    @property
+    def regular(self) -> bool:
+        """It comes back on a clock - a thermostat, a timer, a fridge."""
+        return (self.count >= 4 and self.interval_s is not None and self.interval_mad is not None
+                and self.interval_mad < 0.35 * self.interval_s)
+
+    def guess(self) -> Guess:
+        """What KIND of thing this might be. Never a claim - see classify."""
+        return classify(self.watts, self.pf, self.level_count, self.duration_s)
+
     def describe(self, tz) -> str:
-        """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen 258 times'."""
-        total = sum(self.power.values())
+        """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
+        258 times - maybe a heating element (power factor 1.00, one level)'."""
         phases = "+".join(p.upper() for p in self.phases)
         dur = _fmt_s(self.duration_s)
         gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
         pf = f", PF {self.pf:.2f}" if self.pf is not None else ""
-        return f"{total / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, seen {self.count} times"
+        line = f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, seen {self.count} times"
+        guess = self.guess()
+        # the short form: the line above already carries the factor, the
+        # levels and the size the guess rests on
+        return f"{line} - {guess.short}" if guess.kind else line
 
     def to_dict(self) -> dict:
         return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
                 "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
                 "interval_s": self.interval_s, "hours": self.hours, "level_count": self.level_count, "name": self.name,
-                "last_start": self.last_start, "locations": self.locations}
+                "last_start": self.last_start, "locations": self.locations, "power_mad": self.power_mad,
+                "duration_mad": self.duration_mad, "interval_mad": self.interval_mad}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
         return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
                    count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
                    hours=list(d.get("hours") or [0] * 24), level_count=d.get("level_count", 1.0), name=d.get("name"),
-                   last_start=d.get("last_start"), locations=dict(d.get("locations") or {}))
+                   last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
+                   power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   interval_mad=d.get("interval_mad"))
 
 
 def _fmt_s(x: Optional[float]) -> str:
@@ -770,3 +819,45 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
 
     deepest = [n for n in seen if not any(n in ancestors(m) for m in seen if m != n)]
     return sorted(deepest or seen)[0]
+
+
+def _and(names: Sequence[str]) -> str:
+    names = list(names)
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def describe_location(locations: Dict[str, int], count: int,
+                      parents: Optional[Dict[str, Optional[str]]] = None,
+                      phases: str = "") -> str:
+    """Where the load is, said by EXCLUSION.
+
+    "In the house" is worth little when the house meter covers everything.
+    What narrows it is what did NOT see it: a load the house meter saw but
+    neither the boy's room nor the office sockets did is somewhere in the
+    rest of the house, and that sentence is the useful one. With no meter at
+    all the phase is still a clue, being one leg of the board."""
+    parents = parents or {}
+    on = f"on phase {'+'.join(p.upper() for p in phases)}" if phases else ""
+    where = most_specific(locations, count, parents)
+    if where != "main":
+        children = [c for c, parent in parents.items() if parent == where]
+        missed = sorted(c for c in children if locations.get(c, 0) * 2 < count)
+        return f"in {where}, outside {_and(missed)}" if missed else f"in {where}"
+    partial = sorted((n for n, k in locations.items() if k), key=lambda n: -locations[n])
+    if partial:
+        n = partial[0]
+        return f"under no meter, though {n} saw it {locations[n]} of {count} times" + (f", {on}" if on else "")
+    return f"under no meter, {on}" if on else "under no meter"
+
+
+def location_confidence(locations: Dict[str, int], count: int,
+                        parents: Optional[Dict[str, Optional[str]]] = None) -> float:
+    """How sure the location is: the share of sightings that agree with it."""
+    if count <= 0:
+        return 0.0
+    where = most_specific(locations, count, parents)
+    if where != "main":
+        return round(min(1.0, locations.get(where, 0) / count), 2)
+    return round(1.0 - min(1.0, (max(locations.values()) / count) if locations else 0.0), 2)
