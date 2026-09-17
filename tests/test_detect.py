@@ -363,5 +363,77 @@ def test_a_load_is_still_found_under_a_steady_sun():
     assert 2050 < sum(det.signatures[0].power.values()) < 2350, det.signatures[0].power
 
 
+def _repeat(durations, watts=2000.0, gap=600.0):
+    """A load that runs for each of ``durations`` in turn, ``gap`` apart."""
+    rows, t = [], T0
+    for _ in range(24):                      # seed the floor first
+        rows.append((t, 300.0)); t += DT
+    for d in durations:
+        for _ in range(int(d / DT)):
+            rows.append((t, 300.0 + watts)); t += DT
+        for _ in range(int(gap / DT)):
+            rows.append((t, 300.0)); t += DT
+    return rows, t
+
+
+def test_a_load_seen_once_has_no_evidence():
+    det = D.Detector()
+    rows, end = _repeat([600])
+    det.process({"a": rows}, now_ts=end + 100)
+    assert len(det.signatures) == 1
+    assert det.signatures[0].evidence == 0.0, det.signatures[0].evidence
+
+
+def test_evidence_rises_with_repetition_and_falls_with_scatter():
+    """Five identical runs are a device. Five runs of wildly different
+    length that happen to share a power are the detector pairing edges."""
+    tight = D.Detector()
+    rows, end = _repeat([600] * 6)
+    tight.process({"a": rows}, now_ts=end + 100)
+    loose = D.Detector()
+    rows, end = _repeat([300, 900, 420, 1200, 600, 240])
+    loose.process({"a": rows}, now_ts=end + 100)
+    assert len(tight.signatures) == 1 and len(loose.signatures) == 1, (tight.signatures, loose.signatures)
+    a, b = tight.signatures[0], loose.signatures[0]
+    assert a.count == b.count == 6, (a.count, b.count)
+    assert a.evidence > 0.9, a.evidence
+    assert b.evidence < a.evidence - 0.1, (a.evidence, b.evidence)
+
+
+def test_a_repeating_load_is_called_regular_and_a_sporadic_one_is_not():
+    clockwork = D.Detector()
+    rows, end = _repeat([600] * 6, gap=600.0)
+    clockwork.process({"a": rows}, now_ts=end + 100)
+    assert clockwork.signatures[0].regular, clockwork.signatures[0].interval_mad
+
+
+def test_where_a_load_is_said_by_exclusion():
+    parents = {"Hiša": None, "Blaževa Soba": "Hiša", "Mansarda": None, "Vtičnice - pisarna": "Mansarda"}
+    # the house meter saw it, the rooms inside it did not
+    seen = {"Hiša": 9}
+    assert D.describe_location(seen, 10, parents, "b") == "in Hiša, outside Blaževa Soba"
+    assert D.location_confidence(seen, 10, parents) == 0.9
+    # the room saw it too: the deepest meter wins and there is nothing to exclude
+    both = {"Hiša": 9, "Blaževa Soba": 8}
+    assert D.describe_location(both, 10, parents) == "in Blaževa Soba"
+    # nothing downstream saw it: the phase is the only clue left
+    assert D.describe_location({}, 9, parents, "ac") == "under no meter, on phase A+C"
+    assert D.location_confidence({}, 9, parents) == 1.0
+    # seen sometimes, not enough to own it
+    part = D.describe_location({"Hiša": 2}, 9, parents, "b")
+    assert part.startswith("under no meter, though Hiša saw it 2 of 9"), part
+    assert D.location_confidence({"Hiša": 2}, 9, parents) < 0.8
+
+
+def test_the_description_offers_a_guess_when_the_factor_allows_one():
+    det = D.Detector()
+    rows = series(2400, lambda s: 2000.0 if 600 <= s < 1500 else 0.0)
+    q = {ts: 0.0 for ts, _ in rows}                      # purely resistive
+    det.process({"a": rows}, {"a": q}, now_ts=T0 + 2500)
+    words = det.signatures[0].describe(None)
+    assert "maybe a heating element" in words, words
+    assert "seen 1 times" in words, words
+
+
 if __name__ == "__main__":
     run_main(globals())

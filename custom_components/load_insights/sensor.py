@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
-from .insights.detect import most_specific, suggest_levels
+from .insights.detect import describe_location, location_confidence, most_specific, suggest_levels
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -373,7 +373,14 @@ class DetectedLoadsSensor(_DetectionBase):
                  "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen), "hours": s.hours,
                  # the downstream meter that also saw it, or "main" (upstream of every submeter)
                  "location": most_specific(s.locations, s.count, self._runner.parents),
-                 "seen_by": dict(s.locations)}
+                 "where": describe_location(s.locations, s.count, self._runner.parents, s.phases),
+                 "seen_by": dict(s.locations),
+                 # three separate scores: whether it is a real repeating load,
+                 # what kind of thing it might be, and where it lives. They
+                 # answer different questions, so they are not blended.
+                 "evidence": s.evidence, "regular": s.regular,
+                 "guess": s.guess().to_dict(),
+                 "where_confidence": location_confidence(s.locations, s.count, self._runner.parents)}
                 for s in sorted(det.signatures, key=lambda x: -x.count)
             ],
             "meters": {
