@@ -566,5 +566,41 @@ def test_the_day_is_drawn_as_a_block_chart():
     assert D.hour_histogram([0] * 24) == []
 
 
+def test_which_days_a_load_runs_on_is_kept():
+    """A washing machine and a dishwasher look alike by the hour and quite
+    different by the week."""
+    from datetime import datetime, timezone
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    # three runs, all on a Wednesday, one on the Saturday after
+    wed = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc).timestamp()
+    rows = []
+    for day, n in ((wed, 3), (wed + 3 * 86400, 1)):
+        for k in range(n):
+            start = day + k * 7200
+            rows.append((start, start + 600))
+    for start, end in rows:
+        det._file(D.Session(phases="a", start=start, end=end,
+                            levels={"a": [(start, 2000.0)]}, pf=1.0))
+    sig = det.signatures[0]
+    assert sig.days[2] == 3 and sig.days[5] == 1, sig.days       # Wednesday, Saturday
+    assert sum(sig.days) == sig.count == 4, (sig.days, sig.count)
+    lines = D.day_histogram(sig.days)
+    assert lines[-1].strip().startswith("Mo"), lines[-1]
+    assert len(lines) == 5, lines                                 # 3 rows, axis, labels
+    assert D.day_histogram([0] * 7) == []
+
+
+def test_merging_two_signatures_adds_their_weeks_together():
+    det = D.Detector()
+    a = _sig(1, 1800.0, 70.0, 0.97, 10)
+    b = _sig(2, 1810.0, 72.0, 0.97, 8)
+    a.days = [1, 2, 3, 0, 0, 0, 4]
+    b.days = [0, 1, 0, 0, 5, 0, 2]
+    det.signatures = [a, b]
+    assert det.consolidate(100.0) == 1
+    assert det.signatures[0].days == [1, 3, 3, 0, 5, 0, 6], det.signatures[0].days
+
+
 if __name__ == "__main__":
     run_main(globals())
