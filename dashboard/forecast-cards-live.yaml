@@ -37,10 +37,9 @@ card:
     const forecastFn = (e, key) => '({hass}) => {const r = hass.states["' + e +
     '"].attributes.detailedForecast || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.' +
     key + ' ?? p.kwh)};}';
-    const lineFn = e => '({hass}) => {const a = hass.states["' + e +
-    '"].attributes; const past = (a.history || []).filter(p => p.predicted != null).map(p => [new Date(p.period_start), p.predicted]); ' +
-    'const future = (a.detailedForecast || []).map(p => [new Date(p.period_start), p.kwh]); const all = past.concat(future); ' +
-    'return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};}';
+    const lineFn = e => '({xs, states, hass}) => {const past = states.map((s, i) => [xs[i], +s.state / 1000]).filter(r => isFinite(r[1])); ' +
+    'const future = (hass.states["' + e + '"].attributes.detailedForecast || []).map(p => [new Date(p.period_start), p.kwh]); ' +
+    'const all = past.concat(future); return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};}';
     const historyFn = e => '({hass}) => {const r = hass.states["' + e +
     '"].attributes.history || []; return {xs: r.map(p => new Date(p.period_start)), ys: r.map(p => p.kwh)};}';
     return ids.map(e => {
