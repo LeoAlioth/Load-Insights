@@ -153,7 +153,12 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "meters": _jsonable(runner.submeters),
             "processed_until": _jsonable(runner.last_processed),
             "caught_up": runner.caught_up,
-            "phases": {p: {"baseline": st.baseline, "noise": st.noise, "open_since": st.session_start}
+            "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
+                           # the loads believed to be running, and what each
+                           # is still drawing: an edge that never pairs off
+                           # is the thing to look at when a load goes missing
+                           "running": [{"since": _jsonable(o.since), "watts": round(o.watts),
+                                        "levels": len(o.levels)} for o in st.open_edges]}
                        for p, st in det.phases.items()},
             "signatures": [
                 {**_jsonable(sig.to_dict()), "location": most_specific(sig.locations, sig.count, parents)}
