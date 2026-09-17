@@ -38,6 +38,9 @@ DETECTION_SLICE_HOURS = 6
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"
 
+SERVICE_REFRESH = "refresh"
+SERVICE_RESET_DETECTION = "reset_detection"
+
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so
 # phase 1 does exactly that and nothing incremental.

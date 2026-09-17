@@ -193,6 +193,34 @@ dashboard no battery is simulated, and the net is reported before it -
 forecast reached; beyond it the hours are treated as sunless, so a two-day PV
 forecast leaves the rest of the week reading as pure consumption.
 
+## When something is half-done
+
+Three things leave the integration working and quietly worse, and none is an
+error, so each is raised as a repair notification while it is true and
+withdrawn the moment it is fixed: a weather entity without an outdoor
+temperature sensor or the reverse (the response needs both halves and can
+never fit); a PV site with no forecast integration linked on the Energy
+dashboard (the grid forecast then predicts a sunless week); and a metered
+device whose hardware publishes only energy, never power, which detection
+cannot see.
+
+## Diagnostics
+
+**Download diagnostics** on the config entry or any of its devices gives one
+file with the configuration, what the Energy dashboard said, every forecast's
+fit - history, level, temperature response, each signal's factors, the
+nowcast, the horizon - the scoring ledger, and load detection's baselines,
+signature library and recent sessions. It is the first thing to attach to a
+question about a number.
+
+## Services
+
+`load_insights.refresh` recomputes every forecast now rather than at the top
+of the hour - useful straight after changing an input, to see whether it
+engaged. `load_insights.reset_detection` forgets every signature and starts
+the meter's backfill again, for when a meter changed or a phase was rewired;
+names are lost with the signatures.
+
 ## Requirements
 
 - Home Assistant with the Energy dashboard configured, at least a grid source.

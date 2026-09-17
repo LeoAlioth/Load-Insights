@@ -40,6 +40,7 @@ from .insights.model import SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
 from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
 from .insights.series import combine, coverage, subtract_all
+from .repairs import async_check
 
 STORAGE_VERSION = 1
 SITE_KEY = "consumption"
@@ -271,7 +272,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         grid = await self.hass.async_add_executor_job(
             build_grid, cons_fc.hourly, pv, soc, site.battery_capacity_kwh,
         )
-        return InsightsData(
+        data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
@@ -292,6 +293,10 @@ class InsightsCoordinator(DataUpdateCoordinator):
             device_state_sensors=state_map,
             device_state_now=state_now,
         )
+        # things that are silently half-done get said out loud
+        if self.config_entry is not None:
+            async_check(self.hass, self.config_entry, data)
+        return data
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:
         """Hour key -> forecast PV kWh, from the forecast integrations the
