@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
 from .coordinator import InsightsCoordinator
@@ -34,6 +34,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][f"{entry.entry_id}_site_device"] = site_device.id
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_changed))
+    _prune_empty_devices(hass, entry)
+    return True
+
+
+@callback
+def _prune_empty_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop our devices that no longer hold an entity.
+
+    A device a metered thing used to have - one removed from the Energy
+    dashboard, or one left behind when the layout changed - lingers in the
+    registry with nothing in it, and Home Assistant does not clear it. This
+    runs after the platforms, so every entity that should exist does.
+    """
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+        if er.async_entries_for_device(entities, device.id, include_disabled_entities=True):
+            continue
+        # only drops the device when this entry was the last one on it
+        devices.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
+
+
+async def async_remove_config_entry_device(hass: HomeAssistant, entry: ConfigEntry, device) -> bool:
+    """Let a device be deleted from the UI - the answer is always yes.
+
+    Its entities come back on the next reload if the thing still exists, so
+    deleting one is a way to tidy, never a way to lose anything.
+    """
     return True
 
 
