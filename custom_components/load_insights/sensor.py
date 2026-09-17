@@ -292,13 +292,16 @@ class DayAheadErrorSensor(ScoreSensor):
 class DeviceForecastSensor(ForecastPowerSensor):
     """The same forecast, for one individually metered device.
 
-    Disabled by default: a busy dashboard lists twenty devices and nobody
-    wants a forecast of the bug lamp on a card - enable the two or three that
-    matter from the device page. The unique id is built from the device's
-    statistic id, which is what the dashboard itself keys the device by.
-    """
+    Enabled, like every other sensor here (Anze, 2026-09-17). They were
+    disabled by default on the theory that a busy dashboard would flood the
+    registry - but a device is on the Energy dashboard because its owner
+    cares about it, the dashboard template builds a card per device, and an
+    entity nobody looks at costs a few hundred bytes. Hiding them only made
+    the first thing anyone wants to do take twenty clicks first.
 
-    _attr_entity_registry_enabled_default = False
+    The unique id is built from the device's statistic id, which is what the
+    dashboard itself keys the device by.
+    """
 
     def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, device) -> None:
         super().__init__(coordinator, entry, "device_forecast", "device")
