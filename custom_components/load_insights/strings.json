@@ -177,6 +177,10 @@
             "title": "Some phases cannot tell a heater from a motor",
             "description": "Load detection has a power reading on phase {phases} but no way to work out a power factor there: that needs the phase's current AND voltage, or a power factor sensor. Watts alone cannot separate a 2 kW heater from a 2 kW motor, so detected loads on those phases get no guess at what they are. Add them under Configure -> Load detection."
         },
+        "detection_found_nothing": {
+            "title": "Load detection has found nothing at all",
+            "description": "The whole history has been read - {samples} readings - and not one load was found. A meter that never moves is the usual cause: an inverter's AC INPUT reads zero at an off-grid site, for instance, while the loads are all on its output. Point load detection at the reading that carries what the house actually draws, under Configure -> Load detection. Devices with their own meters are unaffected."
+        },
         "devices_without_power": {
             "title": "Some metered devices cannot be detected",
             "description": "{devices} appear on the Energy dashboard but publish no power reading, only energy. Hourly energy is far too coarse to line up with a load switching on, so these devices cannot locate or name anything in load detection. Their forecasts are unaffected."

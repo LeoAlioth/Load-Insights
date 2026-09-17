@@ -177,6 +177,10 @@
             "title": "Na nekaterih fazah ni mogoče ločiti grelca od motorja",
             "description": "Zaznavanje porabe ima meritev moči na fazi {phases}, nima pa podatkov za izračun faktorja moči: za to potrebuje tok IN napetost te faze ali senzor faktorja moči. Sami vati ne ločijo 2 kW grelca od 2 kW motorja, zato bremena na teh fazah ostanejo brez ugibanja, kaj so. Dodajte jih v Nastavitve -> Zaznavanje porabe."
         },
+        "detection_found_nothing": {
+            "title": "Zaznavanje porabe ni našlo ničesar",
+            "description": "Vsa zgodovina je prebrana - {samples} meritev - in najdenega ni bilo nobenega bremena. Običajen vzrok je števec, ki se nikoli ne premakne: vhod AC pri otočnem sistemu je vedno nič, bremena pa so vsa na izhodu. V Nastavitve -> Zaznavanje porabe izberite meritev, ki nosi dejansko porabo hiše. Naprave z lastnimi števci to ne prizadene."
+        },
         "devices_without_power": {
             "title": "Nekaterih merjenih naprav ni mogoče zaznati",
             "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
