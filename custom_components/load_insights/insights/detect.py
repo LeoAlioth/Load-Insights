@@ -35,6 +35,13 @@ BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
 SLOW_FOLLOW = 0.02             # the held level follows drift this fast, so a ramp is never a step
+# A cloud IS a step at the meter, and a big one. It is the sun switching,
+# not a load, and it gives itself away by moving PV the opposite way at the
+# same moment. The share is a RANGE because the array's reading may be this
+# phase's own (share about 1) or the inverter's total (about a third of it
+# on each phase), and three phases are never quite balanced either.
+PV_SHARE_MIN = 0.25
+PV_SHARE_MAX = 1.25
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
@@ -100,6 +107,20 @@ class Session:
 
 
 # ------------------------------------------------------------------ per-phase tracker
+def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
+    """Is this step at the meter just PV moving the other way?
+
+    A grid meter carries the house MINUS the array, so a cloud arrives on it
+    as a load switching on and clears as one switching off. A step that a
+    simultaneous PV step of the opposite sign accounts for is not a load.
+    Where the reading already excludes PV nothing fires here, because there
+    is no step to explain."""
+    if pv_step is None or step * pv_step >= 0:
+        return False
+    share = abs(step) / abs(pv_step)
+    return PV_SHARE_MIN <= share <= PV_SHARE_MAX
+
+
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     """The LOAD's power factor, from its OWN step in real and reactive power.
 
@@ -157,15 +178,18 @@ class PhaseState:
     noise: float = MIN_NOISE_W
     level: Optional[float] = None                # what the phase is holding now
     q_level: Optional[float] = None              # reactive VAr at that level, when known
+    pv_level: Optional[float] = None             # what the array was making then
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
-    pending: List[Tuple[float, float, Optional[float]]] = field(default_factory=list)
+    pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
 
-    def process(self, ts: float, w: float, q: Optional[float] = None) -> Optional[Session]:
-        """One sample: seconds, watts, and reactive VAr where the meter gives
-        enough to work it out. Returns a Session when a step down pairs off."""
+    def process(self, ts: float, w: float, q: Optional[float] = None,
+                pv: Optional[float] = None) -> Optional[Session]:
+        """One sample: seconds, watts, reactive VAr where the meter gives
+        enough to work it out, and what the array was making at the time.
+        Returns a Session when a step down pairs off."""
         if self.last_ts is not None and ts <= self.last_ts:
             return None
         self.last_ts = ts
@@ -179,6 +203,7 @@ class PhaseState:
                 self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
                 self.q_level = q
+                self.pv_level = pv
                 self.seed = []
             return None
 
@@ -193,6 +218,8 @@ class PhaseState:
             self.level += SLOW_FOLLOW * (w - self.level)
             if q is not None:
                 self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
+            if pv is not None:
+                self.pv_level = pv if self.pv_level is None else self.pv_level + SLOW_FOLLOW * (pv - self.pv_level)
             if not self.open_edges:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
                 self.level = self.baseline
@@ -202,19 +229,26 @@ class PhaseState:
                     self.idle_diffs = self.idle_diffs[-120:]
             return None
 
-        self.pending.append((ts, w, q))
+        self.pending.append((ts, w, q, pv))
         if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < SUSTAIN_SECONDS:
             return None
-        new_level = _median([x for _, x, _ in self.pending])
-        known_q = [x for _, _, x in self.pending if x is not None]
+        new_level = _median([x for _, x, _, _ in self.pending])
+        known_q = [x for _, _, x, _ in self.pending if x is not None]
+        known_pv = [x for _, _, _, x in self.pending if x is not None]
         new_q = _median(known_q) if known_q else None
+        new_pv = _median(known_pv) if known_pv else None
         since = self.pending[0][0]
         self.pending = []
         step = new_level - self.level
         step_q = None if (new_q is None or self.q_level is None) else new_q - self.q_level
+        pv_step = None if (new_pv is None or self.pv_level is None) else new_pv - self.pv_level
         self.level = new_level
         if new_q is not None:
             self.q_level = new_q
+        if new_pv is not None:
+            self.pv_level = new_pv
+        if _is_the_sun(step, pv_step):
+            return None
         if step > 0:
             self.open_edges.append(_Open(since, step, step_q, [(since, step)]))
             if len(self.open_edges) > MAX_OPEN_EDGES:
@@ -271,7 +305,7 @@ class PhaseState:
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
-                "q_level": self.q_level, "seed": self.seed,
+                "q_level": self.q_level, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -280,9 +314,9 @@ class PhaseState:
         if not d:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
-                   q_level=d.get("q_level"), seed=list(d.get("seed") or []),
+                   q_level=d.get("q_level"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
-                   pending=[tuple(x) for x in d.get("pending") or []],
+                   pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
 
 
@@ -395,7 +429,8 @@ class Detector:
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
-                q: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None) -> List[Session]:
+                q: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None,
+                pv: Optional[Dict[str, Dict[float, float]]] = None) -> List[Session]:
         """Feed new (ts, watts) samples per phase, in time order per phase.
         ``q`` is reactive VAr keyed by the SAME timestamps, where the meter
         gives enough to work it out. Returns the sessions this batch closed."""
@@ -406,9 +441,10 @@ class Detector:
                 continue
             st = self.phases[ph]
             qm = (q or {}).get(ph) or {}
+            pvm = (pv or {}).get(ph) or {}
             for ts, w in rows:
                 latest = max(latest, ts)
-                s = st.process(ts, w, qm.get(ts))
+                s = st.process(ts, w, qm.get(ts), pvm.get(ts))
                 if s is not None:
                     s.phases = ph
                     s.levels = {ph: s.levels.pop("")}
@@ -593,11 +629,14 @@ class Fleet:
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
                 main_q=None, sub_q=None, now_ts: Optional[float] = None,
-                agnostic: Optional[Dict[str, bool]] = None) -> None:
+                agnostic: Optional[Dict[str, bool]] = None,
+                pv: Optional[Dict[str, Dict[float, float]]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
-        closed_main = self.main.process(main_samples, main_q, now_ts)
+        # only the main meter needs the array: a downstream meter sees the
+        # house side of it and never the sun
+        closed_main = self.main.process(main_samples, main_q, now_ts, pv)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())

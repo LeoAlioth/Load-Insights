@@ -48,6 +48,7 @@ class DetectionRunner:
         self.entry = entry
         self.submeters = {}
         self.fleet: Fleet = Fleet()
+        self.solar: Dict[str, str] = {}      # the array's power per phase, when it has one
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -84,17 +85,7 @@ class DetectionRunner:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
-                rows = []
-                for e in er.async_entries_for_device(registry, entry.device_id, include_disabled_entities=False):
-                    if e.domain != "sensor":
-                        continue
-                    st = self.hass.states.get(e.entity_id)
-                    rows.append({
-                        "entity_id": e.entity_id,
-                        "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
-                        "name": e.name or e.original_name or "",
-                    })
-                fields = match_meter_entities(rows)
+                fields = match_meter_entities(self._device_rows(registry, entry.device_id))
             phases = [p for p in PHASES if fields.get(f"power_{p}")]
             agnostic = False
             if len(phases) < 2:
@@ -109,6 +100,43 @@ class DetectionRunner:
             out[dev.label] = {"fields": fields, "agnostic": agnostic,
                               "parent": parent.label if parent else None}
         return out
+
+    def _device_rows(self, registry, device_id: str) -> list:
+        """A device's sensors in the shape the meter matcher reads."""
+        rows = []
+        for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
+            if e.domain != "sensor":
+                continue
+            st = self.hass.states.get(e.entity_id)
+            rows.append({
+                "entity_id": e.entity_id,
+                "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
+                "name": e.name or e.original_name or "",
+            })
+        return rows
+
+    async def _resolve_solar(self) -> Dict[str, str]:
+        """The array's power, per phase where the inverter publishes it.
+
+        A grid meter carries the house MINUS the array, so every cloud is a
+        step on it and would be filed as a load switching. An inverter
+        usually gives its own per-phase power, which makes that test exact;
+        failing that the dashboard's solar power sensor, or the inverter's
+        total, stands in for every phase."""
+        manager = await async_get_manager(self.hass)
+        site = SiteModel.from_prefs(manager.data)
+        if not site.solar:
+            return {}
+        registry = er.async_get(self.hass)
+        found: Dict[str, str] = {}
+        entry = registry.async_get(site.solar[0])
+        if entry is not None and entry.device_id:
+            matched = match_meter_entities(self._device_rows(registry, entry.device_id))
+            found = {k: v for k, v in matched.items() if k.startswith("power_")}
+        if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
+            return found
+        total = (site.solar_power[0] if site.solar_power else None) or found.get("power_a")
+        return {f"power_{p}": total for p in PHASES} if total else {}
 
     @property
     def detector(self) -> Detector:
@@ -202,6 +230,9 @@ class DetectionRunner:
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
             samples, q = await self._read(start, end, self.config)
+            self.solar = await self._resolve_solar()
+            pv_rows, _ = await self._read(start, end, self.solar) if self.solar else ({}, {})
+            pv = {p: _align(pv_rows[p], samples[p]) for p in samples if pv_rows.get(p)}
             self.submeters = await self._resolve_submeters()
             sub_samples, sub_q, agnostic = {}, {}, {}
             for name, meter in self.submeters.items():
@@ -210,7 +241,7 @@ class DetectionRunner:
                     sub_samples[name], sub_q[name] = ss, sq
                     agnostic[name] = meter["agnostic"]
             await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic
+                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv
             )
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
@@ -273,6 +304,17 @@ def _as_of(rows: list, ts: float, i: int) -> int:
     while i + 1 < len(rows) and rows[i + 1][0] <= ts:
         i += 1
     return i
+
+
+def _align(source: list, target_rows: list) -> Dict[float, float]:
+    """``source`` read as of each of ``target_rows``' moments."""
+    out: Dict[float, float] = {}
+    i = 0
+    for ts, _ in target_rows:
+        i = _as_of(source, ts, i)
+        if i >= 0:
+            out[ts] = source[i][1]
+    return out
 
 
 def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
