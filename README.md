@@ -14,32 +14,40 @@ statistics for them, and publishes a consumption forecast:
 | entity | state | attributes |
 |---|---|---|
 | **Consumption forecast** | expected average power over the coming hour, W | `detailedForecast`: 7 days hourly kWh with a `kwh_p10`/`kwh_p90` spread (the shape and naming the PV forecast integrations use); `history`: the last 48 hours as they happened, same shape; today/tomorrow kWh, level correction, weeks of data |
-| **Consumption today** | actual for completed hours + forecast for the rest, kWh | |
-| **Consumption tomorrow** | kWh | |
 | **Grid forecast** | what the METER will do over the coming hour, W - positive importing, negative exporting | `detailedForecast` with consumption, PV, battery and SOC per hour; tomorrow's import and export totals |
-| **Grid import / export tomorrow** | kWh | |
 | **Battery SOC forecast** | the pack's expected state of charge at the end of the coming hour, % | hourly SOC, and the day's minimum and maximum |
 | **Base load** | what the site draws with nothing switched on, W | per phase, per meter, and each phase's noise floor |
 | **Unmetered consumption forecast** | as the first, for consumption minus every individually metered device | `subtracted_devices`, `remainder_complete_since` |
-| **Forecast error / bias, day ahead** and **hour ahead** | trailing 7-day mean absolute error and signed mean error of the site forecast, W | per-lead table (hour, day and week ahead), `band_coverage_day_ahead` (share of actuals inside p10-p90; honest is about 0.8), the last 48 scored hours |
-| **Yesterday's day-ahead error** | actual minus the "tomorrow" total the forecast showed at noon the day before, kWh | |
-| **Unmetered forecast error / bias, day ahead** | the same for the remainder | |
 | **\<device\> forecast**, one per individually metered device | as the first, for that device alone | `statistic_id`, plus that device's own `score` and `nowcast` |
 
 Consumption is `grid in - grid out + PV + battery out - battery in`, the
 dashboard's own signs. A device listed as included in another listed device
 (`included_in_stat`) is not subtracted twice.
 
-A device added to the Energy dashboard later gets its sensor after a reload
-of the integration.
+**One sensor per thing forecast.** The state is the prediction for the coming
+hour and the attributes carry the rest, so daily totals, import and export
+figures and the individual scores are attributes rather than entities of
+their own - a template sensor makes one wherever a dashboard wants it.
+
+**A metered device's forecast lives on that device.** The dashboard's
+statistic id resolves through the entity registry to the Home Assistant
+device behind it, and the forecast is attached there - so the boiler's
+forecast sits on the boiler, beside its own sensors. Only loads found by
+profiling the meter, which have no device of their own, get a new one. Where
+no device can be resolved (a template or helper statistic) the forecast falls
+back to a device of its own under the site. A device added to the Energy
+dashboard later gets its sensor after a reload of the integration.
 
 ### Scoring
 
+Scores are the `score` attribute on every forecast sensor: mean absolute
+error and bias per lead, how often the actual landed inside the p10-p90 band,
+and yesterday's day-ahead total against what the day then used.
+
 Every hour the forecast's value for the hour one hour, one day and one week
 (the horizon's last row, 167 h) ahead is remembered; when that hour arrives, prediction and actual are paired
-and the errors kept for 30 days in `.storage`. The score sensors report the
-trailing week. Device scores are the `score` attribute on each device
-forecast sensor. Scores need time to fill: the hour-ahead figures after a
+and the errors kept for 30 days in `.storage`. They report the trailing
+week. Scores need time to fill: the hour-ahead figures after a
 day, the day-ahead ones after two, the week-ahead table after eight.
 
 ### Actual against forecast on one chart
