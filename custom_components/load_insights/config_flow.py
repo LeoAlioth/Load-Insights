@@ -14,7 +14,6 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
-    CONF_SUBMETERS,
     DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -125,44 +124,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._pending_detection: dict | None = None
-        self._pending_submeter: dict | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "submeter"])
-
-    async def async_step_submeter(self, user_input: dict[str, Any] | None = None):
-        """A meter below the main one: a subpanel, or a single circuit. Same
-        fields as the main meter plus a name. A load this meter and the main
-        meter both see is recorded as being on this circuit. Edit an existing
-        one by name; a name with every field cleared removes it."""
-        subs = dict(self.config_entry.options.get(CONF_SUBMETERS) or {})
-        pending = dict(self._pending_submeter or {})
-
-        def form(defaults: dict, found_text: str):
-            schema = {vol.Optional("name", description={"suggested_value": defaults.get("name")}): selector.TextSelector()}
-            schema.update(_device_field(defaults.get("device")))
-            schema.update(_meter_fields(defaults))
-            return self.async_show_form(
-                step_id="submeter", data_schema=vol.Schema(schema),
-                description_placeholders={"existing": ", ".join(sorted(subs)) or "-", "found": found_text},
-            )
-
-        if user_input is not None:
-            device = user_input.get("device")
-            if device and device != pending.get("device"):
-                found = _discover(self.hass, device)
-                self._pending_submeter = {"name": user_input.get("name") or "", "device": device, **found}
-                return form(self._pending_submeter, describe_match(found))
-            self._pending_submeter = None
-            name = (user_input.get("name") or "").strip()
-            fields = {k: v for k, v in user_input.items() if k != "name" and v}
-            if name:
-                if any(k != "device" for k in fields):
-                    subs[name] = fields
-                else:
-                    subs.pop(name, None)
-            return self.async_create_entry(data={**dict(self.config_entry.options), CONF_SUBMETERS: subs})
-        return form(pending, describe_match({k: v for k, v in pending.items() if k not in ("name", "device")}))
+        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection"])
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """The main meter. Pick the DEVICE and its per-phase readings are
@@ -193,8 +157,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # An emptied selector clears the input; only set keys are kept.
             # The per-device map lives on another page and is carried over.
             keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {}),
-                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {}),
-                    CONF_SUBMETERS: self.config_entry.options.get(CONF_SUBMETERS, {})}
+                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {})}
             return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):

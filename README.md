@@ -130,11 +130,14 @@ it are levels, so a washing machine is one session with a heater level and a
 motor level; sessions that start and end together on several phases are one
 multi-phase load. Closed sessions are matched to **signatures** (phase set,
 watts per phase, duration, PF) and described in words - "6.1 kW on A+C, ~80 s,
-every 3 min, seen 258 times". Meters below the main one - a subpanel, or a single circuit - go on the
-*Downstream meter* page, each with a name: they run their own detectors, and a load the
-main meter and a downstream one both see is **located** there - a signature's
-`location` says which subpanel it lives on, or `main` for upstream of them
-all. Two sensors: **Detected loads** (how many are on now, with the signature
+every 3 min, seen 258 times". Meters below the main one need no setting up. Every device on your Energy
+dashboard is resolved to its Home Assistant device and its power readings are
+discovered the same way - per phase where the hardware has them, one total
+where it does not - so a load that the main meter and a device's own meter
+both see is **located and named** at once. `included_in_stat` supplies the
+nesting, so a load seen by both the workshop's meter and the boiler's belongs
+to the boiler; a signature's `location` says which, or `main` when no device
+meter saw it. Two sensors: **Detected loads** (how many are on now, with the signature
 library and every downstream meter's in its attributes) and **Unknown load
 power**. Naming signatures, explaining them with the dashboard's known
 devices, and feeding them back into the forecast are the next stages.

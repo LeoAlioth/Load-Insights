@@ -21,7 +21,11 @@ CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
 # that matters most; PF (or reactive power), current and voltage refine the
 # signatures where the meter publishes them. All optional, per phase.
 CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a, pf_b, ...
-CONF_SUBMETERS = "submeters"            # name -> the same fields, for downstream 3-phase meters
+# Meters BELOW the main one are not configured: the Energy dashboard already
+# lists every individually metered device and, through included_in_stat, how
+# they nest. Load Insights resolves each one to its Home Assistant device and
+# discovers that device's per-phase readings, so a load seen by both the main
+# meter and a device's own meter is located - and named - with nothing typed.
 DETECTION_KINDS = ("power", "pf", "current", "voltage")
 DETECTION_INTERVAL_MINUTES = 5
 DETECTION_BACKFILL_DAYS = 10

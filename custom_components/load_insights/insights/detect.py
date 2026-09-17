@@ -206,8 +206,8 @@ class Signature:
 
     @property
     def location(self) -> str:
-        """Where the load lives: the downstream meter that saw most of its
-        sessions, or "main" when none did - upstream of every submeter."""
+        """The meter that saw most of this signature's sessions, or "main"
+        when none did. ``most_specific`` refines this with the hierarchy."""
         if not self.locations:
             return "main"
         name, n = max(self.locations.items(), key=lambda kv: kv[1])
@@ -467,10 +467,14 @@ class Fleet:
     subs: Dict[str, Detector] = field(default_factory=dict)
     pending_main: List[Session] = field(default_factory=list)    # main sessions awaiting a downstream partner
     pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
+    agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
-                main_pf=None, sub_pf=None, now_ts: Optional[float] = None) -> None:
+                main_pf=None, sub_pf=None, now_ts: Optional[float] = None,
+                agnostic: Optional[Dict[str, bool]] = None) -> None:
         latest = now_ts or 0.0
+        if agnostic:
+            self.agnostic.update(agnostic)
         closed_main = self.main.process(main_samples, main_pf, now_ts)
         closed_sub = {}
         for name, samples in sub_samples.items():
@@ -489,7 +493,7 @@ class Fleet:
             hit = None
             for name, subs in self.pending_sub.items():
                 for i, s in enumerate(subs):
-                    if _same_load(m, s):
+                    if _same_load(m, s, self.agnostic.get(name, False)):
                         hit = (name, i)
                         break
                 if hit:
@@ -507,7 +511,8 @@ class Fleet:
     def to_dict(self) -> dict:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
                 "pending_main": [s.to_dict() for s in self.pending_main],
-                "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()}}
+                "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
+                "agnostic": self.agnostic}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Fleet":
@@ -518,17 +523,49 @@ class Fleet:
         f.subs = {n: Detector.from_dict(v) for n, v in (d.get("subs") or {}).items()}
         f.pending_main = [Session.from_dict(x) for x in d.get("pending_main") or []]
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
+        f.agnostic = dict(d.get("agnostic") or {})
         return f
 
 
-def _same_load(a: Session, b: Session) -> bool:
-    if a.phases != b.phases:
-        return False
+def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
+    """Is the downstream session ``b`` the same load as the main-meter
+    session ``a``? Always the same moment; then the same size.
+
+    ``phase_agnostic`` is for a meter that reports only a total - most
+    single-device meters do. It cannot say which phase the load is on, so
+    only the magnitude is compared; the main meter's own session supplies the
+    phase, which is how a device's phase gets learned for free."""
     if abs(a.start - b.start) > MERGE_TOLERANCE_S or abs(a.end - b.end) > MERGE_TOLERANCE_S:
         return False
     pa, pb = a.power_by_phase(), b.power_by_phase()
+    if phase_agnostic:
+        ta, tb = sum(pa.values()), sum(pb.values())
+        return abs(ta - tb) <= max(MATCH_POWER_REL * max(ta, tb), MIN_NOISE_W)
+    if a.phases != b.phases:
+        return False
     for ph in a.phases:
         tol = max(MATCH_POWER_REL * max(pa[ph], pb.get(ph, 0.0)), MIN_NOISE_W)
         if abs(pa[ph] - pb.get(ph, 0.0)) > tol:
             return False
     return True
+
+
+def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[str, Optional[str]]] = None) -> str:
+    """Which meter a signature belongs to, given the Energy dashboard's
+    nesting. A load seen by both the workshop's meter and the boiler's is the
+    BOILER's - the deepest meter that saw it, not the widest. ``parents`` maps
+    a meter to the meter it sits inside (``included_in_stat``)."""
+    seen = {n for n, k in locations.items() if k * 2 >= count}
+    if not seen:
+        return "main"
+    parents = parents or {}
+
+    def ancestors(name):
+        out, cur = [], parents.get(name)
+        while cur and cur not in out:
+            out.append(cur)
+            cur = parents.get(cur)
+        return out
+
+    deepest = [n for n in seen if not any(n in ancestors(m) for m in seen if m != n)]
+    return sorted(deepest or seen)[0]
