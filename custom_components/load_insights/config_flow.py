@@ -165,6 +165,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
             )
 
+        self._naming_selected = candidates[0].id
         return self._naming_form(runner, candidates, candidates[0].id)
 
     def _naming_form(self, runner, candidates: list, selected: int):

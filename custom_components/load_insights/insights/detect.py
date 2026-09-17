@@ -443,6 +443,54 @@ class Signature:
             return None
         return score
 
+    def alike(self, other: "Signature", noise_w: float) -> bool:
+        """Would these two be the same signature if they arrived now?
+
+        The same test as ``matches``, between two signatures rather than a
+        signature and a session."""
+        if self.phases != other.phases or self is other:
+            return False
+        if self.name and other.name and self.name != other.name:
+            return False                       # named apart on purpose
+        for ph in self.phases:
+            mine, theirs = self.power.get(ph, 0.0), other.power.get(ph, 0.0)
+            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise_w):
+                return False
+        ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
+        if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
+            return False
+        if self.pf is not None and other.pf is not None and abs(self.pf - other.pf) > MATCH_PF_TOL:
+            return False
+        return True
+
+    def swallow(self, other: "Signature") -> None:
+        """Take another signature's sightings into this one, by weight."""
+        a, b = self.count, other.count
+        n = a + b
+        if n <= 0:
+            return
+        for ph in set(self.power) | set(other.power):
+            self.power[ph] = (self.power.get(ph, 0.0) * a + other.power.get(ph, 0.0) * b) / n
+        self.duration_s = (self.duration_s * a + other.duration_s * b) / n
+        self.level_count = (self.level_count * a + other.level_count * b) / n
+        self.power_mad = (self.power_mad * a + other.power_mad * b) / n
+        self.duration_mad = (self.duration_mad * a + other.duration_mad * b) / n
+        if self.pf is None:
+            self.pf = other.pf
+        elif other.pf is not None:
+            self.pf = (self.pf * a + other.pf * b) / n
+        if other.interval_s is not None and (self.interval_s is None or b > a):
+            self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
+        self.hours = [x + y for x, y in zip(self.hours, other.hours)]
+        for name, k in other.locations.items():
+            self.locations[name] = self.locations.get(name, 0) + k
+        self.first_seen = min(self.first_seen, other.first_seen)
+        self.last_seen = max(self.last_seen, other.last_seen)
+        if other.last_start is not None:
+            self.last_start = max(self.last_start or 0.0, other.last_start)
+        self.name = self.name or other.name
+        self.count = n
+
     def absorb(self, s: Session, tz) -> None:
         n = self.count
         pw = s.power_by_phase()
@@ -511,9 +559,10 @@ class Signature:
         """Markdown for the naming form, once one is picked: what it is, when
         it runs, where it is, and how sure each of those is."""
         lines = [f"**{self.describe(tz)}**", ""]
-        bars = sparkline(self.hours)
+        bars = hour_histogram(self.hours)
         if bars:
-            lines += ["When it runs, midnight to midnight:", "", f"`{bars}`", f"`{hour_ruler()}`", ""]
+            lines += [f"When it runs, by hour of day - tallest bar is {max(self.hours)} sightings:",
+                      "", "```", *bars, "```", ""]
         guess = self.guess()
         if guess.kind:
             both = guess.kind if not guess.alternative else f"{guess.kind} or {guess.alternative}"
@@ -654,7 +703,42 @@ class Detector:
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
+        self.consolidate(noise)
         self._prune()
+
+    def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
+        """Merge signatures that have BECOME alike, and say how many went.
+
+        Power and duration are running MEANS, so two signatures that are now
+        indistinguishable need not have been when the second was created.
+        Kozolec had one 1.8 kW load split five ways - 230, 136, 50, 27 and 18
+        sightings, all within 4 % of each other - because the first one's
+        mean duration was different at the moment the second arrived. Filing
+        only ever looks at the signatures as they stand, and nothing came
+        back to them afterwards; this does, by the same rule.
+        """
+        gone = 0
+        again = True
+        while again:
+            again = False
+            self.signatures.sort(key=lambda x: -x.count)
+            for i, keep in enumerate(self.signatures):
+                doomed = [j for j in range(i + 1, len(self.signatures))
+                          if keep.alike(self.signatures[j], noise_w)]
+                if not doomed:
+                    continue
+                moved = {}
+                for j in reversed(doomed):
+                    other = self.signatures.pop(j)
+                    moved[other.id] = keep.id
+                    keep.swallow(other)
+                    gone += 1
+                for r in self.recent:            # the sessions still point at them
+                    if r.get("signature") in moved:
+                        r["signature"] = moved[r["signature"]]
+                again = True
+                break
+        return gone
 
     def _prune(self) -> None:
         """Keep the library to its cap, weakest first.
@@ -916,27 +1000,36 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
     return sorted(deepest or seen)[0]
 
 
-_BARS = " ▁▂▃▄▅▆▇█"
+HISTOGRAM_ROWS = 5
+HISTOGRAM_COL = 2              # characters per hour, so the day is 48 wide
 
 
-def sparkline(counts: Sequence[int]) -> str:
-    """The 24 hours as one line of bars. A config flow cannot draw a chart -
-    it renders markdown - but the shape of the day is most of what a chart
-    would have said, and it fits on a line."""
+def hour_histogram(counts: Sequence[int], rows: int = HISTOGRAM_ROWS,
+                   width: int = HISTOGRAM_COL) -> List[str]:
+    """The day as a block chart, for a form that renders markdown.
+
+    A config flow cannot draw a graph. It can print one: 24 columns two
+    characters wide, five rows tall, half-blocks for the halves - which says
+    a good deal more than one line of sparkline did.
+    """
     top = max(counts) if counts else 0
     if top <= 0:
-        return ""
-    return "".join(_BARS[0] if not c else _BARS[min(8, max(1, round(8 * c / top)))] for c in counts)
-
-
-def hour_ruler() -> str:
-    """A 24-character ruler that lines up under the bars."""
-    out = [" "] * 24
-    for h in (0, 6, 12, 18):
+        return []
+    out = []
+    for r in range(rows, 0, -1):
+        line = []
+        for c in counts:
+            level = (c / top) * rows
+            line.append(("█" if level >= r else "▄" if level >= r - 0.5 else " ") * width)
+        out.append("|" + "".join(line))
+    out.append("+" + "-" * (len(counts) * width))
+    ruler = [" "] * (len(counts) * width)
+    for h in range(0, len(counts), 3):
         for i, ch in enumerate(str(h)):
-            if h + i < 24:
-                out[h + i] = ch
-    return "".join(out)
+            if h * width + i < len(ruler):
+                ruler[h * width + i] = ch
+    out.append(" " + "".join(ruler))
+    return out
 
 
 def _and(names: Sequence[str]) -> str:
