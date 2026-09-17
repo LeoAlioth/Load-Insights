@@ -82,11 +82,13 @@ cards:
         line: {width: 2, dash: dot}
         filters:
           - fn: |-
-              ({hass}) => {
-                const a = hass.states["{{ s.entity_id }}"].attributes;
-                const past = (a.history || []).filter(p => p.predicted != null)
-                                              .map(p => [new Date(p.period_start), p.predicted]);
-                const future = (a.detailedForecast || []).map(p => [new Date(p.period_start), p.kwh]);
+              ({xs, states, hass}) => {
+                // the past is the sensor's own recorded state - it IS the
+                // forecast for the coming hour - in W, so /1000 for kWh/h
+                const past = states.map((s, i) => [xs[i], +s.state / 1000])
+                                   .filter(r => isFinite(r[1]));
+                const future = (hass.states["{{ s.entity_id }}"].attributes.detailedForecast || [])
+                                   .map(p => [new Date(p.period_start), p.kwh]);
                 const all = past.concat(future);
                 return {xs: all.map(r => r[0]), ys: all.map(r => r[1])};
               }

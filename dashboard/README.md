@@ -33,10 +33,19 @@ and one per device on the Energy dashboard - and writes one graph for each:
 
 * **Actual** (bars): the last 48 hours as they happened, from the sensor's
   `history` attribute.
-* **Forecast** (dotted): the coming week, from `detailedForecast`, clipped by
-  the window.
+* **Forecast** (dotted): behind now, the sensor's own recorded state - its
+  state IS the forecast for the coming hour, so the recorder already holds
+  the forecast's history (in W, hence the /1000). Ahead of now,
+  `detailedForecast`. One continuous line.
 * **Likely range** (shaded): `kwh_p10` to `kwh_p90`, the spread of that hour
-  across the weeks behind it.
+  across the weeks behind it. Future only - there is no spread to show for an
+  hour that has already happened.
+
+The `history` attribute also carries a `predicted` value per hour: what was
+forecast for it a DAY ahead, from the scoring ledger. That is a harder test
+than the recorded state (which is an hour ahead) and takes about two days
+from a fresh install to fill, so the cards do not use it - but it is there
+for an accuracy chart.
 
 The window is 36 hours back and 36 hours forward, rolling - the card's
 window is relative to now, not pinned to midnight.
