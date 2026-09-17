@@ -12,8 +12,7 @@
 
   Needs the Plotly Graph Card from HACS.
 
-  The window is the last 24 hours and the next 48: yesterday, today and
-  tomorrow, rolling rather than pinned to midnight.
+  The window is 36 hours back and 36 hours forward.
 -#}
 {%- set sensors = states.sensor
       | selectattr('attributes.detailedForecast', 'defined')
@@ -29,7 +28,7 @@ cards:
   - type: custom:plotly-graph
     title: {{ (s.name | replace(' forecast', '') | replace(' Forecast', '')) }}
     hours_to_show: 72
-    time_offset: 48h
+    time_offset: 36h
     refresh_interval: 300
     layout:
       height: 260

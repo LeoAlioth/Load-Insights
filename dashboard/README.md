@@ -14,9 +14,8 @@ and one per device on the Energy dashboard - and writes one graph for each:
 * **Likely range** (shaded): `kwh_p10` to `kwh_p90`, the spread of that hour
   across the weeks behind it.
 
-The window is the last 24 hours and the next 48 - yesterday, today and
-tomorrow, rolling rather than pinned to midnight, because the card's window is
-relative to now.
+The window is 36 hours back and 36 hours forward, rolling - the card's
+window is relative to now, not pinned to midnight.
 
 Requires the [Plotly Graph Card](https://github.com/dbuezas/lovelace-plotly-graph-card)
 from HACS. Re-run the template after adding a device to your Energy dashboard.
