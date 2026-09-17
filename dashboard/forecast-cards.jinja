@@ -18,6 +18,19 @@
       | selectattr('attributes.detailedForecast', 'defined')
       | rejectattr('state', 'in', ['unavailable', 'unknown'])
       | sort(attribute='name') | list -%}
+{#- every name begins with the integration's device name ("Home Insights
+    Boiler forecast"); drop the words they all share so the titles read
+    "Boiler", "Consumption", "Unmetered consumption". -#}
+{%- set ns = namespace(prefix=[]) -%}
+{%- if sensors | count > 1 -%}
+  {%- set first = sensors[0].name.split(' ') -%}
+  {%- for i in range(first | count) -%}
+    {%- if sensors | map(attribute='name') | select('match', (ns.prefix + [first[i]]) | join(' ') + ' ') | list | count == sensors | count -%}
+      {%- set ns.prefix = ns.prefix + [first[i]] -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endif -%}
+{%- set prefix = (ns.prefix | join(' ') + ' ') if ns.prefix else '' -%}
 {%- if sensors | count == 0 -%}
 # No Load Insights forecast sensors found on this instance.
 # If the device ones are missing, enable them on the Load Insights device page.
@@ -26,7 +39,7 @@ type: vertical-stack
 cards:
 {%- for s in sensors %}
   - type: custom:plotly-graph
-    title: {{ (s.name | replace(' forecast', '') | replace(' Forecast', '')) }}
+    title: {{ (s.name | replace(prefix, '', 1) | replace(' forecast', '') | replace(' Forecast', '')) | trim | capitalize }}
     hours_to_show: 72
     time_offset: 36h
     refresh_interval: 300
