@@ -14,6 +14,7 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
+    CONF_SIGNATURE_REVISION,
     DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -21,6 +22,9 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
+from homeassistant.util import dt as dt_util
+
+from .insights.detect import suggest_levels
 from .insights.discovery import describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -126,7 +130,49 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         self._pending_detection: dict | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection"])
+        return self.async_show_menu(step_id="init", menu_options=["inputs", "device_state", "detection", "naming"])
+
+    async def async_step_naming(self, user_input: dict[str, Any] | None = None):
+        """Name a detected load. One per visit; giving two signatures the same
+        name says they are one device (a hob on two settings), and clearing
+        the name forgets it again."""
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        if runner is None or not runner.enabled:
+            return self.async_abort(reason="no_detection")
+        candidates = runner.unlocated()
+        if not candidates:
+            return self.async_abort(reason="nothing_to_name")
+
+        if user_input is not None:
+            chosen = int(user_input["signature"])
+            await runner.async_rename(chosen, user_input.get("name"))
+            # the entry has to change for the entities to be rebuilt
+            rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+            return self.async_create_entry(
+                data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
+            )
+
+        tz = dt_util.DEFAULT_TIME_ZONE
+        levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
+        options = []
+        for sig in candidates:
+            label = sig.describe(tz)
+            if sig.name:
+                label = f"{sig.name} - {label}"
+            if sig.id in levels:
+                label += f"  [looks like set {levels[sig.id]} of one device]"
+            options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
+        current = candidates[0]
+        return self.async_show_form(
+            step_id="naming",
+            data_schema=vol.Schema({
+                vol.Required("signature", default=str(current.id)): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Optional("name"): selector.TextSelector(),
+            }),
+            description_placeholders={"count": str(len(candidates))},
+        )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """The main meter. Pick the DEVICE and its per-phase readings are

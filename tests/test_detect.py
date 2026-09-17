@@ -195,5 +195,64 @@ def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     assert {s.phases: s.location for s in copy.main.signatures} == {"ac": "workshop", "b": "main"}
 
 
+def test_signatures_sharing_a_name_are_one_device():
+    det = D.Detector()
+    a = series(1200, lambda s: 2000.0 if 100 <= s < 300 else 0.0)
+    det.process({"a": a}, now_ts=T0 + 1300)
+    b = series(1200, lambda s: 900.0 if 600 <= s < 800 else 0.0, seed=9)
+    det.process({"b": b}, now_ts=T0 + 1300)
+    assert len(det.signatures) == 2
+    for sig in det.signatures:
+        assert det.rename(sig.id, "Hob")
+    assert det.names() == {"Hob": sorted(s.id for s in det.signatures)}
+    assert det.rename(999, "Nope") is False
+    # clearing a name forgets it
+    det.rename(det.signatures[0].id, "  ")
+    assert list(det.names()) == ["Hob"] and len(det.names()["Hob"]) == 1
+
+
+def test_active_power_is_reported_per_name():
+    det = D.Detector()
+    a = series(400, lambda s: 3000.0 if s >= 100 else 0.0)
+    det.process({"a": a}, now_ts=T0 + 400)
+    # name the signature the open session will be guessed as
+    sig_id = det._guess("a", 3000.0, 250.0)
+    assert sig_id is None      # nothing closed yet, so no signature to guess
+    tail = [(T0 + 400 + i * 5.0, 300.0) for i in range(1, 30)]
+    det.process({"a": tail}, now_ts=T0 + 700)
+    det.rename(det.signatures[0].id, "Kettle")
+    again = series(400, lambda s: 3000.0 if s >= 100 else 0.0, seed=2)
+    det2 = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    det2.process({"a": [(T0 + 800 + t, w) for t, w in [(x - T0, y) for x, y in again]]}, now_ts=T0 + 1200)
+    assert det2.active_by_name(T0 + 1200).get("Kettle", 0) > 2800, det2.active(T0 + 1200)
+
+
+def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
+    """Two sizes on one phase that never run together look like settings of
+    one appliance; two that overlap in time cannot be."""
+    det = D.Detector()
+    # a hob: 1 kW then 2 kW, never at once
+    a = series(2400, lambda s: 1000.0 if 100 <= s < 400 else (2000.0 if 900 <= s < 1200 else 0.0))
+    det.process({"a": a}, now_ts=T0 + 2500)
+    a2 = series(2400, lambda s: 1000.0 if 100 <= s < 400 else (2000.0 if 900 <= s < 1200 else 0.0), seed=11)
+    det.process({"a": [(t + 3000, w) for t, w in a2]}, now_ts=T0 + 5600)
+    groups = D.suggest_levels(det.signatures, det.recent)
+    assert len(groups) == 1 and len(groups[0]) == 2, (groups, [s.describe(None) for s in det.signatures])
+    # naming one removes it from the pool: a named signature is settled
+    det.rename(groups[0][0], "Hob")
+    assert D.suggest_levels(det.signatures, det.recent) == []
+
+
+def test_overlapping_signatures_are_never_suggested_as_one_device():
+    sigs = [
+        D.Signature(id=1, phases="a", power={"a": 1000.0}, duration_s=300, pf=None, count=5, first_seen=T0, last_seen=T0),
+        D.Signature(id=2, phases="a", power={"a": 2000.0}, duration_s=300, pf=None, count=5, first_seen=T0, last_seen=T0),
+    ]
+    recent = [{"signature": 1, "start": T0, "end": T0 + 600}, {"signature": 2, "start": T0 + 300, "end": T0 + 900}]
+    assert D.suggest_levels(sigs, recent) == []
+    apart = [{"signature": 1, "start": T0, "end": T0 + 300}, {"signature": 2, "start": T0 + 600, "end": T0 + 900}]
+    assert D.suggest_levels(sigs, apart) == [[1, 2]]
+
+
 if __name__ == "__main__":
     run_main(globals())

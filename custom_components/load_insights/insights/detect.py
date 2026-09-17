@@ -434,6 +434,30 @@ class Detector:
     def unknown_power(self, now_ts: float) -> float:
         return float(sum(m["watts"] for m in self.active(now_ts)))
 
+    def active_by_name(self, now_ts: float) -> Dict[str, float]:
+        """Watts on right now per NAME - signatures sharing a name are one
+        device, which is what giving two of them the same name means."""
+        out: Dict[str, float] = {}
+        for a in self.active(now_ts):
+            if a.get("name"):
+                out[a["name"]] = out.get(a["name"], 0.0) + float(a["watts"])
+        return out
+
+    def names(self) -> Dict[str, List[int]]:
+        """name -> the signature ids filed under it."""
+        out: Dict[str, List[int]] = {}
+        for sig in self.signatures:
+            if sig.name:
+                out.setdefault(sig.name, []).append(sig.id)
+        return out
+
+    def rename(self, signature_id: int, name: Optional[str]) -> bool:
+        for sig in self.signatures:
+            if sig.id == signature_id:
+                sig.name = (name or "").strip() or None
+                return True
+        return False
+
     # ------------------------------------------------ storage
     def to_dict(self) -> dict:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
@@ -548,6 +572,46 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
         if abs(pa[ph] - pb.get(ph, 0.0)) > tol:
             return False
     return True
+
+
+def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> List[List[int]]:
+    """Signatures that look like different settings of ONE device.
+
+    A hob on three settings looks like three signatures: same phases, the
+    same power factor, and - because it is one appliance - never two of them
+    running at once. That is the whole test; the sizes are deliberately not
+    compared, since settings can be any ratio. It is only a suggestion, and
+    confirming it means giving them the same name."""
+    times: Dict[int, List[Tuple[float, float]]] = {}
+    for r in recent:
+        times.setdefault(r["signature"], []).append((r["start"], r["end"]))
+
+    def overlap(x: int, y: int) -> bool:
+        for s1, e1 in times.get(x, ()):
+            for s2, e2 in times.get(y, ()):
+                if s1 < e2 and s2 < e1:
+                    return True
+        return False
+
+    def compatible(a: Signature, b: Signature) -> bool:
+        if a.phases != b.phases:
+            return False
+        if (a.pf is None) != (b.pf is None):
+            return False
+        if a.pf is not None and abs(a.pf - b.pf) > MATCH_PF_TOL:
+            return False
+        return not overlap(a.id, b.id)
+
+    pool = [s for s in signatures if not s.name and s.count >= 2]
+    groups: List[List[Signature]] = []
+    for sig in sorted(pool, key=lambda x: -x.count):
+        for g in groups:
+            if all(compatible(sig, m) for m in g):
+                g.append(sig)
+                break
+        else:
+            groups.append([sig])
+    return [sorted(x.id for x in g) for g in groups if len(g) > 1]
 
 
 def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[str, Optional[str]]] = None) -> str:

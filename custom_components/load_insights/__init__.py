@@ -9,7 +9,7 @@ from .const import DOMAIN
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

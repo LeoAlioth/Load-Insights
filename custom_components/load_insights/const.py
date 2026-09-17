@@ -30,6 +30,9 @@ DETECTION_KINDS = ("power", "pf", "current", "voltage")
 DETECTION_INTERVAL_MINUTES = 5
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
+# Bumped whenever a signature is named, so the entry reloads and the named
+# load's entities appear. The names themselves live with the detector.
+CONF_SIGNATURE_REVISION = "signature_revision"
 
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so

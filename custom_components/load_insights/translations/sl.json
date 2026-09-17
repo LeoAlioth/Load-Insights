@@ -74,7 +74,8 @@
                 "menu_options": {
                     "inputs": "Pojasnjevalni vhodi",
                     "device_state": "Lastni senzor stanja naprave",
-                    "detection": "Zaznavanje porabnikov"
+                    "detection": "Zaznavanje porabnikov",
+                    "naming": "Poimenuj zaznan porabnik"
                 }
             },
             "inputs": {
@@ -120,10 +121,20 @@
                 "data_description": {
                     "device": "Izberite števec in meritve po fazah se izpolnijo spodaj, da jih preverite. Pustite prazno za ročno izbiro entitet."
                 }
+            },
+            "naming": {
+                "title": "Poimenuj zaznan porabnik",
+                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.",
+                "data": {
+                    "signature": "Zaznan porabnik",
+                    "name": "Ime"
+                }
             }
         },
         "abort": {
-            "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav."
+            "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
+            "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
+            "nothing_to_name": "Zaenkrat ni kaj poimenovati - ali ni bil zaznan noben porabnik ali pa vse pojasnijo števci naprav."
         }
     }
 }
