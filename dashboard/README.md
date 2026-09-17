@@ -18,6 +18,11 @@ dashboard makes a graph appear on its own - nothing to re-run.
 a `vertical-stack`'s **cards** rather than an entity list, so each generated
 item is a whole card rather than a row.
 
+The template writes the cards as literal YAML, which is auto-entities' own
+documented style. It is not decoration: Jinja's `tojson` filter is
+HTML-safe, so it escapes `>` and `'` - and the plotting functions are full of
+`=>`, which comes out the other side as `=\u003e` and no longer parses.
+
 
 ## `forecast-cards.jinja` - forecast against actual, one graph per thing
 
