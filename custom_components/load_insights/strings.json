@@ -28,35 +28,11 @@
             "consumption_forecast": {
                 "name": "Consumption forecast"
             },
-            "consumption_today": {
-                "name": "Consumption today"
-            },
-            "consumption_tomorrow": {
-                "name": "Consumption tomorrow"
-            },
             "remainder_forecast": {
                 "name": "Unmetered consumption forecast"
             },
             "device_forecast": {
-                "name": "{device} forecast"
-            },
-            "consumption_error_day_ahead": {
-                "name": "Forecast error, day ahead"
-            },
-            "consumption_bias_day_ahead": {
-                "name": "Forecast bias, day ahead"
-            },
-            "consumption_error_hour_ahead": {
-                "name": "Forecast error, hour ahead"
-            },
-            "consumption_day_ahead_kwh_error": {
-                "name": "Yesterday's day-ahead error"
-            },
-            "remainder_error_day_ahead": {
-                "name": "Unmetered forecast error, day ahead"
-            },
-            "remainder_bias_day_ahead": {
-                "name": "Unmetered forecast bias, day ahead"
+                "name": "Forecast"
             },
             "detected_loads": {
                 "name": "Detected loads"
@@ -67,17 +43,19 @@
             "grid_forecast": {
                 "name": "Grid forecast"
             },
-            "grid_import_tomorrow": {
-                "name": "Grid import tomorrow"
-            },
-            "grid_export_tomorrow": {
-                "name": "Grid export tomorrow"
-            },
             "battery_soc_forecast": {
                 "name": "Battery SOC forecast"
             },
             "base_load": {
                 "name": "Base load"
+            },
+            "named_load_power": {
+                "name": "Power"
+            }
+        },
+        "binary_sensor": {
+            "named_load_running": {
+                "name": "Running"
             }
         }
     },

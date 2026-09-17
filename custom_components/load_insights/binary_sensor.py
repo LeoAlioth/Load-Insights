@@ -12,6 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .detection import DetectionRunner
+from .sensor import _child_device
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -32,9 +33,9 @@ class NamedLoadRunning(BinarySensorEntity):
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
         self._runner = runner
         self._name = name
-        self._attr_name = name
+        self._attr_translation_key = "named_load_running"
         self._attr_unique_id = f"{entry.entry_id}_load_{name.lower().replace(' ', '_')}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
 
     async def async_added_to_hass(self) -> None:
         self._runner.add_listener(self.async_write_ha_state)
