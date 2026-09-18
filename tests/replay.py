@@ -6,10 +6,14 @@ Home Assistant's History panel downloads - the one with entity_id, state
 and last_changed - and feeds it through exactly the code that runs there,
 then prints the library the naming page would show.
 
-    python3 tests/replay.py ~/Downloads/history.csv
+    python3 tests/replay.py data/history/home --rates
+    python3 tests/replay.py data/history/home --pv sensor.inverter_ac_power
     python3 tests/replay.py hist.csv --role power_a=sensor.my_phase_a
     python3 tests/replay.py hist.csv --sub "Boiler=sensor.boiler_power"
-    python3 tests/replay.py hist.csv --pv sensor.inverter_ac_power
+
+Exports live in ``data/``, which .gitignore holds twice over - the whole
+folder, and *.csv anywhere - so a site's history never reaches the remote.
+One folder per site, one file per day.
 
 Entities are matched to their roles by name, the same way the config flow
 matches a device's sensors, and anything it gets wrong can be pinned with
