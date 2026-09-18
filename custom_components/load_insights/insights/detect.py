@@ -131,6 +131,13 @@ NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE
 NOISE_SESSION_S = 20.0
 MATCH_POWER_REL = 0.10
 MATCH_DURATION_FACTOR = 3.0
+# Two METERS may disagree about a run's length far more than two sightings of
+# one load may: a 66-second boiler cycle is 66 seconds on its own meter and
+# often minutes on a busy main one, where the down-step pairs with a
+# different edge. A wide bound is only safe because the cross-meter match
+# scores every passing pair and takes the closest - with first-fit it made
+# things worse (Anze, 2026-09-18).
+CROSS_METER_DURATION_FACTOR = 12.0
 MATCH_PF_TOL = 0.15
 MAX_SIGNATURES = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
@@ -1711,30 +1718,43 @@ class Fleet:
         self.pending_main += closed_main
         for name, sessions in closed_sub.items():
             self.pending_sub.setdefault(name, []).extend(sessions)
-        still: List[Session] = []
-        for m in self.pending_main:
-            sig = self.main.signature_of(m)
-            hit = None
+        # BEST fit, not first fit. Taking the first session that passed and
+        # popping it is order-dependent, and at Kozolec it was the whole
+        # reason a boiler with its own meter and 367 sightings collected
+        # thirteen locations: a main session that merely fitted consumed the
+        # downstream session a better-matching one needed, and loosening the
+        # test made it worse rather than better (Anze, 2026-09-18). Every
+        # passing pair is scored, the closest is taken first, and each
+        # session is spent once.
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        pairs = []
+        for mi, m in enumerate(self.pending_main):
             for name, subs in self.pending_sub.items():
-                # how far apart the two meters can honestly be: one full
-                # reporting interval each, since a step can land anywhere
-                # inside one, and never less than the merge tolerance
                 det = self.subs.get(name)
                 sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
-                main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+                # one full reporting interval each, since a step can land
+                # anywhere inside one, and never less than the merge tolerance
                 tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
-                for i, s in enumerate(subs):
-                    if _same_load(m, s, self.agnostic.get(name, False), tol):
-                        hit = (name, i)
-                        break
-                if hit:
-                    break
-            if hit and sig is not None:
-                name, i = hit
-                self.pending_sub[name].pop(i)
-                sig.locations[name] = sig.locations.get(name, 0) + 1
-            elif latest - m.end < HELD_TAIL_S * 2:
-                still.append(m)          # a partner may still close on a slower meter
+                agnostic = self.agnostic.get(name, False)
+                for si, s in enumerate(subs):
+                    if _same_load(m, s, agnostic, tol):
+                        pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
+        pairs.sort(key=lambda x: x[0])
+        taken_main, taken_sub = set(), set()
+        for _, mi, name, si in pairs:
+            if mi in taken_main or (name, si) in taken_sub:
+                continue
+            sig = self.main.signature_of(self.pending_main[mi])
+            if sig is None:
+                continue
+            taken_main.add(mi)
+            taken_sub.add((name, si))
+            sig.locations[name] = sig.locations.get(name, 0) + 1
+        for name in self.pending_sub:
+            self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
+                                      if (name, i) not in taken_sub]
+        still = [m for i, m in enumerate(self.pending_main)
+                 if i not in taken_main and latest - m.end < HELD_TAIL_S * 2]
         self.pending_main = still
         for name in list(self.pending_sub):
             self.pending_sub[name] = [s for s in self.pending_sub[name] if latest - s.end < HELD_TAIL_S * 2]
@@ -1756,6 +1776,24 @@ class Fleet:
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
         f.agnostic = dict(d.get("agnostic") or {})
         return f
+
+
+def _match_cost(a: Session, b: Session, phase_agnostic: bool, tol_s: float) -> float:
+    """How well these two sessions fit, smaller being better.
+
+    Only ever asked of a pair that already passed ``_same_load``; this is
+    what decides which of several passing pairs is the real one."""
+    pa, pb = a.power_by_phase(), b.power_by_phase()
+    ta = sum(pa.values()) if phase_agnostic else sum(pa.get(ph, 0.0) for ph in a.phases)
+    tb = sum(pb.values()) if phase_agnostic else sum(pb.get(ph, 0.0) for ph in a.phases)
+    biggest = max(abs(ta), abs(tb), 1.0)
+    when = abs(a.start - b.start) / max(tol_s, 1.0)
+    size = abs(ta - tb) / biggest
+    da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
+    length = abs(math.log(da / db))
+    # the moment and the size are what two meters can agree on; the length is
+    # what a busy main meter gets wrong, so it only breaks ties
+    return when + size + 0.25 * length
 
 
 def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
@@ -1783,19 +1821,24 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
     # caller derives it from what each meter actually does.
     if abs(a.start - b.start) > tol_s:
         return False
-    # They also have to be the same LENGTH of thing. Dropping this looked
-    # right - the boiler's 66-second cycle is often a far longer session on
-    # the main meter, where the down-step pairs with a different edge - and
-    # measuring it said otherwise: without the guard NOTHING was placed at
-    # all, because the matcher takes the first fit and pops it, so a loose
-    # test lets a wrong pairing eat the session the right one needed. The
-    # greedy match is the real limit here, not the tolerance.
+    # They still have to be roughly the same LENGTH of thing, but the bound
+    # is wide: dropping it entirely placed NOTHING, because a loose test with
+    # first-fit let a wrong pairing eat the session the right one needed.
+    # With best-fit scoring behind it a wide bound is safe, and it has to be
+    # wide - see CROSS_METER_DURATION_FACTOR.
     da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
-    if max(da, db) / min(da, db) > MATCH_DURATION_FACTOR:
+    if max(da, db) / min(da, db) > CROSS_METER_DURATION_FACTOR:
         return False
     pa, pb = a.power_by_phase(), b.power_by_phase()
     if phase_agnostic:
-        ta, tb = sum(pa.values()), sum(pb.values())
+        # The PEAK, not the energy-weighted mean. A meter slower than the load
+        # it watches dilutes that mean with the part of a sample where the
+        # load was off: Kozolec's boiler runs 66 seconds and its Shelly
+        # reports every 52, so its own sessions measured 953 W against the
+        # 1813 W the main meter saw - a factor of two, and the size test threw
+        # out 343 of 381 otherwise-good pairs on it (Anze, 2026-09-18). What
+        # a load PEAKS at survives coarse sampling; what it averages does not.
+        ta, tb = a.max_w, b.max_w
         return abs(ta - tb) <= max(MATCH_POWER_REL * max(ta, tb), MIN_NOISE_W)
     if a.phases != b.phases:
         return False
