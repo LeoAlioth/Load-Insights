@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .classify import Guess, classify
 
 PHASES = ("a", "b", "c")
+WEEK_SECONDS = 7 * 24 * 3600.0
 MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
 NOISE_MAD_FACTOR = 4.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
@@ -565,21 +566,38 @@ class Signature:
         """What this load has actually used over everything seen of it."""
         return sum(self.hour_wh)
 
+    @property
+    def weekly_wh(self) -> float:
+        """At the rate it has been going, what it costs in a week.
+
+        Never extrapolated from less than a day: a load first seen an hour
+        ago would otherwise claim a hundred and sixty-eight times its own
+        energy."""
+        span = max(self.last_seen - self.first_seen, 1.0)
+        return self.energy_wh * min(WEEK_SECONDS / span, 7.0)
+
+    @property
+    def per_run_wh(self) -> float:
+        return self.energy_wh / max(self.count, 1)
+
     def row(self, tz) -> str:
-        """One line for a menu: what it costs, what it is, and its day."""
-        guess = self.guess()
-        # "6x" alone does not say over what, and a menu row has no second
-        # line to say it on (Anze, 2026-09-18)
-        often = (f"{self.count}x, every {_fmt_s(self.interval_s)}" if self.interval_s
-                 else f"{self.count}x in {_fmt_s(max(self.last_seen - self.first_seen, 0.0))}")
-        bits = [_fmt_wh(self.energy_wh),
-                f"{self.watts / 1000:.1f} kW on {'+'.join(p.upper() for p in self.phases)}",
-                _fmt_s(self.duration_s), often]
-        if guess.kind:
-            bits.append(guess.short.replace("maybe ", ""))
-        line = " · ".join(bits)
-        bars = sparkline(self.hour_wh)
-        return f"{line}  {bars}" if bars else line
+        """One line for a menu, and a MENU ROW IS NARROW - it truncated at
+        about sixty characters and took the useful half with it (Anze,
+        2026-09-18). So: what it draws, what it costs a week and a run, how
+        long it runs, how often, one word for what it might be, and the week
+        itself in seven characters."""
+        phases = "+".join(p.upper() for p in self.phases)
+        bits = [f"{self.watts / 1000:.1f} kW ({phases})",
+                f"{_fmt_wh(self.weekly_wh)}/{_fmt_wh(self.per_run_wh)}",
+                _fmt_s(self.duration_s)]
+        # how OFTEN is left to the load's own page: of everything here it is
+        # the least use for telling one row from another
+        tag = self.guess().tag
+        if tag:
+            bits.append(tag)
+        line = ", ".join(bits)
+        bars = sparkline(self.day_wh)          # seven characters, one per day
+        return f"{line} {bars}" if bars else line
 
     @property
     def evidence(self) -> float:

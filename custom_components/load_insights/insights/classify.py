@@ -33,6 +33,10 @@ INVERTER = "an inverter-driven appliance"
 PROGRAMME = "an appliance running a programme"
 CAR = "a car charging"
 
+# One word each, for a place with no room for a sentence - a menu row
+SHORT = {HEATER: "heater", MOTOR: "motor", SUPPLY: "electronics",
+         INVERTER: "inverter", PROGRAMME: "programme", CAR: "car"}
+
 MIN_SCORE = 0.2            # below this the evidence says nothing
 CLOSE = 0.15               # two families this close are both named
 NO_PF_CAP = 0.4            # a guess made without a power factor is never confident
@@ -47,6 +51,11 @@ class Guess:
     confidence: float                      # 0 to 1
     because: Tuple[str, ...] = ()          # the readings it rests on
     alternative: Optional[str] = None      # a family scoring nearly as well
+
+    @property
+    def tag(self) -> str:
+        """One word, or nothing."""
+        return SHORT.get(self.kind or "", "")
 
     @property
     def short(self) -> str:

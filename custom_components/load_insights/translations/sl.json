@@ -131,7 +131,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, tu jih je prikazanih {hidden} manj. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete na ta seznam.\n\nDvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete. Bremena, ki jih števec naprave že pokriva, poimenuje energijska nadzorna plošča in tu niso navedena.",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica je: moč (faze), energija na teden in na zagon, koliko traja en zagon, kaj bi lahko bilo, in njegov teden od ponedeljka do nedelje. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
