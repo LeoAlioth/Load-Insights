@@ -35,6 +35,7 @@ from .insights.detect import (
     Detector,
     Fleet,
     carries_generation,
+    carries_load,
     classify_source,
     exports_positive,
     most_specific,
@@ -498,8 +499,8 @@ class DetectionRunner:
                     continue
                 series = await self._read_raw(start, end, triple)
                 power_rows = series.get(("power", phase)) or []
-                if not power_rows:
-                    continue
+                if not carries_load(power_rows):
+                    continue          # coherent, but nothing flows through it
                 var = _reactive(power_rows, series.get(("voltage", phase)),
                                 series.get(("current", phase)), series.get(("pf", phase)))
                 if var:
