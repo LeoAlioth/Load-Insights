@@ -1224,6 +1224,32 @@ def test_average_power_comes_from_energy_that_arrived_not_from_an_open_step():
     assert abs(rate * span / 3600.0 - 300.0) < 1e-6
 
 
+def test_stored_state_carries_only_the_precision_it_has():
+    """A watt-hour written as 276.1825572400394 spends fifteen digits on a
+    figure the energy meter publishes to two decimals of a kilowatt-hour, and
+    the whole library is rewritten every pass. Trimming must not cost the
+    energy total anything that matters: a total that steps DOWN reads as a
+    meter reset."""
+    import json
+    det = D.Detector()
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.123456789}, duration_s=61.987654321,
+                      pf=0.9543210987, count=40, first_seen=1_789_000_000.25,
+                      last_seen=1_789_050_000.75, name="Boiler")
+    sig.hour_wh = [276.1825572400394] * 24
+    sig.day_wh = [946.9116248229 for _ in range(7)]
+    det.signatures = [sig]
+    blob = json.dumps(det.to_dict())
+    copy = D.Detector.from_dict(json.loads(blob))
+    back = copy.signatures[0]
+    assert "276.1825572400394" not in blob, "full float precision still stored"
+    assert abs(back.energy_wh - sig.energy_wh) < 2.5, (back.energy_wh, sig.energy_wh)
+    assert abs(back.energy_wh - sig.energy_wh) / sig.energy_wh < 1e-4
+    # timestamps keep their precision - a rounded epoch second is a second lost
+    assert back.first_seen == sig.first_seen and back.last_seen == sig.last_seen
+    assert back.name == "Boiler" and back.count == 40
+    assert abs(back.power["a"] - 2000.1) < 0.05 and abs((back.pf or 0) - 0.9543) < 1e-4
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had
