@@ -58,7 +58,10 @@ STORAGE_VERSION = 1
 # 4 = reactive power comes from one meter's own power, voltage and current,
 #     and the step is measured against a median rather than a slow EMA, so
 #     every stored power factor was derived differently from today's.
-DETECTOR_GENERATION = 4
+# 5 = readings are scaled by their UNIT, so a meter publishing kW is no
+#     longer read as watts - which changes what every submeter saw, and so
+#     where loads are placed and what they were classified as.
+DETECTOR_GENERATION = 5
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
