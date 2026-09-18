@@ -28,6 +28,7 @@ from .const import (
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
+    SAVE_MAX_INTERVAL_S,
     DOMAIN,
 )
 from .insights.detect import (
@@ -94,6 +95,7 @@ class DetectionRunner:
         self.average_power: Dict[str, float] = {}
         self._energy_mark: Dict[str, float] = {}
         self._mark_ts: Optional[float] = None
+        self._saved_at: Optional[float] = None
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -322,10 +324,35 @@ class DetectionRunner:
         bumps the entry so the entities follow."""
         if not self.detector.rename(signature_id, name):
             return False
-        await self._store.async_save(self._snapshot())
+        await self._persist(force=True)          # a user action, written at once
         for cb in self._listeners:
             cb()
         return True
+
+    async def _persist(self, force: bool = False) -> None:
+        """Write the state, but not on every pass.
+
+        The snapshot is the whole library and runs to well over a hundred
+        kilobytes; written every five minutes that is tens of megabytes a day,
+        and it is the single thing that would multiply if detection ran every
+        minute instead (Anze, 2026-09-18, whose suggestion this is: keep it in
+        memory and write it at most hourly).
+
+        async_delay_save alone will not do it. Called again before its delay
+        expires it POSTPONES the pending write rather than letting it run, so
+        a pass every minute against an hourly delay would never write at all
+        until shutdown - and an ungraceful one would lose everything since the
+        last write. So the delayed save is the safety net (it also registers
+        Home Assistant's final-write listener, which is what makes a clean
+        shutdown durable) and the elapsed check is the floor.
+        """
+        now = dt_util.utcnow().timestamp()
+        due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
+        if force or due:
+            await self._store.async_save(self._snapshot())
+            self._saved_at = now
+        else:
+            self._store.async_delay_save(self._snapshot, SAVE_MAX_INTERVAL_S)
 
     def _snapshot(self) -> dict:
         return {"fleet": self.fleet.to_dict(),
@@ -365,7 +392,8 @@ class DetectionRunner:
         self.last_processed = None
         self.caught_up = False
         self.samples_read = 0
-        await self._store.async_save(self._snapshot())
+        self._saved_at = None
+        await self._persist(force=True)          # a reset must survive a crash
         for cb in self._listeners:
             cb()
         self.hass.async_create_task(self._run())
@@ -433,7 +461,7 @@ class DetectionRunner:
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
             self.last_run = now
-            await self._store.async_save(self._snapshot())
+            await self._persist()
             for cb in self._listeners:
                 cb()
             if not self.caught_up:
@@ -650,8 +678,24 @@ def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
 
 
 def _fetch(hass, start, end, entity_ids):
-    out = {}
-    for eid in entity_ids:
-        res = history.state_changes_during_period(hass, start, end, eid, no_attributes=True, include_start_time_state=True)
-        out.update(res)
-    return out
+    """Every entity's state changes over the window, in ONE query.
+
+    This looped over state_changes_during_period, which takes a single
+    entity_id, so a pass cost one SQL round trip per entity - about twenty at
+    Anze's home once the submeters are counted, and that is per pass rather
+    than per sample, so it is exactly the cost that multiplies if detection
+    runs more often (2026-09-18). get_significant_states takes the whole
+    list; significant_changes_only=False is what keeps it every change rather
+    than the dashboard's thinned-out view, and minimal_response=False keeps
+    State objects rather than the compressed dicts, which is what the callers
+    read.
+    """
+    if not entity_ids:
+        return {}
+    return history.get_significant_states(
+        hass, start, end, list(entity_ids),
+        include_start_time_state=True,
+        significant_changes_only=False,
+        minimal_response=False,
+        no_attributes=True,
+    )

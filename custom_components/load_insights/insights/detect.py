@@ -276,6 +276,23 @@ def mean_power(previous: Dict[str, float], current: Dict[str, float],
     return out
 
 
+def _trim(value, places: int):
+    """A stored number at the precision it actually carries.
+
+    A watt-hour figure written as 276.1825572400394 spends fifteen digits on
+    a quantity the energy meter publishes to two decimal places of a
+    kilowatt-hour. Over a library of two hundred signatures that is a third
+    of the stored state, rewritten every pass (Anze, 2026-09-18).
+
+    Energy is trimmed to whole watt-hours rather than integers on the way
+    in: what is stored is what a restart restores, and an energy total that
+    steps DOWN reads as a meter reset to Home Assistant's statistics. At one
+    decimal a restart costs the biggest signature here 0.14 Wh out of
+    38.7 kWh, which is three ten-thousandths of a per cent.
+    """
+    return round(value, places) if isinstance(value, float) else value
+
+
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     """Does this reading contain the site's generation, or the house alone?
 
@@ -931,13 +948,24 @@ class Signature:
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "phases": self.phases, "power": self.power, "duration_s": self.duration_s,
-                "pf": self.pf, "count": self.count, "first_seen": self.first_seen, "last_seen": self.last_seen,
-                "interval_s": self.interval_s, "hour_wh": self.hour_wh, "day_wh": self.day_wh,
-                "level_count": self.level_count, "name": self.name,
-                "last_start": self.last_start, "locations": self.locations, "power_mad": self.power_mad,
+        # Written every pass, so it is trimmed to the precision each figure
+        # actually carries - watts to a tenth, seconds to a tenth, a power
+        # factor to four places, energy to a tenth of a watt-hour. Timestamps
+        # keep theirs: an epoch second rounded is a second lost.
+        return {"id": self.id, "phases": self.phases,
+                "power": {k: _trim(v, 1) for k, v in self.power.items()},
+                "duration_s": _trim(self.duration_s, 1),
+                "pf": _trim(self.pf, 4), "count": self.count,
+                "first_seen": self.first_seen, "last_seen": self.last_seen,
+                "interval_s": _trim(self.interval_s, 1),
+                "hour_wh": [_trim(x, 1) for x in self.hour_wh],
+                "day_wh": [_trim(x, 1) for x in self.day_wh],
+                "level_count": _trim(self.level_count, 3), "name": self.name,
+                "last_start": self.last_start, "locations": self.locations,
+                "power_mad": _trim(self.power_mad, 1),
                 "successor_id": self.successor_id,
-                "duration_mad": self.duration_mad, "interval_mad": self.interval_mad}
+                "duration_mad": _trim(self.duration_mad, 1),
+                "interval_mad": _trim(self.interval_mad, 1)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":

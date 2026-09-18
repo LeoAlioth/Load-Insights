@@ -91,6 +91,12 @@ DETECTION_KINDS = ("power", "pf", "current", "voltage")
 DETECTION_INTERVAL_MINUTES = 5
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
+# How long the detector's state may sit in memory unwritten. The snapshot is
+# the whole signature library - well over a hundred kilobytes - and writing
+# it every pass is what makes the polling interval expensive rather than the
+# detection itself, which costs under a millisecond per pass. An hour caps
+# what an ungraceful shutdown can lose; a clean one always writes.
+SAVE_MAX_INTERVAL_S = 3600.0
 # Bumped whenever a signature is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"
