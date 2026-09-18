@@ -568,9 +568,13 @@ class Signature:
     def row(self, tz) -> str:
         """One line for a menu: what it costs, what it is, and its day."""
         guess = self.guess()
+        # "6x" alone does not say over what, and a menu row has no second
+        # line to say it on (Anze, 2026-09-18)
+        often = (f"{self.count}x, every {_fmt_s(self.interval_s)}" if self.interval_s
+                 else f"{self.count}x in {_fmt_s(max(self.last_seen - self.first_seen, 0.0))}")
         bits = [_fmt_wh(self.energy_wh),
                 f"{self.watts / 1000:.1f} kW on {'+'.join(p.upper() for p in self.phases)}",
-                _fmt_s(self.duration_s), f"{self.count}x"]
+                _fmt_s(self.duration_s), often]
         if guess.kind:
             bits.append(guess.short.replace("maybe ", ""))
         line = " · ".join(bits)
@@ -626,7 +630,10 @@ class Signature:
         gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
         pf = f", PF {self.pf:.2f}" if self.pf is not None else ""
-        line = f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, seen {self.count} times"
+        span = max(self.last_seen - self.first_seen, 0.0)
+        over = f" over {_fmt_s(span)}" if span > 0 else ""
+        line = (f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, "
+                f"seen {self.count} times{over}")
         guess = self.guess()
         # the short form: the line above already carries the factor, the
         # levels and the size the guess rests on
@@ -657,6 +664,11 @@ class Signature:
         lines.append(f"Where: {describe_location(self.locations, self.count, parents, self.phases)}.")
         clock = " It comes back on a clock." if self.regular else ""
         lines.append(f"Confidence that this is a real repeating load: {self.evidence:.2f}.{clock}")
+        if tz is not None and self.last_seen > self.first_seen:
+            first = datetime.fromtimestamp(self.first_seen, tz)
+            last = datetime.fromtimestamp(self.last_seen, tz)
+            lines.append(f"Seen {self.count} times between {first:%a %d %b %H:%M} "
+                         f"and {last:%a %d %b %H:%M}.")
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -690,7 +702,9 @@ def _fmt_s(x: Optional[float]) -> str:
         return f"{x:.0f} s"
     if x < 5400:
         return f"{x / 60:.0f} min"
-    return f"{x / 3600:.1f} h"
+    if x < 172800:                      # past two days, hours stop being readable
+        return f"{x / 3600:.1f} h"
+    return f"{x / 86400:.1f} days"
 
 
 # ------------------------------------------------------------------ the detector
