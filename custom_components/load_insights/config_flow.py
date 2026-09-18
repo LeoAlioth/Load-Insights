@@ -36,7 +36,7 @@ from .insights.detect import describe_location, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
-DONE_NAMING = "__done__"       # the list's last entry: apply and close
+NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -187,6 +187,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         self._pending_detection: dict | None = None
         self._naming_selected: int | None = None
         self._pending_grid: dict | None = None
+        self._naming_rows: list[int] = []      # menu position -> signature id
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
@@ -266,61 +267,63 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_overview()
 
     async def async_step_naming(self, user_input: dict[str, Any] | None = None):
-        """Pick a detected load. Nothing else on this page.
+        """The detected loads, biggest first, one clickable row each.
 
-        A form's description always renders ABOVE its fields, and a form
-        cannot redraw while a dropdown is being scrolled, so a picker and a
-        picture of the pick cannot share one page: the charts sat above the
-        list and never changed (Anze, 2026-09-18). Picking is its own step,
-        and the next one shows what was picked."""
+        A MENU rather than a form: its rows are real buttons, so choosing one
+        goes straight to it with no submit, which is what a dropdown could
+        never do. Their labels come from the translation of
+        ``menu_options.<key>``, and the frontend passes this step's
+        description_placeholders into that lookup - so a fixed key whose
+        template is nothing but a placeholder carries whatever we put there,
+        which is how each row shows its own numbers and its own day (Anze,
+        2026-09-18)."""
         runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
         candidates = runner.unlocated()
         if not candidates:
             return self.async_abort(reason="nothing_to_name")
-        if user_input is not None:
-            if user_input["signature"] == DONE_NAMING:
-                # the revision is what rebuilds the entities; the names
-                # themselves were already written as each was given
-                rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-                return self.async_create_entry(
-                    data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev})
-            self._naming_selected = int(user_input["signature"])
-            return await self.async_step_naming_detail()
+        shown = candidates[:NAMING_MAX_ROWS]
+        self._naming_rows = [s.id for s in shown]
 
         tz = dt_util.DEFAULT_TIME_ZONE
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
-        parents = runner.parents
+        placeholders = {"count": str(len(candidates)),
+                        "hidden": str(max(0, len(candidates) - len(shown)))}
         options = []
-        for sig in candidates:
-            label = sig.describe(tz)
-            if sig.locations:
-                # nothing owns these - they are all "main" - but a meter that
-                # saw it SOMETIMES still narrows where it is
-                label += f", {describe_location(sig.locations, sig.count, parents, sig.phases)}"
+        for index, sig in enumerate(shown):
+            label = sig.row(tz)
             if sig.name:
-                label = f"{sig.name} - {label}"
+                label = f"{sig.name} — {label}"
             if sig.id in levels:
-                label += f"  [looks like set {levels[sig.id]} of one device]"
-            # the list is ordered by this, so it has to be visible - otherwise
-            # it reads as no order at all (Anze, 2026-09-17)
-            label = f"[{sig.evidence:.2f}] {label}"
-            options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
-        options.append(selector.SelectOptionDict(value=DONE_NAMING, label="— finished, apply —"))
-        return self.async_show_form(
-            step_id="naming",
-            data_schema=vol.Schema({
-                vol.Required("signature", default=str(candidates[0].id)): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.DROPDOWN)
-                ),
-            }),
-            description_placeholders={"count": str(len(candidates))},
-            # neither of these pages ends the flow - picking leads to the
-            # load, naming leads back to the list - so the button should say
-            # Next rather than Submit, which reads as if the dialog closes
-            last_step=False,
-        )
+                label += f"  [set {levels[sig.id]} of one device]"
+            placeholders[f"load_{index}"] = label
+            options.append(f"load_{index}")
+        options.append("naming_done")
+        return self.async_show_menu(step_id="naming", menu_options=options,
+                                    description_placeholders=placeholders)
+
+    def __getattr__(self, name: str):
+        """Route the menu's rows, which are steps named after their position."""
+        if name.startswith("async_step_load_") and name[16:].isdigit():
+            index = int(name[16:])
+
+            async def _chosen(user_input: dict[str, Any] | None = None):
+                rows = self.__dict__.get("_naming_rows") or []
+                if index >= len(rows):
+                    return await self.async_step_naming()
+                self._naming_selected = rows[index]
+                return await self.async_step_naming_detail()
+
+            return _chosen
+        raise AttributeError(name)
+
+    async def async_step_naming_done(self, user_input: dict[str, Any] | None = None):
+        """Apply: the names were written as they were given, and this is what
+        rebuilds the entities behind them."""
+        rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+        return self.async_create_entry(
+            data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev})
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
         """The load that was picked, then its name."""
