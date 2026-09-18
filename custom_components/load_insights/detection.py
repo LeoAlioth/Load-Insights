@@ -40,6 +40,10 @@ STORAGE_VERSION = 1
 # 3 = the hour and weekday histograms hold ENERGY, not counts of starts.
 DETECTOR_GENERATION = 3
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
+# What a load has actually USED is the reason to bother naming it: a
+# signature worth 30 Wh over ten days is noise with a shape, and a list full
+# of those is why the naming page ran to a hundred and eighty rows.
+NAMING_MIN_WH = 50.0
 
 
 class DetectionRunner:
@@ -220,10 +224,10 @@ class DetectionRunner:
         seen once, dont show them"). It keeps its place in the library and
         appears here as soon as it happens again."""
         parents = self.parents
-        # best evidence first: the loads most worth naming, not merely the
-        # most frequent
-        return [s for s in sorted(self.detector.signatures, key=lambda x: (-x.evidence, -x.count))
-                if s.count >= MIN_COUNT_TO_NAME
+        # biggest first, by energy: what a load COSTS is the reason to name
+        # it, and it puts the ones worth the trouble at the top
+        return [s for s in sorted(self.detector.signatures, key=lambda x: (-x.energy_wh, -x.evidence))
+                if s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
                 and most_specific(s.locations, s.count, parents) == "main"]
 
     async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:

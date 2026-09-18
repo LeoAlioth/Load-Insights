@@ -131,9 +131,33 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for - {count} of them. Pick one and the next page shows what it looks like, then asks for a name; naming one brings you straight back here, so several can be done in one visit.\n\nGive two of them the SAME name to say they are one device on different settings, and clear a name to forget it. Choose *finished* when you are done - that is what rebuilds the entities. Loads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
-                "data": {
-                    "signature": "Detected load"
+                "description": "Loads no device meter accounts for, biggest first - {count} of them, showing {hidden} fewer than that here. Click one to see it and give it a name; naming brings you back to this list.\n\nGive two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities. Loads a device meter already accounts for are named by the Energy dashboard and are not listed.",
+                "menu_options": {
+                    "load_0": "{load_0}",
+                    "load_1": "{load_1}",
+                    "load_2": "{load_2}",
+                    "load_3": "{load_3}",
+                    "load_4": "{load_4}",
+                    "load_5": "{load_5}",
+                    "load_6": "{load_6}",
+                    "load_7": "{load_7}",
+                    "load_8": "{load_8}",
+                    "load_9": "{load_9}",
+                    "load_10": "{load_10}",
+                    "load_11": "{load_11}",
+                    "load_12": "{load_12}",
+                    "load_13": "{load_13}",
+                    "load_14": "{load_14}",
+                    "load_15": "{load_15}",
+                    "load_16": "{load_16}",
+                    "load_17": "{load_17}",
+                    "load_18": "{load_18}",
+                    "load_19": "{load_19}",
+                    "load_20": "{load_20}",
+                    "load_21": "{load_21}",
+                    "load_22": "{load_22}",
+                    "load_23": "{load_23}",
+                    "naming_done": "— finished, apply —"
                 }
             },
             "overview": {

@@ -561,6 +561,23 @@ class Signature:
         return sum(self.power.values())
 
     @property
+    def energy_wh(self) -> float:
+        """What this load has actually used over everything seen of it."""
+        return sum(self.hour_wh)
+
+    def row(self, tz) -> str:
+        """One line for a menu: what it costs, what it is, and its day."""
+        guess = self.guess()
+        bits = [_fmt_wh(self.energy_wh),
+                f"{self.watts / 1000:.1f} kW on {'+'.join(p.upper() for p in self.phases)}",
+                _fmt_s(self.duration_s), f"{self.count}x"]
+        if guess.kind:
+            bits.append(guess.short.replace("maybe ", ""))
+        line = " · ".join(bits)
+        bars = sparkline(self.hour_wh)
+        return f"{line}  {bars}" if bars else line
+
+    @property
     def evidence(self) -> float:
         """How sure we are this is a REAL repeating load rather than a pair
         of unrelated edges: how often it has been seen, and how tightly its
@@ -1072,6 +1089,20 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
 
     deepest = [n for n in seen if not any(n in ancestors(m) for m in seen if m != n)]
     return sorted(deepest or seen)[0]
+
+
+_BARS = " ▁▂▃▄▅▆▇█"
+
+
+def sparkline(counts: Sequence[float]) -> str:
+    """One line of bars, for a place that has only one line - a menu row.
+
+    Each row of a flow menu is a single label, so the shape of the day has
+    to fit on it or not appear at all (Anze, 2026-09-18)."""
+    top = max(counts) if counts else 0
+    if top <= 0:
+        return ""
+    return "".join(_BARS[0] if not c else _BARS[min(8, max(1, round(8 * c / top)))] for c in counts)
 
 
 HISTOGRAM_ROWS = 5
