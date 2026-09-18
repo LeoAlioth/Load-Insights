@@ -515,16 +515,20 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     assert any(s.id == 9999 for s in det2.signatures)
     assert len(det2.signatures) == cap + 1, "established loads are not traded for a cap"
 
-    # an established load unseen for over a month is fair game again
+    # an appliance that has genuinely left the house is fair game again -
+    # but the horizon is over a year, because a load that runs twice a year
+    # is rare, not stale (see the twice-a-year test)
+    day = 86400.0
     det3 = D.Detector()
     det3.signatures = [
         D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=20, first_seen=0.0, last_seen=40 * 86400.0 + i)
+                    count=20, first_seen=0.0, last_seen=500 * day + i)
         for i in range(cap + 1)
     ]
-    det3.signatures[0].last_seen = 0.0               # forty days silent
-    det3._prune(now=40 * 86400.0 + cap)
+    det3.signatures[0].last_seen = 0.0               # gone for five hundred days
+    det3._prune(now=500 * day + cap)
     assert not any(s.id == 0 for s in det3.signatures)
+    assert D.ESTABLISHED_HORIZON_S > 365 * day, "a yearly load must survive its own year"
 
 
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
@@ -1082,6 +1086,73 @@ def test_a_named_load_that_changed_points_at_what_replaced_it():
     new.count = 2
     det._link_successors(now=10 * day)
     assert old.successor_id is None
+
+
+def test_a_mature_signature_still_follows_a_load_that_changes():
+    """Without a cap the running mean ossifies: at 300 sightings a new one
+    moves it by 0.3%, so a load that genuinely changes can never drag its own
+    fingerprint across - the new sessions stop matching and found a sibling
+    first. The count keeps counting; only the WEIGHT is bounded."""
+    import datetime as _dt
+    tz = _dt.timezone.utc
+    run = lambda w: D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, w)]}, samples=40)
+    young, mature = _sig(1, 3000.0, 40.0, None, 10), _sig(2, 3000.0, 40.0, None, 300)
+    before = mature.power["a"]
+    young.absorb(run(2000.0), tz)
+    mature.absorb(run(2000.0), tz)
+    # the young one moves further - convergence is still the point
+    assert (3000.0 - young.power["a"]) > (3000.0 - mature.power["a"])
+    # but the mature one is not frozen: about 1% of the gap, not 0.3%
+    moved = (before - mature.power["a"]) / (before - 2000.0)
+    assert 0.008 < moved < 0.012, moved
+    assert mature.count == 301, "the history is kept, only the weight is capped"
+
+    # over fifty runs at the new power it gets most of the way there
+    sig = _sig(3, 3000.0, 40.0, None, 300)
+    for _ in range(50):
+        sig.absorb(run(2000.0), tz)
+    assert sig.power["a"] < 2650.0, sig.power["a"]
+
+
+def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
+    """A kiln fired twice a year, or a pump that only runs in a wet spring,
+    has a strong signature and deserves to be measured and tracked as well as
+    the kettle. Evidence is the gate; age is only the backstop for an
+    appliance that has genuinely left the house."""
+    day = 86400.0
+    cap = D.MAX_SIGNATURES
+    det = D.Detector()
+    # a library already full of well-evidenced everyday loads
+    det.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=30, first_seen=0.0, last_seen=400 * day + i)
+        for i in range(cap)
+    ]
+    rare = D.Signature(id=9999, phases="a", power={"a": 7000.0}, duration_s=3600.0, pf=0.99,
+                       count=8, first_seen=0.0, last_seen=400 * day - 180 * day)
+    rare.power_mad, rare.duration_mad = 40.0, 20.0        # tight: real evidence
+    det.signatures.append(rare)
+    assert rare.evidence >= D.ESTABLISHED_EVIDENCE
+    det._prune(now=400 * day + cap)
+    assert any(s.id == 9999 for s in det.signatures), "a strong twice-a-year load was evicted"
+
+    # and it is not offered a successor merely for being rare
+    rare.name = "Kiln"
+    rare.interval_s = 180 * day
+    other = _sig(1234, 7000.0, 3600.0, 0.99, 20)
+    other.last_seen = 400 * day
+    det.signatures = [rare, other]
+    det._link_successors(now=400 * day)
+    assert rare.successor_id is None, "a rare load was declared replaced for running rarely"
+
+    # a load that runs every five minutes and has not for a week IS quiet
+    fast = _sig(5, 2000.0, 60.0, 0.95, 200, name="Pump")
+    fast.interval_s, fast.last_seen = 300.0, 0.0
+    heir = _sig(6, 2100.0, 60.0, 0.95, 20)
+    heir.last_seen = 8 * day
+    det.signatures = [fast, heir]
+    det._link_successors(now=8 * day)
+    assert fast.successor_id == 6
 
 
 def test_signatures_that_have_become_alike_are_merged():
