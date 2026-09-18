@@ -120,11 +120,34 @@ def read_csv(paths, keep_coarse=False):
 
 
 def guess_roles(series):
-    """Which entity is which per-phase reading, by the live matcher."""
+    """Which entity is which per-phase reading, by the live matcher.
+
+    With one correction the live flow does not need. There, the user picks a
+    DEVICE and the matcher only ever sees that device's entities; here it is
+    handed every entity in the export at once, so it can pick a grid meter
+    over a house-consumption template on the strength of the meter having
+    volts and amps beside it. The harness has what the config flow does not -
+    the actual data - so it settles it the way physics does: a reading that
+    goes below zero contains the site's generation and is not what the house
+    draws (Anze's home, 2026-09-18, where that mistake put the idle floor at
+    -8 kW)."""
     rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid,
              "device_id": pseudo_device(eid)}
             for eid in series]
-    return DISCOVERY.match_meter_entities(rows, "load")
+    fields = DISCOVERY.match_meter_entities(rows, "load")
+    for p in D.PHASES:
+        chosen = fields.get(f"power_{p}")
+        if not chosen or D.carries_generation(series[chosen]) is not True:
+            continue
+        better = [r["entity_id"] for r in rows
+                  if r["device_class"] == "power"
+                  and DISCOVERY.phase_of(r["entity_id"]) == p
+                  and D.carries_generation(series[r["entity_id"]]) is False]
+        if better:
+            pick = max(better, key=lambda e: DISCOVERY._score(e, e, "load") or 0)
+            print(f"   ({chosen} carries generation - using {pick} for phase {p.upper()})")
+            fields[f"power_{p}"] = pick
+    return fields
 
 
 def align(source, target_rows):

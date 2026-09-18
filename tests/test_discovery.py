@@ -186,3 +186,27 @@ def test_a_power_reading_with_its_own_volts_and_amps_beside_it_wins():
           {"entity_id": "sensor.short_power_a", "device_class": "power", "name": "", "device_id": "y"}]
     assert match_meter_entities(pf)["power_a"] == "sensor.long_name_meter_power_a"
 
+def test_coherence_breaks_ties_but_never_overrules_which_side_we_want():
+    """A MultiPlus publishes power, current and voltage on its AC INPUT as
+    well as its output, and at Kozolec that input is a generator port sitting
+    at zero. Preferring a reading with volts and amps beside it must not talk
+    us onto the wrong side of an inverter."""
+    rows = [
+        {"entity_id": "sensor.mp_input_power_l1", "device_class": "power", "name": "", "device_id": "mp"},
+        {"entity_id": "sensor.mp_input_current_l1", "device_class": "current", "name": "", "device_id": "mp"},
+        {"entity_id": "sensor.mp_input_voltage_l1", "device_class": "voltage", "name": "", "device_id": "mp"},
+        # the output side publishes watts alone - no volts, no amps
+        {"entity_id": "sensor.mp_output_power_l1", "device_class": "power", "name": "", "device_id": "mp"},
+    ]
+    assert match_meter_entities(rows, "load")["power_a"] == "sensor.mp_output_power_l1"
+    # and for the GRID role the preference flips, as it always did
+    assert match_meter_entities(rows, "grid")["power_a"] == "sensor.mp_input_power_l1"
+    # with no role word in play, coherence still decides
+    plain = [
+        {"entity_id": "sensor.meter_two_power_a", "device_class": "power", "name": "", "device_id": "b"},
+        {"entity_id": "sensor.meter_two_current_a", "device_class": "current", "name": "", "device_id": "b"},
+        {"entity_id": "sensor.meter_two_voltage_a", "device_class": "voltage", "name": "", "device_id": "b"},
+        {"entity_id": "sensor.one_power_a", "device_class": "power", "name": "", "device_id": "a"},
+    ]
+    assert match_meter_entities(plain)["power_a"] == "sensor.meter_two_power_a"
+

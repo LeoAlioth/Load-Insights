@@ -88,7 +88,16 @@ DEFAULT_SOURCE_KIND = SOURCE_AUTO
 # discovers that device's per-phase readings, so a load seen by both the main
 # meter and a device's own meter is located - and named - with nothing typed.
 DETECTION_KINDS = ("power", "pf", "current", "voltage")
-DETECTION_INTERVAL_MINUTES = 5
+# How often the recorder is re-read. One minute by default since the pass
+# itself costs well under a millisecond and its overheads no longer scale
+# with it - one query rather than one per entity, and the state written
+# hourly rather than every pass (Anze, 2026-09-18). Configurable because a
+# large site, or one on slow storage, may still want it slower; it buys
+# latency, not accuracy, since the same recorded edges are reconstructed
+# either way.
+CONF_DETECTION_INTERVAL = "interval_minutes"
+DETECTION_INTERVAL_MINUTES = 1
+DETECTION_INTERVAL_CHOICES = (1, 2, 5, 10, 15, 30)
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
 # How long the detector's state may sit in memory unwritten. The snapshot is

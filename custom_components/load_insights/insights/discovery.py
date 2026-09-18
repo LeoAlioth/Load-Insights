@@ -52,8 +52,14 @@ PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 
            # definition - spent its backfill watching a flat line and
            # learned nothing at all (Anze, 2026-09-17).
            "input": 8, "ac_in": 8}
-# outranks any difference in name length, which is at most a few dozen
-COHERENT_BONUS = 500
+# Enough to outrank any difference in NAME LENGTH, which is at most a few
+# dozen, and deliberately NOT enough to outrank a role preference, which is
+# worth ten times its weight. The ordering matters: a MultiPlus publishes
+# power, current and voltage on its AC input as well as its output, and at
+# Kozolec that input is a generator port sitting at zero. Coherence must
+# never talk us onto the wrong side of an inverter - it breaks ties, it does
+# not decide which circuit we want (Anze, 2026-09-18).
+COHERENT_BONUS = 50
 BONUS = {"output": 6, "ac_out": 6, "out": 4, "load": 4, "loads": 4, "consumption": 4}
 # The same device usually publishes both sides, so which one is wanted
 # depends on what it is being asked for: picking the meter for the GRID
