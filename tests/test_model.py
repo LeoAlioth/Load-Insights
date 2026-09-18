@@ -105,5 +105,28 @@ def test_summary_counts_for_the_form():
     assert s["device_names"] == ["Workshop", "Workshop boiler", "sensor.evse_energy"]
 
 
+def test_the_dashboard_already_states_which_way_round_the_meter_is():
+    """None / normal / inverted / a pair of sensors - the grid source asks
+    exactly this, so a meter that reports export positive is DECLARED and
+    never has to be inferred from how it behaves."""
+    def polarity(power_config):
+        src = {"type": "grid", "stat_energy_from": "sensor.imported"}
+        if power_config is not None:
+            src["power_config"] = power_config
+        site = SiteModel.from_prefs({"energy_sources": [src]})
+        return site.grid_power[0].polarity if site.grid_power else None
+
+    assert polarity({"stat_rate": "sensor.m1_power"}) == 1
+    assert polarity({"stat_rate_inverted": "sensor.m1_power"}) == -1
+    # a pair names its own directions, so there is no polarity to state
+    assert polarity({"stat_rate_from": "sensor.imp", "stat_rate_to": "sensor.exp"}) == 1
+    assert polarity(None) is None
+    # the 2025.12 shape, a bare stat_rate outside any power_config
+    site = SiteModel.from_prefs({"energy_sources": [
+        {"type": "grid", "stat_energy_from": "sensor.i", "stat_rate": "sensor.p"}]})
+    assert site.grid_power[0].polarity == 1
+    assert site.grid_power[0].rate_entity == "sensor.p"
+
+
 if __name__ == "__main__":
     run_main(globals())
