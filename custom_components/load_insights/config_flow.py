@@ -17,6 +17,9 @@ from .const import (
     CONF_GRID_PREFIX,
     CONF_LAYOUT,
     LAYOUTS,
+    SOURCE_KINDS,
+    CONF_SOURCE_KIND,
+    DEFAULT_SOURCE_KIND,
     LAYOUT_ALIASES,
     LAYOUT_AUTO,
     CONF_CALENDAR_ENTITIES,
@@ -67,6 +70,10 @@ def _grid_fields(defaults: dict) -> dict:
     out[vol.Optional(CONF_LAYOUT, default=LAYOUT_ALIASES.get(
         defaults.get(CONF_LAYOUT, LAYOUT_AUTO), defaults.get(CONF_LAYOUT, LAYOUT_AUTO)))] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(LAYOUTS), translation_key=CONF_LAYOUT,
+                                      mode=selector.SelectSelectorMode.DROPDOWN))
+    out[vol.Optional(CONF_SOURCE_KIND,
+                     default=defaults.get(CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND))] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=list(SOURCE_KINDS), translation_key=CONF_SOURCE_KIND,
                                       mode=selector.SelectSelectorMode.DROPDOWN))
     return out
 
@@ -244,7 +251,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                             "device": device})},
                     )
             keep = {k: v for k, v in detection.items()
-                    if not k.startswith(CONF_GRID_PREFIX) and k not in (CONF_GRID_DEVICE, CONF_LAYOUT)}
+                    if not k.startswith(CONF_GRID_PREFIX)
+                    and k not in (CONF_GRID_DEVICE, CONF_LAYOUT, CONF_SOURCE_KIND)}
             cfg = {**keep, **{k: v for k, v in user_input.items() if v}}
             return self.async_create_entry(
                 data={**dict(self.config_entry.options), CONF_DETECTION: cfg})

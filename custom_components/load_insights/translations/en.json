@@ -185,11 +185,13 @@
                     "grid_power_a": "Grid power A",
                     "grid_power_b": "Grid power B",
                     "grid_power_c": "Grid power C",
-                    "layout": "Wiring"
+                    "layout": "Wiring",
+                    "source_kind": "What is connected"
                 },
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
-                    "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports."
+                    "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports.",
+                    "source_kind": "The same AC input can be the utility or a generator, and the wiring cannot tell them apart. It decides what a shortfall means: energy bought, a generator someone has to start, or a load that goes unserved."
                 }
             },
             "naming_detail": {
@@ -239,6 +241,13 @@
                 "auto": "Work it out from the data",
                 "parallel": "Parallel - inverter feeds the grid bus directly (AC-coupled solar, no battery)",
                 "series": "Series - all power flows through the inverter (hybrid with DC-coupled battery)"
+            }
+        },
+        "source_kind": {
+            "options": {
+                "utility": "Utility grid",
+                "generator": "Generator",
+                "none": "Nothing - off grid"
             }
         }
     }
