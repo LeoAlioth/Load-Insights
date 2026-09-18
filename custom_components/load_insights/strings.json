@@ -53,6 +53,9 @@
             },
             "named_load_power": {
                 "name": "Power"
+            },
+            "named_load_energy": {
+                "name": "Energy"
             }
         },
         "binary_sensor": {

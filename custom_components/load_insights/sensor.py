@@ -54,7 +54,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     if detection is not None:
         entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
         entities += [BaseLoadSensor(detection, entry)]
-        entities += [NamedLoadPower(detection, entry, n) for n in sorted(detection.detector.names())]
+        for n in sorted(detection.detector.names()):
+            entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
     add(entities)
 
 
@@ -569,3 +570,34 @@ class NamedLoadPower(_DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         return round(self._runner.detector.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0))
+
+
+class NamedLoadEnergy(_DetectionBase):
+    """What a named load has used, all told.
+
+    Naming a load already gave it a device and a power reading; without an
+    ENERGY reading beside it the device cannot appear on the Energy
+    dashboard, which is where anyone would go to ask what the thing costs
+    (Anze, 2026-09-18).
+
+    The figure is sound as a meter rather than merely plausible: a
+    signature's hour_wh only ever accumulates, a merge sums both sides, and
+    a named signature is never evicted - so it cannot go backwards except
+    when detection is reset, which is a real meter reset and is exactly what
+    TOTAL_INCREASING means.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
+        super().__init__(runner, entry, "named_load_energy")
+        self._name = name
+        self._attr_unique_id = f"{entry.entry_id}_load_energy_{name.lower().replace(' ', '_')}"
+        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0

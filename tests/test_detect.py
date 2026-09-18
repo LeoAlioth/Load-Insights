@@ -1155,6 +1155,45 @@ def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
     assert fast.successor_id == 6
 
 
+def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
+    """Naming a load gives it a device and a power reading; without an energy
+    reading it cannot appear on the Energy dashboard, which is where anyone
+    would go to ask what the thing costs. The figure has to be sound AS A
+    METER, not merely plausible - a total that dips reads as a meter reset."""
+    import datetime as _dt
+    tz = _dt.timezone.utc
+    det = D.Detector()
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=60.0, pf=None, count=0,
+                      first_seen=0.0, last_seen=0.0, name="Boiler")
+    det.signatures = [sig]
+    run = lambda i: D.Session(phases="a", start=T0 + i * 3600, end=T0 + i * 3600 + 1800.0,
+                              levels={"a": [(T0 + i * 3600, 2000.0)]}, samples=20)
+    seen = []
+    for i in range(5):                       # half an hour at 2 kW is 1 kWh
+        sig.absorb(run(i), tz)
+        seen.append(det.energy_by_name()["Boiler"] / 1000.0)
+    assert [round(x, 3) for x in seen] == [1.0, 2.0, 3.0, 4.0, 5.0], seen
+    assert seen == sorted(seen)
+
+    # two signatures under one name are one device, so their energy adds
+    twin = D.Signature(id=2, phases="a", power={"a": 2000.0}, duration_s=60.0, pf=None, count=3,
+                       first_seen=0.0, last_seen=0.0, name="Boiler")
+    twin.hour_wh = [500.0] + [0.0] * 23
+    det.signatures.append(twin)
+    assert round(det.energy_by_name()["Boiler"] / 1000.0, 3) == 5.5
+
+    # and a merge carries the history across rather than losing half of it
+    sig.swallow(twin)
+    det.signatures = [sig]
+    assert round(det.energy_by_name()["Boiler"] / 1000.0, 3) == 5.5
+    assert sig.name == "Boiler"
+
+    # an unnamed signature contributes nothing to anyone's meter
+    det.signatures.append(D.Signature(id=3, phases="a", power={"a": 9.0}, duration_s=1.0, pf=None,
+                                      count=1, first_seen=0.0, last_seen=0.0))
+    assert set(det.energy_by_name()) == {"Boiler"}
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had

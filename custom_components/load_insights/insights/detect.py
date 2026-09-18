@@ -1248,6 +1248,18 @@ class Detector:
                 out[a["name"]] = out.get(a["name"], 0.0) + float(a["watts"])
         return out
 
+    def energy_by_name(self) -> Dict[str, float]:
+        """Watt-hours each NAME has used over everything ever seen of it.
+
+        Signatures sharing a name are one device, so their energy adds. Only
+        ever grows: hour_wh accumulates and a merge sums both sides, so this
+        is safe to publish as a total-increasing meter."""
+        out: Dict[str, float] = {}
+        for sig in self.signatures:
+            if sig.name:
+                out[sig.name] = out.get(sig.name, 0.0) + sig.energy_wh
+        return out
+
     def names(self) -> Dict[str, List[int]]:
         """name -> the signature ids filed under it."""
         out: Dict[str, List[int]] = {}
