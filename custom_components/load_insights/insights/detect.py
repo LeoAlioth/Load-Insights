@@ -76,6 +76,17 @@ MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in 
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
+# ...AND this close in SIZE. A real multi-phase load is balanced by design -
+# a two-phase element, a three-phase motor - and over ten days at home the
+# smallest-to-largest ratio inside kiln-sized groups sat at a median of 0.98.
+# Grouping on timing alone married a 2025 W load on A to a 163 W blip on C
+# and filed the pair as one 2.2 kW two-phase load, which both invented a
+# phantom and stole the session from the real single-phase one (Anze,
+# 2026-09-18). Below this they are simply two loads that started together,
+# which is what they are.
+PHASE_BALANCE_MIN = 0.4
+# A run measured over this many samples is as well measured as it needs to be
+WELL_SAMPLED = 12.0
 NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
 NOISE_SESSION_S = 20.0
 MATCH_POWER_REL = 0.10
@@ -89,6 +100,16 @@ MAX_SIGNATURES = 200
 ESTABLISHED_EVIDENCE = 0.5
 ESTABLISHED_HORIZON_S = 30 * 86400.0
 YOUNG_COUNT = 3
+# A NAMED signature is never evicted, so when its load CHANGES - a kiln put on
+# a different programme, an element replaced - the name stays attached to a
+# fingerprint nothing matches any more while the successor sits unnamed. The
+# name should follow the load. Detecting that is guesswork, so it is never
+# done silently: a named signature gone quiet this long, with an unnamed one
+# on the same phases of a similar shape, records a HINT for the naming page
+# to offer. Nothing is renamed without the user (Anze, 2026-09-18).
+SUCCESSOR_QUIET_S = 7 * 86400.0
+SUCCESSOR_POWER_REL = 0.5
+SUCCESSOR_MIN_COUNT = 5
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
 HELD_TAIL_S = 60.0             # closed sessions wait this long for a partner on another phase
@@ -106,6 +127,21 @@ class Session:
     end: float
     levels: Dict[str, List[Tuple[float, float]]]   # phase -> [(since_ts, watts above baseline)]
     pf: Optional[float] = None           # mean power factor during the session, if known
+    # How many meter samples the run actually spanned. A 43-second load read
+    # every 5 s is eight numbers; the same load read every second is
+    # forty-three, and the second measurement deserves more weight and a
+    # tighter tolerance than the first. Anze asked whether the fingerprint
+    # could take the sampling rate into account (2026-09-18) - this is where
+    # it enters. 0 means unknown, which is treated as well-measured so that
+    # nothing stored before this existed is suddenly distrusted.
+    samples: int = 0
+
+    @property
+    def confidence(self) -> float:
+        """0.25 to 1, by how many samples the run was measured over."""
+        if self.samples <= 0:
+            return 1.0
+        return max(0.25, min(1.0, (self.samples - 1) / (WELL_SAMPLED - 1.0)))
 
     @property
     def duration_s(self) -> float:
@@ -136,6 +172,7 @@ class Session:
 
     def to_dict(self) -> dict:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
+                "samples": self.samples,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
 
     @classmethod
@@ -376,6 +413,10 @@ class PhaseState:
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
+    # this phase's own sampling interval, as a slow mean of the gaps between
+    # samples - the meter's rate, not a setting, so turning a poll up from
+    # 5 s to 1 s is noticed rather than configured
+    interval: float = 0.0
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None) -> List[Session]:
@@ -385,6 +426,10 @@ class PhaseState:
         loads stopped together."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
+        if self.last_ts is not None:
+            gap = ts - self.last_ts
+            if 0.0 < gap < 120.0:        # a restart gap is not a sampling rate
+                self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
         self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
@@ -516,6 +561,13 @@ class PhaseState:
             self.baseline = max(new_level, 0.0) if self.floor_zero else new_level
         return []
 
+    def _span(self, since: float, until: float) -> int:
+        """How many meter samples a run of that length was measured over, from
+        this phase's own observed sampling interval."""
+        if not self.interval or self.interval <= 0:
+            return 0
+        return max(1, int(round((until - since) / self.interval)) + 1)
+
     def _close(self, o: _Open, at: float, watts: float, var: Optional[float]) -> Session:
         levels = list(o.levels)
         if len(levels) == 1:
@@ -527,7 +579,7 @@ class PhaseState:
         else:
             q = o.var                         # the factor of the level it started at
         return Session(phases="", start=o.since, end=at, levels={"": levels},
-                       pf=_pf_from(levels[0][1], q))
+                       pf=_pf_from(levels[0][1], q), samples=self._span(o.since, at))
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -537,7 +589,7 @@ class PhaseState:
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
-                "q_level": self.q_level, "q_recent": list(self.q_recent), "pv_level": self.pv_level, "seed": self.seed,
+                "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -546,7 +598,8 @@ class PhaseState:
         if not d:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
-                   q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
+                   interval=d.get("interval", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
@@ -583,6 +636,8 @@ class Signature:
     day_wh: List[float] = field(default_factory=lambda: [0.0] * 7)
     level_count: float = 1.0
     name: Optional[str] = None
+    # an unnamed signature that may be what this named one BECAME
+    successor_id: Optional[int] = None
     # how much each reading WANDERS between sightings, as a running mean
     # absolute deviation. A load that repeats to within a few per cent is a
     # real device; one whose power and duration are all over the place is
@@ -592,14 +647,20 @@ class Signature:
     interval_mad: Optional[float] = None
 
     def matches(self, s: Session, noise_w: float) -> Optional[float]:
-        """A score in (0, 1] when ``s`` fits, None when it does not."""
+        """A score in (0, 1] when ``s`` fits, None when it does not.
+
+        A coarsely-measured session gets a wider power band: a 43-second run
+        read every 5 s is eight numbers, and holding that to the same
+        tolerance as a run read forty-three times is asking the meter for
+        precision it never had."""
         if s.phases != self.phases:
             return None
         pw = s.power_by_phase()
         score = 1.0
+        rel = MATCH_POWER_REL / max(0.25, s.confidence)
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), pw.get(ph, 0.0)
-            tol = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
+            tol = max(rel * max(mine, theirs), noise_w)
             if abs(mine - theirs) > tol:
                 return None
             score *= 1.0 - abs(mine - theirs) / (2 * tol)
@@ -660,16 +721,22 @@ class Signature:
         self.count = n
 
     def absorb(self, s: Session, tz) -> None:
+        # A session pulls the running means by how well it was MEASURED, not
+        # one-for-one. Eight samples of a 43-second run and forty-three of the
+        # same run are not equally good evidence of its power, and letting the
+        # first move the mean as hard as the second is how a well-established
+        # figure gets dragged about by its worst sightings (Anze, 2026-09-18).
         n = self.count
+        k = s.confidence
         pw = s.power_by_phase()
-        self.power_mad = (self.power_mad * n + abs(sum(pw.values()) - sum(self.power.values()))) / (n + 1)
-        self.duration_mad = (self.duration_mad * n + abs(s.duration_s - self.duration_s)) / (n + 1)
-        for ph, w in s.power_by_phase().items():
-            self.power[ph] = (self.power.get(ph, w) * n + w) / (n + 1)
-        self.duration_s = (self.duration_s * n + s.duration_s) / (n + 1)
-        self.level_count = (self.level_count * n + s.level_count) / (n + 1)
+        self.power_mad = (self.power_mad * n + k * abs(sum(pw.values()) - sum(self.power.values()))) / (n + k)
+        self.duration_mad = (self.duration_mad * n + k * abs(s.duration_s - self.duration_s)) / (n + k)
+        for ph, w in pw.items():
+            self.power[ph] = (self.power.get(ph, w) * n + k * w) / (n + k)
+        self.duration_s = (self.duration_s * n + k * s.duration_s) / (n + k)
+        self.level_count = (self.level_count * n + k * s.level_count) / (n + k)
         if s.pf is not None:
-            self.pf = s.pf if self.pf is None else (self.pf * n + s.pf) / (n + 1)
+            self.pf = s.pf if self.pf is None else (self.pf * n + k * s.pf) / (n + k)
         if self.last_start is not None:
             gap = s.start - self.last_start
             if gap > 0:
@@ -820,6 +887,7 @@ class Signature:
                 "interval_s": self.interval_s, "hour_wh": self.hour_wh, "day_wh": self.day_wh,
                 "level_count": self.level_count, "name": self.name,
                 "last_start": self.last_start, "locations": self.locations, "power_mad": self.power_mad,
+                "successor_id": self.successor_id,
                 "duration_mad": self.duration_mad, "interval_mad": self.interval_mad}
 
     @classmethod
@@ -831,6 +899,7 @@ class Signature:
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   successor_id=d.get("successor_id"),
                    interval_mad=d.get("interval_mad"))
 
 
@@ -851,6 +920,27 @@ def _fmt_s(x: Optional[float]) -> str:
 
 
 # ------------------------------------------------------------------ the detector
+def _balanced(group: List[Session], candidate: Session) -> bool:
+    """Could these be legs of ONE multi-phase load, by size?
+
+    Coinciding in time is not enough. A real multi-phase load is balanced by
+    design - a two-phase element, a three-phase motor - and over ten days at
+    home the smallest-to-largest ratio inside kiln-sized groups had a median
+    of 0.98 and only 4% below 0.4. Timing alone married a 2025 W load on A to
+    a 163 W blip on C and called the pair one 2.2 kW two-phase load: a phantom
+    invented, and the session stolen from the real single-phase one it
+    belonged to (Anze, 2026-09-18).
+
+    Below the threshold they are two loads that happened to start together,
+    and saying so costs nothing - each is still filed on its own phase."""
+    watts = [w for m in group for w in m.power_by_phase().values()]
+    watts += list(candidate.power_by_phase().values())
+    watts = [abs(w) for w in watts if w]
+    if len(watts) < 2:
+        return True
+    return min(watts) >= PHASE_BALANCE_MIN * max(watts)
+
+
 @dataclass
 class Detector:
     phases: Dict[str, PhaseState] = field(default_factory=lambda: {p: PhaseState() for p in PHASES})
@@ -890,7 +980,8 @@ class Detector:
         for s in pool:
             for g in groups:
                 if (abs(g[0].start - s.start) <= MERGE_TOLERANCE_S and abs(g[0].end - s.end) <= MERGE_TOLERANCE_S
-                        and all(s.phases not in m.phases for m in g)):
+                        and all(s.phases not in m.phases for m in g)
+                        and _balanced(g, s)):
                     g.append(s)
                     break
             else:
@@ -952,6 +1043,7 @@ class Detector:
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
         self.consolidate(noise)
+        self._link_successors(s.end)
         self._prune(s.end)
 
     def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
@@ -987,6 +1079,37 @@ class Detector:
                 again = True
                 break
         return gone
+
+    def _link_successors(self, now: float) -> None:
+        """Point a named signature that has gone quiet at what may have
+        replaced it.
+
+        A load that drifts is followed by the running mean, and one that
+        changes in a step founds a sibling - after which the named original
+        goes unseen forever, because named signatures are never evicted. The
+        name should follow the load, but deciding that a 2.4 kW run IS the
+        3 kW one you called "Kiln" is a judgement, not a measurement, so this
+        only records the candidate and the naming page offers it.
+
+        Deliberately narrow: same phases, a real history behind the
+        candidate, and within half the power. A wrong guess here puts a
+        person's name on someone else's load."""
+        for named in self.signatures:
+            if not named.name or now - named.last_seen < SUCCESSOR_QUIET_S:
+                continue
+            best, best_gap = None, None
+            for other in self.signatures:
+                if (other.name or other.phases != named.phases
+                        or other.count < SUCCESSOR_MIN_COUNT
+                        or other.last_seen <= named.last_seen):
+                    continue
+                mine, theirs = abs(named.watts), abs(other.watts)
+                if not mine or abs(mine - theirs) > SUCCESSOR_POWER_REL * max(mine, theirs):
+                    continue
+                gap = abs(mine - theirs) / mine
+                if best_gap is None or gap < best_gap:
+                    best, best_gap = other, gap
+            named.successor_id = best.id if best is not None else None
 
     def _prune(self, now: Optional[float] = None) -> None:
         """Keep the library to its cap, in tiers.
