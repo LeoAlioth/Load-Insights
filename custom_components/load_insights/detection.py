@@ -317,8 +317,22 @@ class DetectionRunner:
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
         return [s for s in sorted(self.detector.signatures, key=lambda x: (-x.energy_wh, -x.evidence))
-                if s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
-                and most_specific(s.locations, s.count, parents) == "main"]
+                if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
+                    and most_specific(s.locations, s.count, parents) == "main")
+                # a load that may be what a NAMED one became belongs on the
+                # list whatever its size: the offer to move the name is the
+                # whole reason to open it
+                or self.detector.predecessor_of(s.id) is not None]
+
+    async def async_adopt(self, signature_id: int) -> Optional[str]:
+        """Move a predecessor's name onto this signature, and persist."""
+        name = self.detector.adopt(signature_id)
+        if name is None:
+            return None
+        await self._persist(force=True)
+        for cb in self._listeners:
+            cb()
+        return name
 
     async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
         """Name a signature (or clear it) and persist at once - the caller

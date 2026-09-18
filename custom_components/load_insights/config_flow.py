@@ -2,6 +2,8 @@
 explanatory inputs. Options: change the inputs later."""
 from __future__ import annotations
 
+from datetime import datetime
+
 import logging
 
 from typing import Any
@@ -136,6 +138,23 @@ def _inverter_line(inverters: list) -> str:
         bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
                     f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)}, {where})")
     return f"{len(inverters)} set up: " + "; ".join(bits)
+
+
+def _w(value: float) -> str:
+    return f"{value:.0f} W" if abs(value) < 1000 else f"{value / 1000:.1f} kW"
+
+
+def _secs(value: float) -> str:
+    if value < 90:
+        return f"{value:.0f} s"
+    return f"{value / 60:.0f} min" if value < 5400 else f"{value / 3600:.1f} h"
+
+
+def _since(when: float) -> str:
+    days = (dt_util.utcnow().timestamp() - when) / 86400.0
+    if days < 2:
+        return f"for {days * 24:.0f} hours"
+    return f"for {days:.0f} days" if days < 60 else f"since {datetime.fromtimestamp(when, dt_util.DEFAULT_TIME_ZONE):%-d %b %Y}"
 
 
 def _interval_field(defaults: dict) -> dict:
@@ -446,6 +465,11 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             name = (user_input.get("name") or "").strip()
             if user_input.get("forget"):
                 await runner.async_rename(sig.id, None)
+            elif user_input.get("adopt"):
+                # the name moves here and leaves the old fingerprint, which
+                # keeps its history but stops answering to a name nothing
+                # matches any more
+                await runner.async_adopt(sig.id)
             elif name:
                 await runner.async_rename(sig.id, name)
             # An EMPTY box changes nothing and lands back on the list, which
@@ -460,6 +484,17 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
         if sig.name:
             detail = f"Named **{sig.name}**.\n\n{detail}"
+        # A named load whose behaviour changed leaves its name on a
+        # fingerprint nothing matches, while what replaced it sits here
+        # unnamed. Offer the move where the user is already standing.
+        was = runner.detector.predecessor_of(sig.id)
+        if was is not None and not sig.name:
+            fields[vol.Optional("adopt", default=False)] = selector.BooleanSelector()
+            quiet = _since(was.last_seen)
+            detail = (f"**{was.name}** has not run {quiet}, and this looks like what it became "
+                      f"- it was {_w(was.watts)} over {_secs(was.duration_s)}, this is "
+                      f"{_w(sig.watts)} over {_secs(sig.duration_s)}, on the same phases.\n\n"
+                      f"{detail}")
         return self.async_show_form(
             step_id="naming_detail",
             data_schema=vol.Schema(fields),

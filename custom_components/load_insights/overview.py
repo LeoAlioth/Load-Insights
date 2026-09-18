@@ -111,6 +111,12 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
     if not runner.caught_up:
         lines.append(f"- Read up to {_when(runner.last_processed)}; it keeps going on its own.")
     lines.append(f"- {len(sigs)} signatures from {sessions} sessions, {len(named)} named.")
+    changed = [s for s in sigs if s.name and s.successor_id is not None]
+    if changed:
+        one = changed[0]
+        lines.append(f"- **{one.name}** has not run lately and a similar load has - open Name "
+                     f"detected loads to move the name across"
+                     + (f" ({len(changed)} named loads in that position)." if len(changed) > 1 else "."))
     worth = [s for s in sigs if s.count >= 2 and most_specific(s.locations, s.count, runner.parents) == "main"]
     lines.append(f"- {len(worth)} worth naming; {len(sigs) - len(worth)} are either one-offs or "
                  f"already accounted for by a device's own meter.")
