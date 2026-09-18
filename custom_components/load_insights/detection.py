@@ -25,6 +25,9 @@ from .const import (
     SOURCE_NONE,
     CONF_DETECTION,
     CONF_INVERTERS,
+    CONF_MIN_EVIDENCE,
+    DEFAULT_MIN_EVIDENCE,
+    NAMING_MIN_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_DETECTION_INTERVAL,
     DETECTION_INTERVAL_MINUTES,
@@ -320,13 +323,38 @@ class DetectionRunner:
         parents = self.parents
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
-        return [s for s in sorted(self.detector.signatures, key=lambda x: (-x.energy_wh, -x.evidence))
-                if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
-                    and most_specific(s.locations, s.count, parents) == "main")
-                # a load that may be what a NAMED one became belongs on the
-                # list whatever its size: the offer to move the name is the
-                # whole reason to open it
-                or self.detector.predecessor_of(s.id) is not None]
+        worth = [s for s in sorted(self.detector.signatures, key=lambda x: (-x.energy_wh, -x.evidence))
+                 if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
+                     and most_specific(s.locations, s.count, parents) == "main")
+                 # a load that may be what a NAMED one became belongs on the
+                 # list whatever its size: the offer to move the name is the
+                 # whole reason to open it
+                 or self.detector.predecessor_of(s.id) is not None]
+        return self._by_evidence(worth)
+
+    def _by_evidence(self, worth: list) -> list:
+        """Only the ones it is reasonably sure are real loads.
+
+        A house makes far more shapes than it has appliances, and a list of
+        two hundred is a list nobody reads. But a bar that hides everything
+        is worse than one set too low, so when fewer than NAMING_MIN_ROWS
+        clear it the best of the rest come along - which is the "lower it if
+        we are not getting good hits" with nothing to decay."""
+        bar = self.min_evidence
+        clear = [s for s in worth if s.evidence >= bar or s.name
+                 or self.detector.predecessor_of(s.id) is not None]
+        if len(clear) >= NAMING_MIN_ROWS or len(clear) == len(worth):
+            return clear
+        rest = [s for s in worth if s not in clear]
+        rest.sort(key=lambda s: -s.evidence)
+        return clear + rest[:NAMING_MIN_ROWS - len(clear)]
+
+    @property
+    def min_evidence(self) -> float:
+        try:
+            return max(0.0, min(1.0, float(self.config.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))))
+        except (TypeError, ValueError):
+            return DEFAULT_MIN_EVIDENCE
 
     async def async_adopt(self, signature_id: int) -> Optional[str]:
         """Move a predecessor's name onto this signature, and persist."""

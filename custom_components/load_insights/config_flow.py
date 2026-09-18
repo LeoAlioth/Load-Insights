@@ -31,7 +31,10 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DETECTION_INTERVAL,
+    CONF_MIN_EVIDENCE,
+    DEFAULT_MIN_EVIDENCE,
     DETECTION_BACKFILL_DAYS,
+    EVIDENCE_CHOICES,
     NAMING_MAX_STALE_S,
     DETECTION_INTERVAL_CHOICES,
     DETECTION_INTERVAL_MINUTES,
@@ -164,12 +167,18 @@ def _interval_field(defaults: dict) -> dict:
     one query per pass rather than one per entity, and the state written
     hourly rather than every pass - so the default is a minute and slowing it
     down is for a large site or slow storage, not for a quiet one."""
-    return {vol.Optional(CONF_DETECTION_INTERVAL,
+    out = {vol.Optional(CONF_MIN_EVIDENCE,
+                        default=str(defaults.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))):
+           selector.SelectSelector(selector.SelectSelectorConfig(
+               options=[str(x) for x in EVIDENCE_CHOICES], translation_key=CONF_MIN_EVIDENCE,
+               mode=selector.SelectSelectorMode.DROPDOWN))}
+    out.update({vol.Optional(CONF_DETECTION_INTERVAL,
                          default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
             selector.SelectSelector(selector.SelectSelectorConfig(
                 options=[str(n) for n in DETECTION_INTERVAL_CHOICES],
                 translation_key=CONF_DETECTION_INTERVAL,
-                mode=selector.SelectSelectorMode.DROPDOWN))}
+                mode=selector.SelectSelectorMode.DROPDOWN))})
+    return out
 
 
 def _device_field(default=None):

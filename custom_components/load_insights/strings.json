@@ -128,11 +128,13 @@
                     "voltage_a": "Voltage A",
                     "voltage_b": "Voltage B",
                     "voltage_c": "Voltage C",
-                    "interval_minutes": "How often to look"
+                    "interval_minutes": "How often to look",
+                    "min_evidence": "How sure before offering a load"
                 },
                 "data_description": {
                     "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand. Submitting the same meter again fills in any field still empty, and never changes one you set yourself.",
-                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage."
+                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage.",
+                    "min_evidence": "A house makes far more shapes than it has appliances. This is how often a load must have repeated, and how tightly, before it appears on the naming page. If too few clear the bar, the best of the rest are shown anyway - the list never runs dry."
                 }
             },
             "naming": {
@@ -301,6 +303,16 @@
                 "10": "Every 10 minutes",
                 "15": "Every 15 minutes",
                 "30": "Every 30 minutes"
+            }
+        },
+        "min_evidence": {
+            "options": {
+                "0.3": "Almost anything that repeated",
+                "0.5": "Loose - seen a few times",
+                "0.6": "Fairly sure",
+                "0.7": "Balanced",
+                "0.8": "Sure - repeats tightly",
+                "0.9": "Only the unmistakable"
             }
         }
     }
