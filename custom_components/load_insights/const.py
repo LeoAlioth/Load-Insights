@@ -112,6 +112,24 @@ SAVE_MAX_INTERVAL_S = 3600.0
 # Past this it shows them anyway: a detector wedged days back should still
 # offer what it has rather than nothing at all.
 NAMING_MAX_STALE_S = 3600.0
+# How sure the detector must be that a signature is a real repeating load
+# before it is offered for naming. A house makes far more shapes than it has
+# appliances, and a list of two hundred is a list nobody reads (Anze,
+# 2026-09-18). Evidence is the score: how often it has been seen and how
+# tightly its power and duration repeat.
+CONF_MIN_EVIDENCE = "min_evidence"
+# 0.7, not 0.5: evidence is 0.5*seen + 0.3*tight_power + 0.2*tight_duration,
+# so anything seen five times already scores 0.5 and a bar there filters
+# nothing at all - 153 of home's 153 namable signatures cleared it. At 0.7 it
+# asks for a load that also REPEATS tightly, which is 99 at home and 13 at
+# Kozolec (measured over ten days, 2026-09-18).
+DEFAULT_MIN_EVIDENCE = 0.7
+EVIDENCE_CHOICES = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9)
+# ...but a threshold that hides everything is worse than one set too low, so
+# when too few clear it, the best of the rest come along anyway. That is the
+# "lower it slowly if we are not getting good hits" without any state to
+# decay: the bar is what it is, and the list simply never runs dry.
+NAMING_MIN_ROWS = 5
 # Bumped whenever a signature is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"

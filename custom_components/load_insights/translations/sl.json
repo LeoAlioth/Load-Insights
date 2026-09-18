@@ -128,11 +128,13 @@
                     "voltage_a": "Napetost A",
                     "voltage_b": "Napetost B",
                     "voltage_c": "Napetost C",
-                    "interval_minutes": "Kako pogosto pogleda"
+                    "interval_minutes": "Kako pogosto pogleda",
+                    "min_evidence": "Kako zanesljivo, preden ponudi breme"
                 },
                 "data_description": {
                     "device": "Izberite števec in meritve po fazah se izpolnijo spodaj, da jih preverite. Pustite prazno za ročno izbiro entitet. Ponovna potrditev istega števca izpolni še prazna polja, izpolnjenih pa ne spremeni.",
-                    "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni."
+                    "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni.",
+                    "min_evidence": "Hisa ustvari veliko vec vzorcev, kot ima naprav. To pove, kako pogosto in kako natancno se mora breme ponoviti, preden se pokaze za poimenovanje. Ce jih premalo doseze prag, se najboljsa med ostalimi vseeno prikazejo - seznam nikoli ne ostane prazen."
                 }
             },
             "naming": {
@@ -301,6 +303,16 @@
                 "10": "Vsakih 10 minut",
                 "15": "Vsakih 15 minut",
                 "30": "Vsakih 30 minut"
+            }
+        },
+        "min_evidence": {
+            "options": {
+                "0.3": "Skoraj vse, kar se je ponovilo",
+                "0.5": "Ohlapno - videno nekajkrat",
+                "0.6": "Precej zanesljivo",
+                "0.7": "Uravnoteženo",
+                "0.8": "Zanesljivo - se tesno ponavlja",
+                "0.9": "Samo nedvoumno"
             }
         }
     }
