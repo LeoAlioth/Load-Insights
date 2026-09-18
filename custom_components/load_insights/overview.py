@@ -13,7 +13,14 @@ from typing import Optional
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import (
+    CONF_DETECTION,
+    CONF_SOURCE_KIND,
+    DEFAULT_SOURCE_KIND,
+    DOMAIN,
+    SOURCE_GENERATOR,
+    SOURCE_NONE,
+)
 from .insights.detect import most_specific
 from .insights.scoring import LEADS_H
 
@@ -41,6 +48,9 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
     """Markdown for the overview page."""
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry_id)
     runner = (hass.data.get(DOMAIN) or {}).get(f"{entry_id}_detection")
+    entry = hass.config_entries.async_get_entry(entry_id)
+    kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(
+        CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND)
     lines: list[str] = []
 
     data = getattr(coordinator, "data", None)
@@ -55,9 +65,18 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
                      f"tomorrow {fc.tomorrow_kwh:.1f} kWh.")
         if data.grid is not None and data.grid.hours:
             g = data.grid
-            lines.append(f"- At the meter: import {g.import_kwh:.1f} kWh and export "
-                         f"{g.export_kwh:.1f} kWh over the week"
-                         + (", battery simulated." if g.battery_modelled else ", no battery modelled."))
+            battery = ", battery simulated." if g.battery_modelled else ", no battery modelled."
+            # What the shortfall and the surplus ARE depends on what is
+            # connected, not on the arithmetic, which is the same either way.
+            if kind == SOURCE_NONE:
+                lines.append(f"- Off grid: {g.import_kwh:.1f} kWh the battery cannot cover over the "
+                             f"week, {g.export_kwh:.1f} kWh the arrays must curtail" + battery)
+            elif kind == SOURCE_GENERATOR:
+                lines.append(f"- On the generator: {g.import_kwh:.1f} kWh it would have to make over "
+                             f"the week, {g.export_kwh:.1f} kWh spare" + battery)
+            else:
+                lines.append(f"- At the meter: import {g.import_kwh:.1f} kWh and export "
+                             f"{g.export_kwh:.1f} kWh over the week" + battery)
         lines.append(f"- {len(site.devices)} metered devices, "
                      f"{len(site.remainder_devices())} of them inside the remainder.")
         ledger = (data.ledgers or {}).get("consumption")

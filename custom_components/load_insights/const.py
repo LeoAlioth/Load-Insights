@@ -41,6 +41,19 @@ LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SERIES)
 # What was stored before the word was borrowed from Load Juggler, which
 # describes the same two wirings and had the better name for this one.
 LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
+# WHAT is connected there, which the topology does not say. An AC input is
+# an AC input whether the utility or a generator is behind it, and Kozolec
+# has the second: an off-grid site whose MultiPlus input port feeds from a
+# generator, idle - and so reading zero - almost all the time (Anze,
+# 2026-09-18). It changes nothing electrically and everything about what a
+# shortfall MEANS: energy bought at a tariff, a generator someone has to
+# start, or a load that simply goes unserved.
+CONF_SOURCE_KIND = "source_kind"
+SOURCE_UTILITY = "utility"
+SOURCE_GENERATOR = "generator"
+SOURCE_NONE = "none"
+SOURCE_KINDS = (SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
+DEFAULT_SOURCE_KIND = SOURCE_UTILITY
 # Meters BELOW the main one are not configured: the Energy dashboard already
 # lists every individually metered device and, through included_in_stat, how
 # they nest. Load Insights resolves each one to its Home Assistant device and
