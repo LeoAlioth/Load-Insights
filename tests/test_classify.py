@@ -73,12 +73,12 @@ def test_gliding_is_not_holding_a_level_even_when_no_step_is_taken():
     takes a step big enough to count as a level, so it read as one flat level
     at a near-unity power factor - which is a small heating element. The
     wander WITHIN a run is what separates them, and it is a measurement."""
-    scala = C.classify(206.0, 0.96, 1.05, 240.0, "a", ripple=0.69)
-    heater = C.classify(206.0, 0.96, 1.05, 240.0, "a", ripple=0.03)
+    scala = C.classify(206.0, 0.96, 1.05, 240.0, "a", low=104.0, high=247.0)
+    heater = C.classify(206.0, 0.96, 1.05, 240.0, "a", low=203.0, high=209.0)
     assert scala.kind == C.VARIABLE, scala
     assert heater.kind == C.HEATER, heater
     assert scala.tag == "pump?" and heater.tag == "heater"
-    assert any("varies by" in b for b in scala.because), scala.because
+    assert any("varies between 104 W and 247 W" in b for b in scala.because), scala.because
     assert any("steady" in b for b in heater.because), heater.because
     # with nothing measured it falls back to levels alone, as before
     assert C.classify(206.0, 0.96, 1.05, 240.0, "a").kind == C.HEATER
@@ -90,8 +90,8 @@ def test_a_pump_is_recognised_whether_or_not_it_has_a_drive():
     induction motor it is, the Scala2 sits behind a drive that corrects its
     own power factor back to unity. A window that fits one excludes the
     other."""
-    metabo = C.classify(1000.0, 0.80, 1.0, 180.0, "a", ripple=0.08)
-    scala = C.classify(206.0, 0.96, 1.05, 240.0, "a", ripple=0.69)
+    metabo = C.classify(1000.0, 0.80, 1.0, 180.0, "a", low=960.0, high=1040.0)
+    scala = C.classify(206.0, 0.96, 1.05, 240.0, "a", low=104.0, high=247.0)
     assert metabo.kind == C.MOTOR and scala.kind == C.VARIABLE
     assert metabo.appliance == scala.appliance == C.PUMP
 

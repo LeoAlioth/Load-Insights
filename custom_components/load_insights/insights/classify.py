@@ -276,7 +276,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
              duration_s: float = 0.0, phases: str = "",
              interval_s: Optional[float] = None, interval_mad: Optional[float] = None,
              hour_wh: Optional[Sequence[float]] = None,
-             ripple: Optional[float] = None) -> Guess:
+             low: Optional[float] = None, high: Optional[float] = None) -> Guess:
     """``watts`` is the load's total across its phases."""
     scores: Dict[str, float] = {}
     # A load either holds its level or it does not, and there are two ways to
@@ -284,6 +284,15 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     # which only RIPPLE sees. A pressure pump behind a variable-speed drive
     # runs 104 to 247 W without ever taking a step, so it read as one flat
     # level and classified as a small heater (Anze, 2026-09-18).
+    # The band is measured on ONE phase against a baseline that drifts, while
+    # watts is the session's whole draw, so the two can disagree - a 649 W
+    # load came back with a 333-345 W band. Where they do, the band is
+    # describing something other than this load and is not used at all: a
+    # range that does not contain the number beside it is worse than none.
+    middle = None if low is None or high is None else 0.5 * (low + high)
+    if middle is not None and not (low * 0.8 <= watts <= high * 1.25):
+        middle, low, high = None, None, None
+    ripple = None if not middle or middle <= 0 else max(0.0, (high - low) / middle)
     glides = ripple is not None and ripple >= RIPPLE_VARIES
     holds = ripple is None or ripple <= RIPPLE_STEADY
     steady = (1.0 if levels < 1.5 else 0.3) * (0.25 if glides else 1.0)
@@ -324,10 +333,13 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     because = []
     if pf is not None:
         because.append(f"power factor {pf:.2f}")
-    because.append("one steady level" if (levels < 1.5 and holds) else
-                   (f"varies by {ripple * 100:.0f}% as it runs" if glides and levels < 1.5
-                    else f"{levels:.0f} levels"))
-    because.append(_fmt_w(watts))
+    if glides and levels < 1.5:
+        # the watts someone would see on their own meter, not a ratio - and
+        # the range already says the size, so the mean is not repeated
+        because.append(f"varies between {_fmt_w(low)} and {_fmt_w(high)} as it runs")
+    else:
+        because.append("one steady level" if levels < 1.5 else f"{levels:.0f} levels")
+        because.append(_fmt_w(watts))
     if duration_s >= 1800:
         because.append(f"for {_fmt_s(duration_s)}")
     which, how_sure = appliance(kind, watts, pf, levels, duration_s, phases,
