@@ -36,8 +36,11 @@ CONF_GRID_DEVICE = "grid_device"
 CONF_LAYOUT = "layout"
 LAYOUT_AUTO = "auto"
 LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid
-LAYOUT_SEPARATE = "separate"          # load = inverter output alone
-LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SEPARATE)
+LAYOUT_SERIES = "series"              # load = inverter output alone
+LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SERIES)
+# What was stored before the word was borrowed from Load Juggler, which
+# describes the same two wirings and had the better name for this one.
+LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
 # Meters BELOW the main one are not configured: the Energy dashboard already
 # lists every individually metered device and, through included_in_stat, how
 # they nest. Load Insights resolves each one to its Home Assistant device and

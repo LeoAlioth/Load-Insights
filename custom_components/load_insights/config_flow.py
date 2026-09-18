@@ -17,6 +17,7 @@ from .const import (
     CONF_GRID_PREFIX,
     CONF_LAYOUT,
     LAYOUTS,
+    LAYOUT_ALIASES,
     LAYOUT_AUTO,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
@@ -63,7 +64,8 @@ def _grid_fields(defaults: dict) -> dict:
         key = f"{CONF_GRID_PREFIX}{p}"
         out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", device_class="power"))
-    out[vol.Optional(CONF_LAYOUT, default=defaults.get(CONF_LAYOUT, LAYOUT_AUTO))] = selector.SelectSelector(
+    out[vol.Optional(CONF_LAYOUT, default=LAYOUT_ALIASES.get(
+        defaults.get(CONF_LAYOUT, LAYOUT_AUTO), defaults.get(CONF_LAYOUT, LAYOUT_AUTO)))] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(LAYOUTS), translation_key=CONF_LAYOUT,
                                       mode=selector.SelectSelectorMode.DROPDOWN))
     return out
