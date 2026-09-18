@@ -131,7 +131,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Bremena, ki jih noben števec naprav ne pokriva - {count}. Izberite eno in naslednja stran pokaže, kakšno je, nato vpraša za ime.\n\nDvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah, in izbrišite ime, da se pozabi. Bremena, ki jih števec naprave že pokriva, poimenuje energijska nadzorna plošča in tu niso navedena.",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva - {count}. Izberite eno in naslednja stran pokaže, kakšno je, nato vpraša za ime; po poimenovanju se vrnete sem, tako da jih lahko v enem obisku poimenujete več.\n\nDvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah, in izbrišite ime, da se pozabi. Ko končate, izberite *končano* - to je tisto, kar na novo zgradi entitete. Bremena, ki jih števec naprave že pokriva, poimenuje energijska nadzorna plošča in tu niso navedena.",
                 "data": {
                     "signature": "Detected load"
                 }

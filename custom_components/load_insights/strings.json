@@ -131,7 +131,7 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for - {count} of them. Pick one and the next page shows what it looks like, then asks for a name.\n\nGive two of them the SAME name to say they are one device on different settings, and clear a name to forget it. Loads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
+                "description": "Loads no device meter accounts for - {count} of them. Pick one and the next page shows what it looks like, then asks for a name; naming one brings you straight back here, so several can be done in one visit.\n\nGive two of them the SAME name to say they are one device on different settings, and clear a name to forget it. Choose *finished* when you are done - that is what rebuilds the entities. Loads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
                 "data": {
                     "signature": "Detected load"
                 }

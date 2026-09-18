@@ -36,6 +36,7 @@ from .insights.detect import describe_location, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
+DONE_NAMING = "__done__"       # the list's last entry: apply and close
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -279,6 +280,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if not candidates:
             return self.async_abort(reason="nothing_to_name")
         if user_input is not None:
+            if user_input["signature"] == DONE_NAMING:
+                # the revision is what rebuilds the entities; the names
+                # themselves were already written as each was given
+                rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+                return self.async_create_entry(
+                    data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev})
             self._naming_selected = int(user_input["signature"])
             return await self.async_step_naming_detail()
 
@@ -300,6 +307,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # it reads as no order at all (Anze, 2026-09-17)
             label = f"[{sig.evidence:.2f}] {label}"
             options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
+        options.append(selector.SelectOptionDict(value=DONE_NAMING, label="— finished, apply —"))
         return self.async_show_form(
             step_id="naming",
             data_schema=vol.Schema({
@@ -321,11 +329,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             self._naming_selected = None
             await runner.async_rename(sig.id, (user_input.get("name") or "").strip() or None)
-            # the entry has to change for the entities to be rebuilt
-            rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-            return self.async_create_entry(
-                data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
-            )
+            # straight back to the list, so several can be named in one visit
+            # instead of reopening the page for each (Anze, 2026-09-18)
+            return await self.async_step_naming()
         return self.async_show_form(
             step_id="naming_detail",
             data_schema=vol.Schema({
