@@ -1282,6 +1282,25 @@ def test_a_name_can_be_moved_to_the_load_that_replaced_it():
     assert det.adopt(1) is None
 
 
+def test_the_wiring_comes_from_the_inverters_not_from_the_grid_page():
+    """Where the battery sits is a fact about an INVERTER, not about the grid.
+    Series if any inverter is series - the series formula on the summed
+    outputs is exact for a mix, because a parallel member contributes no
+    battery term."""
+    assert D.site_topology([]) is None, "nothing said means read it off the data"
+    assert D.site_topology([{"topology": "parallel"}]) == "parallel"
+    assert D.site_topology([{"topology": "series"}]) == "series"
+    # a SolarEdge on the bus beside a Deye hybrid: the mix reads as series
+    assert D.site_topology([{"topology": "parallel"}, {"topology": "series"}]) == "series"
+    assert D.site_topology([{"topology": "series"}, {"topology": "parallel"}]) == "series"
+    # an inverter with no wiring stated does not vote
+    assert D.site_topology([{"power": "sensor.x"}]) is None
+    # a layout stored before the inverter list existed is still honoured...
+    assert D.site_topology([], "series") == "series"
+    # ...and loses to an inverter that says otherwise
+    assert D.site_topology([{"topology": "parallel"}], "series") == "parallel"
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had

@@ -31,6 +31,7 @@ from .const import (
     CONF_WEATHER_ENTITY,
     DOMAIN,
     HISTORY_WEEKS,
+    CONF_INVERTERS,
     CONF_LAYOUT,
     HORIZON_HOURS,
     LAYOUT_ALIASES,
@@ -42,6 +43,7 @@ from .const import (
 from .insights.calendars import CalendarSignals
 from .insights.inputs import label_history, project, usable
 from .insights.covariates import interpolate_hourly
+from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .insights.model import SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
@@ -281,8 +283,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # from the load reading, which at home is a house-consumption template
         # and says nothing about the battery - and reading it as series there
         # would quietly inflate consumption by the inverter's efficiency.
-        detection = (self.config_entry.options.get(CONF_DETECTION) or {}) if self.config_entry else {}
-        declared = LAYOUT_ALIASES.get(detection.get(CONF_LAYOUT), detection.get(CONF_LAYOUT))
+        opts = self.config_entry.options if self.config_entry else {}
+        stored = (opts.get(CONF_DETECTION) or {}).get(CONF_LAYOUT)
+        declared = site_topology(opts.get(CONF_INVERTERS) or [], LAYOUT_ALIASES.get(stored, stored))
         topology = declared if declared in (LAYOUT_PARALLEL, LAYOUT_SERIES) else LAYOUT_PARALLEL
         grid = await self.hass.async_add_executor_job(
             functools.partial(build_grid, cons_fc.hourly, pv, soc,

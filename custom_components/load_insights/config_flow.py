@@ -17,12 +17,8 @@ from homeassistant.helpers import entity_registry as er, selector
 from .const import (
     CONF_GRID_DEVICE,
     CONF_LAYOUT,
-    LAYOUTS,
     ROLE_PREFIX,
-    ATTACH_BUS,
-    ATTACH_LOAD_PORT,
     CONF_INVERTERS,
-    CONF_INV_ATTACH,
     CONF_INV_DEVICE,
     CONF_INV_TOPOLOGY,
     SOURCE_KINDS,
@@ -88,10 +84,6 @@ def _grid_fields(defaults: dict) -> dict:
             out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
                 selector.EntitySelector(selector.EntitySelectorConfig(
                     domain="sensor", device_class=device_class))
-    out[vol.Optional(CONF_LAYOUT, default=LAYOUT_ALIASES.get(
-        defaults.get(CONF_LAYOUT, LAYOUT_AUTO), defaults.get(CONF_LAYOUT, LAYOUT_AUTO)))] = selector.SelectSelector(
-        selector.SelectSelectorConfig(options=list(LAYOUTS), translation_key=CONF_LAYOUT,
-                                      mode=selector.SelectSelectorMode.DROPDOWN))
     out[vol.Optional(CONF_SOURCE_KIND,
                      default=defaults.get(CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND))] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(SOURCE_KINDS), translation_key=CONF_SOURCE_KIND,
@@ -116,14 +108,11 @@ def _inverter_fields(defaults: dict) -> dict:
         key = f"power_{p}"
         out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
-    out[vol.Optional(CONF_INV_ATTACH, default=defaults.get(CONF_INV_ATTACH, ATTACH_BUS))] = \
-        selector.SelectSelector(selector.SelectSelectorConfig(
-            options=[ATTACH_BUS, ATTACH_LOAD_PORT], translation_key=CONF_INV_ATTACH,
-            mode=selector.SelectSelectorMode.DROPDOWN))
     out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
         selector.SelectSelector(selector.SelectSelectorConfig(
             options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
             mode=selector.SelectSelectorMode.DROPDOWN))
+
     return out
 
 
@@ -134,9 +123,8 @@ def _inverter_line(inverters: list) -> str:
                 "DC-coupled needs: their power never appears on the AC side at all.")
     bits = []
     for inv in inverters:
-        where = "on the bus" if inv.get(CONF_INV_ATTACH, ATTACH_BUS) == ATTACH_BUS else "on another inverter's load port"
         bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
-                    f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)}, {where})")
+                    f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})")
     return f"{len(inverters)} set up: " + "; ".join(bits)
 
 
@@ -374,7 +362,6 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             rest = [inv for inv in current if inv.get(CONF_INV_DEVICE) != device]
             if device and powers:
                 rest.append({CONF_INV_DEVICE: device, **powers,
-                             CONF_INV_ATTACH: user_input.get(CONF_INV_ATTACH, ATTACH_BUS),
                              CONF_INV_TOPOLOGY: user_input.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})
             return self.async_create_entry(
                 data={**dict(self.config_entry.options), CONF_INVERTERS: rest})

@@ -191,7 +191,6 @@
                     "grid_power_a": "Grid power A",
                     "grid_power_b": "Grid power B",
                     "grid_power_c": "Grid power C",
-                    "layout": "Wiring",
                     "source_kind": "What is connected",
                     "grid_voltage_a": "Grid voltage A",
                     "grid_voltage_b": "Grid voltage B",
@@ -205,7 +204,6 @@
                 },
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
-                    "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports.",
                     "source_kind": "Left on automatic this is read off the reading itself: only the utility absorbs a surplus, and a generator is off far more than it is on. Override it for a generator that has not run lately, which reads exactly like nothing connected - and \"you will need the generator\" is not the same warning as \"you will go dark\"."
                 }
             },
@@ -230,13 +228,11 @@
                     "power_a": "Output power A",
                     "power_b": "Output power B",
                     "power_c": "Output power C",
-                    "attach": "Where its output goes",
                     "topology": "Wiring"
                 },
                 "data_description": {
                     "device": "Pick it and its readings can be filled in below.",
                     "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly.",
-                    "attach": "On the bus means it feeds the same wires as the grid. On another inverter's load port means it sits behind one, and that inverter's reading already nets its output.",
                     "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion."
                 }
             }
@@ -287,12 +283,6 @@
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"
-            }
-        },
-        "attach": {
-            "options": {
-                "bus": "On the bus, beside the grid",
-                "load_port": "On another inverter's load port"
             }
         },
         "interval_minutes": {

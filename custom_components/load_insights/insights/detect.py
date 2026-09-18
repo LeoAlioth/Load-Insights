@@ -293,6 +293,24 @@ def _trim(value, places: int):
     return round(value, places) if isinstance(value, float) else value
 
 
+def site_topology(inverters: Sequence[dict], stored: Optional[str] = None) -> Optional[str]:
+    """Where the site's battery sits, from the inverters that are set up.
+
+    Series if ANY inverter is series, which is Load Juggler's rule and holds
+    for the same reason: the series formula on the summed outputs is exact
+    for a mix, because a parallel member contributes no battery term.
+
+    Falls back to a layout stored before the inverter list existed, and
+    answers None when nothing says - which means "read it off the data",
+    not "assume parallel"."""
+    declared = {inv.get("topology") for inv in inverters if inv.get("topology")}
+    if "series" in declared:
+        return "series"
+    if declared:
+        return "parallel"
+    return stored or None
+
+
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     """Does this reading contain the site's generation, or the house alone?
 

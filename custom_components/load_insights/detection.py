@@ -39,6 +39,7 @@ from .insights.detect import (
     carries_generation,
     carries_load,
     classify_source,
+    site_topology,
     exports_positive,
     mean_power,
     most_specific,
@@ -187,8 +188,7 @@ class DetectionRunner:
             seen = classify_source(rows)
             if seen is not None and (self.source_kind is None or seen != SOURCE_NONE):
                 self.source_kind = seen
-        mode = self.config.get(CONF_LAYOUT) or LAYOUT_AUTO
-        mode = LAYOUT_ALIASES.get(mode, mode)
+        mode = self.declared_layout or LAYOUT_AUTO
         out = dict(samples)
         for p, rows in samples.items():
             if not grid_rows.get(p):
@@ -373,6 +373,19 @@ class DetectionRunner:
         return {"fleet": self.fleet.to_dict(),
                 "last_processed": self.last_processed.isoformat() if self.last_processed else None,
                 "generation": DETECTOR_GENERATION}
+
+    @property
+    def declared_layout(self) -> Optional[str]:
+        """The wiring the user stated, from the Inverters page.
+
+        It lived on the grid page as a site-wide dropdown, which was the
+        wrong place: the topology is a fact about where an INVERTER sits, not
+        about the grid - Anze said so and I agreed and then left both in
+        place, one of them reading nothing (2026-09-18). The stored value is
+        still honoured so a site that set it before keeps its answer."""
+        stored = self.config.get(CONF_LAYOUT)
+        stored = LAYOUT_ALIASES.get(stored, stored)
+        return site_topology(self.entry.options.get(CONF_INVERTERS) or [], stored)
 
     @property
     def interval_minutes(self) -> int:
