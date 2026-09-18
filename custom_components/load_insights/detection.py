@@ -379,6 +379,18 @@ class DetectionRunner:
                 "generation": DETECTOR_GENERATION}
 
     @property
+    def behind_s(self) -> Optional[float]:
+        """How far behind now the detector has read, in seconds.
+
+        None before it has read anything at all. The backfill walks ten days
+        in six-hour slices, so a library part way through that is a library
+        of whatever happened to be in the first few days - which is not a
+        thing to offer anyone for naming (Anze, 2026-09-18)."""
+        if self.last_processed is None:
+            return None
+        return max(0.0, (dt_util.utcnow() - self.last_processed).total_seconds())
+
+    @property
     def declared_layout(self) -> Optional[str]:
         """The wiring the user stated, from the Inverters page.
 

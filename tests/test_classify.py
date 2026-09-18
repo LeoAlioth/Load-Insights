@@ -27,7 +27,7 @@ def test_a_small_poor_factor_load_reads_as_electronics():
 
 def test_a_modulating_load_reads_as_inverter_driven():
     g = C.classify(2000, pf=0.96, levels=3.0, duration_s=5400)
-    assert g.kind == C.INVERTER, g
+    assert g.kind == C.VARIABLE, g
 
 
 def test_two_families_that_fit_equally_well_are_both_named():

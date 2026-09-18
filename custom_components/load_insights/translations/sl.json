@@ -235,6 +235,14 @@
                     "power": "Uporabi, kjer razsmernik objavlja samo skupno moč. Po fazah je bolje, kjer jih ima: oblak se takrat izniči natančno.",
                     "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo."
                 }
+            },
+            "naming_waiting": {
+                "title": "Se še bere zgodovina",
+                "description": "Zaznavanje bremen predeluje zapisovalnik - zaostaja {behind}, približno {progress} %.\n\nZa poimenovanje še ni ničesar. Knjižnica sredi polnjenja vsebuje le tisto, kar se je zgodilo v prvih dneh, vrstice, ki bi se sproti spreminjale, pa so slabše od nobene.\n\nNadaljuje samo; **Osveži** pogleda znova.",
+                "menu_options": {
+                    "naming": "Osveži",
+                    "init": "Nazaj"
+                }
             }
         },
         "abort": {

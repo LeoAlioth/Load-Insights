@@ -8,7 +8,9 @@ Three readings carry it:
   * the POWER FACTOR, much the strongest. A resistive element draws its
     current in step with the voltage and reads about 1.00; a motor lags,
     between 0.45 and 0.85; a small unswitched supply sits lower still; an
-    inverter-driven appliance corrects itself back up near 1.
+    appliance that controls its own power electronically - an induction hob,
+    a heat pump, a modern washing machine - corrects itself back up near 1
+    and steps its draw as it goes.
   * the LEVELS, because a modulating appliance steps its draw during a run
     and an element does not.
   * the SIZE and the DURATION, which separate a car charging from a kettle.
@@ -29,13 +31,17 @@ from typing import Dict, Optional, Tuple
 HEATER = "a heating element"
 MOTOR = "a motor"
 SUPPLY = "electronics"
-INVERTER = "an inverter-driven appliance"
+# Named for what someone would SEE, not for the electronics inside. It was
+# "an inverter-driven appliance", which is jargon and, worse, collides with
+# the solar inverters on their own configuration page - the same word for two
+# unrelated things in one integration (Anze, 2026-09-18).
+VARIABLE = "an appliance that varies its own power"
 PROGRAMME = "an appliance running a programme"
 CAR = "a car charging"
 
 # One word each, for a place with no room for a sentence - a menu row
 SHORT = {HEATER: "heater", MOTOR: "motor", SUPPLY: "electronics",
-         INVERTER: "inverter", PROGRAMME: "programme", CAR: "car"}
+         VARIABLE: "variable", PROGRAMME: "programme", CAR: "car"}
 
 MIN_SCORE = 0.2            # below this the evidence says nothing
 CLOSE = 0.15               # two families this close are both named
@@ -120,7 +126,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
                           * _band(duration_s, 0, 0, 3600, 14400))
         scores[MOTOR] = _band(pf, 0.35, 0.55, 0.85, 0.93) * _band(watts, 20, 60, 4000, 7000)
         scores[SUPPLY] = _band(pf, 0.2, 0.4, 0.75, 0.9) * _band(watts, 1, 5, 300, 600)
-        scores[INVERTER] = (_band(pf, 0.88, 0.94, 1.01, 1.01) * stepped
+        scores[VARIABLE] = (_band(pf, 0.88, 0.94, 1.01, 1.01) * stepped
                             * _band(watts, 100, 300, 9000, 12000))
         scores[CAR] = (_band(pf, 0.93, 0.97, 1.01, 1.01) * steady
                        * _band(watts, 1200, 1400, 11500, 23000)
