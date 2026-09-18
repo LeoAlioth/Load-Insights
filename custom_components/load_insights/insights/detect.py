@@ -53,6 +53,13 @@ PV_MIN_SAMPLES = 30
 # cent of a day is minutes, not a spike.
 EXPORT_FLOOR_W = 50.0
 EXPORT_SHARE = 0.005
+# Below this an AC input is carrying nothing; a generator sits here almost
+# always, while a utility connection crosses zero and moves on.
+SOURCE_IDLE_W = 25.0
+SOURCE_IDLE_SHARE = 0.9
+SOURCE_UTILITY = "utility"
+SOURCE_GENERATOR = "generator"
+SOURCE_NONE = "none"
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
@@ -183,6 +190,37 @@ def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
         return None
     below = sum(1 for _, value in rows if value < -EXPORT_FLOOR_W)
     return below >= EXPORT_SHARE * len(rows)
+
+
+def classify_source(rows: Sequence[Tuple[float, float]]) -> Optional[str]:
+    """What is behind an AC input, from the reading alone.
+
+    The reading cannot tell a utility meter from a generator's - both are
+    watts at an input port - but the BEHAVIOUR separates them, and neither
+    is a preference anyone should have to type (Anze, 2026-09-18):
+
+      * only a utility ABSORBS a surplus, so a reading that goes usefully
+        negative is the grid and nothing else;
+      * a generator is off far more than it is on, so a source that spends
+        almost all its life at zero and never absorbs is one;
+      * a port that has never carried anything at all is, as far as the data
+        goes, not connected.
+
+    The last two are the same reading for a generator that has not run in
+    the window, which is the one case the setting is worth overriding for -
+    "you will need the generator" and "you will go dark" are not the same
+    warning. Callers should keep the most informative verdict they have seen
+    rather than following this down to ``none`` again.
+
+    None when there is too little to look at."""
+    if len(rows) < PV_MIN_SAMPLES:
+        return None
+    if any(value < -EXPORT_FLOOR_W for _, value in rows):
+        return SOURCE_UTILITY
+    live = sum(1 for _, value in rows if abs(value) > SOURCE_IDLE_W)
+    if not live:
+        return SOURCE_NONE
+    return SOURCE_GENERATOR if live <= (1.0 - SOURCE_IDLE_SHARE) * len(rows) else SOURCE_UTILITY
 
 
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:

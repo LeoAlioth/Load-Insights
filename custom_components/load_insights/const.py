@@ -1,5 +1,13 @@
 """Load Insights - constants."""
 
+# The pure layer owns the words for what it measures, so they have one
+# definition; the rest of the integration keeps importing from here.
+from .insights.detect import (  # noqa: F401  - one definition, re-exported
+    SOURCE_GENERATOR,
+    SOURCE_NONE,
+    SOURCE_UTILITY,
+)
+
 DOMAIN = "load_insights"
 
 CONF_NAME = "name"
@@ -48,12 +56,15 @@ LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
 # 2026-09-18). It changes nothing electrically and everything about what a
 # shortfall MEANS: energy bought at a tariff, a generator someone has to
 # start, or a load that simply goes unserved.
+# Auto is the default and the honest answer nearly always: only a utility
+# absorbs a surplus, and a generator is off far more than it is on, so the
+# reading itself says which is there. The override exists for the one case
+# the data cannot settle - a generator that has not run inside the window
+# looks exactly like nothing at all.
 CONF_SOURCE_KIND = "source_kind"
-SOURCE_UTILITY = "utility"
-SOURCE_GENERATOR = "generator"
-SOURCE_NONE = "none"
-SOURCE_KINDS = (SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
-DEFAULT_SOURCE_KIND = SOURCE_UTILITY
+SOURCE_AUTO = "auto"
+SOURCE_KINDS = (SOURCE_AUTO, SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
+DEFAULT_SOURCE_KIND = SOURCE_AUTO
 # Meters BELOW the main one are not configured: the Energy dashboard already
 # lists every individually metered device and, through included_in_stat, how
 # they nest. Load Insights resolves each one to its Home Assistant device and

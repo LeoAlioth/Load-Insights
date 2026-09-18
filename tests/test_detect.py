@@ -1124,5 +1124,27 @@ def test_the_wiring_follows_from_the_same_reading():
     assert D.carries_generation(behind_a_switch) is False  # it is already the house
 
 
+def test_what_is_behind_the_ac_input_is_read_off_it():
+    """A utility absorbs a surplus; a generator never does and is off almost
+    always; a port that has never carried anything looks unconnected."""
+    import random
+    rnd = random.Random(11)
+    n = 400
+    house = [800.0 + rnd.uniform(-50, 50) for _ in range(n)]
+    pv = [1600.0 * (i % 50) / 50.0 for i in range(n)]
+    # goes negative when the site exports - only the grid does that
+    assert D.classify_source([(T0 + i * DT, house[i] - pv[i]) for i in range(n)]) == D.SOURCE_UTILITY
+    # imports all day, never exports, never idle: still the grid
+    assert D.classify_source([(T0 + i * DT, house[i]) for i in range(n)]) == D.SOURCE_UTILITY
+    # off except for two short runs, and never absorbs: a generator
+    gen = [(T0 + i * DT, 4200.0 if (30 <= i < 45 or 300 <= i < 312) else 0.0) for i in range(n)]
+    assert D.classify_source(gen) == D.SOURCE_GENERATOR
+    # a port that has never carried anything cannot be told from a generator
+    # that has not run - hence the override, and hence the caller keeping the
+    # better verdict rather than following this one back down
+    assert D.classify_source([(T0 + i * DT, 0.0) for i in range(n)]) == D.SOURCE_NONE
+    assert D.classify_source([(T0, 900.0)]) is None
+
+
 if __name__ == "__main__":
     run_main(globals())

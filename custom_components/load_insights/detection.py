@@ -22,13 +22,21 @@ from .const import (
     LAYOUT_AUTO,
     LAYOUT_PARALLEL,
     LAYOUT_SERIES,
+    SOURCE_NONE,
     CONF_DETECTION,
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector, Fleet, carries_generation, most_specific
+from .insights.detect import (
+    PHASES,
+    Detector,
+    Fleet,
+    carries_generation,
+    classify_source,
+    most_specific,
+)
 from .insights.discovery import match_meter_entities
 from .insights.model import SiteModel
 
@@ -69,6 +77,11 @@ class DetectionRunner:
         # how the grid reading relates to the load one, per phase, worked out
         # from the data unless the user says otherwise
         self.layout: Dict[str, str] = {}
+        # What the AC input turned out to be, kept at the most
+        # informative verdict seen: a generator that has not run this
+        # window reads exactly like nothing connected, and falling back
+        # to that every quiet day would flap the wording for no reason.
+        self.source_kind: Optional[str] = None
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -153,6 +166,10 @@ class DetectionRunner:
         if not cfg or not samples:
             return samples
         grid_rows, _ = await self._read(start, end, cfg)
+        for rows in grid_rows.values():
+            seen = classify_source(rows)
+            if seen is not None and (self.source_kind is None or seen != SOURCE_NONE):
+                self.source_kind = seen
         mode = self.config.get(CONF_LAYOUT) or LAYOUT_AUTO
         mode = LAYOUT_ALIASES.get(mode, mode)
         out = dict(samples)
