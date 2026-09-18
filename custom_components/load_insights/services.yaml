@@ -1,0 +1,19 @@
+refresh:
+  name: Refresh
+  description: >-
+    Recompute every forecast now instead of waiting for the top of the hour.
+    Useful straight after changing an input, to see whether it engaged.
+  target:
+    entity:
+      integration: load_insights
+
+reset_detection:
+  name: Reset load detection
+  description: >-
+    Forget every detected signature and start the meter's backfill again.
+    For when the meter changed, or a phase was rewired, and the library
+    describes a site that no longer exists. Names are lost with the
+    signatures.
+  target:
+    entity:
+      integration: load_insights

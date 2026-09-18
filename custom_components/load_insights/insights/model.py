@@ -40,6 +40,29 @@ class PowerSpec:
     def is_empty(self) -> bool:
         return not any((self.rate, self.rate_inverted, self.rate_from, self.rate_to))
 
+    @property
+    def polarity(self) -> Optional[int]:
+        """+1 when a positive reading means import, -1 when it means export.
+
+        The dashboard already asks this - none, normal, inverted, or a pair
+        of sensors - so it is DECLARED here and should never be guessed at
+        (Anze, 2026-09-18, about a SolarEdge M1 that reports export
+        positive). A pair needs no polarity: each sensor names its own
+        direction, so it answers +1 for the import half.
+
+        None when the source declares no power reading at all, which is when
+        the reading's own behaviour has to settle it instead."""
+        if self.rate_inverted:
+            return -1
+        if self.rate or self.rate_from or self.rate_to:
+            return 1
+        return None
+
+    @property
+    def rate_entity(self) -> Optional[str]:
+        """The single signed sensor, whichever way up it was declared."""
+        return self.rate or self.rate_inverted or None
+
     @classmethod
     def from_source(cls, src: dict) -> Optional["PowerSpec"]:
         pc = src.get("power_config") or {}

@@ -5,10 +5,18 @@
                 "title": "Load Insights",
                 "description": "Prebere, kar vaša nadzorna plošča Energija že ve, in iz tega napove porabo. Tu se nič ne vnaša znova.\n\nNajdeno v nadzorni plošči Energija: {grid} omrežje, {solar} PV, {battery} baterija, {devices} posameznih naprav, {forecasts} vnosov napovedi PV.",
                 "data": {
-                    "name": "Ime"
+                    "name": "Ime",
+                    "weather_entity": "Vremenska entiteta",
+                    "outdoor_temperature_entity": "Senzor zunanje temperature",
+                    "calendar_entities": "Koledarji",
+                    "input_entities": "Drugi vhodi"
                 },
                 "data_description": {
-                    "name": "Prikazano kot naprava, ki združuje senzorje napovedi."
+                    "name": "Prikazano kot naprava, ki združuje senzorje napovedi.",
+                    "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
+                    "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
+                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
                 }
             }
         },
@@ -22,14 +30,280 @@
             "consumption_forecast": {
                 "name": "Napoved porabe"
             },
-            "consumption_today": {
-                "name": "Poraba danes"
-            },
-            "consumption_tomorrow": {
-                "name": "Poraba jutri"
-            },
             "remainder_forecast": {
                 "name": "Napoved nemerjene porabe"
+            },
+            "device_forecast": {
+                "name": "Napoved"
+            },
+            "detected_loads": {
+                "name": "Zaznani porabniki"
+            },
+            "unknown_load_power": {
+                "name": "Moč neznanih porabnikov"
+            },
+            "grid_forecast": {
+                "name": "Napoved omrežja"
+            },
+            "battery_soc_forecast": {
+                "name": "Napoved SOC baterije"
+            },
+            "base_load": {
+                "name": "Osnovna poraba"
+            },
+            "named_load_power": {
+                "name": "Povprečna moč"
+            },
+            "named_load_energy": {
+                "name": "Energija"
+            }
+        },
+        "binary_sensor": {
+            "named_load_running": {
+                "name": "Deluje"
+            }
+        },
+        "button": {
+            "refresh": {
+                "name": "Osveži napovedi"
+            },
+            "reset_detection": {
+                "name": "Ponastavi zaznavanje porabe"
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Load Insights",
+                "description": "Izberite stran.",
+                "menu_options": {
+                    "overview": "Pregled",
+                    "inputs": "Pojasnjevalni vhodi",
+                    "device_state": "Lastni senzor stanja naprave",
+                    "detection": "Zaznavanje porabnikov",
+                    "naming": "Poimenuj zaznan porabnik",
+                    "grid": "Priključek na omrežje",
+                    "inverters": "Razsmerniki"
+                }
+            },
+            "inputs": {
+                "title": "Pojasnjevalni vhodi",
+                "description": "Vhodi, iz katerih se napoved lahko uči. Vsak ostane le, če porabo dejansko pojasnjuje.",
+                "data": {
+                    "weather_entity": "Vremenska entiteta",
+                    "outdoor_temperature_entity": "Senzor zunanje temperature",
+                    "calendar_entities": "Koledarji",
+                    "input_entities": "Drugi vhodi"
+                },
+                "data_description": {
+                    "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
+                    "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
+                    "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
+                }
+            },
+            "device_state": {
+                "title": "Senzor stanja naprave",
+                "description": "Izberite napravo iz nadzorne plošče Energija in senzor, ki pove, kaj bo naprava kmalu počela - temperaturo bojlerja, nivo v cisterni za črpalko. Njegova trenutna vrednost izostri napoved te naprave za naslednjih šest ur. Ena naprava na obisk; pustite senzor prazen, da ga odstranite.",
+                "data": {
+                    "device": "Naprava",
+                    "state_entity": "Senzor stanja"
+                }
+            },
+            "detection": {
+                "title": "Nastavitve zaznavanja",
+                "description": "Kako deluje zaznavanje bremen. Kaj opazuje, se tu ne nastavlja več: iz omrežnega priklopa in razsmernikov se poraba hiše izračuna, ne izbere.\n\n{found}",
+                "data": {
+                    "interval_minutes": "Kako pogosto pogleda",
+                    "min_evidence": "Kako zanesljivo, preden ponudi breme"
+                },
+                "data_description": {
+                    "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni.",
+                    "min_evidence": "Hisa ustvari veliko vec vzorcev, kot ima naprav. To pove, kako pogosto in kako natancno se mora breme ponoviti, preden se pokaze za poimenovanje. Ce jih premalo doseze prag, se najboljsa med ostalimi vseeno prikazejo - seznam nikoli ne ostane prazen."
+                }
+            },
+            "naming": {
+                "title": "Poimenuj zaznan porabnik",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica je: moč (faze), energija na teden in na zagon, koliko traja en zagon, kaj bi lahko bilo, in njegov teden od ponedeljka do nedelje. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
+                "menu_options": {
+                    "load_0": "{load_0}",
+                    "load_1": "{load_1}",
+                    "load_2": "{load_2}",
+                    "load_3": "{load_3}",
+                    "load_4": "{load_4}",
+                    "load_5": "{load_5}",
+                    "load_6": "{load_6}",
+                    "load_7": "{load_7}",
+                    "load_8": "{load_8}",
+                    "load_9": "{load_9}",
+                    "load_10": "{load_10}",
+                    "load_11": "{load_11}",
+                    "load_12": "{load_12}",
+                    "load_13": "{load_13}",
+                    "load_14": "{load_14}",
+                    "load_15": "{load_15}",
+                    "load_16": "{load_16}",
+                    "load_17": "{load_17}",
+                    "load_18": "{load_18}",
+                    "load_19": "{load_19}",
+                    "load_20": "{load_20}",
+                    "load_21": "{load_21}",
+                    "load_22": "{load_22}",
+                    "load_23": "{load_23}",
+                    "naming_done": "— končano, uporabi —"
+                }
+            },
+            "overview": {
+                "title": "Pregled",
+                "description": "Kaj Load Insights vidi zdaj.\n\n{overview}",
+                "menu_options": {
+                    "overview": "🔄 Osveži",
+                    "reset_detection": "Ponastavi zaznavanje porabe",
+                    "init": "← Nazaj na meni"
+                }
+            },
+            "reset_detection": {
+                "title": "Ponastavim zaznavanje porabe?",
+                "description": "Knjižnica zaznanih bremen in vsa imena v njej bodo pozabljena, zadnjih deset dni meritev pa se prebere znova. Teče samodejno in traja nekaj časa. Uporabite po zamenjavi števca, prevezavi faze ali posodobitvi, ki spremeni način zaznavanja.",
+                "menu_options": {
+                    "reset_confirmed": "Da, pozabi vse",
+                    "overview": "← Prekliči"
+                }
+            },
+            "grid": {
+                "title": "Priključek na omrežje",
+                "description": "Kje se objekt stika z omrežjem, po fazah. To je druga VLOGA od zgornje strani, ne drug števec: isti razsmernik navadno objavlja obe strani, ta stran pa daje prednost meritvam vhoda, omrežja in dovoda, ki jih druga odriva.\n\nNamenjena je dopolnitvi signala porabe. Kjer razsmernik napaja bremena vzporedno z omrežjem, števec nosi hišo MINUS to, kar naredi razsmernik, zato nobena meritev sama ni poraba hiše, njuna vsota pa je. Za preklopnim stikalom ali v otočnem sistemu gre vse skozi razsmernik in prištevanje omrežja bi pretok štelo dvakrat.\n\n{found}",
+                "data": {
+                    "grid_device": "Naprava števca omrežja",
+                    "grid_power_a": "Moč omrežja A",
+                    "grid_power_b": "Moč omrežja B",
+                    "grid_power_c": "Moč omrežja C",
+                    "source_kind": "Kaj je priključeno",
+                    "grid_voltage_a": "Napetost omrežja A",
+                    "grid_voltage_b": "Napetost omrežja B",
+                    "grid_voltage_c": "Napetost omrežja C",
+                    "grid_current_a": "Tok omrežja A",
+                    "grid_current_b": "Tok omrežja B",
+                    "grid_current_c": "Tok omrežja C",
+                    "grid_pf_a": "Faktor moči omrežja A",
+                    "grid_pf_b": "Faktor moči omrežja B",
+                    "grid_pf_c": "Faktor moči omrežja C"
+                },
+                "data_description": {
+                    "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
+                    "source_kind": "Na samodejno se ugotovi iz same meritve: samo omrežje sprejme presežek, generator pa je veliko pogosteje ugasnjen kot prižgan. Ročno nastavi za generator, ki dlje časa ni tekel - tak je videti enako kot nepriključen vhod, opozorilo pa ni isto."
+                }
+            },
+            "naming_detail": {
+                "title": "Poimenujte breme",
+                "description": "{detail}\n\nVpišite ime, da dobi svoje entitete. Če polje pustite prazno, se nič ne spremeni in vrnete se na seznam - to je najbližje gumbu za nazaj, kar obrazec dopušča.",
+                "data": {
+                    "name": "Ime",
+                    "forget": "Pozabi obstoječe ime",
+                    "adopt": "Premakni to ime sem"
+                },
+                "data_description": {
+                    "adopt": "Stari vnos obdrzi zgodovino, a ne nosi vec imena. Njegova energija se ne pristeje temu - to sta dve vedenji ene naprave, ne en stevec."
+                }
+            },
+            "inverters": {
+                "title": "Razsmerniki",
+                "description": "En razsmernik naenkrat. Hiša je vsota: omrežni števec plus to, kar vsak razsmernik da NA IZHODU, manj to, kar vzame NA VHODU. Sončni razsmernik nima vhoda in prispeva ves izhod; hibrid prispeva razliko. O vezavi za to ni treba povedati ničesar - vsota se izide tako ali tako.\n\nSonce, nastavljeno tukaj, prevlada nad viri v energijski nadzorni plošči, kar potrebuje stran z DC vezavo.\n\nPusti vse meritve moči prazne, da razsmernik odstraniš.\n\n{found}",
+                "data": {
+                    "device": "Naprava razsmernika",
+                    "power": "Izhodna moč (skupna)",
+                    "power_a": "Izhodna moč A",
+                    "power_b": "Izhodna moč B",
+                    "power_c": "Izhodna moč C",
+                    "in_power": "Moč na omrežni strani (skupna)",
+                    "in_power_a": "Moč na omrežni strani A",
+                    "in_power_b": "Moč na omrežni strani B",
+                    "in_power_c": "Moč na omrežni strani C",
+                    "topology": "Vezava"
+                },
+                "data_description": {
+                    "device": "Izberi napravo in spodnje meritve je mogoče izpolniti.",
+                    "power": "Uporabi, kjer razsmernik objavlja samo skupno moč. Po fazah je bolje, kjer jih ima: oblak se takrat izniči natančno.",
+                    "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo.",
+                    "in_power": "Kar razsmernik jemlje iz omrežja na svojem AC vhodu. Sončni razsmernik tega nima - pusti prazno in prispeva ves izhod. Hibrid ga ima, razlika pa je tisto, kar dejansko doda, tako da se omrežje, ki teče skozenj, ne šteje dvakrat."
+                }
+            },
+            "naming_waiting": {
+                "title": "Se še bere zgodovina",
+                "description": "Zaznavanje bremen predeluje zapisovalnik - zaostaja {behind}, približno {progress} %.\n\nZa poimenovanje še ni ničesar. Knjižnica sredi polnjenja vsebuje le tisto, kar se je zgodilo v prvih dneh, vrstice, ki bi se sproti spreminjale, pa so slabše od nobene.\n\nNadaljuje samo; **Osveži** pogleda znova.",
+                "menu_options": {
+                    "naming": "Osveži",
+                    "init": "Nazaj"
+                }
+            }
+        },
+        "abort": {
+            "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
+            "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
+            "nothing_to_name": "Zaenkrat ni kaj poimenovati - ali ni bil zaznan noben porabnik ali pa vse pojasnijo števci naprav."
+        }
+    },
+    "issues": {
+        "temperature_pair_incomplete": {
+            "title": "Odziv na vreme potrebuje oba dela",
+            "description": "Load Insights ima {have}, nima pa {missing}. Temperaturni odziv se umeri na zabeleženi preteklosti senzorja in uporabi na prihodnjem tednu vremenske entitete, zato eno brez drugega ne more delovati. Manjkajoče dodajte v Nastavitve -> Pojasnjevalni vhodi ali izbrišite oboje."
+        },
+        "no_pv_forecast": {
+            "title": "Na nadzorni plošči Energija ni povezane napovedi PV",
+            "description": "Ta lokacija proizvaja PV, a nadzorna plošča Energija nima nobene integracije napovedi, povezane s sončnim virom. Napoved omrežja zato predvideva teden brez sonca, njene vrednosti uvoza pa so močno pesimistične. Povežite eno (Solcast, Forecast.Solar in druge) z virom PV v Nastavitve -> Nadzorne plošče -> Energija."
+        },
+        "battery_not_modelled": {
+            "title": "Baterija ni modelirana",
+            "description": "Energijska nadzorna plošča ima na tem mestu baterijo, nima pa {missing}. Brez tega napovedi napolnjenosti ni mogoče izračunati, zato senzor napovedi SoC ni ustvarjen, omrežna napoved pa velja PRED baterijo - to pove njen atribut battery_modelled. Obe polji sta neobvezni pri viru baterije v Nastavitve -> Nadzorne plošče -> Energija."
+        },
+        "no_power_factor": {
+            "title": "Na nekaterih fazah ni mogoče ločiti grelca od motorja",
+            "description": "Zaznavanje porabe ima meritev moči na fazi {phases}, nima pa podatkov za izračun faktorja moči: za to potrebuje tok IN napetost te faze ali senzor faktorja moči. Sami vati ne ločijo 2 kW grelca od 2 kW motorja, zato bremena na teh fazah ostanejo brez ugibanja, kaj so. Dodajte jih v Nastavitve -> Zaznavanje porabe."
+        },
+        "detection_found_nothing": {
+            "title": "Zaznavanje porabe ni našlo ničesar",
+            "description": "Vsa zgodovina je prebrana - {samples} meritev - in najdenega ni bilo nobenega bremena. Običajen vzrok je števec, ki se nikoli ne premakne: vhod AC pri otočnem sistemu je vedno nič, bremena pa so vsa na izhodu. V Nastavitve -> Zaznavanje porabe izberite meritev, ki nosi dejansko porabo hiše. Naprave z lastnimi števci to ne prizadene."
+        },
+        "devices_without_power": {
+            "title": "Nekaterih merjenih naprav ni mogoče zaznati",
+            "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
+        }
+    },
+    "selector": {
+        "layout": {
+            "options": {
+                "auto": "Ugotovi iz podatkov",
+                "parallel": "Vzporedno - razsmernik napaja skupno zbiralko (AC sončna elektrarna, brez baterije)",
+                "series": "Zaporedno - vsa moč teče skozi razsmernik (hibrid z DC baterijo)"
+            }
+        },
+        "source_kind": {
+            "options": {
+                "auto": "Ugotovi iz podatkov",
+                "utility": "Omrežje",
+                "generator": "Generator",
+                "none": "Nič - otočni sistem"
+            }
+        },
+        "interval_minutes": {
+            "options": {
+                "1": "Vsako minuto",
+                "2": "Vsakih 2 minut",
+                "5": "Vsakih 5 minut",
+                "10": "Vsakih 10 minut",
+                "15": "Vsakih 15 minut",
+                "30": "Vsakih 30 minut"
+            }
+        },
+        "min_evidence": {
+            "options": {
+                "0.3": "Skoraj vse, kar se je ponovilo",
+                "0.5": "Ohlapno - videno nekajkrat",
+                "0.6": "Precej zanesljivo",
+                "0.7": "Uravnoteženo",
+                "0.8": "Zanesljivo - se tesno ponavlja",
+                "0.9": "Samo nedvoumno"
             }
         }
     }
