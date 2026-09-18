@@ -40,6 +40,7 @@ from .insights.detect import (
     carries_load,
     classify_source,
     site_topology,
+    unit_scale,
     exports_positive,
     mean_power,
     most_specific,
@@ -628,15 +629,28 @@ class DetectionRunner:
         )
         series: Dict[tuple, list] = {}
         for key, eid in entities.items():
+            # History is fetched with no_attributes, so the unit comes from the
+            # live state: a meter publishing kW is otherwise read as watts and
+            # its 2 kW session becomes the number 2.
+            scale = unit_scale(self._unit_of(eid))
             rows = []
             for st in states.get(eid, []):
                 try:
-                    rows.append((st.last_updated.timestamp(), float(st.state)))
+                    rows.append((st.last_updated.timestamp(), float(st.state) * scale))
                 except (TypeError, ValueError):
                     continue
             rows.sort()
             series[key] = rows
         return series
+
+    def _unit_of(self, entity_id: str) -> Optional[str]:
+        state = self.hass.states.get(entity_id)
+        if state is not None:
+            unit = state.attributes.get("unit_of_measurement")
+            if unit:
+                return unit
+        entry = er.async_get(self.hass).async_get(entity_id)
+        return getattr(entry, "unit_of_measurement", None) if entry else None
 
     def _update_average_power(self, processed_to: float) -> None:
         """Mean watts each named load drew over the data just processed.

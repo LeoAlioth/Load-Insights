@@ -1301,6 +1301,26 @@ def test_the_wiring_comes_from_the_inverters_not_from_the_grid_page():
     assert D.site_topology([{"topology": "parallel"}], "series") == "parallel"
 
 
+def test_a_meter_reporting_kilowatts_is_not_read_as_watts():
+    """Home's EV charger publishes kW while every other meter in the house
+    publishes W, so its 2 kW session arrived as the number 2 and could never
+    match the 2000 W session the main meter saw. The load stayed
+    unattributed and turned up in the naming list as an unexplained car."""
+    assert D.unit_scale("W") == 1.0
+    assert D.unit_scale("kW") == 1000.0
+    assert D.unit_scale("MW") == 1_000_000.0
+    assert D.unit_scale("mA") == 0.001
+    assert D.unit_scale("kV") == 1000.0
+    # a power factor published as a percentage is a ratio
+    assert D.unit_scale("%") == 0.01
+    # whitespace and absence are survivable; an unknown unit is assumed base,
+    # because a reading that is probably watts beats no reading
+    assert D.unit_scale(" kW ") == 1000.0
+    assert D.unit_scale(None) == 1.0
+    assert D.unit_scale("") == 1.0
+    assert D.unit_scale("furlongs") == 1.0
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had
