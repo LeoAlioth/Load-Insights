@@ -6,7 +6,7 @@ from datetime import datetime
 
 import logging
 
-from typing import Any
+from typing import Any, Optional
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -31,6 +31,8 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DETECTION_INTERVAL,
+    DETECTION_BACKFILL_DAYS,
+    NAMING_MAX_STALE_S,
     DETECTION_INTERVAL_CHOICES,
     DETECTION_INTERVAL_MINUTES,
     CONF_DEVICE_STATE_SENSORS,
@@ -128,6 +130,16 @@ def _inverter_line(inverters: list) -> str:
         bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
                     f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})")
     return f"{len(inverters)} set up: " + "; ".join(bits)
+
+
+def _behind(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "it has not read anything yet"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} minutes behind"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f} hours behind"
+    return f"{seconds / 86400:.1f} days behind"
 
 
 def _w(value: float) -> str:
@@ -396,6 +408,23 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
+        # Nothing is worth naming from a library that is still being built:
+        # the backfill walks ten days in six-hour slices, so part way through
+        # it holds whatever happened in the first few days and the rows would
+        # change under the reader. Offer a refresh instead - but only while
+        # it is plausibly still working, since a detector wedged eight days
+        # back should still show what it has rather than nothing at all.
+        behind = runner.behind_s
+        if behind is None or behind > NAMING_MAX_STALE_S:
+            done = ""
+            if behind is not None:
+                total = DETECTION_BACKFILL_DAYS * 86400.0
+                done = f"{max(0.0, min(100.0, 100.0 * (1.0 - behind / total))):.0f}"
+            return self.async_show_menu(
+                step_id="naming_waiting", menu_options=["naming", "init"],
+                description_placeholders={
+                    "progress": done or "0",
+                    "behind": _behind(behind)})
         candidates = runner.unlocated()
         if not candidates:
             return self.async_abort(reason="nothing_to_name")

@@ -235,6 +235,14 @@
                     "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly.",
                     "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion."
                 }
+            },
+            "naming_waiting": {
+                "title": "Still reading history",
+                "description": "Load detection is working through the recorder - it is {behind}, about {progress}% of the way.\n\nThere is nothing to name yet. A library part way through a backfill holds whatever happened in the first few days, and rows that would change under you are worse than no rows.\n\nIt keeps going on its own; **Refresh** looks again.",
+                "menu_options": {
+                    "naming": "Refresh",
+                    "init": "Back"
+                }
             }
         },
         "abort": {
