@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 HOME = {
-    "base": "https://ha.alpacasbarn.com/history",
+    "base": "https://ha.alpacasbarn.com",
     "tz": timezone(timedelta(hours=2)),
     "groups": {
         # the SolarEdge meter and inverter, plus the template phase sensors
@@ -45,12 +45,44 @@ HOME = {
     },
 }
 
-SITES = {"home": HOME}
+# Kozolec is a second Home Assistant, so it needs its own base URL and its
+# own token - a long-lived token is issued by one instance for one user and
+# means nothing to another (Anze, 2026-09-18). Its LOAD side is the
+# MultiPlus AC OUT, whose entity names are still to be confirmed; the AC IN
+# it is currently pointed at reads zero, the site being off grid.
+KOZOLEC = {
+    "base": "http://192.168.1.98:8123",         # confirm - the instance's own address
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        "inverter": [
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_0_line_l2_input_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_voltage_l1",
+            "sensor.mppt_150_70_pv_yield_power",
+            "sensor.mppt_150_85_pv_yield_power",
+            "sensor.jk_bms_id_512_charge",
+        ],
+        "devices": [
+            "sensor.shellypro4pm_kozolec_switch_0_power",      # Car charger
+            "sensor.shellypro4pm_kozolec_switch_1_power",      # Boiler
+            "sensor.shellypro4pm_kozolec_switch_3_power",      # Washing Machine
+            "sensor.kotlovnica_well_pump_power",
+            "sensor.kozolec_hidrofor_power",                   # Water Pump
+            "sensor.shelly_pond_switch_0_power",               # Pond
+            "sensor.pond_evse_power",
+            "sensor.pastir_staja_power",
+            "sensor.bug_lamp_power",
+        ],
+    },
+}
+
+SITES = {"home": HOME, "kozolec": KOZOLEC}
 
 
 def link(base: str, entities, start: datetime, end: datetime) -> str:
     stamp = lambda d: d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    return (f"{base}?entity_id={quote(','.join(entities), safe='')}"
+    return (f"{base}/history?entity_id={quote(','.join(entities), safe='')}"
             f"&start_date={quote(stamp(start), safe='')}&end_date={quote(stamp(end), safe='')}")
 
 
