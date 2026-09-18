@@ -27,7 +27,7 @@ from .const import (
     DETECTION_SLICE_HOURS,
     DOMAIN,
 )
-from .insights.detect import PHASES, Detector, Fleet, looks_parallel, most_specific, pv_shows_in
+from .insights.detect import PHASES, Detector, Fleet, carries_generation, most_specific
 from .insights.discovery import match_meter_entities
 from .insights.model import SiteModel
 
@@ -159,7 +159,9 @@ class DetectionRunner:
                 continue
             aligned = _align(grid_rows[p], rows)
             if mode == LAYOUT_AUTO:
-                verdict = looks_parallel(rows, aligned)
+                # the reading that goes negative is the one with generation
+                # in it, and that is the one the inverter must be added back to
+                verdict = carries_generation(rows)
                 if verdict is not None:
                     self.layout[p] = LAYOUT_PARALLEL if verdict else LAYOUT_SEPARATE
                 # unsure means DON'T add: a wrong sum corrupts every reading,
@@ -312,8 +314,13 @@ class DetectionRunner:
                     bucket = pv.setdefault(p, {})
                     for ts, watts in _align(rows[p], target).items():
                         bucket[ts] = bucket.get(ts, 0.0) + watts       # every array together
+            for p, rows in samples.items():
+                if p in self.fleet.main.phases:
+                    # a reading that never exports is the house alone, and
+                    # the house cannot draw less than nothing
+                    self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
             for p in list(pv):
-                verdict = pv_shows_in(samples[p], pv[p])
+                verdict = carries_generation(samples[p])
                 if verdict is not None:
                     self.pv_visible[p] = verdict
                 if self.pv_visible.get(p) is False:

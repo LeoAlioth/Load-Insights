@@ -226,7 +226,7 @@ def main() -> int:
             for ts, watts in align(rows, samples[p]).items():
                 bucket[ts] = bucket.get(ts, 0.0) + watts
     for p in list(pv):
-        verdict = D.pv_shows_in(samples[p], pv[p])
+        verdict = D.carries_generation(samples[p])
         print(f"   array shows in phase {p.upper()}: {verdict}")
         if verdict is False:
             pv.pop(p)
@@ -239,6 +239,8 @@ def main() -> int:
 
     fleet = D.Fleet()
     fleet.main.tz_offset_s = 0.0
+    for p in phases:
+        fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
     fleet.process(samples, subs, q, None, latest,
                   {name: True for name in subs}, pv or None)

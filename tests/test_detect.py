@@ -488,23 +488,531 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     assert 0 in kept, "a named load was evicted"
 
 
-def test_whether_the_array_shows_in_the_meter_is_measured():
-    """A grid meter carries the house minus the array. An inverter's own
-    output on a DC-coupled site does not move with the sun at all, and
-    discounting steps against it there would throw real loads away."""
+def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
+    """Physics, not statistics. I tried correlating the two series' changes
+    first and Anze's own data threw it out: on a day when the grid meter
+    exported 4.5 kW the correlation called the array absent from it."""
     import random
     rnd = random.Random(3)
     n = 400
-    pv = [1000.0 + 900.0 * (i % 40) / 40.0 for i in range(n)]
     house = [400.0 + rnd.uniform(-20, 20) for _ in range(n)]
-    grid = [(T0 + i * DT, house[i] - pv[i] / 3.0) for i in range(n)]
-    standalone = [(T0 + i * DT, house[i]) for i in range(n)]
-    pv_map = {T0 + i * DT: pv[i] for i in range(n)}
-    assert D.pv_shows_in(grid, pv_map) is True
-    assert D.pv_shows_in(standalone, pv_map) is False
-    # a flat sun says nothing either way
-    flat = {T0 + i * DT: 1200.0 for i in range(n)}
-    assert D.pv_shows_in(grid, flat) is None
+    pv = [1000.0 + 900.0 * (i % 40) / 40.0 for i in range(n)]
+    grid = [(T0 + i * DT, house[i] - pv[i]) for i in range(n)]      # exports all day
+    assert D.carries_generation(grid) is True
+    assert D.carries_generation([(T0 + i * DT, house[i]) for i in range(n)]) is False
+    # an off-grid AC input sitting at zero carries nothing either way
+    assert D.carries_generation([(T0 + i * DT, 0.0) for i in range(n)]) is False
+    # one dip is noise, not an export
+    dip = [(T0 + i * DT, -900.0 if i == 7 else house[i]) for i in range(n)]
+    assert D.carries_generation(dip) is False
+    assert D.carries_generation([(T0, 5.0)]) is None
+
+
+def test_a_cloud_is_the_sun_not_a_load():
+    """A 6 kW array dropping into cloud lifts the grid meter by 2 kW on each
+    phase, which is exactly the shape of a load switching on - and of one
+    switching off again when it clears."""
+    def pv(s):
+        return 200.0 if 1800 <= s < 2400 else 2000.0        # this phase's share
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - pv(i * DT)) for i in range(n)]
+    own = {T0 + i * DT: pv(i * DT) for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert det.signatures == [], [(x.power, x.duration_s) for x in det.signatures]
+
+    # the same, with only the inverter's TOTAL to go on: a third each
+    total = {T0 + i * DT: 3 * pv(i * DT) for i in range(n)}
+    det2 = D.Detector()
+    det2.process({"a": grid}, None, T0 + 3700, {"a": total})
+    assert det2.signatures == [], [(x.power, x.duration_s) for x in det2.signatures]
+
+    # and without the array to explain it, the cloud IS filed as a load -
+    # which is what the whole test is about
+    blind = D.Detector()
+    blind.process({"a": grid}, now_ts=T0 + 3700)
+    assert blind.signatures, "a cloud with no PV series to explain it should still be detected"
+
+
+def test_a_load_is_still_found_under_a_steady_sun():
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - 2000.0 + (2200.0 if 600 <= i * DT < 1800 else 0.0)) for i in range(n)]
+    own = {T0 + i * DT: 2000.0 for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert len(det.signatures) == 1, [(x.power, x.duration_s) for x in det.signatures]
+    assert 2050 < sum(det.signatures[0].power.values()) < 2350, det.signatures[0].power
+
+
+def _repeat(durations, watts=2000.0, gap=600.0):
+    """A load that runs for each of ``durations`` in turn, ``gap`` apart."""
+    rows, t = [], T0
+    for _ in range(24):                      # seed the floor first
+        rows.append((t, 300.0)); t += DT
+    for d in durations:
+        for _ in range(int(d / DT)):
+            rows.append((t, 300.0 + watts)); t += DT
+        for _ in range(int(gap / DT)):
+            rows.append((t, 300.0)); t += DT
+    return rows, t
+
+
+def test_a_load_seen_once_has_no_evidence():
+    det = D.Detector()
+    rows, end = _repeat([600])
+    det.process({"a": rows}, now_ts=end + 100)
+    assert len(det.signatures) == 1
+    assert det.signatures[0].evidence == 0.0, det.signatures[0].evidence
+
+
+def test_evidence_rises_with_repetition_and_falls_with_scatter():
+    """Five identical runs are a device. Five runs of wildly different
+    length that happen to share a power are the detector pairing edges."""
+    tight = D.Detector()
+    rows, end = _repeat([600] * 6)
+    tight.process({"a": rows}, now_ts=end + 100)
+    loose = D.Detector()
+    rows, end = _repeat([300, 900, 420, 1200, 600, 240])
+    loose.process({"a": rows}, now_ts=end + 100)
+    assert len(tight.signatures) == 1 and len(loose.signatures) == 1, (tight.signatures, loose.signatures)
+    a, b = tight.signatures[0], loose.signatures[0]
+    assert a.count == b.count == 6, (a.count, b.count)
+    assert a.evidence > 0.9, a.evidence
+    assert b.evidence < a.evidence - 0.1, (a.evidence, b.evidence)
+
+
+def test_a_repeating_load_is_called_regular_and_a_sporadic_one_is_not():
+    clockwork = D.Detector()
+    rows, end = _repeat([600] * 6, gap=600.0)
+    clockwork.process({"a": rows}, now_ts=end + 100)
+    assert clockwork.signatures[0].regular, clockwork.signatures[0].interval_mad
+
+
+def test_where_a_load_is_said_by_exclusion():
+    parents = {"Hiša": None, "Blaževa Soba": "Hiša", "Mansarda": None, "Vtičnice - pisarna": "Mansarda"}
+    # the house meter saw it, the rooms inside it did not
+    seen = {"Hiša": 9}
+    assert D.describe_location(seen, 10, parents, "b") == "in Hiša, outside Blaževa Soba"
+    assert D.location_confidence(seen, 10, parents) == 0.9
+    # the room saw it too: the deepest meter wins and there is nothing to exclude
+    both = {"Hiša": 9, "Blaževa Soba": 8}
+    assert D.describe_location(both, 10, parents) == "in Blaževa Soba"
+    # nothing downstream saw it: the phase is the only clue left
+    assert D.describe_location({}, 9, parents, "ac") == "under no meter, on phase A+C"
+    assert D.location_confidence({}, 9, parents) == 1.0
+    # seen sometimes, not enough to own it
+    part = D.describe_location({"Hiša": 2}, 9, parents, "b")
+    assert part.startswith("under no meter, though Hiša saw it 2 of 9"), part
+    assert D.location_confidence({"Hiša": 2}, 9, parents) < 0.8
+
+
+def test_the_description_offers_a_guess_when_the_factor_allows_one():
+    det = D.Detector()
+    rows = series(2400, lambda s: 2000.0 if 600 <= s < 1500 else 0.0)
+    q = {ts: 0.0 for ts, _ in rows}                      # purely resistive
+    det.process({"a": rows}, {"a": q}, now_ts=T0 + 2500)
+    words = det.signatures[0].describe(None)
+    assert "maybe a heating element" in words, words
+    assert "seen 1 times" in words, words
+
+
+def test_two_loads_stopping_together_both_close():
+    """The oven and its fan go at once, leaving one step too big for either
+    alone. Dropping it left both 'running' for the rest of the day."""
+    def two(s):
+        w = 0.0
+        if 300 <= s < 1800:
+            w += 2000.0
+        if 600 <= s < 1800:
+            w += 900.0
+        return w
+    det = D.Detector()
+    det.process({"a": series(2400, two)}, now_ts=T0 + 2500)
+    got = sorted(round(sum(x.power.values())) for x in det.signatures)
+    assert len(det.signatures) == 2, [(x.power, x.duration_s) for x in det.signatures]
+    assert 1900 < got[1] < 2100 and 850 < got[0] < 950, got
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+
+
+def test_back_at_the_idle_floor_nothing_is_left_running():
+    """A stop that was never matched must not leave a load 'on' for hours -
+    at Anze's home meter eight of them had piled up on phase A, adding to
+    an unknown-load figure of nearly 12 kW."""
+    det = D.Detector()
+    rows = series(600, lambda s: 0.0)
+    det.process({"a": rows}, now_ts=T0 + 700)
+    # a start we see, then a stop hidden inside a much larger simultaneous
+    # change, then a long quiet stretch at the floor
+    t = T0 + 600
+    tail = []
+    for i in range(240):
+        tail.append((t, 300.0 + 1500.0)); t += DT
+    for i in range(240):
+        tail.append((t, 300.0)); t += DT
+    det.process({"a": tail}, now_ts=t)
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+    assert det.active(t) == [], det.active(t)
+
+
+def test_a_named_load_is_never_the_first_thing_evicted():
+    det = D.Detector()
+    det.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
+        for i in range(D.MAX_SIGNATURES + 5)
+    ]
+    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
+    det.signatures[0].count = 2
+    det._prune()
+    kept = {s.id for s in det.signatures}
+    assert len(det.signatures) == D.MAX_SIGNATURES
+    assert 0 in kept, "a named load was evicted"
+
+
+def test_a_glitch_below_zero_cannot_drag_the_floor_down():
+    """A consumption reading cannot go below zero, and Anze's template dips
+    there for 49 samples out of 20764 when its own inputs do not line up.
+    One of those dragged the idle floor to -569 W and every step after it
+    was measured from nonsense (2026-09-18)."""
+    det = D.Detector()
+    det.phases["a"].floor_zero = True
+    rows, t = [], T0
+    for _ in range(40):
+        rows.append((t, 300.0)); t += DT
+    for _ in range(4):                       # the glitch, sustained enough to count
+        rows.append((t, -1700.0)); t += DT
+    for _ in range(200):
+        rows.append((t, 300.0)); t += DT
+    for _ in range(120):
+        rows.append((t, 2300.0)); t += DT
+    for _ in range(80):
+        rows.append((t, 300.0)); t += DT
+    det.process({"a": rows}, now_ts=t)
+    assert det.phases["a"].baseline >= 0.0, det.phases["a"].baseline
+    got = [round(sum(x.power.values())) for x in det.signatures]
+    assert any(1900 < w < 2100 for w in got), got
+
+
+def test_a_cloud_is_the_sun_not_a_load():
+    """A 6 kW array dropping into cloud lifts the grid meter by 2 kW on each
+    phase, which is exactly the shape of a load switching on - and of one
+    switching off again when it clears."""
+    def pv(s):
+        return 200.0 if 1800 <= s < 2400 else 2000.0        # this phase's share
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - pv(i * DT)) for i in range(n)]
+    own = {T0 + i * DT: pv(i * DT) for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert det.signatures == [], [(x.power, x.duration_s) for x in det.signatures]
+
+    # the same, with only the inverter's TOTAL to go on: a third each
+    total = {T0 + i * DT: 3 * pv(i * DT) for i in range(n)}
+    det2 = D.Detector()
+    det2.process({"a": grid}, None, T0 + 3700, {"a": total})
+    assert det2.signatures == [], [(x.power, x.duration_s) for x in det2.signatures]
+
+    # and without the array to explain it, the cloud IS filed as a load -
+    # which is what the whole test is about
+    blind = D.Detector()
+    blind.process({"a": grid}, now_ts=T0 + 3700)
+    assert blind.signatures, "a cloud with no PV series to explain it should still be detected"
+
+
+def test_a_load_is_still_found_under_a_steady_sun():
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - 2000.0 + (2200.0 if 600 <= i * DT < 1800 else 0.0)) for i in range(n)]
+    own = {T0 + i * DT: 2000.0 for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert len(det.signatures) == 1, [(x.power, x.duration_s) for x in det.signatures]
+    assert 2050 < sum(det.signatures[0].power.values()) < 2350, det.signatures[0].power
+
+
+def _repeat(durations, watts=2000.0, gap=600.0):
+    """A load that runs for each of ``durations`` in turn, ``gap`` apart."""
+    rows, t = [], T0
+    for _ in range(24):                      # seed the floor first
+        rows.append((t, 300.0)); t += DT
+    for d in durations:
+        for _ in range(int(d / DT)):
+            rows.append((t, 300.0 + watts)); t += DT
+        for _ in range(int(gap / DT)):
+            rows.append((t, 300.0)); t += DT
+    return rows, t
+
+
+def test_a_load_seen_once_has_no_evidence():
+    det = D.Detector()
+    rows, end = _repeat([600])
+    det.process({"a": rows}, now_ts=end + 100)
+    assert len(det.signatures) == 1
+    assert det.signatures[0].evidence == 0.0, det.signatures[0].evidence
+
+
+def test_evidence_rises_with_repetition_and_falls_with_scatter():
+    """Five identical runs are a device. Five runs of wildly different
+    length that happen to share a power are the detector pairing edges."""
+    tight = D.Detector()
+    rows, end = _repeat([600] * 6)
+    tight.process({"a": rows}, now_ts=end + 100)
+    loose = D.Detector()
+    rows, end = _repeat([300, 900, 420, 1200, 600, 240])
+    loose.process({"a": rows}, now_ts=end + 100)
+    assert len(tight.signatures) == 1 and len(loose.signatures) == 1, (tight.signatures, loose.signatures)
+    a, b = tight.signatures[0], loose.signatures[0]
+    assert a.count == b.count == 6, (a.count, b.count)
+    assert a.evidence > 0.9, a.evidence
+    assert b.evidence < a.evidence - 0.1, (a.evidence, b.evidence)
+
+
+def test_a_repeating_load_is_called_regular_and_a_sporadic_one_is_not():
+    clockwork = D.Detector()
+    rows, end = _repeat([600] * 6, gap=600.0)
+    clockwork.process({"a": rows}, now_ts=end + 100)
+    assert clockwork.signatures[0].regular, clockwork.signatures[0].interval_mad
+
+
+def test_where_a_load_is_said_by_exclusion():
+    parents = {"Hiša": None, "Blaževa Soba": "Hiša", "Mansarda": None, "Vtičnice - pisarna": "Mansarda"}
+    # the house meter saw it, the rooms inside it did not
+    seen = {"Hiša": 9}
+    assert D.describe_location(seen, 10, parents, "b") == "in Hiša, outside Blaževa Soba"
+    assert D.location_confidence(seen, 10, parents) == 0.9
+    # the room saw it too: the deepest meter wins and there is nothing to exclude
+    both = {"Hiša": 9, "Blaževa Soba": 8}
+    assert D.describe_location(both, 10, parents) == "in Blaževa Soba"
+    # nothing downstream saw it: the phase is the only clue left
+    assert D.describe_location({}, 9, parents, "ac") == "under no meter, on phase A+C"
+    assert D.location_confidence({}, 9, parents) == 1.0
+    # seen sometimes, not enough to own it
+    part = D.describe_location({"Hiša": 2}, 9, parents, "b")
+    assert part.startswith("under no meter, though Hiša saw it 2 of 9"), part
+    assert D.location_confidence({"Hiša": 2}, 9, parents) < 0.8
+
+
+def test_the_description_offers_a_guess_when_the_factor_allows_one():
+    det = D.Detector()
+    rows = series(2400, lambda s: 2000.0 if 600 <= s < 1500 else 0.0)
+    q = {ts: 0.0 for ts, _ in rows}                      # purely resistive
+    det.process({"a": rows}, {"a": q}, now_ts=T0 + 2500)
+    words = det.signatures[0].describe(None)
+    assert "maybe a heating element" in words, words
+    assert "seen 1 times" in words, words
+
+
+def test_two_loads_stopping_together_both_close():
+    """The oven and its fan go at once, leaving one step too big for either
+    alone. Dropping it left both 'running' for the rest of the day."""
+    def two(s):
+        w = 0.0
+        if 300 <= s < 1800:
+            w += 2000.0
+        if 600 <= s < 1800:
+            w += 900.0
+        return w
+    det = D.Detector()
+    det.process({"a": series(2400, two)}, now_ts=T0 + 2500)
+    got = sorted(round(sum(x.power.values())) for x in det.signatures)
+    assert len(det.signatures) == 2, [(x.power, x.duration_s) for x in det.signatures]
+    assert 1900 < got[1] < 2100 and 850 < got[0] < 950, got
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+
+
+def test_back_at_the_idle_floor_nothing_is_left_running():
+    """A stop that was never matched must not leave a load 'on' for hours -
+    at Anze's home meter eight of them had piled up on phase A, adding to
+    an unknown-load figure of nearly 12 kW."""
+    det = D.Detector()
+    rows = series(600, lambda s: 0.0)
+    det.process({"a": rows}, now_ts=T0 + 700)
+    # a start we see, then a stop hidden inside a much larger simultaneous
+    # change, then a long quiet stretch at the floor
+    t = T0 + 600
+    tail = []
+    for i in range(240):
+        tail.append((t, 300.0 + 1500.0)); t += DT
+    for i in range(240):
+        tail.append((t, 300.0)); t += DT
+    det.process({"a": tail}, now_ts=t)
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+    assert det.active(t) == [], det.active(t)
+
+
+def test_a_named_load_is_never_the_first_thing_evicted():
+    det = D.Detector()
+    det.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
+        for i in range(D.MAX_SIGNATURES + 5)
+    ]
+    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
+    det.signatures[0].count = 2
+    det._prune()
+    kept = {s.id for s in det.signatures}
+    assert len(det.signatures) == D.MAX_SIGNATURES
+    assert 0 in kept, "a named load was evicted"
+
+
+def test_a_cloud_is_the_sun_not_a_load():
+    """A 6 kW array dropping into cloud lifts the grid meter by 2 kW on each
+    phase, which is exactly the shape of a load switching on - and of one
+    switching off again when it clears."""
+    def pv(s):
+        return 200.0 if 1800 <= s < 2400 else 2000.0        # this phase's share
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - pv(i * DT)) for i in range(n)]
+    own = {T0 + i * DT: pv(i * DT) for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert det.signatures == [], [(x.power, x.duration_s) for x in det.signatures]
+
+    # the same, with only the inverter's TOTAL to go on: a third each
+    total = {T0 + i * DT: 3 * pv(i * DT) for i in range(n)}
+    det2 = D.Detector()
+    det2.process({"a": grid}, None, T0 + 3700, {"a": total})
+    assert det2.signatures == [], [(x.power, x.duration_s) for x in det2.signatures]
+
+    # and without the array to explain it, the cloud IS filed as a load -
+    # which is what the whole test is about
+    blind = D.Detector()
+    blind.process({"a": grid}, now_ts=T0 + 3700)
+    assert blind.signatures, "a cloud with no PV series to explain it should still be detected"
+
+
+def test_a_load_is_still_found_under_a_steady_sun():
+    n = int(3600 / DT)
+    grid = [(T0 + i * DT, 400.0 - 2000.0 + (2200.0 if 600 <= i * DT < 1800 else 0.0)) for i in range(n)]
+    own = {T0 + i * DT: 2000.0 for i in range(n)}
+    det = D.Detector()
+    det.process({"a": grid}, None, T0 + 3700, {"a": own})
+    assert len(det.signatures) == 1, [(x.power, x.duration_s) for x in det.signatures]
+    assert 2050 < sum(det.signatures[0].power.values()) < 2350, det.signatures[0].power
+
+
+def _repeat(durations, watts=2000.0, gap=600.0):
+    """A load that runs for each of ``durations`` in turn, ``gap`` apart."""
+    rows, t = [], T0
+    for _ in range(24):                      # seed the floor first
+        rows.append((t, 300.0)); t += DT
+    for d in durations:
+        for _ in range(int(d / DT)):
+            rows.append((t, 300.0 + watts)); t += DT
+        for _ in range(int(gap / DT)):
+            rows.append((t, 300.0)); t += DT
+    return rows, t
+
+
+def test_a_load_seen_once_has_no_evidence():
+    det = D.Detector()
+    rows, end = _repeat([600])
+    det.process({"a": rows}, now_ts=end + 100)
+    assert len(det.signatures) == 1
+    assert det.signatures[0].evidence == 0.0, det.signatures[0].evidence
+
+
+def test_evidence_rises_with_repetition_and_falls_with_scatter():
+    """Five identical runs are a device. Five runs of wildly different
+    length that happen to share a power are the detector pairing edges."""
+    tight = D.Detector()
+    rows, end = _repeat([600] * 6)
+    tight.process({"a": rows}, now_ts=end + 100)
+    loose = D.Detector()
+    rows, end = _repeat([300, 900, 420, 1200, 600, 240])
+    loose.process({"a": rows}, now_ts=end + 100)
+    assert len(tight.signatures) == 1 and len(loose.signatures) == 1, (tight.signatures, loose.signatures)
+    a, b = tight.signatures[0], loose.signatures[0]
+    assert a.count == b.count == 6, (a.count, b.count)
+    assert a.evidence > 0.9, a.evidence
+    assert b.evidence < a.evidence - 0.1, (a.evidence, b.evidence)
+
+
+def test_a_repeating_load_is_called_regular_and_a_sporadic_one_is_not():
+    clockwork = D.Detector()
+    rows, end = _repeat([600] * 6, gap=600.0)
+    clockwork.process({"a": rows}, now_ts=end + 100)
+    assert clockwork.signatures[0].regular, clockwork.signatures[0].interval_mad
+
+
+def test_where_a_load_is_said_by_exclusion():
+    parents = {"Hiša": None, "Blaževa Soba": "Hiša", "Mansarda": None, "Vtičnice - pisarna": "Mansarda"}
+    # the house meter saw it, the rooms inside it did not
+    seen = {"Hiša": 9}
+    assert D.describe_location(seen, 10, parents, "b") == "in Hiša, outside Blaževa Soba"
+    assert D.location_confidence(seen, 10, parents) == 0.9
+    # the room saw it too: the deepest meter wins and there is nothing to exclude
+    both = {"Hiša": 9, "Blaževa Soba": 8}
+    assert D.describe_location(both, 10, parents) == "in Blaževa Soba"
+    # nothing downstream saw it: the phase is the only clue left
+    assert D.describe_location({}, 9, parents, "ac") == "under no meter, on phase A+C"
+    assert D.location_confidence({}, 9, parents) == 1.0
+    # seen sometimes, not enough to own it
+    part = D.describe_location({"Hiša": 2}, 9, parents, "b")
+    assert part.startswith("under no meter, though Hiša saw it 2 of 9"), part
+    assert D.location_confidence({"Hiša": 2}, 9, parents) < 0.8
+
+
+def test_the_description_offers_a_guess_when_the_factor_allows_one():
+    det = D.Detector()
+    rows = series(2400, lambda s: 2000.0 if 600 <= s < 1500 else 0.0)
+    q = {ts: 0.0 for ts, _ in rows}                      # purely resistive
+    det.process({"a": rows}, {"a": q}, now_ts=T0 + 2500)
+    words = det.signatures[0].describe(None)
+    assert "maybe a heating element" in words, words
+    assert "seen 1 times" in words, words
+
+
+def test_two_loads_stopping_together_both_close():
+    """The oven and its fan go at once, leaving one step too big for either
+    alone. Dropping it left both 'running' for the rest of the day."""
+    def two(s):
+        w = 0.0
+        if 300 <= s < 1800:
+            w += 2000.0
+        if 600 <= s < 1800:
+            w += 900.0
+        return w
+    det = D.Detector()
+    det.process({"a": series(2400, two)}, now_ts=T0 + 2500)
+    got = sorted(round(sum(x.power.values())) for x in det.signatures)
+    assert len(det.signatures) == 2, [(x.power, x.duration_s) for x in det.signatures]
+    assert 1900 < got[1] < 2100 and 850 < got[0] < 950, got
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+
+
+def test_back_at_the_idle_floor_nothing_is_left_running():
+    """A stop that was never matched must not leave a load 'on' for hours -
+    at Anze's home meter eight of them had piled up on phase A, adding to
+    an unknown-load figure of nearly 12 kW."""
+    det = D.Detector()
+    rows = series(600, lambda s: 0.0)
+    det.process({"a": rows}, now_ts=T0 + 700)
+    # a start we see, then a stop hidden inside a much larger simultaneous
+    # change, then a long quiet stretch at the floor
+    t = T0 + 600
+    tail = []
+    for i in range(240):
+        tail.append((t, 300.0 + 1500.0)); t += DT
+    for i in range(240):
+        tail.append((t, 300.0)); t += DT
+    det.process({"a": tail}, now_ts=t)
+    assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
+    assert det.active(t) == [], det.active(t)
+
+
+def test_a_named_load_is_never_the_first_thing_evicted():
+    det = D.Detector()
+    det.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
+        for i in range(D.MAX_SIGNATURES + 5)
+    ]
+    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
+    det.signatures[0].count = 2
+    det._prune()
+    kept = {s.id for s in det.signatures}
+    assert len(det.signatures) == D.MAX_SIGNATURES
+    assert 0 in kept, "a named load was evicted"
 
 
 def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
@@ -600,28 +1108,20 @@ def test_merging_two_signatures_adds_their_weeks_together():
     assert det.signatures[0].day_wh == [1.0, 3.0, 3.0, 0.0, 5.0, 0.0, 6.0], det.signatures[0].day_wh
 
 
-def test_how_the_inverter_and_the_grid_are_wired_is_read_off_the_data():
+def test_the_wiring_follows_from_the_same_reading():
     """Grid-tied, the meter carries the house MINUS what the inverter makes,
-    so the two move against each other and the load is their sum. Behind a
-    transfer switch the grid follows the load instead, and adding it would
-    count the pass-through twice."""
+    so the load is their sum - and that meter is exactly the one that goes
+    negative. Behind a transfer switch nothing exports through the reading,
+    and adding the grid would count the pass-through twice."""
     import random
     rnd = random.Random(11)
     n = 400
-    pv = [1500.0 + 1200.0 * ((i % 60) / 60.0) for i in range(n)]
     house = [600.0 + (900.0 if (i // 37) % 3 == 0 else 0.0) + rnd.uniform(-40, 40) for i in range(n)]
-    out = [(T0 + i * DT, pv[i]) for i in range(n)]
-    parallel = {T0 + i * DT: house[i] - pv[i] for i in range(n)}
-    assert D.looks_parallel(out, parallel) is True
-
-    # a transfer switch: the inverter's output IS the house, and the grid
-    # upstream of it rises and falls WITH the load
-    loads = [(T0 + i * DT, house[i]) for i in range(n)]
-    behind = {T0 + i * DT: max(0.0, house[i] - 150.0) for i in range(n)}
-    assert D.looks_parallel(loads, behind) is False
-
-    # off grid: the connection never moves, so the question cannot be answered
-    assert D.looks_parallel(loads, {T0 + i * DT: 0.0 for i in range(n)}) is None
+    pv = [1500.0 + 1200.0 * ((i % 60) / 60.0) for i in range(n)]
+    grid_tied = [(T0 + i * DT, house[i] - pv[i]) for i in range(n)]
+    behind_a_switch = [(T0 + i * DT, house[i]) for i in range(n)]
+    assert D.carries_generation(grid_tied) is True       # add the inverter back
+    assert D.carries_generation(behind_a_switch) is False  # it is already the house
 
 
 if __name__ == "__main__":
