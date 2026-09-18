@@ -49,17 +49,21 @@ def test_the_battery_absorbs_the_surplus_then_carries_the_evening():
     n = [round(h.net_kwh, 3) for h in g.hours]
     b = [round(h.battery_kwh, 3) for h in g.hours]
     s = [round(h.soc, 1) for h in g.hours]
-    assert b[0] == -3.0 and b[1] == -2.0, b        # 3 kWh surplus, then only 2 kWh of room left
-    assert n[0] == 0.0 and n[1] == -1.0, n         # full: the last 1 kWh exports
+    # AC-coupled, so charging pays a conversion in and discharging one out:
+    # 3 kWh offered puts 2.85 kWh in the pack, and the pack gives up 1.064 kWh
+    # to deliver 1 kWh to the house
+    assert b[0] == -3.0 and b[1] == -2.263, b     # all of it, then only the room left
+    assert n[0] == 0.0 and n[1] == -0.737, n      # full: the rest exports
     assert s[1] == 100.0
-    assert b[2] == 1.0 and n[2] == 0.0, (b, n)     # evening drawn from the pack
-    assert s[3] == 80.0
+    assert b[2] == 1.0 and n[2] == 0.0, (b, n)    # evening drawn from the pack
+    assert s[3] == 78.7
 
 
 def test_an_empty_pack_imports():
     g = G.build(hours([2.0, 2.0]), soc=5.0, capacity_kwh=10.0)
-    assert [round(h.battery_kwh, 3) for h in g.hours] == [0.5, 0.0]
-    assert [round(h.net_kwh, 3) for h in g.hours] == [1.5, 2.0]
+    # 0.5 kWh left in the pack delivers 0.47 kWh to the house
+    assert [round(h.battery_kwh, 3) for h in g.hours] == [0.47, 0.0]
+    assert [round(h.net_kwh, 3) for h in g.hours] == [1.53, 2.0]
     assert g.hours[1].soc == 0.0
 
 
@@ -74,7 +78,7 @@ def test_rated_power_bounds_what_the_pack_can_do():
 
 def test_reserve_limits_are_respected():
     g = G.build(hours([2.0, 2.0]), soc=50.0, capacity_kwh=10.0, soc_min=40.0)
-    assert round(g.hours[0].battery_kwh, 3) == 1.0, "only down to the floor"
+    assert round(g.hours[0].battery_kwh, 3) == 0.94, "only down to the floor"
     assert g.hours[0].soc == 40.0 and g.hours[1].battery_kwh == 0.0
 
 
@@ -88,6 +92,44 @@ def test_no_soc_means_no_battery_and_the_net_is_reported_before_it():
 def test_an_empty_forecast_is_an_empty_answer():
     g = G.build([])
     assert g.hours == () and g.import_kwh == 0.0 and g.export_kwh == 0.0
+
+
+def test_a_dc_coupled_pack_pays_for_the_conversion_once_not_twice():
+    """Series: the arrays are on the DC bus in front of the inverter, so
+    charging is nearly free and EVERY watt the house draws pays the
+    inverter - whether it came from the pack or off the arrays a second
+    earlier. Kozolec is this shape, and the model used to have no losses at
+    all."""
+    # nothing running, so the whole array is surplus either way: the DC path
+    # stores more of it, having skipped a conversion the AC path must pay
+    ac = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
+    dc = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
+                 topology=G.TOPOLOGY_SERIES)
+    assert dc.hours[0].soc > ac.hours[0].soc, (dc.hours[0].soc, ac.hours[0].soc)
+    # but a DC array delivers less to the socket than its nameplate kWh, so
+    # with the house running there is less surplus to begin with
+    ac2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
+    dc2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
+                  topology=G.TOPOLOGY_SERIES)
+    assert dc2.hours[0].net_before_battery_kwh > ac2.hours[0].net_before_battery_kwh
+
+    # overnight: the pack has to give up more than the house receives, and
+    # the series path gives up more still
+    ac_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0)
+    dc_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0, topology=G.TOPOLOGY_SERIES)
+    assert dc_n.hours[0].soc == ac_n.hours[0].soc, "both pay one inverter conversion out"
+    # what the house actually gets is what was asked for, either way
+    assert round(ac_n.hours[0].battery_kwh, 3) == round(dc_n.hours[0].battery_kwh, 3) == 2.0
+
+
+def test_a_lossless_pack_is_not_a_thing_and_the_old_answer_proves_it():
+    """Round-tripping 10 kWh through a pack and back must not return 10 kWh."""
+    g = G.build(hours([0.0, 0.0, 10.0]), pv([10.0, 0.0, 0.0]),
+                soc=0.0, capacity_kwh=20.0)
+    went_in = -g.hours[0].battery_kwh
+    came_out = g.hours[2].battery_kwh
+    assert went_in > came_out > 0, (went_in, came_out)
+    assert round(came_out / went_in, 2) == round(G.AC_CHARGE * G.AC_DISCHARGE, 2)
 
 
 if __name__ == "__main__":
