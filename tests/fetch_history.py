@@ -13,7 +13,10 @@ It needs a long-lived access token, which it reads from a FILE and never
 takes on the command line, where it would land in a shell history:
 
     Home Assistant, your profile, Security, Long-lived access tokens.
-    Save it as data/ha_token - the whole data/ folder is gitignored.
+    Save it as data/ha_token_<site> - the whole data/ folder is gitignored.
+
+A token belongs to ONE instance, so home and Kozolec need one each, which
+is why the default path carries the site name.
 
 Days already downloaded are skipped, so an interrupted run resumes.
 """
@@ -40,7 +43,7 @@ def read_token(path: Path) -> str:
         raise SystemExit(
             f"no token at {path}\n"
             "  Home Assistant -> your profile -> Security -> Long-lived access tokens,\n"
-            f"  then save it there (the whole data/ folder is gitignored)."
+            "  then save it at that path. One per instance; data/ is gitignored."
         )
     token = path.read_text(encoding="utf-8").strip()
     if not token:
@@ -78,7 +81,7 @@ def main() -> int:
     parser.add_argument("--site", default="home", choices=sorted(SITES))
     parser.add_argument("--days", type=int, default=10)
     parser.add_argument("--ending", help="last local day, YYYY-MM-DD; default yesterday")
-    parser.add_argument("--token", default="data/ha_token")
+    parser.add_argument("--token", help="default data/ha_token_<site>")
     parser.add_argument("--out", help="default data/history/<site>")
     parser.add_argument("--chunk-hours", type=int, default=24,
                         help="split each day, for entities that report every second")
@@ -90,8 +93,13 @@ def main() -> int:
     tz = site["tz"]
     out = Path(args.out) if args.out else ROOT / "data" / "history" / args.site
     out.mkdir(parents=True, exist_ok=True)
-    token = "" if args.dry_run else read_token(Path(args.token) if Path(args.token).is_absolute()
-                                               else ROOT / args.token)
+    given = Path(args.token) if args.token else None
+    if given is not None:
+        token_path = given if given.is_absolute() else ROOT / given
+    else:
+        per_site = ROOT / "data" / f"ha_token_{args.site}"
+        token_path = per_site if per_site.exists() else ROOT / "data" / "ha_token"
+    token = "" if args.dry_run else read_token(token_path)
 
     last = (datetime.strptime(args.ending, "%Y-%m-%d").replace(tzinfo=tz) if args.ending
             else datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1))
