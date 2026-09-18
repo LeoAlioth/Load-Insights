@@ -91,6 +91,16 @@ def _forecast(fc, name: str) -> dict:
     }
 
 
+def _power_specs(specs) -> list:
+    """Each PowerConfig as the dashboard states it, polarity spelled out."""
+    return [
+        {"rate": s.rate, "rate_inverted": s.rate_inverted,
+         "rate_from": s.rate_from, "rate_to": s.rate_to,
+         "polarity": s.polarity,
+         "means": {1: "positive = import", -1: "positive = export"}.get(s.polarity, "not declared")}
+        for s in specs
+    ]
+
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """The whole picture, for a bug report or a question about a number."""
     coordinator: InsightsCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
@@ -108,8 +118,15 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     site = data.site
     out["site"] = {
         "grid_import": list(site.grid_import), "grid_export": list(site.grid_export),
-        "solar": list(site.solar), "solar_forecast_entries": list(site.solar_forecast_entries),
+        # The POWER config too, polarity included: whether a meter reports
+        # export as positive decides whether the house is the grid reading
+        # plus the inverter or minus it, and a dump that leaves it out
+        # cannot answer the question (Anze, 2026-09-18).
+        "grid_power": _power_specs(site.grid_power),
+        "solar": list(site.solar), "solar_power": list(site.solar_power),
+        "solar_forecast_entries": list(site.solar_forecast_entries),
         "battery_in": list(site.battery_in), "battery_out": list(site.battery_out),
+        "battery_power": _power_specs(site.battery_power),
         "battery_soc": list(site.battery_soc), "battery_capacity_kwh": site.battery_capacity_kwh,
         "devices": [
             {"statistic_id": d.energy, "name": d.name, "power": d.power, "included_in": d.included_in}
