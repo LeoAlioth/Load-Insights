@@ -59,6 +59,8 @@ EXPORT_SHARE = 0.005
 # always, while a utility connection crosses zero and moves on.
 SOURCE_IDLE_W = 25.0
 SOURCE_IDLE_SHARE = 0.9
+# a reference circuit has to carry something this often to be one
+LIVE_SHARE = 0.2
 SOURCE_UTILITY = "utility"
 SOURCE_GENERATOR = "generator"
 SOURCE_NONE = "none"
@@ -234,6 +236,20 @@ def exports_positive(grid_rows: Sequence[Tuple[float, float]],
     if len(seen) < PV_MIN_SAMPLES:
         return None
     return statistics.median(seen) > 0
+
+
+def carries_load(rows: Sequence[Tuple[float, float]]) -> bool:
+    """Is this reading actually carrying power, or is it a dead port?
+
+    Kozolec's MultiPlus AC input publishes power, current AND voltage - a
+    perfectly coherent triple, and all three sit at zero because the
+    generator behind them is off. Coherence is necessary and not sufficient:
+    a reference for reactive power has to be a circuit something flows
+    through (Anze, 2026-09-18)."""
+    if len(rows) < PV_MIN_SAMPLES:
+        return False
+    live = sum(1 for _, value in rows if abs(value) > SOURCE_IDLE_W)
+    return live >= LIVE_SHARE * len(rows)
 
 
 def classify_source(rows: Sequence[Tuple[float, float]]) -> Optional[str]:

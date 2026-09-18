@@ -168,7 +168,7 @@ def coherent_triples(series, fields, phases):
         for dev in order:
             got = by_device.get(dev) or {}
             trio = (got.get(("power", p)), got.get(("voltage", p)), got.get(("current", p)))
-            if all(trio):
+            if all(trio) and D.carries_load(series[trio[0]]):
                 out[p] = trio
                 break
     return out
