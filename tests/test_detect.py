@@ -1146,5 +1146,25 @@ def test_what_is_behind_the_ac_input_is_read_off_it():
     assert D.classify_source([(T0, 900.0)]) is None
 
 
+def test_which_way_round_the_grid_meter_is_wired():
+    """"House = meter + inverter" holds only where importing is positive.
+    Anze's SolarEdge M1 is the other way up, and summing it unflipped would
+    count the array twice instead of cancelling it."""
+    n = 600
+    def solar(i):                       # a day: nothing, then a broad arc
+        return max(0.0, 3000.0 - abs(i - n / 2) * 12.0)
+    house = [700.0 for _ in range(n)]
+    gen = [(T0 + i * DT, solar(i)) for i in range(n)]
+    standard = [(T0 + i * DT, house[i] - solar(i)) for i in range(n)]
+    inverted = [(T0 + i * DT, solar(i) - house[i]) for i in range(n)]
+    assert D.exports_positive(standard, gen) is False
+    assert D.exports_positive(inverted, gen) is True
+    # a site that never exports has no export sign to find, and the answer
+    # does not matter: there is nothing to cancel
+    never = [(T0 + i * DT, 4000.0 - solar(i)) for i in range(n)]
+    assert D.exports_positive(never, gen) is None
+    assert D.exports_positive(inverted, gen[:3]) is None
+
+
 if __name__ == "__main__":
     run_main(globals())
