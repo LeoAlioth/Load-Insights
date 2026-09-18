@@ -170,9 +170,10 @@
             },
             "naming_detail": {
                 "title": "Poimenujte breme",
-                "description": "{detail}\n\nVpišite ime, da dobi svoje entitete, ali pustite prazno, da se obstoječe ime pozabi.",
+                "description": "{detail}\n\nVpišite ime, da dobi svoje entitete. Če polje pustite prazno, se nič ne spremeni in vrnete se na seznam - to je najbližje gumbu za nazaj, kar obrazec dopušča.",
                 "data": {
-                    "name": "Ime"
+                    "name": "Ime",
+                    "forget": "Pozabi obstoječe ime"
                 }
             }
         },
