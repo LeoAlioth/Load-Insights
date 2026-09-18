@@ -1321,6 +1321,44 @@ def test_a_meter_reporting_kilowatts_is_not_read_as_watts():
     assert D.unit_scale("furlongs") == 1.0
 
 
+def test_the_house_is_the_sum_and_needs_no_wiring_flag():
+    """house = grid + SUM over inverters of (output - input).
+
+    A PV inverter has no AC input and contributes its whole output; a hybrid
+    with the grid flowing through it contributes the difference, so the grid
+    it passed on is not counted twice. The point of the form is that it is
+    arrangement-independent - the same expression is right whether a second
+    inverter feeds the main bus or sits on the first one's load port."""
+    n = 300
+    stamp = lambda i: T0 + i * DT
+    loads_main = [(stamp(i), 400.0) for i in range(n)]
+    loads_backup = [(stamp(i), 900.0) for i in range(n)]
+    se = [(stamp(i), 1500.0) for i in range(n)]            # a PV inverter, no input
+
+    # (a) the PV inverter on the MAIN bus, a hybrid feeding a backup panel
+    deye_in = [(stamp(i), 900.0) for i in range(n)]        # what the hybrid draws
+    deye_out = [(stamp(i), 900.0) for i in range(n)]       # what it delivers
+    grid = [(stamp(i), 400.0 + 900.0 - 1500.0) for i in range(n)]
+    house = D.combine([(grid, 1.0), (deye_out, 1.0), (deye_in, -1.0), (se, 1.0)])
+    assert all(abs(w - 1300.0) < 1e-6 for _, w in house), house[:3]
+
+    # (b) the SAME PV inverter cabled to the hybrid's LOAD PORT. The hybrid now
+    # delivers the backup loads less what the array feeds in, and the grid
+    # meter no longer sees the array at all - a different site, same expression
+    deye_out_b = [(stamp(i), 900.0 - 1500.0) for i in range(n)]
+    grid_b = [(stamp(i), 400.0 + (900.0 - 1500.0)) for i in range(n)]
+    house_b = D.combine([(grid_b, 1.0), (deye_out_b, 1.0), (deye_in := [(stamp(i), 900.0 - 1500.0)
+                                                                        for i in range(n)], -1.0),
+                         (se, 1.0)])
+    assert all(abs(w - 1300.0) < 1e-6 for _, w in house_b), house_b[:3]
+
+    # a term that has not started yet holds the sum back rather than biasing it
+    late = [(stamp(i), 100.0) for i in range(100, n)]
+    mixed = D.combine([(loads_main, 1.0), (late, 1.0)])
+    assert mixed[0][0] == stamp(100) and abs(mixed[0][1] - 500.0) < 1e-6
+    assert D.combine([]) == []
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had

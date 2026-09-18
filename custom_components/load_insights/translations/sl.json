@@ -112,27 +112,13 @@
                 }
             },
             "detection": {
-                "title": "Zaznavanje porabnikov",
-                "description": "Surove meritve glavnega števca po fazah. Najpomembnejša je delovna moč po fazah; faktor moči, tok in napetost izostrijo podpise, kjer jih števec objavlja. Vsa polja so neobvezna; enofazni števec uporabi le polja A.\n\nŠtevcev pod glavnim ni treba nastavljati: naprave iz nadzorne plošče Energija se uporabijo samodejno, skupaj z njihovo hierarhijo.\n\n{found}",
+                "title": "Nastavitve zaznavanja",
+                "description": "Kako deluje zaznavanje bremen. Kaj opazuje, se tu ne nastavlja več: iz omrežnega priklopa in razsmernikov se poraba hiše izračuna, ne izbere.\n\n{found}",
                 "data": {
-                    "device": "Naprava števca",
-                    "power_a": "Delovna moč A",
-                    "power_b": "Delovna moč B",
-                    "power_c": "Delovna moč C",
-                    "pf_a": "Faktor moči A",
-                    "pf_b": "Faktor moči B",
-                    "pf_c": "Faktor moči C",
-                    "current_a": "Tok A",
-                    "current_b": "Tok B",
-                    "current_c": "Tok C",
-                    "voltage_a": "Napetost A",
-                    "voltage_b": "Napetost B",
-                    "voltage_c": "Napetost C",
                     "interval_minutes": "Kako pogosto pogleda",
                     "min_evidence": "Kako zanesljivo, preden ponudi breme"
                 },
                 "data_description": {
-                    "device": "Izberite števec in meritve po fazah se izpolnijo spodaj, da jih preverite. Pustite prazno za ročno izbiro entitet. Ponovna potrditev istega števca izpolni še prazna polja, izpolnjenih pa ne spremeni.",
                     "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni.",
                     "min_evidence": "Hisa ustvari veliko vec vzorcev, kot ima naprav. To pove, kako pogosto in kako natancno se mora breme ponoviti, preden se pokaze za poimenovanje. Ce jih premalo doseze prag, se najboljsa med ostalimi vseeno prikazejo - seznam nikoli ne ostane prazen."
                 }
@@ -223,19 +209,24 @@
             },
             "inverters": {
                 "title": "Razsmerniki",
-                "description": "En razsmernik naenkrat. Kam je razsmernik PRIKLJUČEN loči stran z dvema napravama drug ob drugem od take, kjer je sončni razsmernik vezan na izhod hibrida - meritve so videti enake, računanje pa ni.\n\nSonce, nastavljeno tukaj, prevlada nad viri v energijski nadzorni plošči. To potrebuje stran z DC vezavo: polja, ki prek MPPT polnijo baterijo, se na AC strani sploh ne pokažejo.\n\nPusti vse meritve moči prazne, da razsmernik odstraniš.\n\n{found}",
+                "description": "En razsmernik naenkrat. Hiša je vsota: omrežni števec plus to, kar vsak razsmernik da NA IZHODU, manj to, kar vzame NA VHODU. Sončni razsmernik nima vhoda in prispeva ves izhod; hibrid prispeva razliko. O vezavi za to ni treba povedati ničesar - vsota se izide tako ali tako.\n\nSonce, nastavljeno tukaj, prevlada nad viri v energijski nadzorni plošči, kar potrebuje stran z DC vezavo.\n\nPusti vse meritve moči prazne, da razsmernik odstraniš.\n\n{found}",
                 "data": {
                     "device": "Naprava razsmernika",
                     "power": "Izhodna moč (skupna)",
                     "power_a": "Izhodna moč A",
                     "power_b": "Izhodna moč B",
                     "power_c": "Izhodna moč C",
+                    "in_power": "Moč na omrežni strani (skupna)",
+                    "in_power_a": "Moč na omrežni strani A",
+                    "in_power_b": "Moč na omrežni strani B",
+                    "in_power_c": "Moč na omrežni strani C",
                     "topology": "Vezava"
                 },
                 "data_description": {
                     "device": "Izberi napravo in spodnje meritve je mogoče izpolniti.",
                     "power": "Uporabi, kjer razsmernik objavlja samo skupno moč. Po fazah je bolje, kjer jih ima: oblak se takrat izniči natančno.",
-                    "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo."
+                    "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo.",
+                    "in_power": "Kar razsmernik jemlje iz omrežja na svojem AC vhodu. Sončni razsmernik tega nima - pusti prazno in prispeva ves izhod. Hibrid ga ima, razlika pa je tisto, kar dejansko doda, tako da se omrežje, ki teče skozenj, ne šteje dvakrat."
                 }
             },
             "naming_waiting": {

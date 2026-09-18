@@ -19,12 +19,11 @@ from .const import (
     CONF_GRID_PREFIX,
     CONF_LAYOUT,
     LAYOUT_ALIASES,
-    LAYOUT_AUTO,
-    LAYOUT_PARALLEL,
-    LAYOUT_SERIES,
+    ROLE_PREFIX,
     SOURCE_NONE,
     CONF_DETECTION,
     CONF_INVERTERS,
+    CONF_INV_INPUT_PREFIX,
     CONF_MIN_EVIDENCE,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
@@ -36,6 +35,7 @@ from .const import (
     DOMAIN,
 )
 from .insights.detect import (
+    combine,
     PHASES,
     Detector,
     Fleet,
@@ -171,51 +171,80 @@ class DetectionRunner:
             })
         return rows
 
-    async def _add_the_grid(self, start: datetime, end: datetime, samples: dict,
-                            generation: Optional[Dict[str, list]] = None) -> dict:
-        """Complete the load signal with the grid connection, where it helps.
+    async def _inverter_terms(self, start: datetime, end: datetime) -> List[tuple]:
+        """Each inverter as (rows, sign) per phase: its output, less its input.
 
-        A site whose inverter feeds the loads in PARALLEL with the grid has
-        its house load split between the two readings - the meter carries the
-        house minus what the inverter makes - so neither alone is what the
-        detector wants and their sum is. Behind a transfer switch, or off
-        grid, everything already comes through the inverter and adding the
-        grid would count the pass-through twice.
-
-        Which one a site has is read off the data, since it is a fact about
-        the wiring rather than a preference, and the setting can override it.
-        """
-        cfg = {f"power_{p}": self.config.get(f"{CONF_GRID_PREFIX}{p}") for p in PHASES}
-        cfg = {k: v for k, v in cfg.items() if v}
-        if not cfg or not samples:
-            return samples
-        grid_rows, _ = await self._read(start, end, cfg)
-        sign = await self._grid_sign(grid_rows, generation)
-        for rows in grid_rows.values():
-            seen = classify_source(rows)
-            if seen is not None and (self.source_kind is None or seen != SOURCE_NONE):
-                self.source_kind = seen
-        mode = self.declared_layout or LAYOUT_AUTO
-        out = dict(samples)
-        for p, rows in samples.items():
-            if not grid_rows.get(p):
-                continue
-            aligned = _align(grid_rows[p], rows)
-            if mode == LAYOUT_AUTO:
-                # the reading that goes negative is the one with generation
-                # in it, and that is the one the inverter must be added back to
-                verdict = carries_generation(rows)
-                if verdict is not None:
-                    self.layout[p] = LAYOUT_PARALLEL if verdict else LAYOUT_SERIES
-                # unsure means DON'T add: a wrong sum corrupts every reading,
-                # while leaving it out only keeps what we had before
-                use = self.layout.get(p, LAYOUT_SERIES)
-            else:
-                use = mode
-                self.layout[p] = mode
-            if use == LAYOUT_PARALLEL:
-                out[p] = [(ts, w + sign * aligned.get(ts, 0.0)) for ts, w in rows]
+        An inverter contributes what it ADDS. A PV string inverter has no AC
+        input and contributes its whole output; a hybrid with the grid
+        flowing through it contributes the difference, so the grid it passed
+        on is not counted a second time. Nothing here consults a wiring flag,
+        because the sum telescopes either way."""
+        out: List[tuple] = []
+        for inv in self.entry.options.get(CONF_INVERTERS) or []:
+            for prefix, sign in (("", 1.0), (CONF_INV_INPUT_PREFIX, -1.0)):
+                cfg = {f"power_{p}": inv.get(f"{prefix}power_{p}") for p in PHASES}
+                total = inv.get(f"{prefix}power")
+                if total and not any(cfg.values()):
+                    # a machine that publishes one figure: a three-phase
+                    # inverter is symmetric, so its legs are its total in
+                    # thirds - which reproduced Anze's own templates exactly
+                    cfg = {f"power_{p}": total for p in PHASES}
+                    share = 1.0 / len(PHASES)
+                else:
+                    share = 1.0
+                cfg = {k: v for k, v in cfg.items() if v}
+                if not cfg:
+                    continue
+                rows, _ = await self._read(start, end, cfg)
+                out.append((rows, sign * share))
         return out
+
+    async def _derive_load(self, start: datetime, end: datetime) -> Dict[str, list]:
+        """What the house drew, per phase, from the grid and the inverters.
+
+            house = grid meter + SUM over inverters of (output - input)
+
+        There is no load reading to configure because there is nothing to
+        configure: given the grid and the inverters, the house is determined
+        (Anze, 2026-09-18 - "just have each inverter entry have both inputs
+        and outputs configurable"). Whatever sits between the utility meter
+        and an inverter's own AC input falls out of the same sum, because a
+        hybrid measures that input itself.
+
+        An explicit reading still wins where someone has one that already IS
+        the house - a dedicated CT, or the template sensors Anze built before
+        this existed."""
+        override = {f"power_{p}": self.config.get(f"power_{p}") for p in PHASES}
+        if any(override.values()):
+            samples, _ = await self._read(start, end, {k: v for k, v in override.items() if v})
+            return samples
+
+        terms: List[tuple] = []
+        grid_cfg = {f"power_{p}": self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES}
+        grid_cfg = {k: v for k, v in grid_cfg.items() if v}
+        grid_rows: Dict[str, list] = {}
+        if grid_cfg:
+            grid_rows, _ = await self._read(start, end, grid_cfg)
+        inverters = await self._inverter_terms(start, end)
+        if grid_rows:
+            generation = {}
+            for rows, sign in inverters:
+                if sign <= 0:
+                    continue
+                for p, series in rows.items():
+                    generation[p] = _sum_series(generation.get(p, []), series)
+            sign = await self._grid_sign(grid_rows, generation)
+            terms.append((grid_rows, sign))
+        terms.extend(inverters)
+        if not terms:
+            return {}
+
+        out: Dict[str, list] = {}
+        for p in PHASES:
+            per_phase = [(rows[p], sign) for rows, sign in terms if rows.get(p)]
+            if per_phase:
+                out[p] = combine(per_phase)
+        return {p: rows for p, rows in out.items() if rows}
 
     async def _grid_sign(self, grid_rows: Dict[str, list],
                          generation: Optional[Dict[str, list]]) -> float:
@@ -448,7 +477,14 @@ class DetectionRunner:
 
     @property
     def enabled(self) -> bool:
-        return any(self.config.get(f"power_{p}") for p in PHASES)
+        """Enough to work out what the house draws: a reading that already is
+        the house, or a grid meter, or an inverter."""
+        if any(self.config.get(f"power_{p}") for p in PHASES):
+            return True
+        if any(self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES):
+            return True
+        return any(inv.get("power") or any(inv.get(f"power_{p}") for p in PHASES)
+                   for inv in (self.entry.options.get(CONF_INVERTERS) or []))
 
     def add_listener(self, cb) -> None:
         self._listeners.append(cb)
@@ -502,10 +538,8 @@ class DetectionRunner:
             now = dt_util.utcnow()
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples, _ = await self._read(start, end, self.config)
-            # the arrays first: their raw series is what says which way round
-            # the grid meter is wired, and that decides whether completing the
-            # load signal is an addition or a subtraction
+            samples = await self._derive_load(start, end)
+            # the arrays, for telling a cloud from a load switching
             self.solar = await self._resolve_solar()
             generation: Dict[str, list] = {}
             for fields in self.solar:
@@ -513,7 +547,6 @@ class DetectionRunner:
                 for p, series in rows.items():
                     generation.setdefault(p, [])
                     generation[p] = _sum_series(generation[p], series)
-            samples = await self._add_the_grid(start, end, samples, generation)
             # after the sum, not before: where the inverter is added back the
             # grid meter is the circuit every household watt flows through,
             # so its VAr is the one that steps when a load switches

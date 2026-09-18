@@ -112,27 +112,13 @@
                 }
             },
             "detection": {
-                "title": "Load detection",
-                "description": "The main meter's raw per-phase readings. Active power per phase is what matters most; power factor, current and voltage refine the signatures where the meter publishes them. Every field is optional; a single-phase meter uses the A fields only.\n\nMeters below this one need no setting up: the devices on your Energy dashboard are used automatically, nesting and all.\n\n{found}",
+                "title": "Detection settings",
+                "description": "How load detection behaves. What it watches is no longer asked here: given the grid connection and the inverters, what the house draws is worked out rather than chosen.\n\n{found}",
                 "data": {
-                    "device": "Meter device",
-                    "power_a": "Active power A",
-                    "power_b": "Active power B",
-                    "power_c": "Active power C",
-                    "pf_a": "Power factor A",
-                    "pf_b": "Power factor B",
-                    "pf_c": "Power factor C",
-                    "current_a": "Current A",
-                    "current_b": "Current B",
-                    "current_c": "Current C",
-                    "voltage_a": "Voltage A",
-                    "voltage_b": "Voltage B",
-                    "voltage_c": "Voltage C",
                     "interval_minutes": "How often to look",
                     "min_evidence": "How sure before offering a load"
                 },
                 "data_description": {
-                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand. Submitting the same meter again fills in any field still empty, and never changes one you set yourself.",
                     "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage.",
                     "min_evidence": "A house makes far more shapes than it has appliances. This is how often a load must have repeated, and how tightly, before it appears on the naming page. If too few clear the bar, the best of the rest are shown anyway - the list never runs dry."
                 }
@@ -223,19 +209,24 @@
             },
             "inverters": {
                 "title": "Inverters",
-                "description": "One inverter at a time. Where an inverter ATTACHES is what separates a site with two boxes side by side from one whose PV inverter is cabled to a hybrid's load port - the readings look alike and the arithmetic is not.\n\nSolar set up here overrides the Energy dashboard's own solar sources. That is what a DC-coupled site needs: arrays charging the battery through MPPTs never appear on the AC side at all, so no amount of looking at an AC meter will find them.\n\nLeave every power reading empty to remove an inverter.\n\n{found}",
+                "description": "One inverter at a time. The house is the sum: the grid meter, plus what each inverter puts OUT less what it takes IN. A PV inverter has no input and contributes its whole output; a hybrid contributes the difference. Nothing needs to be said about how it is wired for this - the sum comes out right either way.\n\nSolar set up here overrides the Energy dashboard's own solar sources, which is what a DC-coupled site needs: arrays charging a battery through MPPTs never appear on the AC side at all.\n\nLeave every power reading empty to remove an inverter.\n\n{found}",
                 "data": {
                     "device": "Inverter device",
                     "power": "Output power (total)",
                     "power_a": "Output power A",
                     "power_b": "Output power B",
                     "power_c": "Output power C",
+                    "in_power": "Grid-side power (total)",
+                    "in_power_a": "Grid-side power A",
+                    "in_power_b": "Grid-side power B",
+                    "in_power_c": "Grid-side power C",
                     "topology": "Wiring"
                 },
                 "data_description": {
                     "device": "Pick it and its readings can be filled in below.",
                     "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly.",
-                    "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion."
+                    "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion.",
+                    "in_power": "What the inverter draws from the grid at its own AC input. A PV string inverter has none - leave it empty and it contributes its whole output. A hybrid has one, and the difference is what it actually adds, so the grid it passes through is not counted twice."
                 }
             },
             "naming_waiting": {
