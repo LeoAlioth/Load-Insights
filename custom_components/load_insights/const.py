@@ -56,6 +56,11 @@ CONF_INVERTERS = "inverters"
 CONF_INV_DEVICE = "device"
 CONF_INV_ATTACH = "attach"          # which node its output feeds
 CONF_INV_TOPOLOGY = "topology"
+# An inverter's GRID-side reading, stored beside its output under this
+# prefix. What it contributes to the house is output minus input, so a
+# hybrid does not hand back the grid power it merely passed along; a PV
+# string inverter has no input and contributes its output whole.
+CONF_INV_INPUT_PREFIX = "in_"
 ATTACH_BUS = "bus"                  # the same bus as the grid/main meter
 ATTACH_LOAD_PORT = "load_port"      # behind another inverter's output
 CONF_LAYOUT = "layout"

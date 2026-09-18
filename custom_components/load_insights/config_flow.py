@@ -20,12 +20,11 @@ from .const import (
     ROLE_PREFIX,
     CONF_INVERTERS,
     CONF_INV_DEVICE,
+    CONF_INV_INPUT_PREFIX,
     CONF_INV_TOPOLOGY,
     SOURCE_KINDS,
     CONF_SOURCE_KIND,
     DEFAULT_SOURCE_KIND,
-    LAYOUT_ALIASES,
-    LAYOUT_AUTO,
     LAYOUT_PARALLEL,
     LAYOUT_SERIES,
     CONF_CALENDAR_ENTITIES,
@@ -57,19 +56,6 @@ _LOGGER = logging.getLogger(__name__)
 NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .insights.model import SiteModel
-
-
-def _meter_fields(defaults: dict) -> dict:
-    """The twelve per-phase fields, pre-filled."""
-    classes = {"power": "power", "pf": "power_factor", "current": "current", "voltage": "voltage"}
-    out = {}
-    for kind in DETECTION_KINDS:
-        for p in ("a", "b", "c"):
-            key = f"{kind}_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class=classes[kind])
-            )
-    return out
 
 
 def _grid_fields(defaults: dict) -> dict:
@@ -109,12 +95,14 @@ def _inverter_fields(defaults: dict) -> dict:
     out = {vol.Optional(CONF_INV_DEVICE, description={"suggested_value": defaults.get(CONF_INV_DEVICE)}):
            selector.DeviceSelector(selector.DeviceSelectorConfig(
                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
-    out[vol.Optional("power", description={"suggested_value": defaults.get("power")})] = \
-        selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
-    for p in ("a", "b", "c"):
-        key = f"power_{p}"
-        out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
+    for prefix in ("", CONF_INV_INPUT_PREFIX):
+        out[vol.Optional(f"{prefix}power",
+                         description={"suggested_value": defaults.get(f"{prefix}power")})] = \
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+        for p in ("a", "b", "c"):
+            key = f"{prefix}power_{p}"
+            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
+                selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
         selector.SelectSelector(selector.SelectSelectorConfig(
             options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
@@ -133,6 +121,27 @@ def _inverter_line(inverters: list) -> str:
         bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
                     f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})")
     return f"{len(inverters)} set up: " + "; ".join(bits)
+
+
+def _load_line(hass, entry) -> str:
+    """Where the house figure is coming from, in words."""
+    cfg = entry.options.get(CONF_DETECTION) or {}
+    own = [p.upper() for p in ("a", "b", "c") if cfg.get(f"power_{p}")]
+    if own:
+        return (f"Using the reading you set by hand on {'+'.join(own)}. Clear those fields and it "
+                "is worked out from the grid connection and the inverters instead.")
+    grid = any(cfg.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in ("a", "b", "c"))
+    inverters = entry.options.get(CONF_INVERTERS) or []
+    if not grid and not inverters:
+        return ("Nothing to work with yet - set up the grid connection, the inverters, or both. "
+                "The house is their sum: the meter, plus what each inverter puts out less what "
+                "it takes in.")
+    parts = []
+    if grid:
+        parts.append("the grid meter")
+    if inverters:
+        parts.append(f"{len(inverters)} inverter(s)")
+    return "House consumption is worked out from " + " and ".join(parts) + "."
 
 
 def _behind(seconds: Optional[float]) -> str:
@@ -179,16 +188,6 @@ def _interval_field(defaults: dict) -> dict:
                 translation_key=CONF_DETECTION_INTERVAL,
                 mode=selector.SelectSelectorMode.DROPDOWN))})
     return out
-
-
-def _device_field(default=None):
-    return {
-        vol.Optional("device", description={"suggested_value": default}): selector.DeviceSelector(
-            selector.DeviceSelectorConfig(
-                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]
-            )
-        )
-    }
 
 
 def _disabled_readings(hass, device_id: str) -> int:
@@ -530,45 +529,26 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
-        """The main meter. Pick the DEVICE and its per-phase readings are
-        found for you; the fields below are shown filled in so you can check
-        them before saving, and can be set by hand instead.
+        """How detection behaves - not what it watches.
 
-        Re-submitting the SAME meter offers whatever is still empty, which is
-        how a site set up before a naming was recognised picks it up - what is
-        already filled in is never touched, by discovery or by a later run."""
-        current = dict(self._pending_detection or self.config_entry.options.get(CONF_DETECTION) or {})
+        It used to ask for the meter as well, and that was asking for the
+        answer: given the grid connection and the inverters, what the house
+        draws is determined, not chosen (Anze, 2026-09-18). So the readings
+        live on those two pages and this one keeps the two things that are
+        genuinely preferences.
+
+        A reading set here BEFORE that change still wins, for anyone who has
+        one that already is the house - a dedicated CT, or a template built
+        by hand. Nothing removes it; it simply is not offered any more.
+        """
+        current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
         if user_input is not None:
-            device = user_input.get("device")
-            # consumed here, so the form we may show below is saved on its
-            # own submit rather than re-offered forever
-            pending, self._pending_detection = self._pending_detection, None
-            offer = None
-            if device and pending is None:
-                found = _discover(self.hass, device)
-                if device != current.get("device"):
-                    offer = {"device": device, **found}  # another meter, its own readings
-                else:
-                    typed = {k: v for k, v in user_input.items() if v}
-                    merged = {**found, **typed}  # what the user set wins
-                    if merged != typed:
-                        offer = merged
-            if offer is not None:
-                self._pending_detection = offer
-                return self.async_show_form(
-                    step_id="detection",
-                    data_schema=vol.Schema({**_device_field(offer.get("device")), **_meter_fields(offer),
-                                            **_interval_field(offer)}),
-                    description_placeholders={
-                        "found": _found_line(self.hass, offer)},
-                )
-            cfg = {k: v for k, v in user_input.items() if v}
+            cfg = {**current, **{k: v for k, v in user_input.items() if v}}
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         return self.async_show_form(
             step_id="detection",
-            data_schema=vol.Schema({**_device_field(current.get("device")), **_meter_fields(current),
-                                    **_interval_field(current)}),
-            description_placeholders={"found": _found_line(self.hass, current)},
+            data_schema=vol.Schema(_interval_field(current)),
+            description_placeholders={"found": _load_line(self.hass, self.config_entry)},
         )
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
