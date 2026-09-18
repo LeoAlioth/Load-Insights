@@ -1716,8 +1716,15 @@ class Fleet:
             sig = self.main.signature_of(m)
             hit = None
             for name, subs in self.pending_sub.items():
+                # how far apart the two meters can honestly be: one full
+                # reporting interval each, since a step can land anywhere
+                # inside one, and never less than the merge tolerance
+                det = self.subs.get(name)
+                sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+                main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+                tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
                 for i, s in enumerate(subs):
-                    if _same_load(m, s, self.agnostic.get(name, False)):
+                    if _same_load(m, s, self.agnostic.get(name, False), tol):
                         hit = (name, i)
                         break
                 if hit:
@@ -1751,7 +1758,8 @@ class Fleet:
         return f
 
 
-def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
+def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
+               tol_s: float = MERGE_TOLERANCE_S) -> bool:
     """Is the downstream session ``b`` the same load as the main-meter
     session ``a``? Always the same moment; then the same size.
 
@@ -1767,10 +1775,21 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
     # 443 boiler cycles started within a minute of a main-meter session and
     # their ends differed by 7 s at the median but 438 s at the third
     # quartile, so only 27 were accepted (Anze, 2026-09-18).
-    if abs(a.start - b.start) > MERGE_TOLERANCE_S:
+    #
+    # And ``tol_s`` is not a constant either, because two meters do not
+    # report together: at Kozolec the GX publishes the inverter's output
+    # every 5 s while the Shelly on a device publishes every 52, so a load
+    # can be most of a minute old on one before it appears on the other. The
+    # caller derives it from what each meter actually does.
+    if abs(a.start - b.start) > tol_s:
         return False
-    # ...but they still have to be the same LENGTH of thing, or a kettle
-    # inside an hour-long run would claim it
+    # They also have to be the same LENGTH of thing. Dropping this looked
+    # right - the boiler's 66-second cycle is often a far longer session on
+    # the main meter, where the down-step pairs with a different edge - and
+    # measuring it said otherwise: without the guard NOTHING was placed at
+    # all, because the matcher takes the first fit and pops it, so a loose
+    # test lets a wrong pairing eat the session the right one needed. The
+    # greedy match is the real limit here, not the tolerance.
     da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
     if max(da, db) / min(da, db) > MATCH_DURATION_FACTOR:
         return False
