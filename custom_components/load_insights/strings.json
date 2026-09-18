@@ -131,10 +131,9 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for - {count} of them. Pick one and give it a name; it then gets its own entities. Give two of them the SAME name to say they are one device on different settings, and clear a name to forget it.\n\nLoads that a device meter already accounts for are named by the Energy dashboard and are not listed here.\n\nPick one and press Submit with the name empty to see it in detail; the form cannot redraw while you scroll the list. Fill the name in to save it.\n\n{detail}",
+                "description": "Loads no device meter accounts for - {count} of them. Pick one and the next page shows what it looks like, then asks for a name.\n\nGive two of them the SAME name to say they are one device on different settings, and clear a name to forget it. Loads that a device meter already accounts for are named by the Energy dashboard and are not listed here.",
                 "data": {
-                    "signature": "Detected load",
-                    "name": "Name"
+                    "signature": "Detected load"
                 }
             },
             "overview": {
@@ -167,6 +166,13 @@
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
                     "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports."
+                }
+            },
+            "naming_detail": {
+                "title": "Name this load",
+                "description": "{detail}\n\nGive it a name to create its entities, or leave the name empty to forget one it already has.",
+                "data": {
+                    "name": "Name"
                 }
             }
         },
