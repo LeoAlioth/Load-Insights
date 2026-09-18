@@ -1015,6 +1015,75 @@ def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
                        locations=dict(loc or {}), name=name)
 
 
+def test_two_loads_starting_together_are_not_one_two_phase_load():
+    """A real multi-phase load is balanced by design. Coinciding in time was
+    the only test, so a 2 kW load on A married a 163 W blip on C and the pair
+    was filed as one 2.2 kW two-phase load - a phantom invented, and the
+    session stolen from the single-phase load it belonged to."""
+    det = D.Detector()
+    a = series(1200, lambda s: 2000.0 if 200 <= s < 260 else 0.0)
+    c = series(1200, lambda s: 163.0 if 200 <= s < 260 else 0.0, seed=4, noise=5.0)
+    det.process({"a": a, "c": c}, now_ts=T0 + 1300)
+    assert all(s.phases != "ac" for s in det.signatures), [s.phases for s in det.signatures]
+    assert any(s.phases == "a" and abs(s.power["a"] - 2000) < 200 for s in det.signatures)
+    # a genuinely balanced pair still groups
+    det2 = D.Detector()
+    a2 = series(1200, lambda s: 2000.0 if 200 <= s < 260 else 0.0)
+    c2 = series(1200, lambda s: 1900.0 if 200 <= s < 260 else 0.0, seed=5)
+    det2.process({"a": a2, "c": c2}, now_ts=T0 + 1300)
+    assert any(s.phases == "ac" for s in det2.signatures), [s.phases for s in det2.signatures]
+
+
+def test_how_well_a_run_was_measured_decides_its_weight_and_its_tolerance():
+    """Eight samples of a 43-second run and forty-three of the same run are
+    not equally good evidence of its power."""
+    coarse = D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=4)
+    fine = D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=40)
+    assert coarse.confidence < fine.confidence
+    assert D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
+
+    # the coarse one is admitted at a power the fine one is not
+    sig = _sig(1, 3000.0, 40.0, None, 50)
+    off = lambda n: D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3450.0)]}, samples=n)
+    assert sig.matches(off(4), 50.0) is not None, "a coarsely measured run needs a wider band"
+    assert sig.matches(off(40), 50.0) is None, "a well measured run does not"
+
+    # and it pulls the running mean less far
+    lax = _sig(2, 3000.0, 40.0, None, 10)
+    strict = _sig(3, 3000.0, 40.0, None, 10)
+    import datetime as _dt
+    lax.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=4), _dt.timezone.utc)
+    strict.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=40), _dt.timezone.utc)
+    assert lax.power["a"] > strict.power["a"], (lax.power, strict.power)
+
+
+def test_a_named_load_that_changed_points_at_what_replaced_it():
+    """A named signature is never evicted, so when its load changes in a step
+    the name stays on a fingerprint nothing matches while the successor sits
+    unnamed. The hint is recorded; nothing is renamed without the user."""
+    day = 86400.0
+    det = D.Detector()
+    old = _sig(1, 3000.0, 40.0, 0.95, 200, name="Kiln")
+    old.last_seen = 0.0
+    new = _sig(2, 2400.0, 42.0, 0.95, 60)
+    new.last_seen = 9 * day
+    unrelated = _sig(3, 300.0, 42.0, 0.95, 60)      # nothing like it
+    unrelated.last_seen = 9 * day
+    det.signatures = [old, new, unrelated]
+    det._link_successors(now=10 * day)
+    assert old.successor_id == 2, old.successor_id
+    assert new.successor_id is None and unrelated.successor_id is None
+    # still being seen: no successor is looked for
+    old.successor_id, old.last_seen = None, 10 * day - 3600.0
+    det._link_successors(now=10 * day)
+    assert old.successor_id is None
+    # a thin candidate is not offered
+    old.last_seen = 0.0
+    new.count = 2
+    det._link_successors(now=10 * day)
+    assert old.successor_id is None
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had
