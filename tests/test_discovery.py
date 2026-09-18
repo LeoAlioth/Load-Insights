@@ -176,15 +176,15 @@ def test_a_power_reading_with_its_own_volts_and_amps_beside_it_wins():
         {"entity_id": "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1",
          "device_class": "voltage", "name": "", "device_id": "mp"},
     ]
-    found = match_meter_entities(rows)
+    found = D.match_meter_entities(rows)
     assert found["power_a"] == "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"
     # the GX alone - no voltage - falls back to the plainest name as before
-    assert match_meter_entities(rows[:2])["power_a"] == "sensor.gx_device_consumption_power_l1"
+    assert D.match_meter_entities(rows[:2])["power_a"] == "sensor.gx_device_consumption_power_l1"
     # a power factor entity counts as coherence on its own
     pf = [{"entity_id": "sensor.long_name_meter_power_a", "device_class": "power", "name": "", "device_id": "x"},
           {"entity_id": "sensor.long_name_meter_pf_a", "device_class": "power_factor", "name": "", "device_id": "x"},
           {"entity_id": "sensor.short_power_a", "device_class": "power", "name": "", "device_id": "y"}]
-    assert match_meter_entities(pf)["power_a"] == "sensor.long_name_meter_power_a"
+    assert D.match_meter_entities(pf)["power_a"] == "sensor.long_name_meter_power_a"
 
 def test_coherence_breaks_ties_but_never_overrules_which_side_we_want():
     """A MultiPlus publishes power, current and voltage on its AC INPUT as
@@ -198,9 +198,9 @@ def test_coherence_breaks_ties_but_never_overrules_which_side_we_want():
         # the output side publishes watts alone - no volts, no amps
         {"entity_id": "sensor.mp_output_power_l1", "device_class": "power", "name": "", "device_id": "mp"},
     ]
-    assert match_meter_entities(rows, "load")["power_a"] == "sensor.mp_output_power_l1"
+    assert D.match_meter_entities(rows, "load")["power_a"] == "sensor.mp_output_power_l1"
     # and for the GRID role the preference flips, as it always did
-    assert match_meter_entities(rows, "grid")["power_a"] == "sensor.mp_input_power_l1"
+    assert D.match_meter_entities(rows, "grid")["power_a"] == "sensor.mp_input_power_l1"
     # with no role word in play, coherence still decides
     plain = [
         {"entity_id": "sensor.meter_two_power_a", "device_class": "power", "name": "", "device_id": "b"},
@@ -208,5 +208,19 @@ def test_coherence_breaks_ties_but_never_overrules_which_side_we_want():
         {"entity_id": "sensor.meter_two_voltage_a", "device_class": "voltage", "name": "", "device_id": "b"},
         {"entity_id": "sensor.one_power_a", "device_class": "power", "name": "", "device_id": "a"},
     ]
-    assert match_meter_entities(plain)["power_a"] == "sensor.meter_two_power_a"
+    assert D.match_meter_entities(plain)["power_a"] == "sensor.meter_two_power_a"
 
+
+def test_the_watts_that_go_with_a_meters_amps_are_the_ones_beside_them():
+    """A meter publishing both sides of an inverter offers watts for each,
+    and the amps we hold belong to exactly one of them - without needing to
+    know that "output" is the word that matters."""
+    both = ["sensor.mp_input_power_l1", "sensor.mp_output_power_l1"]
+    assert D.closest_by_name(both, "sensor.mp_output_current_l1") == "sensor.mp_output_power_l1"
+    assert D.closest_by_name(both, "sensor.mp_input_current_l1") == "sensor.mp_input_power_l1"
+    # one candidate is the answer whatever it is called
+    assert D.closest_by_name(["sensor.m1_ac_power_a"], "sensor.m1_ac_current_a") == "sensor.m1_ac_power_a"
+    assert D.closest_by_name([], "sensor.anything") is None
+    # a tie is broken the same way every time rather than by registry order
+    tie = ["sensor.b_power_a", "sensor.a_power_a"]
+    assert D.closest_by_name(tie, "sensor.z_current_a") == D.closest_by_name(list(reversed(tie)), "sensor.z_current_a")
