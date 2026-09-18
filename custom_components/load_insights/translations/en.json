@@ -127,10 +127,12 @@
                     "current_c": "Current C",
                     "voltage_a": "Voltage A",
                     "voltage_b": "Voltage B",
-                    "voltage_c": "Voltage C"
+                    "voltage_c": "Voltage C",
+                    "interval_minutes": "How often to look"
                 },
                 "data_description": {
-                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand. Submitting the same meter again fills in any field still empty, and never changes one you set yourself."
+                    "device": "Pick the meter and its per-phase readings are filled in below for you to check. Leave it empty to choose the entities by hand. Submitting the same meter again fills in any field still empty, and never changes one you set yourself.",
+                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage."
                 }
             },
             "naming": {
@@ -287,6 +289,16 @@
             "options": {
                 "bus": "On the bus, beside the grid",
                 "load_port": "On another inverter's load port"
+            }
+        },
+        "interval_minutes": {
+            "options": {
+                "1": "Every 1 minute",
+                "2": "Every 2 minutes",
+                "5": "Every 5 minutes",
+                "10": "Every 10 minutes",
+                "15": "Every 15 minutes",
+                "30": "Every 30 minutes"
             }
         }
     }

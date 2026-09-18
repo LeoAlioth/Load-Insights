@@ -1048,7 +1048,13 @@ class Detector:
                     s.phases = ph
                     s.levels = {ph: s.levels.pop("")}
                     closed.append(s)
-        return self._merge_and_file(closed, latest)
+        out = self._merge_and_file(closed, latest)
+        # once per pass, not once per session: it walks the whole
+        # library for every named load, and nothing about it changes
+        # between one filing and the next
+        if latest:
+            self._link_successors(latest)
+        return out
 
     def _merge_and_file(self, closed: List[Session], latest: float) -> List[Session]:
         pool = self.held + closed
@@ -1120,7 +1126,6 @@ class Detector:
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
         self.consolidate(noise)
-        self._link_successors(s.end)
         self._prune(s.end)
 
     def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:

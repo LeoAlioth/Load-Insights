@@ -26,6 +26,7 @@ from .const import (
     CONF_DETECTION,
     CONF_INVERTERS,
     DETECTION_BACKFILL_DAYS,
+    CONF_DETECTION_INTERVAL,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     SAVE_MAX_INTERVAL_S,
@@ -64,7 +65,7 @@ NAMING_MIN_WH = 50.0
 
 
 class DetectionRunner:
-    """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
+    """Every interval_minutes, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and signatures persist in
@@ -360,6 +361,15 @@ class DetectionRunner:
                 "generation": DETECTOR_GENERATION}
 
     @property
+    def interval_minutes(self) -> int:
+        """How often to re-read the recorder, as configured or defaulted."""
+        try:
+            value = int(self.config.get(CONF_DETECTION_INTERVAL) or DETECTION_INTERVAL_MINUTES)
+        except (TypeError, ValueError):
+            return DETECTION_INTERVAL_MINUTES
+        return value if value > 0 else DETECTION_INTERVAL_MINUTES
+
+    @property
     def enabled(self) -> bool:
         return any(self.config.get(f"power_{p}") for p in PHASES)
 
@@ -382,7 +392,7 @@ class DetectionRunner:
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         if not self.enabled:
             return
-        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=DETECTION_INTERVAL_MINUTES))
+        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
         self.hass.async_create_task(self._run())
 
     async def async_reset(self) -> None:

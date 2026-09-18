@@ -14,7 +14,6 @@ from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
     CONF_GRID_DEVICE,
-    CONF_GRID_PREFIX,
     CONF_LAYOUT,
     LAYOUTS,
     ROLE_PREFIX,
@@ -31,6 +30,9 @@ from .const import (
     LAYOUT_AUTO,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
+    CONF_DETECTION_INTERVAL,
+    DETECTION_INTERVAL_CHOICES,
+    DETECTION_INTERVAL_MINUTES,
     CONF_DEVICE_STATE_SENSORS,
     CONF_INPUT_ENTITIES,
     CONF_SIGNATURE_REVISION,
@@ -43,7 +45,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import describe_location, suggest_levels
+from .insights.detect import suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -134,6 +136,19 @@ def _inverter_line(inverters: list) -> str:
         bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
                     f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)}, {where})")
     return f"{len(inverters)} set up: " + "; ".join(bits)
+
+
+def _interval_field(defaults: dict) -> dict:
+    """How often the recorder is re-read. Its cost no longer scales with it -
+    one query per pass rather than one per entity, and the state written
+    hourly rather than every pass - so the default is a minute and slowing it
+    down is for a large site or slow storage, not for a quiet one."""
+    return {vol.Optional(CONF_DETECTION_INTERVAL,
+                         default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
+            selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[str(n) for n in DETECTION_INTERVAL_CHOICES],
+                translation_key=CONF_DETECTION_INTERVAL,
+                mode=selector.SelectSelectorMode.DROPDOWN))}
 
 
 def _device_field(default=None):
@@ -480,7 +495,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 self._pending_detection = offer
                 return self.async_show_form(
                     step_id="detection",
-                    data_schema=vol.Schema({**_device_field(offer.get("device")), **_meter_fields(offer)}),
+                    data_schema=vol.Schema({**_device_field(offer.get("device")), **_meter_fields(offer),
+                                            **_interval_field(offer)}),
                     description_placeholders={
                         "found": _found_line(self.hass, offer)},
                 )
@@ -488,7 +504,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         return self.async_show_form(
             step_id="detection",
-            data_schema=vol.Schema({**_device_field(current.get("device")), **_meter_fields(current)}),
+            data_schema=vol.Schema({**_device_field(current.get("device")), **_meter_fields(current),
+                                    **_interval_field(current)}),
             description_placeholders={"found": _found_line(self.hass, current)},
         )
 
