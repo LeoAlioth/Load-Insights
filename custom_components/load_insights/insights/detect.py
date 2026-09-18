@@ -193,6 +193,13 @@ class Session:
     # overlapped and the wander could not be attributed to either.
     low: Optional[float] = None
     high: Optional[float] = None
+    # Which signature took this session. It used to be looked up in ``recent``,
+    # a DISPLAY list capped at 200 - so a backfill slice that filed more than
+    # that lost the answer for all but the last few, and with it every
+    # location. Backfill is exactly when a load's place should be established
+    # (Anze, 2026-09-18: 173 signatures at Kozolec, every one of them "main",
+    # on a site where the boiler and the car charger have their own meters).
+    signature_id: Optional[int] = None
 
     @property
     def ripple(self) -> Optional[float]:
@@ -1291,6 +1298,9 @@ class Detector:
     held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
     signatures: List[Signature] = field(default_factory=list)
     recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
+    # ids that consolidation has retired, so a session filed before a merge
+    # still resolves to the signature that swallowed it
+    _moved: Dict[int, int] = field(default_factory=dict)
     next_id: int = 1
     tz_offset_s: float = 0.0
 
@@ -1353,11 +1363,18 @@ class Detector:
         return out
 
     def signature_of(self, s: Session) -> Optional["Signature"]:
-        """The signature a just-filed session went into (its recent entry)."""
-        for r in reversed(self.recent):
-            if r["start"] == s.start and r["end"] == s.end and r["phases"] == s.phases:
-                return next((x for x in self.signatures if x.id == r["signature"]), None)
-        return None
+        """The signature a just-filed session went into.
+
+        From the session itself. Reading it back out of ``recent`` worked only
+        while a pass filed fewer sessions than that list keeps."""
+        sid = s.signature_id
+        if sid is None:
+            return None
+        seen = set()
+        while sid in self._moved and sid not in seen:
+            seen.add(sid)
+            sid = self._moved[sid]
+        return next((x for x in self.signatures if x.id == sid), None)
 
     @staticmethod
     def _combine(g: List[Session]) -> Session:
@@ -1389,6 +1406,7 @@ class Detector:
             best.count = 1
         else:
             best.absorb(s, tz)
+        s.signature_id = best.id
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
@@ -1425,6 +1443,10 @@ class Detector:
                 for r in self.recent:            # the sessions still point at them
                     if r.get("signature") in moved:
                         r["signature"] = moved[r["signature"]]
+                for s in self.held:
+                    if s.signature_id in moved:
+                        s.signature_id = moved[s.signature_id]
+                self._moved.update(moved)
                 again = True
                 break
         return gone
@@ -1737,7 +1759,20 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
     single-device meters do. It cannot say which phase the load is on, so
     only the magnitude is compared; the main meter's own session supplies the
     phase, which is how a device's phase gets learned for free."""
-    if abs(a.start - b.start) > MERGE_TOLERANCE_S or abs(a.end - b.end) > MERGE_TOLERANCE_S:
+    # The START is the hard test: two meters seeing a load switch on at the
+    # same instant, at the same size, are seeing the same load. The END is
+    # not, and demanding it within the same fifteen seconds is what stopped
+    # Kozolec placing anything - on a busy main meter a load's down-step can
+    # pair with a different edge, so the session runs on. Measured there:
+    # 443 boiler cycles started within a minute of a main-meter session and
+    # their ends differed by 7 s at the median but 438 s at the third
+    # quartile, so only 27 were accepted (Anze, 2026-09-18).
+    if abs(a.start - b.start) > MERGE_TOLERANCE_S:
+        return False
+    # ...but they still have to be the same LENGTH of thing, or a kettle
+    # inside an hour-long run would claim it
+    da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
+    if max(da, db) / min(da, db) > MATCH_DURATION_FACTOR:
         return False
     pa, pb = a.power_by_phase(), b.power_by_phase()
     if phase_agnostic:
