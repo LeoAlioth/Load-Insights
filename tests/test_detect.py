@@ -1166,5 +1166,29 @@ def test_which_way_round_the_grid_meter_is_wired():
     assert D.exports_positive(inverted, gen[:3]) is None
 
 
+def test_a_negative_sample_on_a_house_reading_is_a_glitch_not_a_load():
+    """Home's templates dip to -3000 W when their two inputs update out of
+    step, then return - and the return is a +3000 W step on every phase at
+    once. A one-sample dip already fails SUSTAIN; one that lasts two samples
+    would be accepted as a real step, so on a reading that cannot go below
+    zero the samples are simply not readings."""
+    n = 200
+    house = [(T0 + i * DT, 400.0) for i in range(n)]
+    house[80] = (house[80][0], -3001.0)                  # two samples, so
+    house[81] = (house[81][0], -2950.0)                  # SUSTAIN is satisfied
+    def run(floor):
+        st = D.PhaseState(); st.floor_zero = floor
+        out = []
+        for ts, w in house:
+            out += st.process(ts, w)
+        return st, out
+    st, sessions = run(True)
+    assert sessions == [], [(round(s.duration_s), s.power_by_phase()) for s in sessions]
+    assert abs(st.level - 400.0) < 50
+    # the same samples on a reading that CAN export are taken at face value
+    st2, sessions2 = run(False)
+    assert sessions2 or st2.open_edges, "a real reading, a real step"
+
+
 if __name__ == "__main__":
     run_main(globals())

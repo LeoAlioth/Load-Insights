@@ -31,6 +31,14 @@ from .classify import Guess, classify
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
 MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
+# A house-consumption reading below this is not a reading. Home's template
+# sensors are inverter/3 minus the meter, recomputed whenever EITHER input
+# updates against the other's stale value, so a passing cloud puts one sample
+# at -3000 W and the next back at 26 - and that +3000 step back is the exact
+# shape of a load switching on, on all three phases at once. Rare (134 of
+# 195,890 samples on one phase over ten days) but each one is a phantom
+# 3 kW load (Anze, 2026-09-18).
+GLITCH_FLOOR_W = 200.0
 NOISE_MAD_FACTOR = 4.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and at least this long
@@ -370,6 +378,8 @@ class PhaseState:
         if self.last_ts is not None and ts <= self.last_ts:
             return []
         self.last_ts = ts
+        if self.floor_zero and w < -GLITCH_FLOOR_W:
+            return []                 # a house cannot draw less than nothing; skip it
         if self.baseline is None:
             self.seed.append(w)
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
