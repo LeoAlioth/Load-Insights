@@ -316,6 +316,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 ),
             }),
             description_placeholders={"count": str(len(candidates))},
+            # neither of these pages ends the flow - picking leads to the
+            # load, naming leads back to the list - so the button should say
+            # Next rather than Submit, which reads as if the dialog closes
+            last_step=False,
         )
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
@@ -349,6 +353,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             step_id="naming_detail",
             data_schema=vol.Schema(fields),
             description_placeholders={"detail": detail},
+            last_step=False,
         )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
