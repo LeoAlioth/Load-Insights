@@ -82,6 +82,14 @@ MATCH_POWER_REL = 0.10
 MATCH_DURATION_FACTOR = 3.0
 MATCH_PF_TOL = 0.15
 MAX_SIGNATURES = 200
+# Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
+# or five of any kind) and seen inside the horizon - never evicted. YOUNG:
+# fewer than this many sightings and inside the grace period - protected so
+# it can become established. Everything else goes weakest-first.
+ESTABLISHED_EVIDENCE = 0.5
+ESTABLISHED_HORIZON_S = 30 * 86400.0
+YOUNG_COUNT = 3
+PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
 HELD_TAIL_S = 60.0             # closed sessions wait this long for a partner on another phase
 
@@ -944,7 +952,7 @@ class Detector:
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
         self.consolidate(noise)
-        self._prune()
+        self._prune(s.end)
 
     def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
         """Merge signatures that have BECOME alike, and say how many went.
@@ -980,16 +988,56 @@ class Detector:
                 break
         return gone
 
-    def _prune(self) -> None:
-        """Keep the library to its cap, weakest first.
+    def _prune(self, now: Optional[float] = None) -> None:
+        """Keep the library to its cap, in tiers.
 
         A NAMED load is never evicted, which the old ordering had exactly
         backwards: it sorted named signatures to the front and then kept the
         tail, so the ones the user had taken the trouble to name were the
-        first to go. Among the unnamed the best evidence survives."""
-        if len(self.signatures) > MAX_SIGNATURES:
-            self.signatures.sort(key=lambda x: (x.name is not None, x.evidence, x.count, x.last_seen))
-            self.signatures = self.signatures[-MAX_SIGNATURES:]
+        first to go.
+
+        An ESTABLISHED load - real evidence, seen inside a month - is never
+        evicted either. Its history is its claim on the library, and pausing
+        does not forfeit it. Replayed over ten real days at home, the kiln
+        reached 299 runs at evidence 0.81 - the best-evidenced signature in
+        the library - and was thrown out during a twelve-hour pause.
+
+        A YOUNG signature - seen once or twice, inside the grace period - is
+        protected so that it CAN become established. A signature seen once
+        is always the weakest, so on a full library it was pruned in the same
+        call that created it, and a new load could only survive if it had
+        already been seen twice - which it never had. 2,705 created, 2,355
+        evicted, the kiln founded and lost 296 times (Anze, 2026-09-18).
+
+        Everything else is fair game, weakest first. The first attempt at
+        this protected by RECENCY instead, and 195 of 200 slots filled with
+        recently-seen junk while the paused kiln was one of the five left to
+        choose from. Recency is not a claim; evidence is."""
+        if len(self.signatures) <= MAX_SIGNATURES:
+            return
+        now = now if now is not None else max(s.last_seen for s in self.signatures)
+        tiers: Dict[int, List[Signature]] = {0: [], 1: [], 2: [], 3: []}
+        for s in self.signatures:
+            age = now - s.last_seen
+            if s.name:
+                tiers[0].append(s)
+            elif s.evidence >= ESTABLISHED_EVIDENCE and age < ESTABLISHED_HORIZON_S:
+                tiers[1].append(s)
+            elif s.count < YOUNG_COUNT and age < PRUNE_GRACE_S:
+                tiers[2].append(s)
+            else:
+                tiers[3].append(s)
+        # The cap bounds only what is fair game. Named, established and young
+        # are all kept outright, so the library can run over it - and must:
+        # a house whose real loads fill the cap would otherwise never learn
+        # another, which is the lockout again wearing a different hat. What
+        # bounds it in practice is reality (a house has so many loads), the
+        # thirty-day horizon, and the grace period on the young.
+        keep = tiers[0] + tiers[1] + tiers[2]
+        room = MAX_SIGNATURES - len(keep)
+        tiers[3].sort(key=lambda x: (x.evidence, x.count, x.last_seen))
+        keep += tiers[3][-room:] if room > 0 else []
+        self.signatures = keep
 
     # ------------------------------------------------ query
     def active(self, now_ts: float) -> List[dict]:

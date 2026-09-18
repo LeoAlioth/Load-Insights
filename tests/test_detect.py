@@ -474,18 +474,57 @@ def test_back_at_the_idle_floor_nothing_is_left_running():
 
 
 def test_a_named_load_is_never_the_first_thing_evicted():
+    """Eviction tiers, tested together on a full library. NAMED survives
+    however stale. ESTABLISHED survives a pause - the kiln reached 299 runs
+    and was thrown out during twelve quiet hours by junk seen since. YOUNG
+    survives long enough to be seen twice - a singleton is always the weakest
+    and used to be pruned in the call that created it. The rest go weakest
+    first."""
+    hour = 3600.0
+    cap = D.MAX_SIGNATURES
     det = D.Detector()
     det.signatures = [
         D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
-        for i in range(D.MAX_SIGNATURES + 5)
+                    count=1, first_seen=0.0, last_seen=i * hour)
+        for i in range(cap + 5)
     ]
-    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
-    det.signatures[0].count = 2
-    det._prune()
+    det.signatures[0].name = "Boiler"                # named, stalest of all, count 1
+    det.signatures[1].count = 190                    # the kiln: paused 20 hours, evidence high
+    det.signatures[1].last_seen = (cap + 4 - 20) * hour
+    newest = cap + 4                                 # a singleton seen just now
+    det._prune(now=newest * hour)
     kept = {s.id for s in det.signatures}
-    assert len(det.signatures) == D.MAX_SIGNATURES
+    assert len(det.signatures) == cap
     assert 0 in kept, "a named load was evicted"
+    assert 1 in kept, "a well-evidenced load lost its place by pausing"
+    assert newest in kept, "a signature seen once was pruned before it could be seen twice"
+    # what went: the stalest singletons that are past the grace period
+    assert kept.isdisjoint({2, 3, 4, 5, 6}), sorted(set(range(2, 7)) & kept)
+
+    # a library FULL of established loads still admits a newcomer - over the cap
+    det2 = D.Detector()
+    det2.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=20, first_seen=0.0, last_seen=i * hour)
+        for i in range(cap)
+    ]
+    now = cap * hour
+    det2.signatures.append(D.Signature(id=9999, phases="a", power={"a": 5000.0}, duration_s=40.0,
+                                       pf=None, count=1, first_seen=now, last_seen=now))
+    det2._prune(now=now)
+    assert any(s.id == 9999 for s in det2.signatures)
+    assert len(det2.signatures) == cap + 1, "established loads are not traded for a cap"
+
+    # an established load unseen for over a month is fair game again
+    det3 = D.Detector()
+    det3.signatures = [
+        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
+                    count=20, first_seen=0.0, last_seen=40 * 86400.0 + i)
+        for i in range(cap + 1)
+    ]
+    det3.signatures[0].last_seen = 0.0               # forty days silent
+    det3._prune(now=40 * 86400.0 + cap)
+    assert not any(s.id == 0 for s in det3.signatures)
 
 
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
@@ -652,21 +691,6 @@ def test_back_at_the_idle_floor_nothing_is_left_running():
     det.process({"a": tail}, now_ts=t)
     assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
     assert det.active(t) == [], det.active(t)
-
-
-def test_a_named_load_is_never_the_first_thing_evicted():
-    det = D.Detector()
-    det.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
-        for i in range(D.MAX_SIGNATURES + 5)
-    ]
-    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
-    det.signatures[0].count = 2
-    det._prune()
-    kept = {s.id for s in det.signatures}
-    assert len(det.signatures) == D.MAX_SIGNATURES
-    assert 0 in kept, "a named load was evicted"
 
 
 def test_a_glitch_below_zero_cannot_drag_the_floor_down():
@@ -839,21 +863,6 @@ def test_back_at_the_idle_floor_nothing_is_left_running():
     assert det.active(t) == [], det.active(t)
 
 
-def test_a_named_load_is_never_the_first_thing_evicted():
-    det = D.Detector()
-    det.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
-        for i in range(D.MAX_SIGNATURES + 5)
-    ]
-    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
-    det.signatures[0].count = 2
-    det._prune()
-    kept = {s.id for s in det.signatures}
-    assert len(det.signatures) == D.MAX_SIGNATURES
-    assert 0 in kept, "a named load was evicted"
-
-
 def test_a_cloud_is_the_sun_not_a_load():
     """A 6 kW array dropping into cloud lifts the grid meter by 2 kW on each
     phase, which is exactly the shape of a load switching on - and of one
@@ -998,21 +1007,6 @@ def test_back_at_the_idle_floor_nothing_is_left_running():
     det.process({"a": tail}, now_ts=t)
     assert det.phases["a"].open_edges == [], det.phases["a"].open_edges
     assert det.active(t) == [], det.active(t)
-
-
-def test_a_named_load_is_never_the_first_thing_evicted():
-    det = D.Detector()
-    det.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=1 if i else 50, first_seen=0.0, last_seen=float(i))
-        for i in range(D.MAX_SIGNATURES + 5)
-    ]
-    det.signatures[0].name = "Boiler"       # named, but seen the fewest times
-    det.signatures[0].count = 2
-    det._prune()
-    kept = {s.id for s in det.signatures}
-    assert len(det.signatures) == D.MAX_SIGNATURES
-    assert 0 in kept, "a named load was evicted"
 
 
 def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
