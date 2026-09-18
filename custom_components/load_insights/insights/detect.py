@@ -87,6 +87,18 @@ MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in star
 PHASE_BALANCE_MIN = 0.4
 # A run measured over this many samples is as well measured as it needs to be
 WELL_SAMPLED = 12.0
+# How many sightings a running mean is allowed to average over. Without a
+# cap the update (mean*n + new) / (n+1) makes a signature OSSIFY: at ten
+# sightings a new one moves the mean by 9%, at three hundred by 0.3%, so a
+# load that genuinely changes - a kiln on a different programme, an element
+# replaced - can never drag its own fingerprint across. Long before it does,
+# the new sessions stop matching and found a sibling instead, which is the
+# succession problem arriving by a different road. Capped, a mature
+# signature keeps following change at a fixed rate: about 1% per sighting,
+# so a real shift is tracked over a few dozen runs rather than never.
+# count itself keeps counting - this bounds the WEIGHT, not the history
+# (Anze, 2026-09-18, who picked 100 over the 50 I proposed).
+ABSORB_WINDOW = 100.0
 NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
 NOISE_SESSION_S = 20.0
 MATCH_POWER_REL = 0.10
@@ -97,8 +109,16 @@ MAX_SIGNATURES = 200
 # or five of any kind) and seen inside the horizon - never evicted. YOUNG:
 # fewer than this many sightings and inside the grace period - protected so
 # it can become established. Everything else goes weakest-first.
+#
+# The horizon is deliberately longer than a year. It was 30 days, which
+# quietly said "a load that has not run this month is not a load" - and a
+# kiln fired twice a year, or a pump that only runs in a wet spring, has a
+# strong signature and deserves to be measured and tracked exactly as well
+# as the kettle. Evidence is the gate; age is only the backstop for an
+# appliance that has genuinely left the house (Anze, 2026-09-18). One-offs
+# are excluded by evidence, not by age: they never reach 0.5.
 ESTABLISHED_EVIDENCE = 0.5
-ESTABLISHED_HORIZON_S = 30 * 86400.0
+ESTABLISHED_HORIZON_S = 400 * 86400.0
 YOUNG_COUNT = 3
 # A NAMED signature is never evicted, so when its load CHANGES - a kiln put on
 # a different programme, an element replaced - the name stays attached to a
@@ -108,6 +128,9 @@ YOUNG_COUNT = 3
 # on the same phases of a similar shape, records a HINT for the naming page
 # to offer. Nothing is renamed without the user (Anze, 2026-09-18).
 SUCCESSOR_QUIET_S = 7 * 86400.0
+# ...but a week means nothing to a load that runs twice a year, so "quiet"
+# is really "silent for far longer than it has ever been between runs".
+SUCCESSOR_QUIET_INTERVALS = 6.0
 SUCCESSOR_POWER_REL = 0.5
 SUCCESSOR_MIN_COUNT = 5
 PRUNE_GRACE_S = 6 * 3600.0
@@ -726,7 +749,7 @@ class Signature:
         # same run are not equally good evidence of its power, and letting the
         # first move the mean as hard as the second is how a well-established
         # figure gets dragged about by its worst sightings (Anze, 2026-09-18).
-        n = self.count
+        n = min(float(self.count), ABSORB_WINDOW)
         k = s.confidence
         pw = s.power_by_phase()
         self.power_mad = (self.power_mad * n + k * abs(sum(pw.values()) - sum(self.power.values()))) / (n + k)
@@ -1095,7 +1118,15 @@ class Detector:
         candidate, and within half the power. A wrong guess here puts a
         person's name on someone else's load."""
         for named in self.signatures:
-            if not named.name or now - named.last_seen < SUCCESSOR_QUIET_S:
+            if not named.name:
+                continue
+            quiet_after = SUCCESSOR_QUIET_S
+            if named.interval_s:
+                # a load that runs every five minutes is quiet after an hour;
+                # one that runs twice a year is not quiet after a week
+                quiet_after = max(quiet_after, SUCCESSOR_QUIET_INTERVALS * named.interval_s)
+            if now - named.last_seen < quiet_after:
+                named.successor_id = None
                 continue
             best, best_gap = None, None
             for other in self.signatures:
