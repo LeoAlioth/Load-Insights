@@ -237,8 +237,8 @@
         "layout": {
             "options": {
                 "auto": "Ugotovi iz podatkov",
-                "parallel": "Razsmernik napaja vzporedno z omrežjem",
-                "separate": "Vse gre skozi razsmernik"
+                "parallel": "Vzporedno - razsmernik napaja skupno zbiralko (AC sončna elektrarna, brez baterije)",
+                "series": "Zaporedno - vsa moč teče skozi razsmernik (hibrid z DC baterijo)"
             }
         }
     }

@@ -18,9 +18,10 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_GRID_PREFIX,
     CONF_LAYOUT,
+    LAYOUT_ALIASES,
     LAYOUT_AUTO,
     LAYOUT_PARALLEL,
-    LAYOUT_SEPARATE,
+    LAYOUT_SERIES,
     CONF_DETECTION,
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
@@ -153,6 +154,7 @@ class DetectionRunner:
             return samples
         grid_rows, _ = await self._read(start, end, cfg)
         mode = self.config.get(CONF_LAYOUT) or LAYOUT_AUTO
+        mode = LAYOUT_ALIASES.get(mode, mode)
         out = dict(samples)
         for p, rows in samples.items():
             if not grid_rows.get(p):
@@ -163,10 +165,10 @@ class DetectionRunner:
                 # in it, and that is the one the inverter must be added back to
                 verdict = carries_generation(rows)
                 if verdict is not None:
-                    self.layout[p] = LAYOUT_PARALLEL if verdict else LAYOUT_SEPARATE
+                    self.layout[p] = LAYOUT_PARALLEL if verdict else LAYOUT_SERIES
                 # unsure means DON'T add: a wrong sum corrupts every reading,
                 # while leaving it out only keeps what we had before
-                use = self.layout.get(p, LAYOUT_SEPARATE)
+                use = self.layout.get(p, LAYOUT_SERIES)
             else:
                 use = mode
                 self.layout[p] = mode

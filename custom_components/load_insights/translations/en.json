@@ -237,8 +237,8 @@
         "layout": {
             "options": {
                 "auto": "Work it out from the data",
-                "parallel": "Inverter feeds in parallel with the grid",
-                "separate": "Everything comes through the inverter"
+                "parallel": "Parallel - inverter feeds the grid bus directly (AC-coupled solar, no battery)",
+                "series": "Series - all power flows through the inverter (hybrid with DC-coupled battery)"
             }
         }
     }
