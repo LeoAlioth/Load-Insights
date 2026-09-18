@@ -704,6 +704,12 @@ class Signature:
     name: Optional[str] = None
     # an unnamed signature that may be what this named one BECAME
     successor_id: Optional[int] = None
+    # Energy inherited from a fingerprint whose name moved here. Kept apart
+    # from hour_wh on purpose: the METER wants the appliance's whole history
+    # so it never steps backwards, while the hour-of-day and weekday charts
+    # want only what THIS behaviour did - mixing a retired 5.9 kW programme
+    # into a 4.2 kW one would describe neither.
+    carried_wh: float = 0.0
     # how much each reading WANDERS between sightings, as a running mean
     # absolute deviation. A load that repeats to within a few per cent is a
     # real device; one whose power and duration are all over the place is
@@ -776,6 +782,7 @@ class Signature:
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
         self.hour_wh = [x + y for x, y in zip(self.hour_wh, other.hour_wh)]
+        self.carried_wh += other.carried_wh
         self.day_wh = [x + y for x, y in zip(self.day_wh, other.day_wh)]
         for name, k in other.locations.items():
             self.locations[name] = self.locations.get(name, 0) + k
@@ -821,8 +828,9 @@ class Signature:
 
     @property
     def energy_wh(self) -> float:
-        """What this load has actually used over everything seen of it."""
-        return sum(self.hour_wh)
+        """What this load has actually used over everything seen of it,
+        including whatever a predecessor did before its name moved here."""
+        return sum(self.hour_wh) + self.carried_wh
 
     @property
     def weekly_wh(self) -> float:
@@ -963,7 +971,7 @@ class Signature:
                 "level_count": _trim(self.level_count, 3), "name": self.name,
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1),
-                "successor_id": self.successor_id,
+                "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1)}
 
@@ -976,7 +984,7 @@ class Signature:
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
-                   successor_id=d.get("successor_id"),
+                   successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    interval_mad=d.get("interval_mad"))
 
 
@@ -1333,6 +1341,38 @@ class Detector:
                 sig.name = (name or "").strip() or None
                 return True
         return False
+
+    def predecessor_of(self, signature_id: int) -> Optional["Signature"]:
+        """The named signature that thinks this one is what it became.
+
+        The naming page asks this of whatever the user is looking at, so the
+        offer appears where they are already standing rather than on a dead
+        entry they have no reason to open."""
+        for sig in self.signatures:
+            if sig.name and sig.successor_id == signature_id:
+                return sig
+        return None
+
+    def adopt(self, signature_id: int) -> Optional[str]:
+        """Move a name onto the signature that replaced its load.
+
+        The old fingerprint keeps its own history - a kiln that drew 5.9 kW
+        really did draw it - but stops carrying a name nothing matches any
+        more. Its ENERGY comes along, as carried_wh rather than folded into
+        the hour and weekday charts: the meter must not step backwards when a
+        name moves, or Home Assistant reads it as a reset, while the charts
+        should still describe this behaviour rather than an average of two."""
+        old = self.predecessor_of(signature_id)
+        if old is None or not old.name:
+            return None
+        name = old.name
+        heir = next((s for s in self.signatures if s.id == signature_id), None)
+        if heir is None:
+            return None
+        heir.carried_wh += old.energy_wh
+        old.name, old.successor_id = None, None
+        self.rename(signature_id, name)
+        return name
 
     # ------------------------------------------------ storage
     def to_dict(self) -> dict:

@@ -1250,6 +1250,38 @@ def test_stored_state_carries_only_the_precision_it_has():
     assert abs(back.power["a"] - 2000.1) < 0.05 and abs((back.pf or 0) - 0.9543) < 1e-4
 
 
+def test_a_name_can_be_moved_to_the_load_that_replaced_it():
+    """The hint on its own changes nothing. Moving the name leaves the old
+    fingerprint its history and its energy - a kiln that drew 5.9 kW really
+    did draw it - but stops it answering to a name nothing matches."""
+    day = 86400.0
+    det = D.Detector()
+    old = _sig(1, 3000.0, 40.0, 0.95, 200, name="Kiln")
+    old.last_seen, old.hour_wh = 0.0, [1000.0] + [0.0] * 23
+    new = _sig(2, 2400.0, 42.0, 0.95, 60)
+    new.last_seen, new.hour_wh = 9 * day, [250.0] + [0.0] * 23
+    det.signatures = [old, new]
+    det._link_successors(now=10 * day)
+    assert det.predecessor_of(2) is old
+    assert det.predecessor_of(1) is None
+
+    assert det.adopt(2) == "Kiln"
+    assert new.name == "Kiln" and old.name is None
+    assert old.successor_id is None
+    # the meter must not step backwards when a name moves - Home Assistant
+    # reads a drop as a reset - so the appliance's whole history comes along
+    assert det.energy_by_name() == {"Kiln": 1250.0}
+    assert new.carried_wh == 1000.0
+    # ...but the charts still describe THIS behaviour, not an average of two
+    assert new.hour_wh == [250.0] + [0.0] * 23
+    assert old.hour_wh == [1000.0] + [0.0] * 23
+    assert old.count == 200, "history is kept, only the name moves"
+
+    # and it cannot be done twice, or to a signature nobody is pointing at
+    assert det.adopt(2) is None
+    assert det.adopt(1) is None
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had

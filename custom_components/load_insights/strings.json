@@ -214,7 +214,11 @@
                 "description": "{detail}\n\nType a name to give it entities of its own. Leaving the box empty changes nothing and takes you back to the list, which is as close to a back button as a form allows.",
                 "data": {
                     "name": "Name",
-                    "forget": "Forget the name it has"
+                    "forget": "Forget the name it has",
+                    "adopt": "Move that name here"
+                },
+                "data_description": {
+                    "adopt": "The old entry keeps its history but stops carrying the name. Its energy is not added to this one - they are two behaviours of one appliance, not one meter."
                 }
             },
             "inverters": {

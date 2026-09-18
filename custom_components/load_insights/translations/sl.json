@@ -214,7 +214,11 @@
                 "description": "{detail}\n\nVpišite ime, da dobi svoje entitete. Če polje pustite prazno, se nič ne spremeni in vrnete se na seznam - to je najbližje gumbu za nazaj, kar obrazec dopušča.",
                 "data": {
                     "name": "Ime",
-                    "forget": "Pozabi obstoječe ime"
+                    "forget": "Pozabi obstoječe ime",
+                    "adopt": "Premakni to ime sem"
+                },
+                "data_description": {
+                    "adopt": "Stari vnos obdrzi zgodovino, a ne nosi vec imena. Njegova energija se ne pristeje temu - to sta dve vedenji ene naprave, ne en stevec."
                 }
             },
             "inverters": {
