@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .classify import Guess, classify
+from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, classify
 
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
@@ -158,6 +158,11 @@ class Session:
     # it enters. 0 means unknown, which is treated as well-measured so that
     # nothing stored before this existed is suddenly distrusted.
     samples: int = 0
+    # How much the reading wandered WITHIN the run, as a fraction of its own
+    # level. A heating element holds still and reads near zero; anything on a
+    # variable-speed drive glides and reads a third or more. None when two
+    # loads overlapped and the wander could not be attributed to either.
+    ripple: Optional[float] = None
 
     @property
     def confidence(self) -> float:
@@ -195,7 +200,7 @@ class Session:
 
     def to_dict(self) -> dict:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
-                "samples": self.samples,
+                "samples": self.samples, "ripple": self.ripple,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
 
     @classmethod
@@ -526,15 +531,25 @@ class _Open:
     watts: float
     var: Optional[float]                          # the reactive step it started with
     levels: List[Tuple[float, float]] = field(default_factory=list)
+    # Lowest and highest the phase read while this was the ONLY load running.
+    # A resistive element holds its level; anything behind a variable-speed
+    # drive glides between them without ever taking a step big enough to be
+    # a LEVEL. Kozolec's Grundfos Scala2 runs 104 to 247 W and reads as one
+    # flat level, which is why it classified as a small heater (Anze,
+    # 2026-09-18).
+    lo: Optional[float] = None
+    hi: Optional[float] = None
 
     def as_list(self) -> list:
-        return [self.since, self.watts, self.var, [list(x) for x in self.levels]]
+        return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi]
 
     @classmethod
     def of(cls, raw) -> "_Open":
         since, watts, var = raw[0], raw[1], raw[2]
         levels = [tuple(x) for x in (raw[3] if len(raw) > 3 else [])] or [(since, watts)]
-        return cls(since=since, watts=watts, var=var, levels=levels)
+        return cls(since=since, watts=watts, var=var, levels=levels,
+                   lo=raw[4] if len(raw) > 4 else None,
+                   hi=raw[5] if len(raw) > 5 else None)
 
 
 @dataclass
@@ -624,6 +639,14 @@ class PhaseState:
 
         if abs(w - self.level) < self.noise:
             self.pending = []
+            # With one load running, what the phase does IS what that load
+            # does, so its wander can be attributed. With two it cannot, and
+            # nothing is recorded rather than something wrong.
+            if len(self.open_edges) == 1:
+                o = self.open_edges[0]
+                above = w - self.baseline if self.baseline is not None else w
+                o.lo = above if o.lo is None else min(o.lo, above)
+                o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
             if q is not None:
@@ -746,8 +769,14 @@ class PhaseState:
             q = sum(known) / len(known) if known else None
         else:
             q = o.var                         # the factor of the level it started at
+        ripple = None
+        if o.lo is not None and o.hi is not None:
+            middle = 0.5 * (o.lo + o.hi)
+            if middle > MIN_NOISE_W:
+                ripple = max(0.0, (o.hi - o.lo) / middle)
         return Session(phases="", start=o.since, end=at, levels={"": levels},
-                       pf=_pf_from(levels[0][1], q), samples=self._span(o.since, at))
+                       pf=_pf_from(levels[0][1], q), samples=self._span(o.since, at),
+                       ripple=ripple)
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -812,6 +841,8 @@ class Signature:
     # want only what THIS behaviour did - mixing a retired 5.9 kW programme
     # into a 4.2 kW one would describe neither.
     carried_wh: float = 0.0
+    # running mean of how much its runs wandered inside themselves
+    ripple: Optional[float] = None
     # how much each reading WANDERS between sightings, as a running mean
     # absolute deviation. A load that repeats to within a few per cent is a
     # real device; one whose power and duration are all over the place is
@@ -883,6 +914,8 @@ class Signature:
             self.pf = (self.pf * a + other.pf * b) / n
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
+        if other.ripple is not None:
+            self.ripple = other.ripple if self.ripple is None else (self.ripple * a + other.ripple * b) / n
         self.hour_wh = [x + y for x, y in zip(self.hour_wh, other.hour_wh)]
         self.carried_wh += other.carried_wh
         self.day_wh = [x + y for x, y in zip(self.day_wh, other.day_wh)]
@@ -912,6 +945,8 @@ class Signature:
         self.level_count = (self.level_count * n + k * s.level_count) / (n + k)
         if s.pf is not None:
             self.pf = s.pf if self.pf is None else (self.pf * n + k * s.pf) / (n + k)
+        if s.ripple is not None:
+            self.ripple = s.ripple if self.ripple is None else (self.ripple * n + k * s.ripple) / (n + k)
         if self.last_start is not None:
             gap = s.start - self.last_start
             if gap > 0:
@@ -986,9 +1021,51 @@ class Signature:
         return (self.count >= 4 and self.interval_s is not None and self.interval_mad is not None
                 and self.interval_mad < 0.35 * self.interval_s)
 
+    @property
+    def recognisable(self) -> float:
+        """How easily someone could look at this row and say what it is.
+
+        Separate from evidence, which asks whether it is a real repeating
+        load, and from the guess, which asks what kind. This asks whether the
+        ROW carries enough for a person to recognise their own house in it,
+        because a list sorted only by energy puts an anonymous 600 W
+        something above a machine that runs every Saturday at noon (Anze,
+        2026-09-18).
+
+        What helps a person: a time it keeps to, a day it keeps to, a clock
+        it comes back on, a size worth noticing, more than one phase, and a
+        guess specific enough to be worth confirming."""
+        bits = []
+        total = sum(self.hour_wh)
+        if total > 0:
+            # concentrated in few hours is recognisable; spread over all 24 is not
+            busy = sum(1 for w in self.hour_wh if w > total / 48.0)
+            bits.append((1.0 - min(1.0, busy / 12.0), 1.0))
+        days = sum(self.day_wh)
+        if days > 0:
+            busy_d = sum(1 for w in self.day_wh if w > days / 14.0)
+            bits.append((1.0 - min(1.0, (busy_d - 1) / 6.0), 0.7))
+        if self.regular:
+            bits.append((1.0, 0.8))
+        # something you would notice running: a kettle's worth per run
+        bits.append((min(1.0, self.per_run_wh / 200.0), 1.0))
+        if len(self.phases) > 1:
+            bits.append((1.0, 0.5))
+        if self.locations:
+            # a meter saw some of it, even if not enough to claim it
+            seen = max(self.locations.values()) / max(1, self.count)
+            bits.append((min(1.0, seen * 2.0), 1.2))
+        g = self.guess()
+        if g.appliance:
+            bits.append((min(1.0, g.appliance_confidence / MAX_APPLIANCE), 1.5))
+        weight = sum(w for _, w in bits) or 1.0
+        return round(sum(v * w for v, w in bits) / weight, 3)
+
     def guess(self) -> Guess:
         """What KIND of thing this might be. Never a claim - see classify."""
-        return classify(self.watts, self.pf, self.level_count, self.duration_s)
+        return classify(self.watts, self.pf, self.level_count, self.duration_s,
+                        self.phases, self.interval_s, self.interval_mad, self.hour_wh,
+                        self.ripple)
 
     def _spread(self, s: Session, tz) -> None:
         """Put a session's energy into every hour and day it occupied.
@@ -1074,6 +1151,7 @@ class Signature:
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
+                "ripple": _trim(self.ripple, 3),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1)}
 
@@ -1087,6 +1165,7 @@ class Signature:
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
+                   ripple=d.get("ripple"),
                    interval_mad=d.get("interval_mad"))
 
 

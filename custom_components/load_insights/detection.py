@@ -323,7 +323,13 @@ class DetectionRunner:
         parents = self.parents
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
-        worth = [s for s in sorted(self.detector.signatures, key=lambda x: (-x.energy_wh, -x.evidence))
+        # Energy alone put an anonymous 600 W something above a machine that
+        # runs every Saturday at noon. Rank by what a person can actually act
+        # on: what it costs, weighted by whether the row says enough to
+        # recognise it (Anze, 2026-09-18).
+        def rank(s):
+            return -(s.energy_wh * (0.45 + 0.55 * s.recognisable))
+        worth = [s for s in sorted(self.detector.signatures, key=lambda x: (rank(x), -x.evidence))
                  if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
                      and most_specific(s.locations, s.count, parents) == "main")
                  # a load that may be what a NAMED one became belongs on the
