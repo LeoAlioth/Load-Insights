@@ -43,7 +43,28 @@ def device_class_of(entity_id: str):
     return None
 
 
-def read_csv(paths):
+def drop_aggregates(rows):
+    """Remove hourly statistics, keeping the raw state changes.
+
+    An export reaching past the recorder's retention comes back at two
+    resolutions: state changes for the recent part and HOURLY MEANS for
+    everything older. An hour's mean cannot show a 44-second burst, and fed
+    to the detector each one looks like a step, so a month of them would
+    invent a load an hour. They give themselves away by landing on the hour
+    after a long gap (Anze exporting 30 days, 2026-09-18)."""
+    kept, dropped, previous = [], 0, None
+    for ts, value in rows:
+        on_the_hour = abs((ts + 30) % 3600.0 - 30) < 5.0
+        gap = None if previous is None else ts - previous
+        if on_the_hour and (gap is None or gap >= 1800.0):
+            dropped += 1
+        else:
+            kept.append((ts, value))
+        previous = ts
+    return kept, dropped
+
+
+def read_csv(paths, keep_coarse=False):
     """entity_id -> [(epoch seconds, value)], numbers only, in time order."""
     series = defaultdict(list)
     for path in paths:
@@ -65,9 +86,16 @@ def read_csv(paths):
                 if moment.tzinfo is None:
                     moment = moment.replace(tzinfo=timezone.utc)
                 series[eid].append((moment.timestamp(), value))
-    for rows in series.values():
+    out, coarse = {}, 0
+    for eid, rows in series.items():
         rows.sort()
-    return dict(series)
+        if not keep_coarse:
+            rows, gone = drop_aggregates(rows)
+            coarse += gone
+        out[eid] = rows
+    if coarse:
+        print(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
+    return out
 
 
 def guess_roles(series):
@@ -120,9 +148,23 @@ def main() -> int:
                         metavar="Name=sensor.x", help="a device's own meter")
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
+    parser.add_argument("--keep-coarse", action="store_true",
+                        help="do not drop hourly statistics rows")
+    parser.add_argument("--rates", action="store_true",
+                        help="print each entity's sampling rate and stop")
     args = parser.parse_args()
 
-    series = read_csv(args.csv)
+    series = read_csv(args.csv, args.keep_coarse)
+    if args.rates:
+        for eid, rows in sorted(series.items()):
+            if len(rows) < 3:
+                print(f"  {eid:62} {len(rows)} rows")
+                continue
+            gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
+            span = (rows[-1][0] - rows[0][0]) / 86400.0
+            print(f"  {eid:62} {len(rows):>8} rows, {span:5.1f} days, "
+                  f"median gap {gaps[len(gaps) // 2]:6.1f} s")
+        return 0
     if not series:
         print("no numeric rows found - is this a History panel export?")
         return 1
