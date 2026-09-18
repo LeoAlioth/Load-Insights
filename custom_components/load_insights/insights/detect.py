@@ -192,6 +192,48 @@ def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     return below >= EXPORT_SHARE * len(rows)
 
 
+def exports_positive(grid_rows: Sequence[Tuple[float, float]],
+                     generation: Sequence[Tuple[float, float]]) -> Optional[bool]:
+    """Which way round is this grid meter wired?
+
+    "House = the meter plus the inverter" holds only in the dashboard's
+    convention, where importing is positive. Anze's SolarEdge M1 is the
+    other way round - verified on a real day, 2177 of 2177 samples positive
+    while the array was over 12 kW - and summing it would have counted the
+    array twice instead of cancelling it.
+
+    Nobody should have to know this about their own meter, and the data
+    says it outright: when generation is at its peak the site is exporting,
+    so whichever sign the meter shows THEN is its export sign.
+
+    Only meaningful for a reading that exports at all, so it answers None
+    unless the reading goes both ways - a site that never exports has no
+    export sign to find, and the sum is unaffected either way."""
+    if carries_generation(grid_rows) is not True:
+        return None
+    if len(generation) < PV_MIN_SAMPLES:
+        return None
+    peak = max(value for _, value in generation)
+    if peak <= 0:
+        return None
+    busy = {ts for ts, value in generation if value >= 0.8 * peak}
+    if len(busy) < PV_MIN_SAMPLES:
+        return None
+    # the grid reading as of each of those moments, sample and hold
+    ordered, i, seen = sorted(generation), 0, []
+    at = sorted(busy)
+    rows = sorted(grid_rows)
+    j = 0
+    for ts in at:
+        while j + 1 < len(rows) and rows[j + 1][0] <= ts:
+            j += 1
+        if rows and rows[0][0] <= ts:
+            seen.append(rows[j][1])
+    if len(seen) < PV_MIN_SAMPLES:
+        return None
+    return statistics.median(seen) > 0
+
+
 def classify_source(rows: Sequence[Tuple[float, float]]) -> Optional[str]:
     """What is behind an AC input, from the reading alone.
 
