@@ -51,7 +51,7 @@ HOME = {
 # MultiPlus AC OUT, whose entity names are still to be confirmed; the AC IN
 # it is currently pointed at reads zero, the site being off grid.
 KOZOLEC = {
-    "base": "http://192.168.1.98:8123",         # confirm - the instance's own address
+    "base": "https://ha.kozolec.hlevcek.com",
     "tz": timezone(timedelta(hours=2)),
     "groups": {
         "inverter": [

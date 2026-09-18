@@ -13,10 +13,11 @@ It needs a long-lived access token, which it reads from a FILE and never
 takes on the command line, where it would land in a shell history:
 
     Home Assistant, your profile, Security, Long-lived access tokens.
-    Save it as data/ha_token_<site> - the whole data/ folder is gitignored.
+    Save it as data/<hostname> - so data/ha.alpacasbarn.com holds the token
+    that instance issued. The whole data/ folder is gitignored.
 
-A token belongs to ONE instance, so home and Kozolec need one each, which
-is why the default path carries the site name.
+A token belongs to ONE instance, so each site needs its own, and naming the
+file after the host is what keeps them straight (Anze, 2026-09-18).
 
 Days already downloaded are skipped, so an interrupted run resumes.
 """
@@ -43,7 +44,8 @@ def read_token(path: Path) -> str:
         raise SystemExit(
             f"no token at {path}\n"
             "  Home Assistant -> your profile -> Security -> Long-lived access tokens,\n"
-            "  then save it at that path. One per instance; data/ is gitignored."
+            "  then save it at that path - the file is named after the host it\n"
+            "  came from. One per instance; data/ is gitignored."
         )
     token = path.read_text(encoding="utf-8").strip()
     if not token:
@@ -81,7 +83,7 @@ def main() -> int:
     parser.add_argument("--site", default="home", choices=sorted(SITES))
     parser.add_argument("--days", type=int, default=10)
     parser.add_argument("--ending", help="last local day, YYYY-MM-DD; default yesterday")
-    parser.add_argument("--token", help="default data/ha_token_<site>")
+    parser.add_argument("--token", help="default data/<hostname of the site>")
     parser.add_argument("--out", help="default data/history/<site>")
     parser.add_argument("--chunk-hours", type=int, default=24,
                         help="split each day, for entities that report every second")
@@ -97,8 +99,10 @@ def main() -> int:
     if given is not None:
         token_path = given if given.is_absolute() else ROOT / given
     else:
-        per_site = ROOT / "data" / f"ha_token_{args.site}"
-        token_path = per_site if per_site.exists() else ROOT / "data" / "ha_token"
+        host = urllib.parse.urlsplit(site["base"]).hostname or args.site
+        candidates = [ROOT / "data" / host, ROOT / "data" / f"ha_token_{args.site}",
+                      ROOT / "data" / "ha_token"]
+        token_path = next((p for p in candidates if p.exists()), candidates[0])
     token = "" if args.dry_run else read_token(token_path)
 
     last = (datetime.strptime(args.ending, "%Y-%m-%d").replace(tzinfo=tz) if args.ending

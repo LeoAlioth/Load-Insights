@@ -45,10 +45,14 @@ SLOW_FOLLOW = 0.02             # the held level follows drift this fast, so a ra
 # on each phase), and three phases are never quite balanced either.
 PV_SHARE_MIN = 0.25
 PV_SHARE_MAX = 1.25
-PV_VISIBLE_R = -0.2            # the reading includes the array when its changes move this much against it
 PV_MIN_SWING_W = 200.0         # below this the sun hardly moved and there is nothing to tell
 PV_MIN_SAMPLES = 30
-LAYOUT_R = -0.2                # below this the grid moves against the inverter: they are in parallel
+# A reading that CONTAINS generation goes below zero whenever the site
+# exports; one that carries the house alone cannot. Both thresholds are
+# deliberately slack: a meter's noise sits well inside 50 W, and half a per
+# cent of a day is minutes, not a spike.
+EXPORT_FLOOR_W = 50.0
+EXPORT_SHARE = 0.005
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
@@ -159,47 +163,26 @@ def delta_correlation(samples: Sequence[Tuple[float, float]],
     return sxy / math.sqrt(sxx * syy)
 
 
-def looks_parallel(load_rows: Sequence[Tuple[float, float]],
-                   grid_by_ts: Dict[float, float]) -> Optional[bool]:
-    """Is the inverter feeding the loads IN PARALLEL with the grid?
+def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
+    """Does this reading contain the site's generation, or the house alone?
 
-    It decides which arithmetic gives the house's load, and the two are not
-    interchangeable:
+    It decides two things at once - whether a cloud can masquerade as a load
+    in this signal, and whether the inverter's output has to be added back
+    to get what the house draws - and it is answered by physics rather than
+    statistics: a reading that includes generation goes BELOW ZERO whenever
+    the site exports, and one that carries only the house cannot.
 
-      * PARALLEL, the grid-tied case. The grid meter reads the house MINUS
-        what the inverter makes, so the two move against each other and the
-        load is their SUM.
-      * SEPARATE, a transfer switch or an off-grid site. Everything reaches
-        the loads through the inverter's output, the grid sits upstream of
-        it, and adding the two would count the pass-through twice. The load
-        is the output alone.
+    I tried correlating the two series' changes first, and Anze's own data
+    threw it out (2026-09-18): on a day when the grid meter exported 4.5 kW
+    the correlation called the array absent from it. Sampling the two series
+    at different instants is enough to destroy that signal, while "did it go
+    negative" survives anything.
 
-    Which one a site has is a fact about its wiring, so it is read off the
-    data rather than asked about - with an override for when the data cannot
-    say, such as a site that never exports. None when the grid hardly
-    moved, which is itself the off-grid answer."""
-    r = delta_correlation(load_rows, grid_by_ts)
-    return None if r is None else r <= LAYOUT_R
-
-
-def pv_shows_in(samples: Sequence[Tuple[float, float]],
-                pv_by_ts: Dict[float, float]) -> Optional[bool]:
-    """Does this reading INCLUDE the array? Measured, never assumed.
-
-    A grid meter carries the house MINUS the array, so its changes move
-    against the array's and a cloud must be discounted. An inverter's own AC
-    output on a site whose solar is DC-coupled to the battery does not move
-    with the array at all - Kozolec has no grid and separate MPPTs (Anze,
-    2026-09-17) - and discounting steps against the sun there would throw
-    away real loads that happened to switch as a cloud passed.
-
-    Which of the two a site has is a property of the wiring, not something
-    worth asking about, so it is read off the data: the correlation of the
-    two series' changes. None when the sun hardly moved in this window and
-    the question cannot be answered yet.
-    """
-    r = delta_correlation(samples, pv_by_ts)
-    return None if r is None else r <= PV_VISIBLE_R
+    None when there is too little to look at."""
+    if len(rows) < PV_MIN_SAMPLES:
+        return None
+    below = sum(1 for _, value in rows if value < -EXPORT_FLOOR_W)
+    return below >= EXPORT_SHARE * len(rows)
 
 
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
@@ -260,6 +243,12 @@ class PhaseState:
     level: Optional[float] = None                # what the phase is holding now
     q_level: Optional[float] = None              # reactive VAr at that level, when known
     pv_level: Optional[float] = None             # what the array was making then
+    # True where this reading is the house alone, which cannot go below
+    # zero. Anze's per-phase template dips negative for 49 samples out of
+    # 20764 - the moments its own inputs do not line up - and one of those
+    # dragged the idle floor to -569 W for the rest of the day, so every
+    # step after it was measured from nonsense (2026-09-18).
+    floor_zero: bool = False
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
@@ -280,6 +269,8 @@ class PhaseState:
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
                 ordered = sorted(self.seed)
                 self.baseline = ordered[int(BASELINE_SEED_PERCENTILE * (len(ordered) - 1))]
+                if self.floor_zero:
+                    self.baseline = max(self.baseline, 0.0)
                 near = [x for x in ordered if x - self.baseline < 2 * MIN_NOISE_W]
                 diffs = [abs(x - self.baseline) for x in near] or [0.0]
                 self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
@@ -304,6 +295,8 @@ class PhaseState:
                 self.pv_level = pv if self.pv_level is None else self.pv_level + SLOW_FOLLOW * (pv - self.pv_level)
             if not self.open_edges:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
+                if self.floor_zero:
+                    self.baseline = max(self.baseline, 0.0)
                 self.level = self.baseline
                 self.idle_diffs.append(abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
@@ -388,7 +381,8 @@ class PhaseState:
                 out.append(self._close(o, at, o.watts, None))
             return sorted(out, key=lambda x: x.start)
         if not self.open_edges:
-            self.baseline = new_level         # nothing was running: the floor itself moved
+            # nothing was running: the floor itself moved
+            self.baseline = max(new_level, 0.0) if self.floor_zero else new_level
         return []
 
     def _close(self, o: _Open, at: float, watts: float, var: Optional[float]) -> Session:
