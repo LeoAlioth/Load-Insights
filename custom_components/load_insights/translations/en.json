@@ -186,7 +186,16 @@
                     "grid_power_b": "Grid power B",
                     "grid_power_c": "Grid power C",
                     "layout": "Wiring",
-                    "source_kind": "What is connected"
+                    "source_kind": "What is connected",
+                    "grid_voltage_a": "Grid voltage A",
+                    "grid_voltage_b": "Grid voltage B",
+                    "grid_voltage_c": "Grid voltage C",
+                    "grid_current_a": "Grid current A",
+                    "grid_current_b": "Grid current B",
+                    "grid_current_c": "Grid current C",
+                    "grid_pf_a": "Grid power factor A",
+                    "grid_pf_b": "Grid power factor B",
+                    "grid_pf_c": "Grid power factor C"
                 },
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",

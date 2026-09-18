@@ -186,7 +186,16 @@
                     "grid_power_b": "Moč omrežja B",
                     "grid_power_c": "Moč omrežja C",
                     "layout": "Vezava",
-                    "source_kind": "Kaj je priključeno"
+                    "source_kind": "Kaj je priključeno",
+                    "grid_voltage_a": "Napetost omrežja A",
+                    "grid_voltage_b": "Napetost omrežja B",
+                    "grid_voltage_c": "Napetost omrežja C",
+                    "grid_current_a": "Tok omrežja A",
+                    "grid_current_b": "Tok omrežja B",
+                    "grid_current_c": "Tok omrežja C",
+                    "grid_pf_a": "Faktor moči omrežja A",
+                    "grid_pf_b": "Faktor moči omrežja B",
+                    "grid_pf_c": "Faktor moči omrežja C"
                 },
                 "data_description": {
                     "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",

@@ -137,6 +137,50 @@ def align(source, target_rows):
     return out
 
 
+def pseudo_device(entity_id: str) -> str:
+    """The CSV carries no device, so stand one in from the name.
+
+    Everything a meter publishes shares a prefix and differs only in the
+    trailing kind and phase - sensor.solaredge_se17k_m1_ac_power_a beside
+    sensor.solaredge_se17k_m1_ac_current_a - so stripping those two tokens
+    groups a meter's readings the way the entity registry does live."""
+    parts = entity_id.split("_")
+    while parts and (parts[-1] in ("a", "b", "c", "1", "2", "3", "an", "bn", "cn",
+                                   "l1", "l2", "l3")
+                     or parts[-1] in ("power", "current", "voltage", "pf", "factor")):
+        parts.pop()
+    return "_".join(parts)
+
+
+def coherent_triples(series, fields, phases):
+    """Per phase, one meter's power + voltage + current, all from the SAME
+    pseudo-device. The load role's own first - that is the circuit the loads
+    are in - then any other meter that offers a complete set, which at home
+    is the grid meter and is the right answer: every household watt flows
+    through it, so its reactive power steps when a load switches."""
+    by_device = {}
+    for eid in series:
+        by_device.setdefault(pseudo_device(eid), {})[device_kind_phase(eid)] = eid
+    out = {}
+    for p in phases:
+        own = pseudo_device(fields.get(f"power_{p}", ""))
+        order = [own] + [d for d in sorted(by_device) if d != own]
+        for dev in order:
+            got = by_device.get(dev) or {}
+            trio = (got.get(("power", p)), got.get(("voltage", p)), got.get(("current", p)))
+            if all(trio):
+                out[p] = trio
+                break
+    return out
+
+
+def device_kind_phase(entity_id: str):
+    lowered = entity_id.lower()
+    kind = device_class_of(entity_id)
+    phase = DISCOVERY.phase_of(lowered)
+    return (kind, phase)
+
+
 def reactive(power_rows, volts, amps, pfs):
     import math
     out = {}
@@ -171,6 +215,8 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=25, help="rows to print")
     parser.add_argument("--keep-coarse", action="store_true",
                         help="do not drop hourly statistics rows")
+    parser.add_argument("--no-q", action="store_true",
+                        help="ignore reactive power entirely")
     parser.add_argument("--rates", action="store_true",
                         help="print each entity's sampling rate and stop")
     args = parser.parse_args()
@@ -208,13 +254,19 @@ def main() -> int:
 
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
     q = {}
-    for p in phases:
-        var = reactive(samples[p],
-                       series.get(fields.get(f"voltage_{p}", "")),
-                       series.get(fields.get(f"current_{p}", "")),
-                       series.get(fields.get(f"pf_{p}", "")))
-        if var:
-            q[p] = var
+    if not args.no_q:
+        trios = coherent_triples(series, fields, phases)
+        print("reactive power from:")
+        for p in phases:
+            if p not in trios:
+                print(f"   {p.upper()}: no meter publishes power, voltage and current together")
+                continue
+            pw, v, i = trios[p]
+            print(f"   {p.upper()}: {pw}")
+            var = reactive(series[pw], series.get(v), series.get(i), None)
+            if var:
+                # held forward onto the load reading's own sample times
+                q[p] = align(sorted(var.items()), samples[p])
     pv = {}
     for eid in args.pv:
         rows = series.get(eid)
