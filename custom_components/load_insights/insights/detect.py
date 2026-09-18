@@ -30,7 +30,35 @@ from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, classify
 
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
-MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
+# Never call a change smaller than this a transition. A FLOOR under the
+# measured figure, not a replacement for it - the detector works out each
+# phase's own noise from how much it wanders while idle, and this stops a
+# pathological signal from setting it at nothing.
+#
+# It was 100 W, which on both of Anze's sites was eight times the real noise:
+# their median sample-to-sample change is 3 to 5 W, so the measured figure
+# would have been 12 to 20 W and the floor was the binding constraint on
+# everything. A fridge compressor steps 60 to 150 W and could never clear it,
+# which is why Kozolec has two fridges and detected neither (2026-09-18).
+# At 10 W it is barely above the quantisation of the readings themselves, and
+# it is safe to be that low because the level-dependent part below is
+# MEASURED rather than assumed.
+MIN_NOISE_W = 10.0
+# ...and a reading wanders more when more is flowing through it, so the floor
+# is not the whole story either (Anze, 2026-09-18: "can the noise scale with
+# total load or be adaptive in some other way?").
+#
+# It can, and the share is MEASURED rather than picked, because the two sites
+# disagree by a factor of three about what it should be: fitting the observed
+# median sample-to-sample change against level gives 0.61% at home and about
+# 0.2% at Kozolec - home's signal being a template of two sensors subtracted,
+# which is noisier than either. A square root was tried against the same data
+# and fitted worse than a straight line (7.4 W of mean error against 5.4).
+# So each phase learns its own, the same way it already learns the idle
+# figure, and NOISE_REL_CAP only stops a pathological signal declaring itself
+# all noise.
+NOISE_REL_CAP = 0.05
+NOISE_REL_MIN_LEVEL = 300.0    # below this a ratio is mostly quantisation
 # A house-consumption reading below this is not a reading. Home's template
 # sensors are inverter/3 minus the meter, recomputed whenever EITHER input
 # updates against the other's stale value, so a passing cloud puts one sample
@@ -602,6 +630,13 @@ class PhaseState:
     # dragged the idle floor to -569 W for the rest of the day, so every
     # step after it was measured from nonsense (2026-09-18).
     floor_zero: bool = False
+    # this phase's own floor, so a site can ask for more or less sensitivity
+    # than the default without touching the measured part
+    min_noise: float = MIN_NOISE_W
+    # the measured share of the running level that is noise, and the samples
+    # it is measured from
+    noise_rel: float = 0.0
+    rel_diffs: List[float] = field(default_factory=list)
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
@@ -634,9 +669,18 @@ class PhaseState:
                 self.baseline = ordered[int(BASELINE_SEED_PERCENTILE * (len(ordered) - 1))]
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
-                near = [x for x in ordered if x - self.baseline < 2 * MIN_NOISE_W]
-                diffs = [abs(x - self.baseline) for x in near] or [0.0]
-                self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
+                # How far the reading moves BETWEEN SAMPLES, not how far it
+                # sits from a percentile. Two reasons. It is the quantity the
+                # step test actually asks about, and it is what was measured
+                # on both real sites when the floor was set (2 to 5 W quiet,
+                # 30 to 55 W under load). And it is blind to a load being on
+                # through the seed: a steady 2 kW contributes no difference at
+                # all, where a deviation-from-baseline measure would call the
+                # whole load noise. The old window was "within twice the
+                # floor", which tied this to a constant meant for something
+                # else and made lowering that constant collapse the estimate.
+                diffs = [abs(b - a) for a, b in zip(self.seed, self.seed[1:])] or [0.0]
+                self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
                 self.q_level = q
                 self.pv_level = pv
@@ -648,7 +692,7 @@ class PhaseState:
             # with an unrelated load hours later
             self.open_edges = [e for e in self.open_edges if ts - e.since <= MAX_OPEN_S]
 
-        if abs(w - self.level) < self.noise:
+        if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
             # With one load running, what the phase does IS what that load
             # does, so its wander can be attributed. With two it cannot, and
@@ -660,6 +704,12 @@ class PhaseState:
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
+            if self.level is not None and abs(self.level) >= NOISE_REL_MIN_LEVEL:
+                self.rel_diffs.append(abs(w - self.level) / abs(self.level))
+                if len(self.rel_diffs) >= 240:
+                    self.noise_rel = min(NOISE_REL_CAP,
+                                         NOISE_MAD_FACTOR * _median(self.rel_diffs))
+                    self.rel_diffs = self.rel_diffs[-120:]
             if q is not None:
                 self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
                 self.q_recent.append(q)
@@ -673,7 +723,7 @@ class PhaseState:
                 self.level = self.baseline
                 self.idle_diffs.append(abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
-                    self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(self.idle_diffs))
+                    self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
             return []
 
@@ -716,8 +766,19 @@ class PhaseState:
             self.open_edges = []
         return closed
 
+    def noise_at(self, level: Optional[float] = None) -> float:
+        """The smallest change worth calling a step, at that level.
+
+        The measured idle figure is a floor under it, not the whole answer:
+        a phase carrying five kilowatts wanders by tens of watts where the
+        same phase idle wanders by three."""
+        base = self.noise
+        if level is None:
+            level = self.level if self.level is not None else self.baseline
+        return max(base, self.noise_rel * abs(level)) if level else base
+
     def _tol(self, a: float, b: float) -> float:
-        return max(self.noise, MATCH_EDGE_REL * max(a, b))
+        return max(self.noise_at(max(abs(a), abs(b))), MATCH_EDGE_REL * max(a, b))
 
     def _pair(self, at: float, watts: float, var: Optional[float],
               new_level: float) -> List[Session]:
@@ -792,7 +853,8 @@ class PhaseState:
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
-                "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval, "pv_level": self.pv_level, "seed": self.seed,
+                "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval,
+                "min_noise": self.min_noise, "noise_rel": self.noise_rel, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -802,7 +864,7 @@ class PhaseState:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
-                   interval=d.get("interval", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   interval=d.get("interval", 0.0), min_noise=d.get("min_noise", MIN_NOISE_W), noise_rel=d.get("noise_rel", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))

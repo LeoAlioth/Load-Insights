@@ -116,11 +116,13 @@
                 "description": "Kako deluje zaznavanje bremen. Kaj opazuje, se tu ne nastavlja več: iz omrežnega priklopa in razsmernikov se poraba hiše izračuna, ne izbere.\n\n{found}",
                 "data": {
                     "interval_minutes": "Kako pogosto pogleda",
-                    "min_evidence": "Kako zanesljivo, preden ponudi breme"
+                    "min_evidence": "Kako zanesljivo, preden ponudi breme",
+                    "min_step_w": "Najmanjša sprememba, ki jo opazi"
                 },
                 "data_description": {
                     "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni.",
-                    "min_evidence": "Hisa ustvari veliko vec vzorcev, kot ima naprav. To pove, kako pogosto in kako natancno se mora breme ponoviti, preden se pokaze za poimenovanje. Ce jih premalo doseze prag, se najboljsa med ostalimi vseeno prikazejo - seznam nikoli ne ostane prazen."
+                    "min_evidence": "Hisa ustvari veliko vec vzorcev, kot ima naprav. To pove, kako pogosto in kako natancno se mora breme ponoviti, preden se pokaze za poimenovanje. Ce jih premalo doseze prag, se najboljsa med ostalimi vseeno prikazejo - seznam nikoli ne ostane prazen.",
+                    "min_step_w": "Spodnja meja pod tem, kar vsaka faza izmeri sama - prag raste tudi s trenutno obremenitvijo. Hladilnik stopi za 60-150 W; zvišaj, če te majhne stvari motijo."
                 }
             },
             "naming": {
@@ -304,6 +306,15 @@
                 "0.7": "Uravnoteženo",
                 "0.8": "Zanesljivo - se tesno ponavlja",
                 "0.9": "Samo nedvoumno"
+            }
+        },
+        "min_step_w": {
+            "options": {
+                "5": "5 W - skoraj vse",
+                "10": "10 W",
+                "20": "20 W",
+                "40": "40 W",
+                "80": "80 W - samo velika bremena"
             }
         }
     }
