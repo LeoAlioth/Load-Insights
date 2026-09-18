@@ -131,10 +131,9 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Porabniki, ki jih noben števec naprave ne pojasni - teh je {count}. Izberite enega in ga poimenujte; nato dobi svoje entitete. Dvema dajte ISTO ime, če sta ena naprava na različnih stopnjah, in ime izbrišite, da ga pozabite.\n\nPorabniki, ki jih števec naprave že pojasni, so poimenovani po nadzorni plošči Energija in tu niso navedeni.\n\nIzberite eno in pritisnite Potrdi s praznim imenom, da si jo ogledate podrobneje; obrazec se med brskanjem po seznamu ne more osvežiti. Za shranitev vpišite ime.\n\n{detail}",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva - {count}. Izberite eno in naslednja stran pokaže, kakšno je, nato vpraša za ime.\n\nDvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah, in izbrišite ime, da se pozabi. Bremena, ki jih števec naprave že pokriva, poimenuje energijska nadzorna plošča in tu niso navedena.",
                 "data": {
-                    "signature": "Zaznan porabnik",
-                    "name": "Ime"
+                    "signature": "Detected load"
                 }
             },
             "overview": {
@@ -167,6 +166,13 @@
                 "data_description": {
                     "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
                     "layout": "Pustite na samodejno in se prebere iz podatkov: meritev omrežja, ki se giblje nasproti razsmerniku, je z njim vzporedna. Ročno nastavite tam, kjer podatki ne morejo odgovoriti, na primer kjer objekt nikoli ne oddaja."
+                }
+            },
+            "naming_detail": {
+                "title": "Poimenujte breme",
+                "description": "{detail}\n\nVpišite ime, da dobi svoje entitete, ali pustite prazno, da se obstoječe ime pozabi.",
+                "data": {
+                    "name": "Ime"
                 }
             }
         },

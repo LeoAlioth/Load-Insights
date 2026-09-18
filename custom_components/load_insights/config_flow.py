@@ -265,39 +265,23 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_overview()
 
     async def async_step_naming(self, user_input: dict[str, Any] | None = None):
-        """Name a detected load. One per visit; giving two signatures the same
-        name says they are one device (a hob on two settings), and clearing
-        the name forgets it again."""
+        """Pick a detected load. Nothing else on this page.
+
+        A form's description always renders ABOVE its fields, and a form
+        cannot redraw while a dropdown is being scrolled, so a picker and a
+        picture of the pick cannot share one page: the charts sat above the
+        list and never changed (Anze, 2026-09-18). Picking is its own step,
+        and the next one shows what was picked."""
         runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
         candidates = runner.unlocated()
         if not candidates:
             return self.async_abort(reason="nothing_to_name")
-
         if user_input is not None:
-            chosen = int(user_input["signature"])
-            name = (user_input.get("name") or "").strip()
-            if not name and self._naming_selected != chosen:
-                # picked, but not named yet: show what this one looks like
-                # before asking for a name - a config flow cannot draw a
-                # chart, so the description carries the day's shape and the
-                # three confidences (Anze, 2026-09-17)
-                self._naming_selected = chosen
-                return self._naming_form(runner, candidates, chosen)
-            self._naming_selected = None
-            await runner.async_rename(chosen, name or None)
-            # the entry has to change for the entities to be rebuilt
-            rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-            return self.async_create_entry(
-                data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
-            )
+            self._naming_selected = int(user_input["signature"])
+            return await self.async_step_naming_detail()
 
-        self._naming_selected = candidates[0].id
-        return self._naming_form(runner, candidates, candidates[0].id)
-
-    def _naming_form(self, runner, candidates: list, selected: int):
-        """The picker, with the selected load spelled out underneath."""
         tz = dt_util.DEFAULT_TIME_ZONE
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
         parents = runner.parents
@@ -316,17 +300,39 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # it reads as no order at all (Anze, 2026-09-17)
             label = f"[{sig.evidence:.2f}] {label}"
             options.append(selector.SelectOptionDict(value=str(sig.id), label=label))
-        current = next((s for s in candidates if s.id == selected), candidates[0])
         return self.async_show_form(
             step_id="naming",
             data_schema=vol.Schema({
-                vol.Required("signature", default=str(current.id)): selector.SelectSelector(
+                vol.Required("signature", default=str(candidates[0].id)): selector.SelectSelector(
                     selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.DROPDOWN)
                 ),
-                vol.Optional("name", description={"suggested_value": current.name}): selector.TextSelector(),
             }),
-            description_placeholders={"count": str(len(candidates)),
-                                      "detail": current.detail(tz, parents)},
+            description_placeholders={"count": str(len(candidates))},
+        )
+
+    async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
+        """The load that was picked, then its name."""
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        if runner is None:
+            return self.async_abort(reason="no_detection")
+        sig = next((s for s in runner.detector.signatures if s.id == self._naming_selected), None)
+        if sig is None:
+            return await self.async_step_naming()
+        if user_input is not None:
+            self._naming_selected = None
+            await runner.async_rename(sig.id, (user_input.get("name") or "").strip() or None)
+            # the entry has to change for the entities to be rebuilt
+            rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+            return self.async_create_entry(
+                data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
+            )
+        return self.async_show_form(
+            step_id="naming_detail",
+            data_schema=vol.Schema({
+                vol.Optional("name", description={"suggested_value": sig.name}): selector.TextSelector(),
+            }),
+            description_placeholders={
+                "detail": sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)},
         )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
