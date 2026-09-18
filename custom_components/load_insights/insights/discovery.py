@@ -52,6 +52,8 @@ PENALTY = {"import": 6, "export": 6, "returned": 6, "delivered": 6, "reactive": 
            # definition - spent its backfill watching a flat line and
            # learned nothing at all (Anze, 2026-09-17).
            "input": 8, "ac_in": 8}
+# outranks any difference in name length, which is at most a few dozen
+COHERENT_BONUS = 500
 BONUS = {"output": 6, "ac_out": 6, "out": 4, "load": 4, "loads": 4, "consumption": 4}
 # The same device usually publishes both sides, so which one is wanted
 # depends on what it is being asked for: picking the meter for the GRID
@@ -127,7 +129,7 @@ def match_meter_entities(entities: Sequence[dict], role: str = "load") -> Dict[s
 
     ``role`` says which side of an inverter is wanted: "load" for what the
     house draws, "grid" for the connection to the utility."""
-    best: Dict[str, tuple] = {}
+    scored = []                      # (kind, phase, score, eid, device)
     for e in entities:
         kind = KIND_BY_DEVICE_CLASS.get((e.get("device_class") or "").lower())
         if not kind:
@@ -140,6 +142,22 @@ def match_meter_entities(entities: Sequence[dict], role: str = "load") -> Dict[s
         score = _score(eid, name, role)
         if score is None:
             continue
+        scored.append((kind, phase, score, eid, e.get("device_id")))
+    # Which devices publish voltage AND current (or a power factor) for a
+    # phase. A power reading with those beside it is worth more than one
+    # without, because its volts and amps are what make a power factor a
+    # power factor - and it is a better tiebreak than the length of the name,
+    # which is what decided between two readings of the same house at Kozolec
+    # (Anze, 2026-09-18). Rows carrying no device are all one device, which
+    # is how the config flow calls this.
+    offers = {}
+    for kind, phase, _, _, device in scored:
+        offers.setdefault((device, phase), set()).add(kind)
+    best: Dict[str, tuple] = {}
+    for kind, phase, score, eid, device in scored:
+        beside = offers.get((device, phase), set())
+        if kind == "power" and ("pf" in beside or {"voltage", "current"} <= beside):
+            score += COHERENT_BONUS
         key = f"{kind}_{phase}"
         if key not in best or score > best[key][0]:
             best[key] = (score, eid)

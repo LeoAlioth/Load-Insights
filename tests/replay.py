@@ -121,7 +121,8 @@ def read_csv(paths, keep_coarse=False):
 
 def guess_roles(series):
     """Which entity is which per-phase reading, by the live matcher."""
-    rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid}
+    rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid,
+             "device_id": pseudo_device(eid)}
             for eid in series]
     return DISCOVERY.match_meter_entities(rows, "load")
 

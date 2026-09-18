@@ -188,7 +188,8 @@ def _discover(hass, device_id: str, role: str = "load") -> dict:
             or (state.attributes.get("device_class") if state else None)
         )
         name = e.name or e.original_name or (state.attributes.get("friendly_name") if state else "") or ""
-        rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name})
+        rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name,
+                     "device_id": e.device_id})
     return match_meter_entities(rows, role)
 
 

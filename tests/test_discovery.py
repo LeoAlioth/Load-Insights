@@ -158,3 +158,31 @@ def test_a_plain_grid_meter_is_unaffected_by_that_preference():
 
 if __name__ == "__main__":
     run_main(dict(globals()))
+
+def test_a_power_reading_with_its_own_volts_and_amps_beside_it_wins():
+    """Two readings of the same house at Kozolec, one on the GX device and
+    one on the MultiPlus, differed by twenty characters of name and by the
+    MultiPlus publishing voltage and current for the same phase. The second
+    is what makes a power factor possible, so it outranks the shorter name."""
+    rows = [
+        {"entity_id": "sensor.gx_device_consumption_power_l1", "device_class": "power",
+         "name": "", "device_id": "gx"},
+        {"entity_id": "sensor.gx_device_consumption_current_l1", "device_class": "current",
+         "name": "", "device_id": "gx"},
+        {"entity_id": "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1",
+         "device_class": "power", "name": "", "device_id": "mp"},
+        {"entity_id": "sensor.multiplus_ii_48_15000_200_100_id_276_output_current_l1",
+         "device_class": "current", "name": "", "device_id": "mp"},
+        {"entity_id": "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1",
+         "device_class": "voltage", "name": "", "device_id": "mp"},
+    ]
+    found = match_meter_entities(rows)
+    assert found["power_a"] == "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"
+    # the GX alone - no voltage - falls back to the plainest name as before
+    assert match_meter_entities(rows[:2])["power_a"] == "sensor.gx_device_consumption_power_l1"
+    # a power factor entity counts as coherence on its own
+    pf = [{"entity_id": "sensor.long_name_meter_power_a", "device_class": "power", "name": "", "device_id": "x"},
+          {"entity_id": "sensor.long_name_meter_pf_a", "device_class": "power_factor", "name": "", "device_id": "x"},
+          {"entity_id": "sensor.short_power_a", "device_class": "power", "name": "", "device_id": "y"}]
+    assert match_meter_entities(pf)["power_a"] == "sensor.long_name_meter_power_a"
+
