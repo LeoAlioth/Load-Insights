@@ -1359,6 +1359,29 @@ def test_the_house_is_the_sum_and_needs_no_wiring_flag():
     assert D.combine([]) == []
 
 
+def test_a_load_that_keeps_a_clock_says_so_in_its_row():
+    """How often was left off the row as the least use for telling one from
+    another. True of an irregular load, wrong for a regular one: Kozolec's
+    hot water cycles 66 seconds every five minutes for twelve hours a day,
+    and that is what its owner would recognise first."""
+    import datetime as _dt
+    tz = _dt.timezone.utc
+    clock = _sig(1, 1800.0, 70.0, 0.96, 60)
+    clock.interval_s, clock.interval_mad = 840.0, 60.0      # every 14 min, tight
+    clock.hour_wh = [500.0] * 24
+    assert clock.regular
+    assert "every 14 min" in clock.row(tz), clock.row(tz)
+
+    # an irregular load keeps the row short - the spacing would be noise
+    erratic = _sig(2, 1800.0, 70.0, 0.96, 60)
+    erratic.interval_s, erratic.interval_mad = 840.0, 700.0
+    erratic.hour_wh = [500.0] * 24
+    assert not erratic.regular
+    assert "every" not in erratic.row(tz), erratic.row(tz)
+    # and a menu row stays narrow either way
+    assert len(clock.row(tz)) < 72, clock.row(tz)
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had

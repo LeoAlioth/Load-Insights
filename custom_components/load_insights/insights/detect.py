@@ -999,11 +999,18 @@ class Signature:
         long it runs, how often, one word for what it might be, and the week
         itself in seven characters."""
         phases = "+".join(p.upper() for p in self.phases)
+        # How often was left off entirely, as being the least use for telling
+        # one row from another. That is true of an irregular load and quite
+        # wrong for a REGULAR one: Kozolec's hot water cycles 66 seconds every
+        # five minutes for twelve hours a day, and "every 5 min" is the thing
+        # its owner would recognise before any other number on the line
+        # (Anze, 2026-09-18). So it appears only when the load keeps a clock.
+        how_long = _fmt_s(self.duration_s)
+        if self.regular and self.interval_s:
+            how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
         bits = [f"{self.watts / 1000:.1f} kW ({phases})",
                 f"{_fmt_wh(self.weekly_wh)}/{_fmt_wh(self.per_run_wh)}",
-                _fmt_s(self.duration_s)]
-        # how OFTEN is left to the load's own page: of everything here it is
-        # the least use for telling one row from another
+                how_long]
         tag = self.guess().tag
         if tag:
             bits.append(tag)
