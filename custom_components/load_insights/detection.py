@@ -24,6 +24,7 @@ from .const import (
     LAYOUT_SERIES,
     SOURCE_NONE,
     CONF_DETECTION,
+    CONF_INVERTERS,
     DETECTION_BACKFILL_DAYS,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
@@ -35,6 +36,7 @@ from .insights.detect import (
     Fleet,
     carries_generation,
     classify_source,
+    exports_positive,
     most_specific,
 )
 from .insights.discovery import match_meter_entities
@@ -151,7 +153,8 @@ class DetectionRunner:
             })
         return rows
 
-    async def _add_the_grid(self, start: datetime, end: datetime, samples: dict) -> dict:
+    async def _add_the_grid(self, start: datetime, end: datetime, samples: dict,
+                            generation: Optional[Dict[str, list]] = None) -> dict:
         """Complete the load signal with the grid connection, where it helps.
 
         A site whose inverter feeds the loads in PARALLEL with the grid has
@@ -169,6 +172,7 @@ class DetectionRunner:
         if not cfg or not samples:
             return samples
         grid_rows, _ = await self._read(start, end, cfg)
+        sign = await self._grid_sign(grid_rows, generation)
         for rows in grid_rows.values():
             seen = classify_source(rows)
             if seen is not None and (self.source_kind is None or seen != SOURCE_NONE):
@@ -193,8 +197,38 @@ class DetectionRunner:
                 use = mode
                 self.layout[p] = mode
             if use == LAYOUT_PARALLEL:
-                out[p] = [(ts, w + aligned.get(ts, 0.0)) for ts, w in rows]
+                out[p] = [(ts, w + sign * aligned.get(ts, 0.0)) for ts, w in rows]
         return out
+
+    async def _grid_sign(self, grid_rows: Dict[str, list],
+                         generation: Optional[Dict[str, list]]) -> float:
+        """+1 where the grid meter reads import positive, -1 where it does
+        not - because "the house is the meter plus the inverter" is true only
+        in the first convention, and Anze's SolarEdge M1 is the second.
+
+        Declared beats derived: the Energy dashboard's grid source asks this
+        outright (none, normal, inverted, or a pair of sensors), so where it
+        has been answered we use the answer. The dashboard names a TOTAL
+        power sensor while detection runs per phase, so taking its polarity
+        for the phases is an assumption - a safe one on one device, and
+        exports_positive stays as the cross-check for a site that has left
+        the power config empty."""
+        for spec in await self._site_grid_power():
+            if spec.polarity is not None:
+                return float(spec.polarity)
+        if generation:
+            for phase, rows in grid_rows.items():
+                verdict = exports_positive(rows, generation.get(phase) or [])
+                if verdict is not None:
+                    return -1.0 if verdict else 1.0
+        return 1.0
+
+    async def _site_grid_power(self) -> list:
+        try:
+            manager = await async_get_manager(self.hass)
+            return list(SiteModel.from_prefs(manager.data).grid_power)
+        except Exception:  # noqa: BLE001 - a missing dashboard is not an error
+            return []
 
     async def _resolve_solar(self) -> List[Dict[str, str]]:
         """Each array's power, per phase where the inverter publishes it.
@@ -208,6 +242,28 @@ class DetectionRunner:
         One entry PER SOURCE, because a site with two trackers has two of
         them (Kozolec has two MPPTs) and reading only the first would leave
         half of every cloud unexplained."""
+        # An inverter set up on the Inverters page WINS: the Energy dashboard
+        # lists what produces energy, not where it is wired, and a DC-coupled
+        # array charging the battery through an MPPT never shows on the AC
+        # side at all - so at Kozolec there is nothing for the dashboard's
+        # view to find (Anze, 2026-09-18).
+        configured = self.entry.options.get(CONF_INVERTERS) or []
+        if configured:
+            out: List[Dict[str, str]] = []
+            for inv in configured:
+                per_phase = {f"power_{p}": inv.get(f"power_{p}") for p in PHASES
+                             if inv.get(f"power_{p}")}
+                if len(per_phase) >= 2:
+                    fields = per_phase
+                elif inv.get("power") or per_phase:
+                    total = inv.get("power") or next(iter(per_phase.values()))
+                    fields = {f"power_{p}": total for p in PHASES}
+                else:
+                    continue
+                if fields not in out:
+                    out.append(fields)
+            if out:
+                return out
         manager = await async_get_manager(self.hass)
         site = SiteModel.from_prefs(manager.data)
         if not site.solar:
@@ -325,21 +381,25 @@ class DetectionRunner:
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
             samples, _ = await self._read(start, end, self.config)
-            samples = await self._add_the_grid(start, end, samples)
+            # the arrays first: their raw series is what says which way round
+            # the grid meter is wired, and that decides whether completing the
+            # load signal is an addition or a subtraction
+            self.solar = await self._resolve_solar()
+            generation: Dict[str, list] = {}
+            for fields in self.solar:
+                rows, _ = await self._read(start, end, fields)
+                for p, series in rows.items():
+                    generation.setdefault(p, [])
+                    generation[p] = _sum_series(generation[p], series)
+            samples = await self._add_the_grid(start, end, samples, generation)
             # after the sum, not before: where the inverter is added back the
             # grid meter is the circuit every household watt flows through,
             # so its VAr is the one that steps when a load switches
             q = await self._reactive_series(start, end, samples)
-            self.solar = await self._resolve_solar()
             pv: Dict[str, Dict[float, float]] = {}
-            for fields in self.solar:
-                rows, _ = await self._read(start, end, fields)
-                for p, target in samples.items():
-                    if not rows.get(p):
-                        continue
-                    bucket = pv.setdefault(p, {})
-                    for ts, watts in _align(rows[p], target).items():
-                        bucket[ts] = bucket.get(ts, 0.0) + watts       # every array together
+            for p, target in samples.items():
+                if generation.get(p):
+                    pv[p] = _align(generation[p], target)
             for p, rows in samples.items():
                 if p in self.fleet.main.phases:
                     # a reading that never exports is the house alone, and
@@ -494,6 +554,23 @@ class DetectionRunner:
                 if var:
                     q[p] = var
         return samples, q
+
+
+def _sum_series(a: list, b: list) -> list:
+    """Two arrays' power added together, each held forward onto the other's
+    sample times - one site has two trackers and reading only the first
+    would leave half of every cloud unexplained."""
+    if not a:
+        return list(b)
+    if not b:
+        return list(a)
+    stamps = sorted({ts for ts, _ in a} | {ts for ts, _ in b})
+    ia = ib = 0
+    out = []
+    for ts in stamps:
+        ia, ib = _as_of(a, ts, ia), _as_of(b, ts, ib)
+        out.append((ts, (a[ia][1] if ia >= 0 else 0.0) + (b[ib][1] if ib >= 0 else 0.0)))
+    return out
 
 
 def _as_of(rows: list, ts: float, i: int) -> int:

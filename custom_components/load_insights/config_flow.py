@@ -18,6 +18,12 @@ from .const import (
     CONF_LAYOUT,
     LAYOUTS,
     ROLE_PREFIX,
+    ATTACH_BUS,
+    ATTACH_LOAD_PORT,
+    CONF_INVERTERS,
+    CONF_INV_ATTACH,
+    CONF_INV_DEVICE,
+    CONF_INV_TOPOLOGY,
     SOURCE_KINDS,
     CONF_SOURCE_KIND,
     DEFAULT_SOURCE_KIND,
@@ -87,6 +93,47 @@ def _grid_fields(defaults: dict) -> dict:
         selector.SelectSelectorConfig(options=list(SOURCE_KINDS), translation_key=CONF_SOURCE_KIND,
                                       mode=selector.SelectSelectorMode.DROPDOWN))
     return out
+
+
+def _inverter_fields(defaults: dict) -> dict:
+    """One inverter: what it puts out, where that output lands, and whether
+    its battery sits in front of the conversion or behind it.
+
+    Edited one at a time, stored as a LIST - a site already exists with two,
+    a SolarEdge cabled to a Deye hybrid's load port, and where an inverter
+    ATTACHES is what tells that apart from the same two boxes side by side.
+    """
+    out = {vol.Optional(CONF_INV_DEVICE, description={"suggested_value": defaults.get(CONF_INV_DEVICE)}):
+           selector.DeviceSelector(selector.DeviceSelectorConfig(
+               entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
+    out[vol.Optional("power", description={"suggested_value": defaults.get("power")})] = \
+        selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+    for p in ("a", "b", "c"):
+        key = f"power_{p}"
+        out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+    out[vol.Optional(CONF_INV_ATTACH, default=defaults.get(CONF_INV_ATTACH, ATTACH_BUS))] = \
+        selector.SelectSelector(selector.SelectSelectorConfig(
+            options=[ATTACH_BUS, ATTACH_LOAD_PORT], translation_key=CONF_INV_ATTACH,
+            mode=selector.SelectSelectorMode.DROPDOWN))
+    out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
+        selector.SelectSelector(selector.SelectSelectorConfig(
+            options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
+            mode=selector.SelectSelectorMode.DROPDOWN))
+    return out
+
+
+def _inverter_line(inverters: list) -> str:
+    if not inverters:
+        return ("None set up - the Energy dashboard's solar sources are used instead. "
+                "Add one here to override that, which is what a site whose arrays are "
+                "DC-coupled needs: their power never appears on the AC side at all.")
+    bits = []
+    for inv in inverters:
+        where = "on the bus" if inv.get(CONF_INV_ATTACH, ATTACH_BUS) == ATTACH_BUS else "on another inverter's load port"
+        bits.append(f"{inv.get('label') or inv.get(CONF_INV_DEVICE, '?')[:8]} "
+                    f"({inv.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)}, {where})")
+    return f"{len(inverters)} set up: " + "; ".join(bits)
 
 
 def _device_field(default=None):
@@ -212,7 +259,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "device_state", "detection", "grid", "naming"],
+            menu_options=["overview", "inputs", "device_state", "detection", "grid",
+                          "inverters", "naming"],
         )
 
     async def async_step_overview(self, user_input: dict[str, Any] | None = None):
@@ -276,6 +324,28 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                    if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
                 "device": current.get(CONF_GRID_DEVICE)})},
         )
+
+    async def async_step_inverters(self, user_input: dict[str, Any] | None = None):
+        """Add or edit one inverter. Emptying every power reading removes it.
+
+        Solar set up HERE wins over what the Energy dashboard lists, which is
+        the override Kozolec needs: its arrays are two MPPTs charging the
+        battery on the DC bus, so nothing about them is visible to any AC
+        meter and no amount of looking at the AC side will find them."""
+        current = list(self.config_entry.options.get(CONF_INVERTERS) or [])
+        if user_input is not None:
+            device = user_input.get(CONF_INV_DEVICE)
+            powers = {k: v for k, v in user_input.items() if k.startswith("power") and v}
+            rest = [inv for inv in current if inv.get(CONF_INV_DEVICE) != device]
+            if device and powers:
+                rest.append({CONF_INV_DEVICE: device, **powers,
+                             CONF_INV_ATTACH: user_input.get(CONF_INV_ATTACH, ATTACH_BUS),
+                             CONF_INV_TOPOLOGY: user_input.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})
+            return self.async_create_entry(
+                data={**dict(self.config_entry.options), CONF_INVERTERS: rest})
+        return self.async_show_form(
+            step_id="inverters", data_schema=vol.Schema(_inverter_fields({})),
+            description_placeholders={"found": _inverter_line(current)})
 
     async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
         """Ask before forgetting: the library and every name in it go."""

@@ -80,7 +80,8 @@
                     "device_state": "Lastni senzor stanja naprave",
                     "detection": "Zaznavanje porabnikov",
                     "naming": "Poimenuj zaznan porabnik",
-                    "grid": "Priključek na omrežje"
+                    "grid": "Priključek na omrežje",
+                    "inverters": "Razsmerniki"
                 }
             },
             "inputs": {
@@ -210,6 +211,25 @@
                     "name": "Ime",
                     "forget": "Pozabi obstoječe ime"
                 }
+            },
+            "inverters": {
+                "title": "Razsmerniki",
+                "description": "En razsmernik naenkrat. Kam je razsmernik PRIKLJUČEN loči stran z dvema napravama drug ob drugem od take, kjer je sončni razsmernik vezan na izhod hibrida - meritve so videti enake, računanje pa ni.\n\nSonce, nastavljeno tukaj, prevlada nad viri v energijski nadzorni plošči. To potrebuje stran z DC vezavo: polja, ki prek MPPT polnijo baterijo, se na AC strani sploh ne pokažejo.\n\nPusti vse meritve moči prazne, da razsmernik odstraniš.\n\n{found}",
+                "data": {
+                    "device": "Naprava razsmernika",
+                    "power": "Izhodna moč (skupna)",
+                    "power_a": "Izhodna moč A",
+                    "power_b": "Izhodna moč B",
+                    "power_c": "Izhodna moč C",
+                    "attach": "Kam gre njegov izhod",
+                    "topology": "Vezava"
+                },
+                "data_description": {
+                    "device": "Izberi napravo in spodnje meritve je mogoče izpolniti.",
+                    "power": "Uporabi, kjer razsmernik objavlja samo skupno moč. Po fazah je bolje, kjer jih ima: oblak se takrat izniči natančno.",
+                    "attach": "Na zbiralko pomeni, da napaja iste vodnike kot omrežje. Na izhod drugega razsmernika pomeni, da je za njim in da njegova meritev izhod že vključuje.",
+                    "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo."
+                }
             }
         },
         "abort": {
@@ -258,6 +278,12 @@
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"
+            }
+        },
+        "attach": {
+            "options": {
+                "bus": "Na zbiralki, ob omrežju",
+                "load_port": "Na izhodu drugega razsmernika"
             }
         }
     }

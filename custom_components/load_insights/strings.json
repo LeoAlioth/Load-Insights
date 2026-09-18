@@ -80,7 +80,8 @@
                     "device_state": "A device's own state sensor",
                     "detection": "Load detection",
                     "naming": "Name a detected load",
-                    "grid": "Grid connection"
+                    "grid": "Grid connection",
+                    "inverters": "Inverters"
                 }
             },
             "inputs": {
@@ -210,6 +211,25 @@
                     "name": "Name",
                     "forget": "Forget the name it has"
                 }
+            },
+            "inverters": {
+                "title": "Inverters",
+                "description": "One inverter at a time. Where an inverter ATTACHES is what separates a site with two boxes side by side from one whose PV inverter is cabled to a hybrid's load port - the readings look alike and the arithmetic is not.\n\nSolar set up here overrides the Energy dashboard's own solar sources. That is what a DC-coupled site needs: arrays charging the battery through MPPTs never appear on the AC side at all, so no amount of looking at an AC meter will find them.\n\nLeave every power reading empty to remove an inverter.\n\n{found}",
+                "data": {
+                    "device": "Inverter device",
+                    "power": "Output power (total)",
+                    "power_a": "Output power A",
+                    "power_b": "Output power B",
+                    "power_c": "Output power C",
+                    "attach": "Where its output goes",
+                    "topology": "Wiring"
+                },
+                "data_description": {
+                    "device": "Pick it and its readings can be filled in below.",
+                    "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly.",
+                    "attach": "On the bus means it feeds the same wires as the grid. On another inverter's load port means it sits behind one, and that inverter's reading already nets its output.",
+                    "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion."
+                }
             }
         },
         "abort": {
@@ -258,6 +278,12 @@
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"
+            }
+        },
+        "attach": {
+            "options": {
+                "bus": "On the bus, beside the grid",
+                "load_port": "On another inverter's load port"
             }
         }
     }
