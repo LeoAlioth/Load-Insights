@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -554,30 +554,27 @@ class BaseLoadSensor(_DetectionBase):
 
 
 class NamedLoadPower(_DetectionBase):
-    """Watts a named load is believed to be drawing, 0 when it is off.
+    """Mean watts a named load drew over the stretch of data last processed.
 
-    DIAGNOSTIC, because it is a best-effort reading and the energy meter
-    beside it is not. Three things limit it, and none is a bug to fix
-    (Anze, 2026-09-18, who is not much interested in it for these reasons):
+    Not the instantaneous power, which was the first design and was three
+    ways unreliable (Anze, 2026-09-18): it spoke on a step UP without waiting
+    for the matching step down; detection reads the recorder every five
+    minutes, so a load that started AND finished inside one window was
+    already closed when we looked and never showed at all - the kiln, 44
+    seconds every two minutes, was essentially never caught; and a step up
+    whose partner never arrived sat high for as much as a day.
 
-      * it is derived from a step UP whose matching step down has not
-        arrived, so unlike the energy total it never waits for the whole
-        story before speaking;
-      * detection reads the recorder every DETECTION_INTERVAL_MINUTES, so it
-        moves every five minutes, and a load that starts AND finishes inside
-        one of those windows is already closed when we look - the kiln, at
-        44 seconds every two minutes, is essentially never caught running;
-      * an up-step whose partner is never seen stays open for MAX_OPEN_S, so
-        the reading can sit high for as much as a day.
-
-    It is honest about long loads and blind to short ones. Energy is the
-    reading to trust: it counts only sessions that closed.
+    An average over the interval has none of that. It is the energy that
+    arrived divided by the time it covers, so it counts only sessions that
+    CLOSED - short loads included, at their true share of the window - and a
+    load that did nothing reads zero rather than whatever was last left open.
+    It also integrates back to the energy meter beside it, which the
+    instantaneous reading never did.
     """
 
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_suggested_display_precision = 0
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
@@ -588,7 +585,9 @@ class NamedLoadPower(_DetectionBase):
 
     @property
     def native_value(self) -> Optional[float]:
-        return round(self._runner.detector.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0))
+        # None until two passes have run: one pass gives a total, not a rate
+        value = self._runner.average_power.get(self._name)
+        return None if value is None else round(value)
 
 
 class NamedLoadEnergy(_DetectionBase):

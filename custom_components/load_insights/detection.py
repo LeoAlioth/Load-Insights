@@ -38,6 +38,7 @@ from .insights.detect import (
     carries_load,
     classify_source,
     exports_positive,
+    mean_power,
     most_specific,
 )
 from .insights.discovery import match_meter_entities
@@ -88,6 +89,11 @@ class DetectionRunner:
         # window reads exactly like nothing connected, and falling back
         # to that every quiet day would flap the wording for no reason.
         self.source_kind: Optional[str] = None
+        # Mean watts per NAMED load over the last stretch of data processed,
+        # from the energy that stretch added. See _update_average_power.
+        self.average_power: Dict[str, float] = {}
+        self._energy_mark: Dict[str, float] = {}
+        self._mark_ts: Optional[float] = None
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         self.last_run: Optional[datetime] = None
@@ -423,6 +429,7 @@ class DetectionRunner:
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
+            self._update_average_power(end.timestamp())
             self.last_processed = end
             self.caught_up = end >= now - timedelta(minutes=1)
             self.last_run = now
@@ -534,6 +541,29 @@ class DetectionRunner:
             rows.sort()
             series[key] = rows
         return series
+
+    def _update_average_power(self, processed_to: float) -> None:
+        """Mean watts each named load drew over the data just processed.
+
+        Anze, 2026-09-18: rather than report the instantaneous power of a
+        step whose matching step down has not arrived, report the ENERGY that
+        arrived divided by the time it covers. Everything that made the
+        instantaneous reading unreliable goes away - it counts only sessions
+        that CLOSED, so a 44-second kiln run contributes whether or not
+        anyone was looking at the right moment, and a step up whose partner
+        never came contributes nothing instead of sitting high for a day.
+
+        The denominator is the span of DATA processed, not wall-clock time.
+        During the backfill a single pass covers six hours of history in a
+        few seconds, and dividing that energy by the few seconds would report
+        megawatts.
+        """
+        energy = self.detector.energy_by_name()
+        previous, since = self._energy_mark, self._mark_ts
+        self._energy_mark, self._mark_ts = dict(energy), processed_to
+        if since is None or processed_to <= since:
+            return
+        self.average_power = mean_power(previous, energy, processed_to - since)
 
     async def _read(self, start: datetime, end: datetime, cfg: dict, derive_q: bool = True):
         """(watts per phase, reactive VAr per phase) over the window.

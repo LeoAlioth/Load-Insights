@@ -250,6 +250,32 @@ def delta_correlation(samples: Sequence[Tuple[float, float]],
     return sxy / math.sqrt(sxx * syy)
 
 
+def mean_power(previous: Dict[str, float], current: Dict[str, float],
+               span_s: float) -> Dict[str, float]:
+    """Mean watts per name, from the watt-hours gained over ``span_s``.
+
+    Reporting the energy that arrived divided by the time it covers, rather
+    than the instantaneous power of a step whose matching step down has not
+    arrived, is what makes this reading trustworthy: it counts only sessions
+    that CLOSED. A 44-second run contributes its share whether or not anyone
+    was looking at the right moment, and an up-step whose partner never came
+    contributes nothing rather than sitting high for a day.
+
+    A name with no earlier total is left out - one reading is a total, not a
+    rate. A total that went DOWN means detection was reset, which is not
+    negative power.
+    """
+    if span_s <= 0:
+        return {}
+    out: Dict[str, float] = {}
+    for name, total in current.items():
+        was = previous.get(name)
+        if was is None:
+            continue
+        out[name] = max(0.0, total - was) * 3600.0 / span_s
+    return out
+
+
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     """Does this reading contain the site's generation, or the house alone?
 

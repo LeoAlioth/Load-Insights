@@ -52,7 +52,7 @@
                 "name": "Osnovna poraba"
             },
             "named_load_power": {
-                "name": "Moč"
+                "name": "Povprečna moč"
             },
             "named_load_energy": {
                 "name": "Energija"

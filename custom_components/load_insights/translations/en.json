@@ -52,7 +52,7 @@
                 "name": "Base load"
             },
             "named_load_power": {
-                "name": "Power"
+                "name": "Average power"
             },
             "named_load_energy": {
                 "name": "Energy"
