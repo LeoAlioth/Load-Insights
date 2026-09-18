@@ -191,7 +191,7 @@
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
                     "layout": "Leave this on automatic and it is read off the data: a grid reading that moves against the inverter's is in parallel with it. Override it where the data cannot say, such as a site that never exports.",
-                    "source_kind": "The same AC input can be the utility or a generator, and the wiring cannot tell them apart. It decides what a shortfall means: energy bought, a generator someone has to start, or a load that goes unserved."
+                    "source_kind": "Left on automatic this is read off the reading itself: only the utility absorbs a surplus, and a generator is off far more than it is on. Override it for a generator that has not run lately, which reads exactly like nothing connected - and \"you will need the generator\" is not the same warning as \"you will go dark\"."
                 }
             },
             "naming_detail": {
@@ -245,6 +245,7 @@
         },
         "source_kind": {
             "options": {
+                "auto": "Work it out from the data",
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"

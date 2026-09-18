@@ -17,9 +17,11 @@ from .const import (
     CONF_DETECTION,
     CONF_SOURCE_KIND,
     DEFAULT_SOURCE_KIND,
+    SOURCE_AUTO,
     DOMAIN,
     SOURCE_GENERATOR,
     SOURCE_NONE,
+    SOURCE_UTILITY,
 )
 from .insights.detect import most_specific
 from .insights.scoring import LEADS_H
@@ -49,8 +51,12 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry_id)
     runner = (hass.data.get(DOMAIN) or {}).get(f"{entry_id}_detection")
     entry = hass.config_entries.async_get_entry(entry_id)
+    # Set explicitly it is the answer; left on automatic the reading itself
+    # says which, and until detection has looked, the ordinary case.
     kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(
         CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND)
+    if kind == SOURCE_AUTO:
+        kind = getattr(runner, "source_kind", None) or SOURCE_UTILITY
     lines: list[str] = []
 
     data = getattr(coordinator, "data", None)

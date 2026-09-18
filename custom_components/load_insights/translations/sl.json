@@ -191,7 +191,7 @@
                 "data_description": {
                     "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
                     "layout": "Pustite na samodejno in se prebere iz podatkov: meritev omrežja, ki se giblje nasproti razsmerniku, je z njim vzporedna. Ročno nastavite tam, kjer podatki ne morejo odgovoriti, na primer kjer objekt nikoli ne oddaja.",
-                    "source_kind": "Isti AC vhod je lahko omrežje ali generator in ožičenje tega ne loči. Od tega je odvisno, kaj pomeni primanjkljaj: kupljena energija, generator, ki ga je treba zagnati, ali breme, ki ostane nepokrito."
+                    "source_kind": "Na samodejno se ugotovi iz same meritve: samo omrežje sprejme presežek, generator pa je veliko pogosteje ugasnjen kot prižgan. Ročno nastavi za generator, ki dlje časa ni tekel - tak je videti enako kot nepriključen vhod, opozorilo pa ni isto."
                 }
             },
             "naming_detail": {
@@ -245,6 +245,7 @@
         },
         "source_kind": {
             "options": {
+                "auto": "Ugotovi iz podatkov",
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"
