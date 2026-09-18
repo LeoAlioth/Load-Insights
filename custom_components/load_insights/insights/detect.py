@@ -158,11 +158,22 @@ class Session:
     # it enters. 0 means unknown, which is treated as well-measured so that
     # nothing stored before this existed is suddenly distrusted.
     samples: int = 0
-    # How much the reading wandered WITHIN the run, as a fraction of its own
-    # level. A heating element holds still and reads near zero; anything on a
-    # variable-speed drive glides and reads a third or more. None when two
-    # loads overlapped and the wander could not be attributed to either.
-    ripple: Optional[float] = None
+    # The lowest and highest the load itself read during the run. Kept as
+    # WATTS rather than as the ratio between them, because "varies between
+    # 104 and 247 W" is a thing someone recognises about their own pump and
+    # "varies by 69%" is not (Anze, 2026-09-18). None when two loads
+    # overlapped and the wander could not be attributed to either.
+    low: Optional[float] = None
+    high: Optional[float] = None
+
+    @property
+    def ripple(self) -> Optional[float]:
+        """How far it wandered, as a fraction of its own level - which is what
+        a threshold can be set on, where watts cannot."""
+        if self.low is None or self.high is None:
+            return None
+        middle = 0.5 * (self.low + self.high)
+        return max(0.0, (self.high - self.low) / middle) if middle > MIN_NOISE_W else None
 
     @property
     def confidence(self) -> float:
@@ -200,7 +211,7 @@ class Session:
 
     def to_dict(self) -> dict:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
-                "samples": self.samples, "ripple": self.ripple,
+                "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
 
     @classmethod
@@ -769,14 +780,9 @@ class PhaseState:
             q = sum(known) / len(known) if known else None
         else:
             q = o.var                         # the factor of the level it started at
-        ripple = None
-        if o.lo is not None and o.hi is not None:
-            middle = 0.5 * (o.lo + o.hi)
-            if middle > MIN_NOISE_W:
-                ripple = max(0.0, (o.hi - o.lo) / middle)
         return Session(phases="", start=o.since, end=at, levels={"": levels},
                        pf=_pf_from(levels[0][1], q), samples=self._span(o.since, at),
-                       ripple=ripple)
+                       low=o.lo, high=o.hi)
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -841,8 +847,9 @@ class Signature:
     # want only what THIS behaviour did - mixing a retired 5.9 kW programme
     # into a 4.2 kW one would describe neither.
     carried_wh: float = 0.0
-    # running mean of how much its runs wandered inside themselves
-    ripple: Optional[float] = None
+    # running means of the band its runs wandered across, in watts
+    low: Optional[float] = None
+    high: Optional[float] = None
     # how much each reading WANDERS between sightings, as a running mean
     # absolute deviation. A load that repeats to within a few per cent is a
     # real device; one whose power and duration are all over the place is
@@ -914,8 +921,9 @@ class Signature:
             self.pf = (self.pf * a + other.pf * b) / n
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
-        if other.ripple is not None:
-            self.ripple = other.ripple if self.ripple is None else (self.ripple * a + other.ripple * b) / n
+        if other.low is not None and other.high is not None:
+            self.low = other.low if self.low is None else (self.low * a + other.low * b) / n
+            self.high = other.high if self.high is None else (self.high * a + other.high * b) / n
         self.hour_wh = [x + y for x, y in zip(self.hour_wh, other.hour_wh)]
         self.carried_wh += other.carried_wh
         self.day_wh = [x + y for x, y in zip(self.day_wh, other.day_wh)]
@@ -945,8 +953,9 @@ class Signature:
         self.level_count = (self.level_count * n + k * s.level_count) / (n + k)
         if s.pf is not None:
             self.pf = s.pf if self.pf is None else (self.pf * n + k * s.pf) / (n + k)
-        if s.ripple is not None:
-            self.ripple = s.ripple if self.ripple is None else (self.ripple * n + k * s.ripple) / (n + k)
+        if s.low is not None and s.high is not None:
+            self.low = s.low if self.low is None else (self.low * n + k * s.low) / (n + k)
+            self.high = s.high if self.high is None else (self.high * n + k * s.high) / (n + k)
         if self.last_start is not None:
             gap = s.start - self.last_start
             if gap > 0:
@@ -1065,7 +1074,7 @@ class Signature:
         """What KIND of thing this might be. Never a claim - see classify."""
         return classify(self.watts, self.pf, self.level_count, self.duration_s,
                         self.phases, self.interval_s, self.interval_mad, self.hour_wh,
-                        self.ripple)
+                        self.low, self.high)
 
     def _spread(self, s: Session, tz) -> None:
         """Put a session's energy into every hour and day it occupied.
@@ -1151,7 +1160,7 @@ class Signature:
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
-                "ripple": _trim(self.ripple, 3),
+                "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1)}
 
@@ -1165,7 +1174,7 @@ class Signature:
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
-                   ripple=d.get("ripple"),
+                   low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))
 
 
