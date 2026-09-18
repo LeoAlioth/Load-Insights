@@ -1,0 +1,199 @@
+"""Run load detection over an exported history, with no Home Assistant.
+
+Shipping a build to a live site to see what the detector makes of it is a
+slow way to learn anything (Anze, 2026-09-18). This takes the CSV that
+Home Assistant's History panel downloads - the one with entity_id, state
+and last_changed - and feeds it through exactly the code that runs there,
+then prints the library the naming page would show.
+
+    python3 tests/replay.py ~/Downloads/history.csv
+    python3 tests/replay.py hist.csv --role power_a=sensor.my_phase_a
+    python3 tests/replay.py hist.csv --sub "Boiler=sensor.boiler_power"
+    python3 tests/replay.py hist.csv --pv sensor.inverter_ac_power
+
+Entities are matched to their roles by name, the same way the config flow
+matches a device's sensors, and anything it gets wrong can be pinned with
+--role. Everything is optional except at least one phase of power.
+"""
+import argparse
+import csv
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _load import load  # noqa: E402
+
+D = load("insights.detect")
+DISCOVERY = load("insights.discovery")
+
+KIND_HINTS = (
+    ("power_factor", "power_factor"), ("_pf", "power_factor"),
+    ("voltage", "voltage"), ("current", "current"), ("power", "power"),
+)
+
+
+def device_class_of(entity_id: str):
+    """The CSV carries no device class, so read it off the name."""
+    lowered = entity_id.lower()
+    for token, kind in KIND_HINTS:
+        if token in lowered:
+            return kind
+    return None
+
+
+def read_csv(paths):
+    """entity_id -> [(epoch seconds, value)], numbers only, in time order."""
+    series = defaultdict(list)
+    for path in paths:
+        with open(path, newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                eid = (row.get("entity_id") or "").strip()
+                raw = (row.get("state") or "").strip()
+                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
+                if not eid or not when:
+                    continue
+                try:
+                    value = float(raw)
+                except ValueError:
+                    continue                      # unavailable, unknown, a text state
+                try:
+                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=timezone.utc)
+                series[eid].append((moment.timestamp(), value))
+    for rows in series.values():
+        rows.sort()
+    return dict(series)
+
+
+def guess_roles(series):
+    """Which entity is which per-phase reading, by the live matcher."""
+    rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid}
+            for eid in series]
+    return DISCOVERY.match_meter_entities(rows, "load")
+
+
+def align(source, target_rows):
+    """``source`` read as of each of ``target_rows``' moments."""
+    out, i = {}, 0
+    for ts, _ in target_rows:
+        while i + 1 < len(source) and source[i + 1][0] <= ts:
+            i += 1
+        if source and source[0][0] <= ts:
+            out[ts] = source[i][1]
+    return out
+
+
+def reactive(power_rows, volts, amps, pfs):
+    import math
+    out = {}
+    vi = ai = fi = 0
+    volts, amps, pfs = volts or [], amps or [], pfs or []
+
+    def walk(rows, ts, i):
+        while i + 1 < len(rows) and rows[i + 1][0] <= ts:
+            i += 1
+        return i if rows and rows[0][0] <= ts else -1
+
+    for ts, p in power_rows:
+        vi, ai, fi = walk(volts, ts, max(vi, 0)), walk(amps, ts, max(ai, 0)), walk(pfs, ts, max(fi, 0))
+        apparent = None
+        if vi >= 0 and ai >= 0:
+            apparent = volts[vi][1] * amps[ai][1]
+        elif fi >= 0 and pfs[fi][1]:
+            apparent = abs(p) / abs(pfs[fi][1])
+        if apparent is not None:
+            out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("csv", nargs="+", help="History panel exports")
+    parser.add_argument("--role", action="append", default=[],
+                        metavar="power_a=sensor.x", help="pin one field to an entity")
+    parser.add_argument("--sub", action="append", default=[],
+                        metavar="Name=sensor.x", help="a device's own meter")
+    parser.add_argument("--pv", action="append", default=[], help="an array's power")
+    parser.add_argument("--top", type=int, default=25, help="rows to print")
+    args = parser.parse_args()
+
+    series = read_csv(args.csv)
+    if not series:
+        print("no numeric rows found - is this a History panel export?")
+        return 1
+    fields = guess_roles(series)
+    for pin in args.role:
+        key, _, eid = pin.partition("=")
+        fields[key.strip()] = eid.strip()
+    fields = {k: v for k, v in fields.items() if v in series}
+
+    span = [t for rows in series.values() for t, _ in rows]
+    print(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
+          f"{(max(span) - min(span)) / 86400:.1f} days")
+    print("matched:")
+    for key in sorted(fields):
+        print(f"   {key:12} {fields[key]}")
+    phases = [p for p in D.PHASES if fields.get(f"power_{p}")]
+    if not phases:
+        print("no per-phase power found - pin one with --role power_a=sensor.x")
+        return 1
+
+    samples = {p: series[fields[f"power_{p}"]] for p in phases}
+    q = {}
+    for p in phases:
+        var = reactive(samples[p],
+                       series.get(fields.get(f"voltage_{p}", "")),
+                       series.get(fields.get(f"current_{p}", "")),
+                       series.get(fields.get(f"pf_{p}", "")))
+        if var:
+            q[p] = var
+    pv = {}
+    for eid in args.pv:
+        rows = series.get(eid)
+        if not rows:
+            print(f"   (no rows for {eid})")
+            continue
+        for p in phases:
+            bucket = pv.setdefault(p, {})
+            for ts, watts in align(rows, samples[p]).items():
+                bucket[ts] = bucket.get(ts, 0.0) + watts
+    for p in list(pv):
+        verdict = D.pv_shows_in(samples[p], pv[p])
+        print(f"   array shows in phase {p.upper()}: {verdict}")
+        if verdict is False:
+            pv.pop(p)
+
+    subs = {}
+    for pin in args.sub:
+        name, _, eid = pin.partition("=")
+        if eid.strip() in series:
+            subs[name.strip()] = {"a": series[eid.strip()]}
+
+    fleet = D.Fleet()
+    fleet.main.tz_offset_s = 0.0
+    latest = max(t for rows in samples.values() for t, _ in rows)
+    fleet.process(samples, subs, q, None, latest,
+                  {name: True for name in subs}, pv or None)
+    detector = fleet.main
+    merged = detector.consolidate(100.0)
+
+    print()
+    print(f"{len(detector.signatures)} signatures from "
+          f"{sum(s.count for s in detector.signatures)} sessions, {merged} merged on the way")
+    for phase, state in detector.phases.items():
+        if state.baseline is not None:
+            print(f"   phase {phase.upper()}: idle {state.baseline:.0f} W, "
+                  f"noise {state.noise:.0f} W, {len(state.open_edges)} still open")
+    print()
+    for sig in sorted(detector.signatures, key=lambda s: -s.energy_wh)[:args.top]:
+        print(f"  {sig.row(timezone.utc)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
