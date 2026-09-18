@@ -1,6 +1,8 @@
 """Fetches the site's hourly statistics on the quarter hours and forecasts."""
 from __future__ import annotations
 
+import functools
+
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -22,13 +24,18 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
     CONF_CALENDAR_ENTITIES,
+    CONF_DETECTION,
     CONF_DEVICE_STATE_SENSORS,
     CONF_INPUT_ENTITIES,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
     DOMAIN,
     HISTORY_WEEKS,
+    CONF_LAYOUT,
     HORIZON_HOURS,
+    LAYOUT_ALIASES,
+    LAYOUT_PARALLEL,
+    LAYOUT_SERIES,
     REFRESH_MINUTES,
     REFRESH_SECOND,
 )
@@ -269,8 +276,17 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # own forecast integrations predict, then the battery in between ---
         pv = await self._solar_forecast(site, now)
         soc = _read_number(self.hass, site.battery_soc)
+        # Where the pack sits decides which conversions its energy pays for.
+        # Only an EXPLICIT setting is used: the layout detection auto-derives
+        # from the load reading, which at home is a house-consumption template
+        # and says nothing about the battery - and reading it as series there
+        # would quietly inflate consumption by the inverter's efficiency.
+        detection = self.entry.options.get(CONF_DETECTION) or {}
+        declared = LAYOUT_ALIASES.get(detection.get(CONF_LAYOUT), detection.get(CONF_LAYOUT))
+        topology = declared if declared in (LAYOUT_PARALLEL, LAYOUT_SERIES) else LAYOUT_PARALLEL
         grid = await self.hass.async_add_executor_job(
-            build_grid, cons_fc.hourly, pv, soc, site.battery_capacity_kwh,
+            functools.partial(build_grid, cons_fc.hourly, pv, soc,
+                              site.battery_capacity_kwh, topology=topology),
         )
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,

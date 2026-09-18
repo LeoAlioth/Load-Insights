@@ -14,6 +14,24 @@ pack's capacity or state of charge is unknown, no battery is simulated and
 the net is reported before it.
 
 Powers are watts; energies are kWh per hour, which is kW.
+
+Two facts about the site change the arithmetic rather than the wording.
+
+WHERE THE BATTERY SITS. Series, or DC-coupled: the arrays land on the DC
+bus in front of the inverter, so charging is DC to DC and nearly free, and
+everything the house draws pays the inverter conversion once - whether it
+came from the pack or off the arrays a second earlier. Parallel, or
+AC-coupled: the arrays are already AC and feed the house at no cost, and
+only the surplus pays, twice, in and back out. On a site that runs its
+whole night off the pack that is the dominant term, and the model used to
+have no losses at all (Anze, 2026-09-18, about Kozolec).
+
+WHAT IS AT THE AC INPUT. The residual after the battery is grid flow only
+where there is a grid. Off grid a deficit is a load that goes UNSERVED and
+a surplus is generation the arrays CURTAIL; on a generator the deficit is
+fuel someone has to burn. Same number, three different meanings, and
+Kozolec was being shown a weekly import figure for a site with no utility
+connection.
 """
 from __future__ import annotations
 
@@ -22,6 +40,18 @@ from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
 Sample = Tuple[datetime, float]
+
+# Round-trip efficiencies. Deliberately plain single figures: a real pack's
+# curve depends on rate, temperature and state of charge, and pretending to
+# that precision inside an hourly forecast would be false rigour.
+DC_CHARGE = 0.98        # array to pack on a shared DC bus
+DC_DISCHARGE = 0.94     # pack out through the inverter
+AC_CHARGE = 0.95        # AC bus into the pack, one conversion in
+AC_DISCHARGE = 0.94     # and one back out
+INVERTER = 0.94         # DC bus to AC loads, the series path's standing cost
+
+TOPOLOGY_SERIES = "series"
+TOPOLOGY_PARALLEL = "parallel"
 
 
 @dataclass(frozen=True)
@@ -56,10 +86,24 @@ class GridForecast:
 def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None,
           soc: Optional[float] = None, capacity_kwh: Optional[float] = None,
           max_charge_w: Optional[float] = None, max_discharge_w: Optional[float] = None,
-          soc_min: float = 0.0, soc_max: float = 100.0) -> GridForecast:
+          soc_min: float = 0.0, soc_max: float = 100.0,
+          topology: str = TOPOLOGY_PARALLEL) -> GridForecast:
     """``consumption`` is the hourly forecast; ``pv`` maps hour key to forecast
-    PV kWh for that hour. ``soc`` is the pack's state of charge NOW."""
+    PV kWh for that hour. ``soc`` is the pack's state of charge NOW.
+
+    ``topology`` says where the pack sits relative to the conversion, which
+    is where the losses land - see the module docstring."""
     pv = pv or {}
+    # Everything below is in AC-DELIVERED terms, so the topology shows up
+    # only as efficiencies. On the series path the arrays are DC and reach
+    # the house through the inverter, so a kWh of array is worth INVERTER
+    # kWh at the socket - and a kWh of AC-equivalent surplus never paid that
+    # conversion, so it stores MORE than one kWh in the pack. Round trip
+    # works out at 98% DC-coupled against 89% AC-coupled, which is right:
+    # the DC path avoids a conversion the AC path cannot.
+    series = topology == TOPOLOGY_SERIES
+    charge_eff = (DC_CHARGE / INVERTER) if series else AC_CHARGE
+    discharge_eff = DC_DISCHARGE if series else AC_DISCHARGE
     model_battery = soc is not None and capacity_kwh is not None and capacity_kwh > 0
     level = (soc / 100.0) * capacity_kwh if model_battery else 0.0
     lo = (soc_min / 100.0) * capacity_kwh if model_battery else 0.0
@@ -72,23 +116,28 @@ def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None
         if p is not None:
             seen_pv += 1
         p = p or 0.0
+        if series:
+            p = p * INVERTER            # DC array, as it arrives at the loads
         net_before = c - p
         battery = 0.0
         if model_battery:
             if net_before < 0:                       # surplus: charge
-                room = max(0.0, hi - level)
-                take = min(-net_before, room)
+                offered = -net_before
                 if max_charge_w is not None:
-                    take = min(take, max_charge_w / 1000.0)
-                level += take
-                battery = -take
+                    offered = min(offered, max_charge_w / 1000.0)
+                # what reaches the pack is less than what is offered to it
+                stored = min(offered * charge_eff, max(0.0, hi - level))
+                level += stored
+                battery = -(stored / charge_eff if charge_eff else 0.0)
             else:                                    # deficit: discharge
-                have = max(0.0, level - lo)
-                give = min(net_before, have)
+                wanted = net_before
                 if max_discharge_w is not None:
-                    give = min(give, max_discharge_w / 1000.0)
-                level -= give
-                battery = give
+                    wanted = min(wanted, max_discharge_w / 1000.0)
+                # and more leaves the pack than arrives at the house
+                drawn = min(wanted / discharge_eff if discharge_eff else 0.0,
+                            max(0.0, level - lo))
+                level -= drawn
+                battery = drawn * discharge_eff
         rows.append(GridHour(
             when=t, consumption_kwh=c, pv_kwh=p,
             net_before_battery_kwh=net_before, battery_kwh=battery,
