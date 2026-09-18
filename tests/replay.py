@@ -64,9 +64,24 @@ def drop_aggregates(rows):
     return kept, dropped
 
 
+def expand(paths):
+    """Files, or every .csv inside a directory - a long window has to come
+    out of the History panel a day at a time (Anze, 2026-09-18), so a folder
+    of them is the normal case."""
+    out = []
+    for raw in paths:
+        path = Path(raw)
+        out.extend(sorted(path.glob("*.csv")) if path.is_dir() else [path])
+    return out
+
+
 def read_csv(paths, keep_coarse=False):
-    """entity_id -> [(epoch seconds, value)], numbers only, in time order."""
+    """entity_id -> [(epoch seconds, value)], numbers only, in time order.
+
+    Order across files does not matter, and the overlap between one day's
+    export and the next is harmless: rows are sorted and de-duplicated."""
     series = defaultdict(list)
+    paths = expand(paths)
     for path in paths:
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
@@ -89,12 +104,14 @@ def read_csv(paths, keep_coarse=False):
     out, coarse = {}, 0
     for eid, rows in series.items():
         rows.sort()
+        rows = [row for i, row in enumerate(rows) if i == 0 or row[0] != rows[i - 1][0]]
         if not keep_coarse:
             rows, gone = drop_aggregates(rows)
             coarse += gone
         out[eid] = rows
     if coarse:
         print(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
+    print(f"read {len(paths)} file(s)")
     return out
 
 
