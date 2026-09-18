@@ -131,7 +131,7 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for, biggest first - {count} of them, showing {hidden} fewer than that here. Click one to see it and give it a name; naming brings you back to this list.\n\nGive two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities. Loads a device meter already accounts for are named by the Energy dashboard and are not listed.",
+                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row is: power (phases), energy per week and per run, how long a run lasts, what it might be, and its week from Monday to Sunday. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
