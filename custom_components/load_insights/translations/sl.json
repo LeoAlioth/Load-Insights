@@ -191,7 +191,6 @@
                     "grid_power_a": "Moč omrežja A",
                     "grid_power_b": "Moč omrežja B",
                     "grid_power_c": "Moč omrežja C",
-                    "layout": "Vezava",
                     "source_kind": "Kaj je priključeno",
                     "grid_voltage_a": "Napetost omrežja A",
                     "grid_voltage_b": "Napetost omrežja B",
@@ -205,7 +204,6 @@
                 },
                 "data_description": {
                     "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
-                    "layout": "Pustite na samodejno in se prebere iz podatkov: meritev omrežja, ki se giblje nasproti razsmerniku, je z njim vzporedna. Ročno nastavite tam, kjer podatki ne morejo odgovoriti, na primer kjer objekt nikoli ne oddaja.",
                     "source_kind": "Na samodejno se ugotovi iz same meritve: samo omrežje sprejme presežek, generator pa je veliko pogosteje ugasnjen kot prižgan. Ročno nastavi za generator, ki dlje časa ni tekel - tak je videti enako kot nepriključen vhod, opozorilo pa ni isto."
                 }
             },
@@ -230,13 +228,11 @@
                     "power_a": "Izhodna moč A",
                     "power_b": "Izhodna moč B",
                     "power_c": "Izhodna moč C",
-                    "attach": "Kam gre njegov izhod",
                     "topology": "Vezava"
                 },
                 "data_description": {
                     "device": "Izberi napravo in spodnje meritve je mogoče izpolniti.",
                     "power": "Uporabi, kjer razsmernik objavlja samo skupno moč. Po fazah je bolje, kjer jih ima: oblak se takrat izniči natančno.",
-                    "attach": "Na zbiralko pomeni, da napaja iste vodnike kot omrežje. Na izhod drugega razsmernika pomeni, da je za njim in da njegova meritev izhod že vključuje.",
                     "topology": "Vzporedno: napaja zbiralko neposredno, baterija pa se polni z AC strani. Zaporedno: vse teče skozi njega, baterija pa je na DC zbiralki pred pretvorbo."
                 }
             }
@@ -287,12 +283,6 @@
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"
-            }
-        },
-        "attach": {
-            "options": {
-                "bus": "Na zbiralki, ob omrežju",
-                "load_port": "Na izhodu drugega razsmernika"
             }
         },
         "interval_minutes": {
