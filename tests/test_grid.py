@@ -1,0 +1,136 @@
+"""What the meter will do: consumption less PV, then the battery."""
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _load import load, run_main  # noqa: E402
+
+G = load("insights.grid")
+TZ = ZoneInfo("Europe/Ljubljana")
+T0 = datetime(2026, 9, 17, 0, 0, tzinfo=TZ)
+
+
+def hours(vals, start=T0):
+    return [(start + timedelta(hours=i), v) for i, v in enumerate(vals)]
+
+
+def pv(vals, start=T0):
+    return {(start + timedelta(hours=i)).timestamp(): v for i, v in enumerate(vals)}
+
+
+def test_without_pv_the_meter_is_the_consumption():
+    g = G.build(hours([1.0, 2.0, 0.5]))
+    assert [round(h.net_kwh, 3) for h in g.hours] == [1.0, 2.0, 0.5]
+    assert g.import_kwh == 3.5 and g.export_kwh == 0.0
+    assert not g.battery_modelled and g.pv_hours == 0
+    assert all(h.soc is None for h in g.hours)
+
+
+def test_pv_turns_the_meter_around():
+    g = G.build(hours([1.0, 1.0, 1.0]), pv([0.0, 3.0, 1.0]))
+    assert [round(h.net_kwh, 3) for h in g.hours] == [1.0, -2.0, 0.0]
+    assert g.import_kwh == 1.0 and g.export_kwh == 2.0
+    assert g.pv_hours == 3
+
+
+def test_a_missing_pv_hour_counts_as_no_sun_and_is_reported():
+    g = G.build(hours([1.0, 1.0]), {T0.timestamp(): 2.0})       # only the first hour forecast
+    assert [round(h.net_kwh, 3) for h in g.hours] == [-1.0, 1.0]
+    assert g.pv_hours == 1, "the caller can see how far the PV forecast reached"
+
+
+def test_the_battery_absorbs_the_surplus_then_carries_the_evening():
+    # 10 kWh pack at 50 %: 5 kWh in it, 5 kWh of room
+    g = G.build(hours([1.0, 1.0, 1.0, 1.0]), pv([4.0, 4.0, 0.0, 0.0]),
+                soc=50.0, capacity_kwh=10.0)
+    assert g.battery_modelled
+    n = [round(h.net_kwh, 3) for h in g.hours]
+    b = [round(h.battery_kwh, 3) for h in g.hours]
+    s = [round(h.soc, 1) for h in g.hours]
+    # AC-coupled, so charging pays a conversion in and discharging one out:
+    # 3 kWh offered puts 2.85 kWh in the pack, and the pack gives up 1.064 kWh
+    # to deliver 1 kWh to the house
+    assert b[0] == -3.0 and b[1] == -2.263, b     # all of it, then only the room left
+    assert n[0] == 0.0 and n[1] == -0.737, n      # full: the rest exports
+    assert s[1] == 100.0
+    assert b[2] == 1.0 and n[2] == 0.0, (b, n)    # evening drawn from the pack
+    assert s[3] == 78.7
+
+
+def test_an_empty_pack_imports():
+    g = G.build(hours([2.0, 2.0]), soc=5.0, capacity_kwh=10.0)
+    # 0.5 kWh left in the pack delivers 0.47 kWh to the house
+    assert [round(h.battery_kwh, 3) for h in g.hours] == [0.47, 0.0]
+    assert [round(h.net_kwh, 3) for h in g.hours] == [1.53, 2.0]
+    assert g.hours[1].soc == 0.0
+
+
+def test_rated_power_bounds_what_the_pack_can_do():
+    g = G.build(hours([0.0, 5.0]), pv([9.0, 0.0]), soc=50.0, capacity_kwh=20.0,
+                max_charge_w=3000.0, max_discharge_w=2000.0)
+    assert round(g.hours[0].battery_kwh, 3) == -3.0, "charge capped at 3 kW"
+    assert round(g.hours[0].net_kwh, 3) == -6.0, "the rest exports"
+    assert round(g.hours[1].battery_kwh, 3) == 2.0, "discharge capped at 2 kW"
+    assert round(g.hours[1].net_kwh, 3) == 3.0
+
+
+def test_reserve_limits_are_respected():
+    g = G.build(hours([2.0, 2.0]), soc=50.0, capacity_kwh=10.0, soc_min=40.0)
+    assert round(g.hours[0].battery_kwh, 3) == 0.94, "only down to the floor"
+    assert g.hours[0].soc == 40.0 and g.hours[1].battery_kwh == 0.0
+
+
+def test_no_soc_means_no_battery_and_the_net_is_reported_before_it():
+    g = G.build(hours([1.0]), pv([3.0]), soc=None, capacity_kwh=10.0)
+    assert not g.battery_modelled
+    assert g.hours[0].net_kwh == g.hours[0].net_before_battery_kwh == -2.0
+    assert g.hours[0].soc is None
+
+
+def test_an_empty_forecast_is_an_empty_answer():
+    g = G.build([])
+    assert g.hours == () and g.import_kwh == 0.0 and g.export_kwh == 0.0
+
+
+def test_a_dc_coupled_pack_pays_for_the_conversion_once_not_twice():
+    """Series: the arrays are on the DC bus in front of the inverter, so
+    charging is nearly free and EVERY watt the house draws pays the
+    inverter - whether it came from the pack or off the arrays a second
+    earlier. Kozolec is this shape, and the model used to have no losses at
+    all."""
+    # nothing running, so the whole array is surplus either way: the DC path
+    # stores more of it, having skipped a conversion the AC path must pay
+    ac = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
+    dc = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
+                 topology=G.TOPOLOGY_SERIES)
+    assert dc.hours[0].soc > ac.hours[0].soc, (dc.hours[0].soc, ac.hours[0].soc)
+    # but a DC array delivers less to the socket than its nameplate kWh, so
+    # with the house running there is less surplus to begin with
+    ac2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
+    dc2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
+                  topology=G.TOPOLOGY_SERIES)
+    assert dc2.hours[0].net_before_battery_kwh > ac2.hours[0].net_before_battery_kwh
+
+    # overnight: the pack has to give up more than the house receives, and
+    # the series path gives up more still
+    ac_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0)
+    dc_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0, topology=G.TOPOLOGY_SERIES)
+    assert dc_n.hours[0].soc == ac_n.hours[0].soc, "both pay one inverter conversion out"
+    # what the house actually gets is what was asked for, either way
+    assert round(ac_n.hours[0].battery_kwh, 3) == round(dc_n.hours[0].battery_kwh, 3) == 2.0
+
+
+def test_a_lossless_pack_is_not_a_thing_and_the_old_answer_proves_it():
+    """Round-tripping 10 kWh through a pack and back must not return 10 kWh."""
+    g = G.build(hours([0.0, 0.0, 10.0]), pv([10.0, 0.0, 0.0]),
+                soc=0.0, capacity_kwh=20.0)
+    went_in = -g.hours[0].battery_kwh
+    came_out = g.hours[2].battery_kwh
+    assert went_in > came_out > 0, (went_in, came_out)
+    assert round(came_out / went_in, 2) == round(G.AC_CHARGE * G.AC_DISCHARGE, 2)
+
+
+if __name__ == "__main__":
+    run_main(globals())
