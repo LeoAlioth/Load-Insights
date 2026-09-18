@@ -135,6 +135,12 @@ EVIDENCE_CHOICES = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9)
 # "lower it slowly if we are not getting good hits" without any state to
 # decay: the bar is what it is, and the list simply never runs dry.
 NAMING_MIN_ROWS = 5
+# The smallest change to call a step, as a floor under what each phase
+# measures for itself. Anze asked whether it was configurable - it was not,
+# and at 100 W it was the binding constraint on both sites, which is why
+# Kozolec has two fridges and detected neither.
+CONF_MIN_STEP_W = "min_step_w"
+STEP_CHOICES = (5, 10, 20, 40, 80)
 # Bumped whenever a signature is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"

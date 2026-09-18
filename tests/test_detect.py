@@ -1382,6 +1382,40 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     assert len(clock.row(tz)) < 72, clock.row(tz)
 
 
+def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
+    """A fixed 100 W floor was the binding constraint on both real sites,
+    whose sample-to-sample movement is 3 to 5 W - which is why Kozolec has
+    two fridges and detected neither. The floor is now a backstop and the
+    rest is measured: how far the reading moves BETWEEN SAMPLES, and what
+    share of the running level that is."""
+    st = D.PhaseState()
+    # a quiet signal: the measured figure lands near the floor
+    for i in range(400):
+        st.process(T0 + i * DT, 300.0 + (3.0 if i % 2 else -3.0))
+    assert st.noise <= 40.0, st.noise
+    assert st.noise_at(300.0) < 60.0
+
+    # ...and the same phase is deliberately deafer while something big runs,
+    # because a reading wanders more when more is flowing through it
+    st.noise_rel = 0.02
+    assert st.noise_at(5000.0) > st.noise_at(300.0)
+    assert st.noise_at(5000.0) >= 100.0
+
+    # a 60 W fridge on a quiet phase is now a step, where it never was
+    quiet = D.PhaseState()
+    quiet.floor_zero = True
+    rows = []
+    for i in range(600):
+        on = 60.0 if (i // 40) % 2 else 0.0
+        rows.append((T0 + i * DT, 250.0 + on + (2.0 if i % 2 else -2.0)))
+    closed = []
+    for ts, w in rows:
+        closed += quiet.process(ts, w)
+    assert closed, f"nothing detected at noise {quiet.noise:.0f} W"
+    assert any(abs(sum(s.power_by_phase().values()) - 60.0) < 25.0 for s in closed), \
+        [round(sum(s.power_by_phase().values())) for s in closed]
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had
