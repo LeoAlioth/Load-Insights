@@ -17,6 +17,7 @@ from .const import (
     CONF_GRID_PREFIX,
     CONF_LAYOUT,
     LAYOUTS,
+    ROLE_PREFIX,
     SOURCE_KINDS,
     CONF_SOURCE_KIND,
     DEFAULT_SOURCE_KIND,
@@ -59,14 +60,24 @@ def _meter_fields(defaults: dict) -> dict:
 
 
 def _grid_fields(defaults: dict) -> dict:
-    """The grid connection: per-phase power, and how it is wired."""
+    """The grid connection: its whole electrical set, and how it is wired.
+
+    Voltage and current live here and not only on the load page because they
+    belong to the METER that publishes them. A power factor is only a power
+    factor when the watts and the amps are the same circuit, and the load
+    page is often pointed at a template with no volts or amps of its own -
+    which is home, where the grid meter is the one carrying every household
+    watt and so the one whose reactive power steps when a load switches."""
     out = {vol.Optional(CONF_GRID_DEVICE, description={"suggested_value": defaults.get(CONF_GRID_DEVICE)}):
            selector.DeviceSelector(selector.DeviceSelectorConfig(
                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
-    for p in ("a", "b", "c"):
-        key = f"{CONF_GRID_PREFIX}{p}"
-        out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+    for kind, device_class in (("power", "power"), ("voltage", "voltage"),
+                               ("current", "current"), ("pf", "power_factor")):
+        for p in ("a", "b", "c"):
+            key = f"{ROLE_PREFIX['grid']}{kind}_{p}"
+            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
+                selector.EntitySelector(selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class))
     out[vol.Optional(CONF_LAYOUT, default=LAYOUT_ALIASES.get(
         defaults.get(CONF_LAYOUT, LAYOUT_AUTO), defaults.get(CONF_LAYOUT, LAYOUT_AUTO)))] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(LAYOUTS), translation_key=CONF_LAYOUT,
@@ -236,9 +247,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             device = user_input.get(CONF_GRID_DEVICE)
             pending, self._pending_grid = self._pending_grid, None
             if device and pending is None:
-                found = {f"{CONF_GRID_PREFIX}{p}": v for k, v in
-                         _discover(self.hass, device, role="grid").items()
-                         for p in [k.rsplit("_", 1)[1]] if k.startswith("power_")}
+                # every kind, not just watts: the meter's own volts and amps
+                # are what make its reactive power meaningful
+                found = {f"{ROLE_PREFIX['grid']}{k}": v
+                         for k, v in _discover(self.hass, device, role="grid").items()}
                 typed = {k: v for k, v in user_input.items() if v}
                 merged = {**found, **typed}
                 if device != detection.get(CONF_GRID_DEVICE) or merged != typed:
@@ -246,13 +258,13 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                     return self.async_show_form(
                         step_id="grid", data_schema=vol.Schema(_grid_fields(merged)),
                         description_placeholders={"found": _found_line(self.hass, {
-                            **{k.replace(CONF_GRID_PREFIX, "power_"): v for k, v in merged.items()
-                               if k.startswith(CONF_GRID_PREFIX)},
+                            **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in merged.items()
+                               if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
                             "device": device})},
                     )
             keep = {k: v for k, v in detection.items()
-                    if not k.startswith(CONF_GRID_PREFIX)
-                    and k not in (CONF_GRID_DEVICE, CONF_LAYOUT, CONF_SOURCE_KIND)}
+                    if not k.startswith(ROLE_PREFIX["grid"])
+                    and k not in (CONF_LAYOUT, CONF_SOURCE_KIND)}
             cfg = {**keep, **{k: v for k, v in user_input.items() if v}}
             return self.async_create_entry(
                 data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
@@ -260,8 +272,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="grid", data_schema=vol.Schema(_grid_fields(current)),
             description_placeholders={"found": _found_line(self.hass, {
-                **{k.replace(CONF_GRID_PREFIX, "power_"): v for k, v in current.items()
-                   if k.startswith(CONF_GRID_PREFIX)},
+                **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in current.items()
+                   if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
                 "device": current.get(CONF_GRID_DEVICE)})},
         )
 

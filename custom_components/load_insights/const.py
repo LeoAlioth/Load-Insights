@@ -41,6 +41,23 @@ CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a
 # grid would count the pass-through twice.
 CONF_GRID_PREFIX = "grid_power_"
 CONF_GRID_DEVICE = "grid_device"
+# Each ROLE carries the whole electrical set, not just watts. Voltage and
+# current belong to the meter that publishes them, and pairing one meter's
+# amps with another meter's watts is not a power factor - it is a
+# subtraction artefact. Home did exactly that: the load reading was a
+# template of house consumption while the volts and amps came off the grid
+# meter, and the reactive power derived from the pair turned 121 signatures
+# into 199 in a single day (Anze, 2026-09-18).
+ROLE_PREFIX = {"load": "", "grid": "grid_"}
+# Inverters, as a LIST from the start: one site already has two - a SolarEdge
+# cabled to a Deye hybrid's load port - and retrofitting a list onto a
+# single-inverter config would be a migration across every site.
+CONF_INVERTERS = "inverters"
+CONF_INV_DEVICE = "device"
+CONF_INV_ATTACH = "attach"          # which node its output feeds
+CONF_INV_TOPOLOGY = "topology"
+ATTACH_BUS = "bus"                  # the same bus as the grid/main meter
+ATTACH_LOAD_PORT = "load_port"      # behind another inverter's output
 CONF_LAYOUT = "layout"
 LAYOUT_AUTO = "auto"
 LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid

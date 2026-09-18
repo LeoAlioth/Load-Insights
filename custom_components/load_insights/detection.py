@@ -47,7 +47,10 @@ STORAGE_VERSION = 1
 # what it learns now, so the library is dropped and the backfill re-run.
 # 2 = sessions are paired edges rather than excursions above the idle floor.
 # 3 = the hour and weekday histograms hold ENERGY, not counts of starts.
-DETECTOR_GENERATION = 3
+# 4 = reactive power comes from one meter's own power, voltage and current,
+#     and the step is measured against a median rather than a slow EMA, so
+#     every stored power factor was derived differently from today's.
+DETECTOR_GENERATION = 4
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -321,8 +324,12 @@ class DetectionRunner:
             now = dt_util.utcnow()
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples, q = await self._read(start, end, self.config)
+            samples, _ = await self._read(start, end, self.config)
             samples = await self._add_the_grid(start, end, samples)
+            # after the sum, not before: where the inverter is added back the
+            # grid meter is the circuit every household watt flows through,
+            # so its VAr is the one that steps when a load switches
+            q = await self._reactive_series(start, end, samples)
             self.solar = await self._resolve_solar()
             pv: Dict[str, Dict[float, float]] = {}
             for fields in self.solar:
@@ -369,21 +376,89 @@ class DetectionRunner:
         finally:
             self._running = False
 
-    async def _read(self, start: datetime, end: datetime, cfg: dict):
-        """(watts per phase, reactive VAr per phase) over the window.
+    def _device_of(self, entity_id: Optional[str]) -> Optional[str]:
+        """Which device publishes this entity, or None."""
+        if not entity_id:
+            return None
+        entry = er.async_get(self.hass).async_get(entity_id)
+        return entry.device_id if entry else None
 
-        Voltage and current were configured but unread until now: with them
-        the REACTIVE power follows, and a load's own power factor is the
-        ratio of how far each moved when it switched - which is what tells a
-        heater from a motor. A power factor entity does instead."""
+    def _coherent_triple(self, cfg: dict, phase: str) -> Optional[dict]:
+        """One role's power, voltage and current for a phase - but only when
+        they come off the SAME device.
+
+        V x I is the apparent power OF THE CIRCUIT THE METER IS IN. Pair one
+        meter's amps with another meter's watts and the root of S squared
+        minus P squared is not a reactive power, it is the two circuits'
+        difference wearing the units of one. Home was configured exactly that
+        way - house-consumption templates for the watts, grid meter for the
+        volts and amps - and it cost 78 phantom signatures in a single day.
+
+        A power-factor entity needs no current, so it counts as coherent on
+        its own as long as it sits with the power."""
+        power = cfg.get(f"power_{phase}")
+        home = self._device_of(power)
+        if not power:
+            return None
+        def with_power(key):
+            eid = cfg.get(key)
+            # no device on either side means a template or a helper, and we
+            # cannot prove they belong together - so we do not assume it
+            return eid if eid and home is not None and self._device_of(eid) == home else None
+        pf = with_power(f"pf_{phase}")
+        volts, amps = with_power(f"voltage_{phase}"), with_power(f"current_{phase}")
+        if not pf and not (volts and amps):
+            return None
+        return {f"power_{phase}": power, f"pf_{phase}": pf,
+                f"voltage_{phase}": volts, f"current_{phase}": amps}
+
+    async def _reactive_series(self, start: datetime, end: datetime,
+                               targets: Dict[str, list]) -> Dict[str, Dict[float, float]]:
+        """Reactive VAr at each of ``targets``' sample times.
+
+        Taken from whichever role publishes a coherent triple - the load's
+        own first, since that is the circuit the loads are in, and the grid
+        meter after it. At home only the grid meter has volts and amps, and
+        that is fine: every watt the house draws flows through it, so the
+        CHANGE in its reactive power when something switches is the load's
+        own, even though the level is mostly the inverter's grid support.
+        Kozolec has the triple on the load side itself.
+
+        Nothing is returned when no role can offer one, which is honest: no
+        power factor beats a fabricated one."""
+        out: Dict[str, Dict[float, float]] = {}
+        for phase, rows in targets.items():
+            if not rows:
+                continue
+            for prefix in ("", "grid_"):
+                cfg = {k[len(prefix):]: v for k, v in self.config.items()
+                       if not prefix or k.startswith(prefix)} if prefix else dict(self.config)
+                triple = self._coherent_triple(cfg, phase)
+                if triple is None:
+                    continue
+                series = await self._read_raw(start, end, triple)
+                power_rows = series.get(("power", phase)) or []
+                if not power_rows:
+                    continue
+                var = _reactive(power_rows, series.get(("voltage", phase)),
+                                series.get(("current", phase)), series.get(("pf", phase)))
+                if var:
+                    # the reference samples at its own moments; hold each
+                    # value forward onto the load's
+                    out[phase] = _align(sorted(var.items()), rows)
+                break
+        return out
+
+    async def _read_raw(self, start: datetime, end: datetime, cfg: dict) -> Dict[tuple, list]:
+        """Every configured field of one role as (kind, phase) -> rows."""
         entities = {}
         for p in PHASES:
             for kind in ("power", "pf", "current", "voltage"):
-                eid = cfg.get(f"{kind}_{p}")      # "device" is not read here
+                eid = cfg.get(f"{kind}_{p}")
                 if eid:
                     entities[(kind, p)] = eid
-        if not any(kind == "power" for kind, _ in entities):
-            return {}, {}
+        if not entities:
+            return {}
         states = await get_instance(self.hass).async_add_executor_job(
             _fetch, self.hass, start, end, list(dict.fromkeys(entities.values()))
         )
@@ -392,18 +467,32 @@ class DetectionRunner:
             rows = []
             for st in states.get(eid, []):
                 try:
-                    v = float(st.state)
+                    rows.append((st.last_updated.timestamp(), float(st.state)))
                 except (TypeError, ValueError):
                     continue
-                rows.append((st.last_updated.timestamp(), v))
             rows.sort()
             series[key] = rows
+        return series
+
+    async def _read(self, start: datetime, end: datetime, cfg: dict, derive_q: bool = True):
+        """(watts per phase, reactive VAr per phase) over the window.
+
+        The VAr here is only ever derived from readings that sit on one
+        device; a role whose watts and amps come from different meters gets
+        none, and ``_reactive_series`` finds it a proper source instead."""
+        series = await self._read_raw(start, end, cfg)
         samples = {p: series[("power", p)] for p in PHASES if series.get(("power", p))}
+        if not samples:
+            return {}, {}
         q: Dict[str, Dict[float, float]] = {}
-        for p, rows in samples.items():
-            var = _reactive(rows, series.get(("voltage", p)), series.get(("current", p)), series.get(("pf", p)))
-            if var:
-                q[p] = var
+        if derive_q:
+            for p in samples:
+                if self._coherent_triple(cfg, p) is None:
+                    continue          # different meters; not this power's VAr
+                var = _reactive(samples[p], series.get(("voltage", p)),
+                                series.get(("current", p)), series.get(("pf", p)))
+                if var:
+                    q[p] = var
         return samples, q
 
 

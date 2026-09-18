@@ -37,7 +37,9 @@ SUSTAIN_SECONDS = 5.0          # ...and at least this long
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
-SLOW_FOLLOW = 0.02             # the held level follows drift this fast, so a ramp is never a step
+SLOW_FOLLOW = 0.02
+# how many idle samples the pre-step reactive median is taken over
+Q_RECENT_SAMPLES = 8             # the held level follows drift this fast, so a ramp is never a step
 # A cloud IS a step at the meter, and a big one. It is the sun switching,
 # not a load, and it gives itself away by moving PV the opposite way at the
 # same moment. The share is a RANGE because the array's reading may be this
@@ -322,6 +324,14 @@ class PhaseState:
     noise: float = MIN_NOISE_W
     level: Optional[float] = None                # what the phase is holding now
     q_level: Optional[float] = None              # reactive VAr at that level, when known
+    # The reactive power just BEFORE a step, as a short median rather than
+    # the slow EMA q_level is. Watts drift slowly while nothing switches, so
+    # an EMA tracks them; the grid meter's VAr does not - at home it swings
+    # from 259 var at night to 2447 at midday with the inverter's voltage
+    # support, and a 0.02 EMA lags that badly enough to swamp a load's own
+    # step. Measured on the kiln: 0.934 from the EMA, 0.989 from the median,
+    # and the classifier's heater band starts at 0.93 (Anze, 2026-09-18).
+    q_recent: List[float] = field(default_factory=list)
     pv_level: Optional[float] = None             # what the array was making then
     # True where this reading is the house alone, which cannot go below
     # zero. Anze's per-phase template dips negative for 49 samples out of
@@ -371,6 +381,8 @@ class PhaseState:
             self.level += SLOW_FOLLOW * (w - self.level)
             if q is not None:
                 self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
+                self.q_recent.append(q)
+                del self.q_recent[:-Q_RECENT_SAMPLES]
             if pv is not None:
                 self.pv_level = pv if self.pv_level is None else self.pv_level + SLOW_FOLLOW * (pv - self.pv_level)
             if not self.open_edges:
@@ -395,11 +407,16 @@ class PhaseState:
         since = self.pending[0][0]
         self.pending = []
         step = new_level - self.level
-        step_q = None if (new_q is None or self.q_level is None) else new_q - self.q_level
+        # the level it stepped FROM, measured over the samples just before
+        # rather than followed, so a fast-drifting reactive signal does not
+        # leak its drift into the load's own step
+        was_q = _median(self.q_recent) if self.q_recent else self.q_level
+        step_q = None if (new_q is None or was_q is None) else new_q - was_q
         pv_step = None if (new_pv is None or self.pv_level is None) else new_pv - self.pv_level
         self.level = new_level
         if new_q is not None:
             self.q_level = new_q
+            self.q_recent = [new_q]
         if new_pv is not None:
             self.pv_level = new_pv
         if _is_the_sun(step, pv_step):
@@ -486,7 +503,7 @@ class PhaseState:
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
-                "q_level": self.q_level, "pv_level": self.pv_level, "seed": self.seed,
+                "q_level": self.q_level, "q_recent": list(self.q_recent), "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -495,7 +512,7 @@ class PhaseState:
         if not d:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
-                   q_level=d.get("q_level"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))

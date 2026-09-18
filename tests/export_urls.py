@@ -54,13 +54,33 @@ KOZOLEC = {
     "base": "https://ha.kozolec.hlevcek.com",
     "tz": timezone(timedelta(hours=2)),
     "groups": {
+        # The LOAD side, and it is fully instrumented: power, current AND
+        # voltage on the MultiPlus output, which is a coherent triple on the
+        # very reading the loads hang off - the one thing home does not have.
+        # The AC INPUT is a generator port, real but idle almost always, so
+        # it comes along to show what "off" looks like rather than to detect
+        # on (Anze, 2026-09-18).
         "inverter": [
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_0_line_l2_output_power",
             "sensor.multiplus_ii_48_15000_200_100_id_276_input_power_l1",
-            "sensor.multiplus_ii_48_15000_200_100_id_276_0_line_l2_input_power",
             "sensor.multiplus_ii_48_15000_200_100_id_276_input_current_l1",
             "sensor.multiplus_ii_48_15000_200_100_id_276_input_voltage_l1",
+            "sensor.gx_device_consumption_power_l1",
+            "sensor.gx_device_consumption_current_l1",
+            "sensor.gx_device_critical_loads_on_l1",
+        ],
+        # DC: the arrays charge the battery directly, so none of this ever
+        # reaches the AC side as generation - which is why the load signal
+        # here is clean and home's is not.
+        "dc": [
             "sensor.mppt_150_70_pv_yield_power",
             "sensor.mppt_150_85_pv_yield_power",
+            "sensor.gx_device_pv_power",
+            "sensor.gx_device_dc_battery_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_dc_power",
             "sensor.jk_bms_id_512_charge",
         ],
         "devices": [
