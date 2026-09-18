@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -554,11 +554,30 @@ class BaseLoadSensor(_DetectionBase):
 
 
 class NamedLoadPower(_DetectionBase):
-    """Watts a named load is drawing right now, 0 when it is off."""
+    """Watts a named load is believed to be drawing, 0 when it is off.
+
+    DIAGNOSTIC, because it is a best-effort reading and the energy meter
+    beside it is not. Three things limit it, and none is a bug to fix
+    (Anze, 2026-09-18, who is not much interested in it for these reasons):
+
+      * it is derived from a step UP whose matching step down has not
+        arrived, so unlike the energy total it never waits for the whole
+        story before speaking;
+      * detection reads the recorder every DETECTION_INTERVAL_MINUTES, so it
+        moves every five minutes, and a load that starts AND finishes inside
+        one of those windows is already closed when we look - the kiln, at
+        44 seconds every two minutes, is essentially never caught running;
+      * an up-step whose partner is never seen stays open for MAX_OPEN_S, so
+        the reading can sit high for as much as a day.
+
+    It is honest about long loads and blind to short ones. Energy is the
+    reading to trust: it counts only sessions that closed.
+    """
 
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_suggested_display_precision = 0
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
