@@ -1150,9 +1150,10 @@ class Detector:
         tail, so the ones the user had taken the trouble to name were the
         first to go.
 
-        An ESTABLISHED load - real evidence, seen inside a month - is never
-        evicted either. Its history is its claim on the library, and pausing
-        does not forfeit it. Replayed over ten real days at home, the kiln
+        An ESTABLISHED load - real evidence, seen inside the horizon, which
+        is over a year - is never evicted either. Its history is its claim on
+        the library, and pausing does not forfeit it: a load that runs twice
+        a year is rare, not stale. Replayed over ten real days at home, the kiln
         reached 299 runs at evidence 0.81 - the best-evidenced signature in
         the library - and was thrown out during a twelve-hour pause.
 
