@@ -43,7 +43,7 @@ from .insights.detect import (
     mean_power,
     most_specific,
 )
-from .insights.discovery import match_meter_entities
+from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
 
 _LOGGER = logging.getLogger(__name__)
@@ -518,6 +518,37 @@ class DetectionRunner:
         return {f"power_{phase}": power, f"pf_{phase}": pf,
                 f"voltage_{phase}": volts, f"current_{phase}": amps}
 
+    def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
+        """A coherent triple built from the meter the VOLTS AND AMPS are on.
+
+        Home is the case this exists for. Its load reading is a template of
+        house consumption, which belongs to no device, while its voltage and
+        current were matched to the SolarEdge meter - so no role offers a
+        triple and there would be no power factor at all. But that meter
+        publishes watts too, and those watts ARE the circuit its amps are in.
+
+        The power entity is chosen by the longest name it shares with the
+        current entity, which is what keeps an inverter's output amps with
+        its output watts rather than pairing them across its input.
+        """
+        volts, amps = cfg.get(f"voltage_{phase}"), cfg.get(f"current_{phase}")
+        if not (volts and amps):
+            return None
+        device = self._device_of(amps)
+        if device is None or device != self._device_of(volts):
+            return None
+        registry = er.async_get(self.hass)
+        candidates = [r["entity_id"] for r in self._device_rows(registry, device)
+                      if (r.get("device_class") or "") == "power"
+                      and match_meter_entities([r]).get(f"power_{phase}")]
+        if not candidates:
+            return None
+        power = closest_by_name(candidates, amps)
+        if not power:
+            return None
+        return {f"power_{phase}": power, f"voltage_{phase}": volts,
+                f"current_{phase}": amps, f"pf_{phase}": None}
+
     async def _reactive_series(self, start: datetime, end: datetime,
                                targets: Dict[str, list]) -> Dict[str, Dict[float, float]]:
         """Reactive VAr at each of ``targets``' sample times.
@@ -539,7 +570,7 @@ class DetectionRunner:
             for prefix in ("", "grid_"):
                 cfg = {k[len(prefix):]: v for k, v in self.config.items()
                        if not prefix or k.startswith(prefix)} if prefix else dict(self.config)
-                triple = self._coherent_triple(cfg, phase)
+                triple = self._coherent_triple(cfg, phase) or self._triple_beside_the_amps(cfg, phase)
                 if triple is None:
                     continue
                 series = await self._read_raw(start, end, triple)

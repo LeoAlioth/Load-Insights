@@ -170,6 +170,29 @@ def match_meter_entities(entities: Sequence[dict], role: str = "load") -> Dict[s
     return {k: v[1] for k, v in sorted(best.items())}
 
 
+def closest_by_name(candidates: Sequence[str], reference: str) -> Optional[str]:
+    """Of several readings on one device, the one whose name runs alongside
+    ``reference`` longest.
+
+    A meter that publishes both sides of an inverter offers watts for each,
+    and the amps we hold belong to exactly one of them: ``mp_output_current_l1``
+    goes with ``mp_output_power_l1``, never with the input's. Matching on the
+    shared prefix keeps the pair on one circuit without having to know that
+    "output" is the word that matters (Anze, 2026-09-18)."""
+    if not candidates:
+        return None
+
+    def shared(eid: str) -> int:
+        n = 0
+        for a, b in zip(eid, reference):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    return max(sorted(candidates), key=shared)
+
+
 def describe_match(found: Dict[str, str]) -> str:
     """One line for the confirmation form."""
     if not found:
