@@ -281,7 +281,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # from the load reading, which at home is a house-consumption template
         # and says nothing about the battery - and reading it as series there
         # would quietly inflate consumption by the inverter's efficiency.
-        detection = self.entry.options.get(CONF_DETECTION) or {}
+        detection = (self.config_entry.options.get(CONF_DETECTION) or {}) if self.config_entry else {}
         declared = LAYOUT_ALIASES.get(detection.get(CONF_LAYOUT), detection.get(CONF_LAYOUT))
         topology = declared if declared in (LAYOUT_PARALLEL, LAYOUT_SERIES) else LAYOUT_PARALLEL
         grid = await self.hass.async_add_executor_job(
