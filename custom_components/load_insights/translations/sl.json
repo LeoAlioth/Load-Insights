@@ -53,6 +53,9 @@
             },
             "named_load_power": {
                 "name": "Moč"
+            },
+            "named_load_energy": {
+                "name": "Energija"
             }
         },
         "binary_sensor": {
