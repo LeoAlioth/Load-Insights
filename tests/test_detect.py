@@ -1194,6 +1194,36 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     assert set(det.energy_by_name()) == {"Boiler"}
 
 
+def test_average_power_comes_from_energy_that_arrived_not_from_an_open_step():
+    """The instantaneous reading spoke on a step UP without waiting for the
+    matching step down, was blind to any load that began and ended between
+    two five-minute passes, and sat high for a day when a partner never
+    came. Energy over the span it covers has none of that."""
+    # 178 Wh over five minutes is 2136 W - roughly two and a half kiln runs
+    got = D.mean_power({"Kiln": 1000.0}, {"Kiln": 1178.0}, 300.0)
+    assert round(got["Kiln"]) == 2136, got
+
+    # a load that did nothing reads zero, not whatever was left open
+    assert D.mean_power({"Kiln": 1178.0}, {"Kiln": 1178.0}, 300.0) == {"Kiln": 0.0}
+
+    # one reading is a total, not a rate: a name with no earlier figure waits
+    assert D.mean_power({}, {"Kiln": 1178.0}, 300.0) == {}
+
+    # a reset takes the total to zero, which is not negative power
+    assert D.mean_power({"Kiln": 1178.0}, {"Kiln": 0.0}, 300.0) == {"Kiln": 0.0}
+
+    # the denominator is the span of DATA processed: a backfill pass covering
+    # six hours in a few seconds must not report megawatts
+    slow = D.mean_power({"Kiln": 0.0}, {"Kiln": 12000.0}, 6 * 3600.0)
+    assert round(slow["Kiln"]) == 2000, slow
+    assert D.mean_power({"Kiln": 0.0}, {"Kiln": 12000.0}, 0.0) == {}
+
+    # and it integrates back to the meter: watts x hours is the energy gained
+    span = 900.0
+    rate = D.mean_power({"X": 5.0}, {"X": 305.0}, span)["X"]
+    assert abs(rate * span / 3600.0 - 300.0) < 1e-6
+
+
 def test_signatures_that_have_become_alike_are_merged():
     """Power and duration are running MEANS, so two signatures indistinguish-
     able today need not have been when the second was created. Kozolec had
