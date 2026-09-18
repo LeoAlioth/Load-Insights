@@ -328,17 +328,27 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_naming()
         if user_input is not None:
             self._naming_selected = None
-            await runner.async_rename(sig.id, (user_input.get("name") or "").strip() or None)
-            # straight back to the list, so several can be named in one visit
-            # instead of reopening the page for each (Anze, 2026-09-18)
+            name = (user_input.get("name") or "").strip()
+            if user_input.get("forget"):
+                await runner.async_rename(sig.id, None)
+            elif name:
+                await runner.async_rename(sig.id, name)
+            # An EMPTY box changes nothing and lands back on the list, which
+            # is the back button a form cannot have: its only control is
+            # Submit (Anze, 2026-09-18). Forgetting a name is its own tick,
+            # so leaving the box empty can never lose one by accident.
             return await self.async_step_naming()
+
+        fields = {vol.Optional("name"): selector.TextSelector()}
+        if sig.name:
+            fields[vol.Optional("forget", default=False)] = selector.BooleanSelector()
+        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
+        if sig.name:
+            detail = f"Named **{sig.name}**.\n\n{detail}"
         return self.async_show_form(
             step_id="naming_detail",
-            data_schema=vol.Schema({
-                vol.Optional("name", description={"suggested_value": sig.name}): selector.TextSelector(),
-            }),
-            description_placeholders={
-                "detail": sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)},
+            data_schema=vol.Schema(fields),
+            description_placeholders={"detail": detail},
         )
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):

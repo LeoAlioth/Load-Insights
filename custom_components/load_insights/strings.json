@@ -170,9 +170,10 @@
             },
             "naming_detail": {
                 "title": "Name this load",
-                "description": "{detail}\n\nGive it a name to create its entities, or leave the name empty to forget one it already has.",
+                "description": "{detail}\n\nType a name to give it entities of its own. Leaving the box empty changes nothing and takes you back to the list, which is as close to a back button as a form allows.",
                 "data": {
-                    "name": "Name"
+                    "name": "Name",
+                    "forget": "Forget the name it has"
                 }
             }
         },
