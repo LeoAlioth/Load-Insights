@@ -42,6 +42,7 @@ from .insights.detect import (
     Fleet,
     carries_generation,
     MIN_NOISE_W,
+    _sum_series,
     carries_load,
     classify_source,
     site_topology,
@@ -787,23 +788,6 @@ class DetectionRunner:
                 if var:
                     q[p] = var
         return samples, q
-
-
-def _sum_series(a: list, b: list) -> list:
-    """Two arrays' power added together, each held forward onto the other's
-    sample times - one site has two trackers and reading only the first
-    would leave half of every cloud unexplained."""
-    if not a:
-        return list(b)
-    if not b:
-        return list(a)
-    stamps = sorted({ts for ts, _ in a} | {ts for ts, _ in b})
-    ia = ib = 0
-    out = []
-    for ts in stamps:
-        ia, ib = _as_of(a, ts, ia), _as_of(b, ts, ib)
-        out.append((ts, (a[ia][1] if ia >= 0 else 0.0) + (b[ib][1] if ib >= 0 else 0.0)))
-    return out
 
 
 def _as_of(rows: list, ts: float, i: int) -> int:
