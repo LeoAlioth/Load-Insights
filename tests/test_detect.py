@@ -1181,5 +1181,65 @@ def test_a_session_waits_for_a_slow_meter_to_say_what_it_saw():
 
 
 
+def _plain(id, watts, count, dur=100.0, mad=0.0):
+    sig = D.Signature(id=id, phases="a", power={"a": watts}, duration_s=dur, pf=None,
+                      count=count, first_seen=0.0, last_seen=float(id))
+    sig.power_mad = mad
+    return sig
+
+
+def test_a_merge_owns_up_to_the_distance_it_just_closed():
+    """Averaging two signatures' deviations throws away the gap between their
+    MEANS, so folding two tight signatures 300 W apart produced one claiming
+    its sightings sat within a few watts of each other. That figure feeds
+    tightness, which feeds evidence, which feeds the confidence the user is
+    shown - a merge made a signature look BETTER measured the further apart
+    the things it merged."""
+    keep, other = _plain(1, 1000.0, 10), _plain(2, 700.0, 10)
+    keep.swallow(other)
+    assert round(sum(keep.power.values())) == 850
+    # 150 W from the new mean on each side, and neither had any spread before
+    assert 140 <= keep.power_mad <= 160, keep.power_mad
+    # durations were identical, so that spread stays where it was
+    assert keep.duration_mad == 0.0
+
+
+def test_a_pool_may_not_be_stretched_wider_than_the_tolerance_that_made_it():
+    """Merging is transitive: each one re-centres the band on the new mean,
+    so A reaches B, the pair reaches C, and it walks. What it has already
+    absorbed has to stay inside the tolerance that let the pair match."""
+    keep = _plain(1, 400.0, 10)
+    assert keep.alike(_plain(2, 330.0, 10), 115.0)          # 70 apart, inside 115
+    keep.swallow(_plain(2, 330.0, 10))                      # now 365 W, spread 35
+    assert keep.alike(_plain(3, 260.0, 10), 115.0)          # 105 apart, spread would be 70
+    keep.swallow(_plain(3, 260.0, 10))                      # now 330 W, spread 70
+    # 200 W is 130 away - outside the band on its own terms
+    assert not keep.alike(_plain(4, 200.0, 10), 115.0)
+    # and a pool already at the limit refuses a partner that is inside the
+    # band on its own terms, because taking it would push the pool past it
+    stretched = _plain(5, 330.0, 100, mad=120.0)
+    assert abs(330.0 - 260.0) < 115.0                       # the pair would match
+    assert not stretched.alike(_plain(6, 260.0, 10), 115.0)  # the pool would not
+
+
+def test_consolidation_re_asks_as_the_mean_moves():
+    """The merge list is chosen against the signature as it stands BEFORE any
+    of them go in. Swallowing them all without re-asking carried it somewhere
+    the later entries would never have been admitted to: a ladder from 400 W
+    to 25 W collapsed into one signature calling itself 94 W."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    for i, w in enumerate([400.0, 330.0, 260.0, 200.0, 150.0, 110.0, 80.0, 55.0, 35.0, 25.0]):
+        det.signatures.append(_plain(i, w, 10))
+    det.consolidate(115.0)
+    got = sorted(round(sum(s.power.values())) for s in det.signatures)
+    # whatever it merges, nothing may end up claiming a power that none of
+    # its constituents was anywhere near
+    for sig in det.signatures:
+        watts = sum(sig.power.values())
+        assert sig.power_mad <= max(0.10 * watts, 115.0), (got, watts, sig.power_mad)
+    assert len(det.signatures) >= 2, got
+
+
 if __name__ == "__main__":
     run_main(globals())

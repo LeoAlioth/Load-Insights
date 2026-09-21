@@ -1053,10 +1053,30 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
+        spread = 0.0
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), other.power.get(ph, 0.0)
-            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise_w):
+            tol = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
+            if abs(mine - theirs) > tol:
                 return False
+            spread = max(spread, tol)
+        # Merging is TRANSITIVE, and that is the trap. Each merge re-centres
+        # the band on the new mean, so A can reach B, the pair can reach C,
+        # and the walk carries on as far as you let it: ten signatures from
+        # 400 W down to 25 W collapsed into one that called itself 94 W and
+        # described none of them. Relative tolerances only make the stride
+        # proportional - they do not stop the walking. So the merged pool
+        # must still be tight enough to be called one load: what it has
+        # already absorbed, plus the distance it is about to travel, has to
+        # stay inside the same tolerance that let the pair match
+        # (Anze asked why consolidation used a fixed figure, 2026-09-21).
+        a, b = max(self.count, 1), max(other.count, 1)
+        mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
+        mid_w = (mine_w * a + theirs_w * b) / (a + b)
+        after = ((self.power_mad + abs(mine_w - mid_w)) * a
+                 + (other.power_mad + abs(theirs_w - mid_w)) * b) / (a + b)
+        if after > spread:
+            return False
         ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
         if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
             return False
@@ -1070,12 +1090,24 @@ class Signature:
         n = a + b
         if n <= 0:
             return
+        mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
         for ph in set(self.power) | set(other.power):
             self.power[ph] = (self.power.get(ph, 0.0) * a + other.power.get(ph, 0.0) * b) / n
+        # The gap BETWEEN the two means is part of the merged spread, and
+        # averaging the two deviations alone throws it away: fold two tight
+        # signatures 300 W apart together and the result claimed its
+        # sightings sat within a few watts of each other. That number feeds
+        # tightness, which feeds evidence, which feeds the confidence the
+        # user is shown - so a merge made a signature look BETTER measured
+        # the further apart the things it merged (2026-09-21).
+        mid_w = sum(self.power.values())
+        self.power_mad = ((self.power_mad + abs(mine_w - mid_w)) * a
+                          + (other.power_mad + abs(theirs_w - mid_w)) * b) / n
+        mid_s = (self.duration_s * a + other.duration_s * b) / n
+        self.duration_mad = ((self.duration_mad + abs(self.duration_s - mid_s)) * a
+                             + (other.duration_mad + abs(other.duration_s - mid_s)) * b) / n
         self.duration_s = (self.duration_s * a + other.duration_s * b) / n
         self.level_count = (self.level_count * a + other.level_count * b) / n
-        self.power_mad = (self.power_mad * a + other.power_mad * b) / n
-        self.duration_mad = (self.duration_mad * a + other.duration_mad * b) / n
         if self.pf is None:
             self.pf = other.pf
         elif other.pf is not None:
@@ -1527,11 +1559,22 @@ class Detector:
                 if not doomed:
                     continue
                 moved = {}
+                # Re-ask on every one. ``doomed`` was judged against ``keep``
+                # as it stood BEFORE any of them went in, and each swallow
+                # moves its mean - so a list gathered in one breath could
+                # carry it somewhere none of the later entries would have
+                # been admitted to. Reverse order keeps the lower indices
+                # valid as they are popped, and one that no longer fits is
+                # simply left where it is (2026-09-21).
                 for j in reversed(doomed):
+                    if not keep.alike(self.signatures[j], noise_w):
+                        continue
                     other = self.signatures.pop(j)
                     moved[other.id] = keep.id
                     keep.swallow(other)
                     gone += 1
+                if not moved:
+                    continue
                 for r in self.recent:            # the sessions still point at them
                     if r.get("signature") in moved:
                         r["signature"] = moved[r["signature"]]
