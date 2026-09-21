@@ -20,6 +20,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -148,6 +149,19 @@ ENERGY_MATCH_LO = 0.65
 ENERGY_MATCH_HI = 1.35
 # how much of a device's samples to keep for answering that question
 SUB_SAMPLE_TAIL_S = 2 * 3600.0
+# How long a main-meter session waits for a device meter to say what it saw.
+# HELD_TAIL_S is about two PHASES of one load closing together, which happens
+# within seconds; this is about a Shelly getting round to it, which does not.
+# A session may not even be judgeable when it closes - the reading has to
+# reach past its end before sample-and-hold stops guessing at the tail - so
+# the wait has to outlast the slowest meter's silence, or the answer arrives
+# after the question has been thrown away (2026-09-19).
+MATCH_PATIENCE_S = 20 * 60.0
+# How far back to look for what the device was drawing ANYWAY. Capped,
+# because a session lasting hours would otherwise want hours of readings
+# before it - further back than the tail we keep - and the longest sessions
+# are exactly the ones energy matching answers best.
+IDLE_WINDOW_S = 900.0
 MATCH_PF_TOL = 0.15
 MAX_SIGNATURES = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
@@ -494,10 +508,21 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     """
     if not rows or end <= start:
         return None
-    if rows[0][0] > start or rows[-1][0] < start:
+    # Both ends, not just the near one. Sample-and-hold carries the last
+    # reading forward for as long as you let it, so a meter that fell silent
+    # an hour ago will answer for a window it never saw - and the answer,
+    # "it drew exactly what it was drawing before", is indistinguishable
+    # from a device that really did stay put. The docstring promised this
+    # check; the code only ever made half of it (2026-09-19).
+    if rows[0][0] > start or rows[-1][0] < end:
         return None
     total = 0.0
-    i = _as_of(rows, start, 0)
+    # Seek, don't walk. _as_of scans forward from the index it is handed, and
+    # a session waits MATCH_PATIENCE_S for an answer - so every pending
+    # session asks every device meter twice, every pass, and each of those
+    # questions would otherwise re-read the whole retained tail from the
+    # front (2026-09-19).
+    i = bisect.bisect_right(rows, (start, float("inf"))) - 1
     if i < 0:
         return None
     at = start
@@ -1841,8 +1866,11 @@ class Fleet:
                 # a workshop meter already making 6 kW collects a heater's
                 # 167 Wh without the heater being anywhere near it. The
                 # detector matches edges everywhere else for the same reason.
-                before = energy_between(rows, m.start - span, m.start)
-                rose = got - (before or 0.0)
+                look = min(span, IDLE_WINDOW_S)
+                before = energy_between(rows, m.start - look, m.start)
+                if before is None:
+                    continue
+                rose = got - before * (span / look)
                 if rose <= 0:
                     continue
                 ratio = rose / want
@@ -1866,10 +1894,15 @@ class Fleet:
             self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
                                       if (name, i) not in taken_sub]
         still = [m for i, m in enumerate(self.pending_main)
-                 if i not in taken_main and latest - m.end < HELD_TAIL_S * 2]
+                 if i not in taken_main and latest - m.end < MATCH_PATIENCE_S]
         self.pending_main = still
         for name in list(self.pending_sub):
-            self.pending_sub[name] = [s for s in self.pending_sub[name] if latest - s.end < HELD_TAIL_S * 2]
+            # the same patience on both sides: _same_load already demands the
+            # two starts be within tol_s of each other, so holding a session
+            # longer only lets a slow meter's own session find the partner
+            # that is still waiting for it - it cannot pair two unrelated ones
+            self.pending_sub[name] = [s for s in self.pending_sub[name]
+                                      if latest - s.end < MATCH_PATIENCE_S]
 
     def to_dict(self) -> dict:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
