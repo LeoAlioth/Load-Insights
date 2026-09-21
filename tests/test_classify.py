@@ -65,9 +65,6 @@ def test_a_reading_outside_every_family_says_nothing():
     assert g.kind is None, g
 
 
-if __name__ == "__main__":
-    run_main(dict(globals()))
-
 def test_gliding_is_not_holding_a_level_even_when_no_step_is_taken():
     """Kozolec's Grundfos Scala2 runs 104 to 247 W to hold pressure and never
     takes a step big enough to count as a level, so it read as one flat level
@@ -105,3 +102,6 @@ def test_a_balanced_three_phase_motor_says_so():
     assert three.kind == C.MOTOR_3P and three.tag == "workshop?"
     assert one.kind != C.MOTOR_3P
 
+
+if __name__ == "__main__":
+    run_main(dict(globals()))
