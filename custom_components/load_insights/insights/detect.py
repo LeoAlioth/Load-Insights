@@ -138,6 +138,16 @@ MATCH_DURATION_FACTOR = 3.0
 # scores every passing pair and takes the closest - with first-fit it made
 # things worse (Anze, 2026-09-18).
 CROSS_METER_DURATION_FACTOR = 12.0
+# How close a device meter's ENERGY over a main-meter session's window must be
+# to that session's own energy for the two to be the same load. Measured at
+# Kozolec over ten days: for boiler-sized sessions the ratio ran 0.97 at the
+# tenth percentile, 1.02 at the median and 1.07 at the ninetieth, and 465 of
+# 479 sessions fell inside this band - where matching the two meters' SESSIONS
+# managed 38 of 381 (2026-09-19). Energy is what a coarse meter can answer.
+ENERGY_MATCH_LO = 0.65
+ENERGY_MATCH_HI = 1.35
+# how much of a device's samples to keep for answering that question
+SUB_SAMPLE_TAIL_S = 2 * 3600.0
 MATCH_PF_TOL = 0.15
 MAX_SIGNATURES = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
@@ -451,6 +461,56 @@ def unit_scale(unit: Optional[str]) -> float:
     An unrecognised unit scales by 1 rather than being dropped: a reading
     that is probably watts is worth more than no reading."""
     return UNIT_SCALE.get((unit or "").strip(), 1.0)
+
+
+def _sum_series(a: list, b: list) -> list:
+    """Two arrays' power added together, each held forward onto the other's
+    sample times - one site has two trackers and reading only the first
+    would leave half of every cloud unexplained."""
+    if not a:
+        return list(b)
+    if not b:
+        return list(a)
+    stamps = sorted({ts for ts, _ in a} | {ts for ts, _ in b})
+    ia = ib = 0
+    out = []
+    for ts in stamps:
+        ia, ib = _as_of(a, ts, ia), _as_of(b, ts, ib)
+        out.append((ts, (a[ia][1] if ia >= 0 else 0.0) + (b[ib][1] if ib >= 0 else 0.0)))
+    return out
+
+
+def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float) -> Optional[float]:
+    """Watt-hours a reading accounts for between two instants, sample and hold.
+
+    This is what a coarse meter CAN answer. A Shelly reporting once a minute
+    cannot describe a 66-second run - it gets three samples and its session
+    power comes out at half the truth - but the energy it recorded over that
+    minute is right, because energy integrates and sampling error cancels
+    where power's does not (Anze, 2026-09-19, on a Zigbee meter that cannot
+    be made faster at all).
+
+    None when the window is not covered by the reading.
+    """
+    if not rows or end <= start:
+        return None
+    if rows[0][0] > start or rows[-1][0] < start:
+        return None
+    total = 0.0
+    i = _as_of(rows, start, 0)
+    if i < 0:
+        return None
+    at = start
+    while at < end:
+        nxt = rows[i + 1][0] if i + 1 < len(rows) else end
+        until = min(nxt, end)
+        total += rows[i][1] * (until - at)
+        at = until
+        if i + 1 < len(rows):
+            i += 1
+        elif at < end:
+            break
+    return total / 3600.0
 
 
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
@@ -1695,6 +1755,10 @@ class Fleet:
     subs: Dict[str, Detector] = field(default_factory=dict)
     pending_main: List[Session] = field(default_factory=list)    # main sessions awaiting a downstream partner
     pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
+    # Each device's raw samples, kept long enough to answer "how much energy
+    # did you record while this was running". A meter too slow to produce a
+    # session of its own can still answer that.
+    sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
@@ -1706,6 +1770,24 @@ class Fleet:
             self.agnostic.update(agnostic)
         # only the main meter needs the array: a downstream meter sees the
         # house side of it and never the sun
+        latest_seen = now_ts or 0.0
+        for name, rows_by_phase in (sub_samples or {}).items():
+            merged: List[Tuple[float, float]] = []
+            for series in rows_by_phase.values():
+                merged = _sum_series(merged, list(series))
+            if not merged:
+                continue
+            kept = self.sub_rows.get(name, []) + merged
+            kept.sort()
+            latest_seen = max(latest_seen, kept[-1][0])
+            # Everything this pass brought, plus a tail before it. Trimming to
+            # a fixed two hours looked thrifty and silently gutted the
+            # backfill, whose slices are six hours long: the sessions being
+            # placed were mostly older than the readings kept to place them
+            # with (2026-09-19).
+            oldest = min((r[0] for r in merged), default=latest_seen)
+            cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
+            self.sub_rows[name] = [r for r in kept if r[0] >= cut]
         closed_main = self.main.process(main_samples, main_q, now_ts, pv)
         closed_sub = {}
         for name, samples in sub_samples.items():
@@ -1739,16 +1821,46 @@ class Fleet:
                 for si, s in enumerate(subs):
                     if _same_load(m, s, agnostic, tol):
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
-        pairs.sort(key=lambda x: x[0])
+        # A device meter too slow to produce a session of its own still knows
+        # how much ENERGY it recorded while a main-meter session ran, and that
+        # answer is right where its session power is not: sampling error
+        # cancels in an integral. So every main session is also offered to the
+        # raw readings, scored by how far the ratio sits from one.
+        for mi, m in enumerate(self.pending_main):
+            want = m.energy_wh
+            span = m.duration_s
+            if want <= 0 or span <= 0:
+                continue
+            for name, rows in self.sub_rows.items():
+                got = energy_between(rows, m.start, m.end)
+                if got is None:
+                    continue
+                # What the device was drawing ANYWAY, over a window of the
+                # same length just before. Without this a device that merely
+                # happened to be running lands inside the band on coincidence:
+                # a workshop meter already making 6 kW collects a heater's
+                # 167 Wh without the heater being anywhere near it. The
+                # detector matches edges everywhere else for the same reason.
+                before = energy_between(rows, m.start - span, m.start)
+                rose = got - (before or 0.0)
+                if rose <= 0:
+                    continue
+                ratio = rose / want
+                if ENERGY_MATCH_LO <= ratio <= ENERGY_MATCH_HI:
+                    # slightly worse than a session match of the same quality,
+                    # so a meter that CAN resolve the load still wins
+                    pairs.append((0.5 + abs(ratio - 1.0), mi, name, None))
+        pairs.sort(key=lambda x: (x[0], x[1]))
         taken_main, taken_sub = set(), set()
         for _, mi, name, si in pairs:
-            if mi in taken_main or (name, si) in taken_sub:
+            if mi in taken_main or (si is not None and (name, si) in taken_sub):
                 continue
             sig = self.main.signature_of(self.pending_main[mi])
             if sig is None:
                 continue
             taken_main.add(mi)
-            taken_sub.add((name, si))
+            if si is not None:
+                taken_sub.add((name, si))
             sig.locations[name] = sig.locations.get(name, 0) + 1
         for name in self.pending_sub:
             self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
