@@ -476,8 +476,14 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         now_ts = dt_util.utcnow().timestamp()
         running = runner.detector.running_now(now_ts)
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
-        placeholders = {"count": str(len(candidates)),
-                        "hidden": str(max(0, len(candidates) - len(shown)))}
+        # What is WAITING, not what was cut off this menu. The two are not the
+        # same: the list arrives already shortened to the length the user has
+        # earned, so subtracting the menu from it said "0 more" to everyone -
+        # and a page whose whole promise is that it lengthens as you name
+        # things then read as "this is all there is" (Anze, 2026-09-22).
+        placeholders = {"count": str(len(shown)),
+                        "hidden": str(runner.unlocated_waiting()
+                                      + max(0, len(candidates) - len(shown)))}
         options = []
         for index, sig in enumerate(shown):
             label = sig.row(tz, now_ts, sig.id in running)

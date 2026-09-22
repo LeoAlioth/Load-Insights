@@ -1702,6 +1702,83 @@ def test_the_naming_page_never_runs_dry():
     assert weak[0] in got
 
 
+def test_the_page_can_say_how_many_are_waiting():
+    """The page promises it lengthens as loads are named; it has to be able
+    to say there is something to lengthen INTO.
+
+    It could not: the caller had only the already-shortened list and
+    subtracted it from itself, so every site read "0 more than fit here" -
+    Kozolec showing 6 of 12, Home 14 of 60 (Anze's screenshots, 2026-09-22)."""
+    sigs = []
+    for i in range(30):
+        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
+                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig.hour_wh = [40.0] * 24
+        sigs.append(sig)
+    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+
+    clear = D.clears_for_naming(sigs, 0.7, min_rows=5)
+    assert len(clear) == 30, "the bar decides WHICH, and does not shorten"
+    shown = D.offer_for_naming(sigs, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(shown) == 6, "the earned length decides HOW MANY"
+    assert len(clear) - len(shown) == 24, "and 24 are waiting, not 0"
+    # naming eats into the backlog rather than inventing rows
+    after = D.offer_for_naming(sigs, 2, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(clear) - len(after) == 16
+
+
+def test_a_reading_measures_what_it_can_resolve_not_just_how_it_jitters():
+    """Noise and resolution are different, and the detector measured one.
+
+    A coarse but STEADY reading deviates from its own baseline by nothing at
+    all, so its measured noise is zero and the global floor stands in - and
+    then its first quantum jump is taken for a load. Home's workshop boiler
+    publishes in 46 W steps and was credited with 4 kW of noise."""
+    assert D.measure_quantum([46.0 * (i // 3) for i in range(300)]) == 46.0
+    # a continuous reading is left alone
+    fine = D.measure_quantum([i * 0.01 for i in range(300)])
+    assert fine < 0.02, fine
+    # and nothing is claimed from too little evidence
+    assert D.measure_quantum([0.0, 46.0, 92.0]) == 0.0
+
+    st = D.PhaseState(min_noise=1.0)
+    for i in range(400):
+        st.process(float(i) * 60.0, 46.0 * (i // 3))
+    assert st.quantum == 46.0, st.quantum
+    assert st.noise >= 46.0, "a step it cannot resolve is not a step"
+
+
+def test_a_power_factor_is_dropped_where_the_amps_cannot_carry_it():
+    """sqrt(S^2 - P^2) amplifies any error in S exactly where PF is near one,
+    and clamps to zero when quantisation puts S under P - which reads as a
+    perfect 1.00. At Kozolec that was 63 % of samples."""
+    st = D.PhaseState(min_noise=5.0)
+    st.q_quantum = 23.0                      # 0.1 A at 230 V
+    o = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
+    small = st._close(o, 600.0, 62.0, 30.0)
+    assert small.pf is None, "62 W is under three quanta; the factor is fabricated"
+
+    big = D._Open(since=0.0, watts=2500.0, var=600.0, levels=[(0.0, 2500.0)])
+    assert st._close(big, 600.0, 2500.0, 600.0).pf is not None, \
+        "a load ten quanta over keeps its factor"
+
+    # a finer meter keeps the small load's factor: same load, same code
+    fine = D.PhaseState(min_noise=5.0)
+    fine.q_quantum = 2.3                     # 0.01 A at 230 V
+    o2 = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
+    assert fine._close(o2, 600.0, 62.0, 30.0).pf is not None
+
+
+def test_the_same_constant_serves_both_sites():
+    """Every gate is a COUNT of a reading's own quanta, so neither site is
+    configured for (Anze, 2026-09-22)."""
+    for value in (D.PF_MIN_QUANTA, D.ENERGY_MIN_QUANTA):
+        assert 1.0 <= value <= 50.0, "a count, not a number of watts"
+    # Kozolec's 0.1 A at 230 V and Home's 0.01 A: one rule, two answers
+    assert D.PF_MIN_QUANTA * 0.1 * 230.0 > 200.0
+    assert D.PF_MIN_QUANTA * 0.01 * 230.0 < 30.0
+
+
 def test_a_grid_meter_filed_as_the_house_is_dropped():
     """power_a means "this reading already IS the house" and wins outright
     over grid-plus-inverters. When setup became three pages the flat fields

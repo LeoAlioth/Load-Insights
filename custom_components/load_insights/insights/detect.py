@@ -226,6 +226,36 @@ SUCCESSOR_QUIET_S = 7 * 86400.0
 SUCCESSOR_QUIET_INTERVALS = 6.0
 SUCCESSOR_POWER_REL = 0.5
 SUCCESSOR_MIN_COUNT = 5
+# How many of a reading's own quanta a quantity must span before it is
+# believed. Every one of these is a COUNT, never a number of watts: the
+# quantum itself is measured from each sensor's own history, so the same
+# constant means 23 VA at Kozolec's 0.1 A Victron and 2.3 VA at Home's
+# 0.01 A SolarEdge without either site being configured (Anze, 2026-09-22:
+# "the goal is to get the integration to work well across both sites
+# without the need for you to manually set parameters").
+#
+# Ten, for a power factor, because sqrt(S^2 - P^2) is a difference of
+# squares and amplifies any error in S exactly where the factor is near
+# one: measured at Kozolec, half a current quantum moves the derived
+# factor by 0.20 below 100 W and 0.13 below 200 W, against a matching
+# tolerance of 0.15 - so the factor was SPLITTING loads that were the
+# same. Ten quanta puts the swing under 0.05.
+PF_MIN_QUANTA = 10.0
+# Two, for an energy rise, because the window matcher subtracts one
+# integral from another and each carries its own quantisation.
+ENERGY_MIN_QUANTA = 2.0
+# How many changes to see before a quantum is believed, and which
+# percentile of them it is. A truly quantised reading changes by exactly
+# one quantum most times it changes at all, so a low percentile IS the
+# quantum; a continuous one has a tiny percentile and is unaffected.
+QUANTUM_MIN_SAMPLES = 40
+QUANTUM_PERCENTILE = 0.05
+# ...and how strictly the candidate has to behave like a real lattice before
+# it is believed: all but a tenth of the changes within a quarter-quantum of
+# a whole multiple.
+QUANTUM_LATTICE_TOL = 0.25
+QUANTUM_LATTICE_SHARE = 0.9
+
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
 HELD_TAIL_S = 60.0             # closed sessions wait this long for a partner on another phase
@@ -744,6 +774,48 @@ def classify_source(rows: Sequence[Tuple[float, float]]) -> Optional[str]:
     return SOURCE_GENERATOR if live <= (1.0 - SOURCE_IDLE_SHARE) * len(rows) else SOURCE_UTILITY
 
 
+def measure_quantum(values: Sequence[float]) -> float:
+    """The smallest change a reading can actually express, from its own data.
+
+    A meter's RESOLUTION is not its noise, and the detector measured only
+    the second. Noise is the median deviation while idle, so a reading that
+    sits rock steady on a coarse value measures ZERO of it and falls back to
+    the global floor - and then its first quantum jump is taken for a load.
+    Home's workshop boiler publishes in 46 W steps and was credited with
+    4 kW of "noise" on exactly that basis (Anze, 2026-09-22).
+
+    A quantised reading changes by exactly one quantum most times it changes
+    at all, so a low percentile of its non-zero changes IS the quantum. A
+    continuous reading has a vanishing percentile and is left alone. The
+    minimum would do the same job in theory and is far too fragile in
+    practice: one sample from before a firmware change, or one interpolated
+    value, and the estimate collapses to nothing.
+    """
+    return quantum_of_steps([abs(b - a) for a, b in zip(values, values[1:]) if b != a])
+
+
+def quantum_of_steps(steps: Sequence[float]) -> float:
+    """measure_quantum, for a caller that already has the changes themselves.
+
+    The candidate is a low percentile of the changes - but that alone measures
+    ACTIVITY, not resolution: a busy reading whose smallest honest change is
+    large would be handed a quantum it does not have, and Home's three phases
+    duly came back with 37, 38 and 58 W floors that were pure signal. So the
+    candidate has to be confirmed: a resolution means every change is a WHOLE
+    NUMBER of quanta, and nothing else does that. Continuous readings still
+    pass with a vanishing quantum, which is harmless - it never beats the
+    measured noise it is taken against."""
+    kept = sorted(x for x in steps if x > 0)
+    if len(kept) < QUANTUM_MIN_SAMPLES:
+        return 0.0
+    q = kept[int(QUANTUM_PERCENTILE * len(kept))]
+    if q <= 0:
+        return 0.0
+    tol = QUANTUM_LATTICE_TOL * q
+    on = sum(1 for x in kept if abs(x - q * round(x / q)) <= tol)
+    return q if on >= QUANTUM_LATTICE_SHARE * len(kept) else 0.0
+
+
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     """The LOAD's power factor, from its OWN step in real and reactive power.
 
@@ -829,6 +901,18 @@ class PhaseState:
     # this phase's own floor, so a site can ask for more or less sensitivity
     # than the default without touching the measured part
     min_noise: float = MIN_NOISE_W
+    # What this reading can RESOLVE, measured from its own changes - see
+    # measure_quantum. Separate from noise because the two failure modes are
+    # opposite: a jittery meter measures its noise correctly, while a coarse
+    # but steady one measures none at all and is then trusted far past what
+    # it can express.
+    quantum: float = 0.0
+    step_diffs: List[float] = field(default_factory=list)
+    last_w: Optional[float] = None
+    # The apparent power one current quantum is worth, V x dI, which is what
+    # limits any power factor derived here. Supplied by whoever read the
+    # amps, since the detector only ever sees the VAr they produced.
+    q_quantum: float = 0.0
     # the measured share of the running level that is noise, and the samples
     # it is measured from
     noise_rel: float = 0.0
@@ -842,6 +926,20 @@ class PhaseState:
     # samples - the meter's rate, not a setting, so turning a poll up from
     # 5 s to 1 s is noticed rather than configured
     interval: float = 0.0
+
+    def _learn_quantum(self, w: float) -> None:
+        """Every change this reading makes, so its resolution is measured the
+        same way its noise is - from the data, never configured."""
+        if self.last_w is not None and w != self.last_w:
+            self.step_diffs.append(abs(w - self.last_w))
+            if len(self.step_diffs) >= QUANTUM_MIN_SAMPLES * 2:
+                self.quantum = quantum_of_steps(self.step_diffs)
+                self.step_diffs = self.step_diffs[-QUANTUM_MIN_SAMPLES:]
+                # At once, not at the next recompute: noise is only remeasured
+                # every 240 IDLE samples, and a reading coarse enough to need
+                # this is often never idle for that long.
+                self.noise = max(self.noise, self.quantum)
+        self.last_w = w
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None) -> List[Session]:
@@ -858,6 +956,7 @@ class PhaseState:
         self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
+        self._learn_quantum(w)
         if self.baseline is None:
             self.seed.append(w)
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
@@ -876,7 +975,7 @@ class PhaseState:
                 # floor", which tied this to a constant meant for something
                 # else and made lowering that constant collapse the estimate.
                 diffs = [abs(b - a) for a, b in zip(self.seed, self.seed[1:])] or [0.0]
-                self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(diffs))
+                self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
                 self.q_level = q
                 self.pv_level = pv
@@ -919,7 +1018,7 @@ class PhaseState:
                 self.level = self.baseline
                 self.idle_diffs.append(abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
-                    self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(self.idle_diffs))
+                    self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
             return []
 
@@ -1037,8 +1136,19 @@ class PhaseState:
             q = sum(known) / len(known) if known else None
         else:
             q = o.var                         # the factor of the level it started at
+        # A factor derived from amps too coarse to resolve this load is not a
+        # measurement of it. Kozolec's Victron publishes current to 0.1 A -
+        # 23 VA at 230 V - so a 62 W load's whole apparent power is under
+        # three quanta, sqrt(S^2 - P^2) clamps to zero on 7 % of samples and
+        # reads PF 1.00, and 63 % of all samples came out at unity. Believing
+        # that split the library into 86 signatures where suppressing it
+        # gives 24 (Anze, 2026-09-22).
+        pf = _pf_from(levels[0][1], q)
+        if pf is not None and self.q_quantum > 0.0 and \
+                abs(levels[0][1]) < PF_MIN_QUANTA * self.q_quantum:
+            pf = None
         return Session(phases="", start=o.since, end=at, levels={"": levels},
-                       pf=_pf_from(levels[0][1], q), samples=self._span(o.since, at),
+                       pf=pf, samples=self._span(o.since, at),
                        low=o.lo, high=o.hi)
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
@@ -1050,7 +1160,9 @@ class PhaseState:
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
                 "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval,
-                "min_noise": self.min_noise, "noise_rel": self.noise_rel, "pv_level": self.pv_level, "seed": self.seed,
+                "min_noise": self.min_noise, "noise_rel": self.noise_rel,
+                "quantum": self.quantum, "q_quantum": self.q_quantum,
+                "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -1060,7 +1172,9 @@ class PhaseState:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
-                   interval=d.get("interval", 0.0), min_noise=d.get("min_noise", MIN_NOISE_W), noise_rel=d.get("noise_rel", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   interval=d.get("interval", 0.0), min_noise=d.get("min_noise", MIN_NOISE_W), noise_rel=d.get("noise_rel", 0.0),
+                   quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
+                   step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
@@ -1689,16 +1803,21 @@ class Detector:
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
                 q: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None,
-                pv: Optional[Dict[str, Dict[float, float]]] = None) -> List[Session]:
+                pv: Optional[Dict[str, Dict[float, float]]] = None,
+                q_quantum: Optional[Dict[str, float]] = None) -> List[Session]:
         """Feed new (ts, watts) samples per phase, in time order per phase.
         ``q`` is reactive VAr keyed by the SAME timestamps, where the meter
-        gives enough to work it out. Returns the sessions this batch closed."""
+        gives enough to work it out, and ``q_quantum`` how much apparent power
+        one quantum of the amps behind it is worth - the limit on any factor
+        derived from it. Returns the sessions this batch closed."""
         closed: List[Session] = []
         latest = now_ts or 0.0
         for ph, rows in samples.items():
             if ph not in self.phases:
                 continue
             st = self.phases[ph]
+            if q_quantum and q_quantum.get(ph):
+                st.q_quantum = q_quantum[ph]
             qm = (q or {}).get(ph) or {}
             pvm = (pv or {}).get(ph) or {}
             for ts, w in rows:
@@ -2148,11 +2267,18 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
+    # What each device meter can RESOLVE, measured from the rows above. The
+    # energy answer is an integral of those rows, so their quantisation is
+    # its error bar - and Home has a workshop boiler publishing in 46 W steps
+    # about every seven minutes (Anze, 2026-09-22).
+    sub_quantum: Dict[str, float] = field(default_factory=dict)
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
                 main_q=None, sub_q=None, now_ts: Optional[float] = None,
                 agnostic: Optional[Dict[str, bool]] = None,
-                pv: Optional[Dict[str, Dict[float, float]]] = None) -> None:
+                pv: Optional[Dict[str, Dict[float, float]]] = None,
+                main_q_quantum: Optional[Dict[str, float]] = None,
+                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
@@ -2176,12 +2302,16 @@ class Fleet:
             oldest = min((r[0] for r in merged), default=latest_seen)
             cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
             self.sub_rows[name] = [r for r in kept if r[0] >= cut]
-        closed_main = self.main.process(main_samples, main_q, now_ts, pv)
+            q = measure_quantum([v for _, v in self.sub_rows[name]])
+            if q:
+                self.sub_quantum[name] = q
+        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
-            closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts)
+            closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
+                                           None, (sub_q_quantum or {}).get(name))
         self._locate(closed_main, closed_sub, latest)
 
     def _locate(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]], latest: float) -> None:
@@ -2235,6 +2365,14 @@ class Fleet:
                     continue
                 rose = got - before * (span / look)
                 if rose <= 0:
+                    continue
+                # Both integrals are sample-and-hold over a reading that can
+                # only express whole quanta, so each carries about one
+                # quantum-hour of error and their difference carries two. A
+                # rise inside that is not evidence of anything.
+                floor = (ENERGY_MIN_QUANTA * self.sub_quantum.get(name, 0.0)
+                         * span / 3600.0)
+                if rose < floor:
                     continue
                 ratio = rose / want
                 if ENERGY_MATCH_LO <= ratio <= ENERGY_MATCH_HI:
@@ -2429,12 +2567,28 @@ def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: flo
     2026-09-22). Nothing is hidden for good; the library keeps every signature
     and naming one brings more.
     """
+    clear = clears_for_naming(worth, min_evidence, min_rows, is_heir)
+    return clear[:max(start_rows + named * rows_per_name, min_rows)]
+
+
+def clears_for_naming(worth: Sequence["Signature"], min_evidence: float,
+                      min_rows: int, is_heir=None) -> List["Signature"]:
+    """WHICH of the namable signatures are worth someone's attention - the
+    first of offer_for_naming's two questions, split out because the page has
+    to say how many are waiting behind it.
+
+    It said nothing: the caller had only the already-shortened list, so it
+    subtracted that list from itself and told every user "0 more than fit
+    here" - Kozolec showing 6 of 12 and Home 14 of 60 (Anze's screenshots,
+    2026-09-22). A page that lengthens as you name things has to be able to
+    promise there is something to lengthen INTO, and that promise was reading
+    as "this is all there is"."""
     clear = [s for s in worth
              if s.evidence >= min_evidence or s.name or (is_heir and is_heir(s.id))]
     if len(clear) < min_rows and len(clear) != len(worth):
         rest = sorted((s for s in worth if s not in clear), key=lambda s: -s.evidence)
         clear = clear + rest[:min_rows - len(clear)]
-    return clear[:max(start_rows + named * rows_per_name, min_rows)]
+    return clear
 
 
 def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> List[List[int]]:

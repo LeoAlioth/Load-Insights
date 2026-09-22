@@ -55,6 +55,8 @@ from .insights.detect import (
     drop_stale_load_override,
     mean_power,
     most_specific,
+    measure_quantum,
+    clears_for_naming,
     offer_for_naming,
 )
 from .insights.discovery import closest_by_name, match_meter_entities
@@ -73,7 +75,11 @@ STORAGE_VERSION = 1
 # 5 = readings are scaled by their UNIT, so a meter publishing kW is no
 #     longer read as watts - which changes what every submeter saw, and so
 #     where loads are placed and what they were classified as.
-DETECTOR_GENERATION = 5
+# 6 = every reading now carries its measured RESOLUTION as well as its
+#     noise, and nothing is derived past what a sensor can express: the
+#     step floor, the power factor and the energy answer are all gated on
+#     it, so steps, factors and placements all differ from generation 5.
+DETECTOR_GENERATION = 6
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -93,6 +99,10 @@ class DetectionRunner:
         self.entry = entry
         self.submeters = {}
         self.fleet: Fleet = Fleet()
+        # V x dI per phase: the apparent power one quantum of the amps
+        # behind this role's power factor is worth. Measured, never set.
+        self.q_quantum: Dict[str, float] = {}
+        self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
@@ -378,6 +388,11 @@ class DetectionRunner:
         teaches the library nothing (Anze, 2026-09-17: "as for signatures only
         seen once, dont show them"). It keeps its place in the library and
         appears here as soon as it happens again."""
+        return self._by_evidence(self._worth())
+
+    def _worth(self) -> list:
+        """Signatures a person could name: on the main meter, seen more than
+        once, and having used enough to be worth the trouble."""
         parents = self.parents
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
@@ -394,7 +409,20 @@ class DetectionRunner:
                  # list whatever its size: the offer to move the name is the
                  # whole reason to open it
                  or self.detector.predecessor_of(s.id) is not None]
-        return self._by_evidence(worth)
+        return worth
+
+    def unlocated_waiting(self) -> int:
+        """How many more cleared the bar than the page's earned length fits.
+
+        The page promises it will lengthen as loads are named; this is the
+        number that makes the promise concrete."""
+        return max(0, len(self._clearing()) - len(self.unlocated()))
+
+    def _clearing(self) -> list:
+        """Everything worth naming, before the page's length is applied."""
+        return clears_for_naming(
+            self._worth(), self.min_evidence, NAMING_MIN_ROWS,
+            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
     def _by_evidence(self, worth: list) -> list:
         """See offer_for_naming, which is where this lives so it can be tested."""
@@ -623,7 +651,8 @@ class DetectionRunner:
                     sub_samples[name], sub_q[name] = ss, sq
                     agnostic[name] = meter["agnostic"]
             await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv
+                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
+                dict(self.q_quantum), dict(self.sub_q_quantum),
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())
@@ -742,6 +771,18 @@ class DetectionRunner:
                     # the reference samples at its own moments; hold each
                     # value forward onto the load's
                     out[phase] = _align(sorted(var.items()), rows)
+                    # ...and what those amps could actually resolve, which is
+                    # the error bar on every factor derived from them. A
+                    # power-factor entity needs no amps and carries its own
+                    # precision, so it is left ungated.
+                    self.q_quantum.pop(phase, None)
+                    amps = series.get(("current", phase)) or []
+                    volts = series.get(("voltage", phase)) or []
+                    if amps and volts:
+                        dq = measure_quantum([v for _, v in amps])
+                        if dq:
+                            level = _median_of([v for _, v in volts])
+                            self.q_quantum[phase] = dq * level
                 break
         return out
 
@@ -837,6 +878,15 @@ def _as_of(rows: list, ts: float, i: int) -> int:
     while i + 1 < len(rows) and rows[i + 1][0] <= ts:
         i += 1
     return i
+
+
+def _median_of(values: list) -> float:
+    """Plain median, for the one voltage level a quantum is scaled by."""
+    kept = sorted(values)
+    if not kept:
+        return 0.0
+    mid = len(kept) // 2
+    return kept[mid] if len(kept) % 2 else 0.5 * (kept[mid - 1] + kept[mid])
 
 
 def _align(source: list, target_rows: list) -> Dict[float, float]:

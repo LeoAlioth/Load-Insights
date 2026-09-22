@@ -278,6 +278,7 @@ def main() -> int:
 
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
     q = {}
+    q_quantum = {}
     if not args.no_q:
         trios = coherent_triples(series, fields, phases)
         print("reactive power from:")
@@ -291,6 +292,16 @@ def main() -> int:
             if var:
                 # held forward onto the load reading's own sample times
                 q[p] = align(sorted(var.items()), samples[p])
+            # ...and what those amps can resolve, the same way production
+            # measures it, so the preview is not kinder than the real thing
+            amps, volts = series.get(i) or [], series.get(v) or []
+            if amps and volts:
+                dq = D.measure_quantum([x for _, x in amps])
+                if dq:
+                    lvl = sorted(x for _, x in volts)[len(volts) // 2]
+                    q_quantum[p] = dq * lvl
+                    print(f"      amps resolve {dq:g} A -> {dq * lvl:.1f} VA per quantum; "
+                          f"no power factor under {D.PF_MIN_QUANTA * dq * lvl:.0f} W")
     pv = {}
     for eid in args.pv:
         rows = series.get(eid)
@@ -319,7 +330,7 @@ def main() -> int:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
     fleet.process(samples, subs, q, None, latest,
-                  {name: True for name in subs}, pv or None)
+                  {name: True for name in subs}, pv or None, q_quantum)
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.
     # This said 100.0 from when MIN_NOISE_W was 100, and left the harness
