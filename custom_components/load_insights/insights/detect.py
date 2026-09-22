@@ -197,6 +197,18 @@ MATCH_PATIENCE_S = 20 * 60.0
 # are exactly the ones energy matching answers best.
 IDLE_WINDOW_S = 900.0
 MATCH_PF_TOL = 0.15
+
+
+def pf_tolerance(a_mad: float, b_mad: float) -> float:
+    """How far apart two power factors may sit and still be one load.
+
+    The flat figure alone assumed every factor was measured equally well, and
+    at Kozolec they are not: a 62 W load's factor is uncertain by 0.20 against
+    a tolerance of 0.15, so the factor REFUSED matches between sightings of
+    the same load. Each side brings its own error bar, and two readings agree
+    when they overlap - so a well-resolved pair still gets the tight 0.15 and
+    a badly-resolved one simply stops constraining anything."""
+    return MATCH_PF_TOL + a_mad + b_mad
 MAX_SIGNATURES = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
 # or five of any kind) and seen inside the horizon - never evicted. YOUNG:
@@ -240,6 +252,15 @@ SUCCESSOR_MIN_COUNT = 5
 # factor by 0.20 below 100 W and 0.13 below 200 W, against a matching
 # tolerance of 0.15 - so the factor was SPLITTING loads that were the
 # same. Ten quanta puts the swing under 0.05.
+# The widest error bar a factor may carry and still be handed to the
+# classifier, whose bands are ~0.05 wide at the edges - the heater band
+# starts at 0.93 - so a factor uncertain by more than that cannot place a
+# load in one of them, however plausible the number looks.
+PF_TRUST_MAD = 0.05
+# How many quanta a load's apparent power must span for its factor to cost
+# less than a tenth. Nothing is gated on this any more - each factor carries
+# its own error bar instead - but it is the honest single number for "below
+# this, power factors stop meaning much here", and the sensor publishes it.
 PF_MIN_QUANTA = 10.0
 # Two, for an energy rise, because the window matcher subtracts one
 # integral from another and each carries its own quantisation.
@@ -273,6 +294,7 @@ class Session:
     end: float
     levels: Dict[str, List[Tuple[float, float]]]   # phase -> [(since_ts, watts above baseline)]
     pf: Optional[float] = None           # mean power factor during the session, if known
+    pf_mad: float = 0.0                  # ...and how far the amps' resolution could put it out
     # How many meter samples the run actually spanned. A 43-second load read
     # every 5 s is eight numbers; the same load read every second is
     # forty-three, and the second measurement deserves more weight and a
@@ -370,12 +392,14 @@ class Session:
 
     def to_dict(self) -> dict:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
+                "pf_mad": self.pf_mad,
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
         return cls(phases=d["phases"], start=d["start"], end=d["end"], pf=d.get("pf"),
+                   pf_mad=d.get("pf_mad", 0.0),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()})
 
 
@@ -816,6 +840,30 @@ def quantum_of_steps(steps: Sequence[float]) -> float:
     return q if on >= QUANTUM_LATTICE_SHARE * len(kept) else 0.0
 
 
+def _pf_spread(watts: float, var: Optional[float], va_quantum: float) -> float:
+    """How far the derived power factor could be wrong, from the resolution of
+    the amps it came from.
+
+    PF = P/S, so a quantum of apparent power moves it by PF * dS/S - small on
+    a load whose own apparent power is many quanta, and ruinous on one that is
+    three. At Kozolec's 0.1 A (23 VA at 230 V) that is 0.01 for a 2.5 kW load
+    and 0.20 for a 62 W one, which is the swing measured off the site itself.
+
+    A VAr of exactly zero is the clamp in _reactive firing: quantisation put
+    the apparent power BELOW the real power, which cannot happen, and the
+    factor was set to 1.00 for want of anywhere else to go. That is not a
+    precise measurement and not an imprecise one either - it is no measurement,
+    so it gets the widest spread there is."""
+    if var is None or va_quantum <= 0.0:
+        return 0.0
+    apparent = math.hypot(watts, var)
+    if apparent <= 0.0:
+        return 1.0
+    if var == 0.0:
+        return 1.0                      # clamped: the true factor could be anything
+    return min(1.0, abs(watts) / apparent * (va_quantum / apparent))
+
+
 def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     """The LOAD's power factor, from its OWN step in real and reactive power.
 
@@ -1143,13 +1191,10 @@ class PhaseState:
         # reads PF 1.00, and 63 % of all samples came out at unity. Believing
         # that split the library into 86 signatures where suppressing it
         # gives 24 (Anze, 2026-09-22).
-        pf = _pf_from(levels[0][1], q)
-        if pf is not None and self.q_quantum > 0.0 and \
-                abs(levels[0][1]) < PF_MIN_QUANTA * self.q_quantum:
-            pf = None
         return Session(phases="", start=o.since, end=at, levels={"": levels},
-                       pf=pf, samples=self._span(o.since, at),
-                       low=o.lo, high=o.hi)
+                       pf=_pf_from(levels[0][1], q),
+                       pf_mad=_pf_spread(levels[0][1], q, self.q_quantum),
+                       samples=self._span(o.since, at), low=o.lo, high=o.hi)
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -1227,6 +1272,7 @@ class Signature:
     # real device; one whose power and duration are all over the place is
     # the detector pairing unrelated edges, and the evidence score says so.
     power_mad: float = 0.0
+    pf_mad: float = 0.0
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
     # motor does this and nothing else in a house does, so it is evidence
     # rather than noise once it is kept out of the power (Anze, 2026-09-22:
@@ -1258,7 +1304,8 @@ class Signature:
         factor = self.duration_factor
         if ratio > factor or ratio < 1.0 / factor:
             return None
-        if self.pf is not None and s.pf is not None and abs(self.pf - s.pf) > MATCH_PF_TOL:
+        if self.pf is not None and s.pf is not None and \
+                abs(self.pf - s.pf) > pf_tolerance(self.pf_mad, s.pf_mad):
             return None
         return score
 
@@ -1299,7 +1346,8 @@ class Signature:
         factor = min(self.duration_factor, other.duration_factor)
         if ratio > factor or ratio < 1.0 / factor:
             return False
-        if self.pf is not None and other.pf is not None and abs(self.pf - other.pf) > MATCH_PF_TOL:
+        if self.pf is not None and other.pf is not None and \
+                abs(self.pf - other.pf) > pf_tolerance(self.pf_mad, other.pf_mad):
             return False
         return True
 
@@ -1328,6 +1376,11 @@ class Signature:
         self.duration_s = (self.duration_s * a + other.duration_s * b) / n
         self.level_count = (self.level_count * a + other.level_count * b) / n
         self.inrush_w = (self.inrush_w * a + other.inrush_w * b) / n
+        if self.pf is not None and other.pf is not None:
+            self.pf_mad = min(1.0, ((self.pf_mad + abs(self.pf - other.pf)) * a
+                                    + (other.pf_mad + abs(other.pf - self.pf)) * b) / n)
+        elif self.pf is None:
+            self.pf_mad = other.pf_mad
         if self.pf is None:
             self.pf = other.pf
         elif other.pf is not None:
@@ -1366,6 +1419,10 @@ class Signature:
         self.duration_s = (self.duration_s * n + k * s.duration_s) / (n + k)
         self.level_count = (self.level_count * n + k * s.level_count) / (n + k)
         if s.pf is not None:
+            # the spread owns BOTH the session's own uncertainty and how far
+            # this sighting sits from the mean, the same way power_mad does
+            gap = 0.0 if self.pf is None else abs(s.pf - self.pf)
+            self.pf_mad = min(1.0, (self.pf_mad * n + k * (s.pf_mad + gap)) / (n + k))
             self.pf = s.pf if self.pf is None else (self.pf * n + k * s.pf) / (n + k)
         if s.low is not None and s.high is not None:
             self.low = s.low if self.low is None else (self.low * n + k * s.low) / (n + k)
@@ -1526,7 +1583,8 @@ class Signature:
         Except where it sits on a meter whose NAME says what it is, which is
         knowledge rather than inference and is treated as such."""
         where = self.location
-        return classify(self.watts, self.pf, self.level_count, self.duration_s,
+        return classify(self.watts, self.pf if self.pf_mad <= PF_TRUST_MAD else None,
+                        self.level_count, self.duration_s,
                         self.phases, self.interval_s, self.interval_mad, self.hour_wh,
                         self.low, self.high, None if where == "main" else where,
                         self.inrush_w)
@@ -1556,7 +1614,8 @@ class Signature:
         dur = _fmt_s(self.duration_s)
         gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
-        pf = f", PF {self.pf:.2f}" if self.pf is not None else ""
+        pf = (f", PF {self.pf:.2f}"
+              if self.pf is not None and self.pf_mad <= PF_TRUST_MAD else "")
         span = max(self.last_seen - self.first_seen, 0.0)
         over = f" over {_fmt_s(span)}" if span > 0 else ""
         when = last_run_phrase(self.last_seen, now, running)
@@ -1616,7 +1675,8 @@ class Signature:
                 "day_wh": [_trim(x, 1) for x in self.day_wh],
                 "level_count": _trim(self.level_count, 3), "name": self.name,
                 "last_start": self.last_start, "locations": self.locations,
-                "power_mad": _trim(self.power_mad, 1), "inrush_w": _trim(self.inrush_w, 1),
+                "power_mad": _trim(self.power_mad, 1), "pf_mad": _trim(self.pf_mad, 4),
+                "inrush_w": _trim(self.inrush_w, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
@@ -1630,7 +1690,7 @@ class Signature:
                    day_wh=list(d.get("day_wh") or [0.0] * 7),
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
-                   power_mad=d.get("power_mad", 0.0), inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   power_mad=d.get("power_mad", 0.0), pf_mad=d.get("pf_mad", 0.0), inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))
@@ -1888,7 +1948,8 @@ class Detector:
             if m.pf is not None:
                 pfs.append(m.pf)
         return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
-                       levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None)
+                       levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None,
+                       pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0))
 
     def _file(self, s: Session) -> None:
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
@@ -1918,6 +1979,15 @@ class Detector:
             for sig in self.signatures:
                 self._reclaim(sig, noise)
         self._prune(s.end)
+
+    def pf_floor(self, phases: str) -> float:
+        """The load size at which these amps' resolution costs a tenth of a
+        factor - what the sensor publishes so a site can see where its power
+        factors stop meaning much. Nothing is gated on it any more; the error
+        bar each factor carries does that work now, load by load."""
+        worst = max((self.phases[p].q_quantum for p in phases if p in self.phases),
+                    default=0.0)
+        return PF_MIN_QUANTA * worst
 
     def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
         """Merge signatures that have BECOME alike, and say how many went.
@@ -2623,7 +2693,7 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
             return False
         if (a.pf is None) != (b.pf is None):
             return False
-        if a.pf is not None and abs(a.pf - b.pf) > MATCH_PF_TOL:
+        if a.pf is not None and abs(a.pf - b.pf) > pf_tolerance(a.pf_mad, b.pf_mad):
             return False
         # Sizes are not compared - a setting can be any fraction of another -
         # but DURATION is a different question, and leaving it out was what

@@ -1748,25 +1748,44 @@ def test_a_reading_measures_what_it_can_resolve_not_just_how_it_jitters():
     assert st.noise >= 46.0, "a step it cannot resolve is not a step"
 
 
-def test_a_power_factor_is_dropped_where_the_amps_cannot_carry_it():
-    """sqrt(S^2 - P^2) amplifies any error in S exactly where PF is near one,
-    and clamps to zero when quantisation puts S under P - which reads as a
-    perfect 1.00. At Kozolec that was 63 % of samples."""
-    st = D.PhaseState(min_noise=5.0)
-    st.q_quantum = 23.0                      # 0.1 A at 230 V
+def test_a_power_factor_carries_how_far_wrong_it_could_be():
+    """A factor from coarse amps is not thrown away - it is given its error
+    bar, and the bar is what stops it constraining anything.
+
+    Anze asked for this rather than the outright gate it replaces: one
+    mechanism reads cleaner than a cliff, and a factor that IS well measured
+    on a small load still gets to count (2026-09-22)."""
+    coarse = D.PhaseState(min_noise=5.0)
+    coarse.q_quantum = 23.0                  # 0.1 A at 230 V
     o = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
-    small = st._close(o, 600.0, 62.0, 30.0)
-    assert small.pf is None, "62 W is under three quanta; the factor is fabricated"
+    small = coarse._close(o, 600.0, 62.0, 30.0)
+    assert small.pf is not None, "the measurement is kept..."
+    assert small.pf_mad > 0.15, f"...and owns its uncertainty ({small.pf_mad})"
 
     big = D._Open(since=0.0, watts=2500.0, var=600.0, levels=[(0.0, 2500.0)])
-    assert st._close(big, 600.0, 2500.0, 600.0).pf is not None, \
-        "a load ten quanta over keeps its factor"
+    large = coarse._close(big, 600.0, 2500.0, 600.0)
+    assert large.pf_mad < 0.02, f"a load many quanta over is measured well ({large.pf_mad})"
 
-    # a finer meter keeps the small load's factor: same load, same code
+    # the same load on amps ten times finer is trusted
     fine = D.PhaseState(min_noise=5.0)
-    fine.q_quantum = 2.3                     # 0.01 A at 230 V
+    fine.q_quantum = 2.3
     o2 = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
-    assert fine._close(o2, 600.0, 62.0, 30.0).pf is not None
+    assert fine._close(o2, 600.0, 62.0, 30.0).pf_mad <= D.PF_TRUST_MAD, \
+        "fine enough amps: the classifier may still use this factor"
+
+    # a VAr clamped to zero is no measurement at all, not a precise one
+    clamped = D._Open(since=0.0, watts=62.0, var=0.0, levels=[(0.0, 62.0)])
+    assert coarse._close(clamped, 600.0, 62.0, 0.0).pf_mad == 1.0
+
+
+def test_two_factors_agree_when_their_error_bars_overlap():
+    """The flat tolerance assumed every factor was measured equally well, and
+    so REFUSED matches between sightings of one load at Kozolec."""
+    assert D.pf_tolerance(0.0, 0.0) == D.MATCH_PF_TOL, "well measured: unchanged"
+    # two badly-resolved factors 0.5 apart are not evidence of two loads
+    assert D.pf_tolerance(0.2, 0.2) > 0.5
+    # and a wide bar never tightens the test
+    assert D.pf_tolerance(0.3, 0.0) > D.pf_tolerance(0.0, 0.0)
 
 
 def test_the_same_constant_serves_both_sites():

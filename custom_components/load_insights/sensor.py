@@ -389,7 +389,8 @@ class DetectedLoadsSensor(_DetectionBase):
                  "phases": s.phases.upper(),
                  "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
-                 "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen),
+                 "pf": None if s.pf is None else round(s.pf, 2),
+                 "pf_mad": round(s.pf_mad, 3), "last_seen": iso(s.last_seen),
                  # watt-hours per hour of day, and per weekday from Monday
                  "hour_wh": [round(x) for x in s.hour_wh], "day_wh": [round(x) for x in s.day_wh],
                  # the downstream meter that also saw it, or "main" (upstream of every submeter)
