@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.3.0
+
+### New Features
+
+- **A name outlives the library it was written on.** Naming a load is the one thing in the signature library that a person put there by hand - it creates a device, an energy meter and a place on the Energy dashboard - and everything else in that library is re-learned from ten days of history in a few minutes. Until now a reset took the names with it, and so would any future update that changed how loads are found: the library is keyed on a detector generation, and when that moves the whole store is discarded behind a line in the log. On every installation at once, the first time it happened. Names are now carried across both - the deliberate reset and the silent one - as descriptions of what wore them, and handed back to whatever the rebuild finds that looks like the same load, by the same test that decides two signatures are one thing. Where nothing matches, which is exactly what a genuinely changed site looks like, the name does not return; it waits instead, visible in the *Detected loads* sensor's `awaiting_name` attribute rather than disappearing. Because a named load's sensors are keyed on the NAME, a name that comes back brings its own history with it. **Ordinary updates were never affected** - 0.1.0 to 0.2.0 kept every name, because the generation did not move - but nothing guaranteed that, and the guarantee is the point.
+
+---
+
 ## 0.2.0
 
 Load detection learns to say *where*. In 0.1.0 it found what the house does and described it well, but almost nothing ever landed on the device meter that already measured it - at a site with a metered boiler, car charger and two pumps, every one of 173 signatures read as "main". This release is that path made to work, end to end, measured against ten days of two real sites.

@@ -357,7 +357,7 @@ class DetectedLoadsSensor(_DetectionBase):
     _unrecorded_attributes = frozenset({
         "active", "signatures", "recent_sessions", "meters", "meter_hierarchy",
         "named_loads", "looks_like_one_device", "noise_floor_w", "baseline_w",
-        "processed_until", "caught_up",
+        "processed_until", "caught_up", "awaiting_name",
     })
 
     def __init__(self, runner, entry) -> None:
@@ -411,6 +411,9 @@ class DetectedLoadsSensor(_DetectionBase):
             },
             "meter_hierarchy": self._runner.parents,
             "named_loads": self._runner.detector.names(),
+            # names whose signature a reset took, still looking for the load
+            # that wore them - visible so they are not silently in limbo
+            "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
             "looks_like_one_device": suggest_levels(det.signatures, det.recent),
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]

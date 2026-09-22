@@ -12,8 +12,10 @@ reset_detection:
   description: >-
     Forget every detected signature and start the meter's backfill again.
     For when the meter changed, or a phase was rewired, and the library
-    describes a site that no longer exists. Names are lost with the
-    signatures.
+    describes a site that no longer exists. Names you have given are kept
+    and handed back to whatever the backfill finds that looks like them -
+    so where the site really has changed, and nothing matches, a name
+    simply does not return.
   target:
     entity:
       integration: load_insights
