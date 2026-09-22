@@ -1219,6 +1219,13 @@ class Signature:
     def per_run_wh(self) -> float:
         return self.energy_wh / max(self.count, 1)
 
+    @property
+    def when(self) -> str:
+        """When this load generally runs, in words, or "" when it keeps no
+        time worth mentioning."""
+        return when_phrase(self.hour_wh, self.day_wh,
+                           max(self.last_seen - self.first_seen, 0.0), self.count)
+
     def row(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """One line for a menu, and a MENU ROW IS NARROW - it truncated at
         about sixty characters and took the useful half with it (Anze,
@@ -1241,11 +1248,19 @@ class Signature:
         tag = self.guess().tag
         if tag:
             bits.append(tag)
+        generally = self.when
+        if generally:
+            bits.append(generally)
         when = last_run_phrase(self.last_seen, now, running)
         if when:
             bits.append(when)
         line = ", ".join(bits)
-        bars = sparkline(self.day_wh)          # seven characters, one per day
+        # The sparkline is seven characters of the week, and "weekdays" says
+        # the same thing in eight - so only one of them earns its place on a
+        # row this narrow. The words win: they are read rather than decoded,
+        # and the detail view keeps both the day and hour histograms for
+        # anyone who wants the actual shape.
+        bars = "" if generally else sparkline(self.day_wh)
         return f"{line} {bars}" if bars else line
 
     @property
@@ -1342,8 +1357,10 @@ class Signature:
         span = max(self.last_seen - self.first_seen, 0.0)
         over = f" over {_fmt_s(span)}" if span > 0 else ""
         when = last_run_phrase(self.last_seen, now, running)
+        generally = f", {self.when}" if self.when else ""
         line = (f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, "
-                f"seen {self.count} times{over}" + (f", {when}" if when else ""))
+                f"seen {self.count} times{over}{generally}"
+                + (f", {when}" if when else ""))
         guess = self.guess()
         # the short form: the line above already carries the factor, the
         # levels and the size the guess rests on
@@ -1430,6 +1447,81 @@ def _fmt_s(x: Optional[float]) -> str:
     if x < 172800:                      # past two days, hours stop being readable
         return f"{x / 3600:.1f} h"
     return f"{x / 86400:.1f} days"
+
+
+# Parts of the day, by the hour they start. Deliberately coarse: a load that
+# runs "in the evening" is recognised by that phrase far more readily than by
+# "18:00-22:00", and the histogram in the detail view is there for anyone who
+# wants the actual shape.
+_DAY_PARTS = ((22, 6, "overnight"), (6, 12, "mornings"),
+              (12, 18, "afternoons"), (18, 22, "evenings"))
+# Tried only when no narrower part fits. A load running 08:00 to 17:00 belongs
+# to neither the morning nor the afternoon and is plainly a daytime load; with
+# only the narrow windows it got no phrase at all.
+_DAY_HALVES = ((6, 18, "daytime"), (18, 6, "nights"))
+# How much of a load's energy has to fall inside a window before it is worth
+# saying anything at all. Below this the load simply does not keep to a time,
+# and a phrase on every row would say nothing while costing the width that
+# tells one row from another.
+WHEN_SHARE = 0.65
+# A week of history before the weekday split is worth reading - with less, one
+# quiet weekend makes a load "weekdays only".
+WHEN_MIN_DAYS = 7.0
+# And two days before the hour-of-day split is worth reading at all: every run
+# inside one evening falls in the same hours by construction, so a load seen
+# five times over four hours would say "evenings" on the strength of what is
+# really a single occasion.
+WHEN_MIN_HOUR_DAYS = 2.0
+# Three sightings, because two can agree by chance about anything.
+WHEN_MIN_COUNT = 3
+
+
+def _window_share(hour_wh: Sequence[float], start: int, end: int) -> float:
+    """The share of a load's energy falling in a window of hours, which may
+    wrap around midnight."""
+    total = sum(hour_wh)
+    if total <= 0:
+        return 0.0
+    hours = range(start, end) if start < end else list(range(start, 24)) + list(range(0, end))
+    return sum(hour_wh[h] for h in hours) / total
+
+
+def when_phrase(hour_wh: Sequence[float], day_wh: Optional[Sequence[float]] = None,
+                span_s: float = 0.0, count: int = 0) -> str:
+    """When a load generally runs, in words - or nothing, which is the common
+    case and the right answer for it.
+
+    This is a MEASUREMENT where the appliance guess is a prior: "runs at six in
+    the evening" is a fact about this house, not a belief about houses. It is
+    also what its owner recognises first - "the thing that runs overnight" is a
+    better handle on a load than the size of its step (Anze, 2026-09-22).
+
+    Said only when the load actually keeps to a time. A load scattered through
+    the day gets no phrase rather than a misleading one.
+    """
+    if not hour_wh or sum(hour_wh) <= 0 or count < WHEN_MIN_COUNT:
+        return ""
+    bits = []
+    if span_s >= WHEN_MIN_HOUR_DAYS * 86400.0:
+        for windows in (_DAY_PARTS, _DAY_HALVES):
+            best = max(windows, key=lambda p: _window_share(hour_wh, p[0], p[1]))
+            if _window_share(hour_wh, best[0], best[1]) >= WHEN_SHARE:
+                bits.append(best[2])
+                break
+    if day_wh and sum(day_wh) > 0 and span_s >= WHEN_MIN_DAYS * 86400.0:
+        # Per DAY, not per group. There are five weekdays and two weekend
+        # days, so a load running uniformly puts 71 % of its energy on
+        # weekdays and reads as a weekday load - which put "weekdays" on
+        # twenty of Anze's twenty-four rows, distinguishing nothing from
+        # nothing (2026-09-22).
+        week, end = sum(day_wh[:5]) / 5.0, sum(day_wh[5:]) / 2.0
+        total = week + end
+        if total > 0:
+            if end / total <= 1.0 - WHEN_SHARE:
+                bits.append("weekdays")
+            elif week / total <= 1.0 - WHEN_SHARE:
+                bits.append("weekends")
+    return ", ".join(bits)
 
 
 def last_run_phrase(last_seen: float, now: Optional[float], running: bool = False) -> str:
