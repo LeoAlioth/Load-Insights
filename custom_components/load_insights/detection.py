@@ -80,7 +80,10 @@ STORAGE_VERSION = 1
 #     noise, and nothing is derived past what a sensor can express: the
 #     step floor, the power factor and the energy answer are all gated on
 #     it, so steps, factors and placements all differ from generation 5.
-DETECTOR_GENERATION = 6
+# 7 = a power factor carries how far wrong it could be, and that error bar -
+#     not a threshold - decides whether it constrains a match or reaches the
+#     classifier. Every stored factor was kept under the old rule.
+DETECTOR_GENERATION = 7
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
