@@ -56,6 +56,7 @@ from .insights.detect import (
     mean_power,
     most_specific,
     measure_quantum,
+    quantum_of_steps,
     clears_for_naming,
     offer_for_naming,
 )
@@ -85,6 +86,10 @@ MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
 # of those is why the naming page ran to a hundred and eighty rows.
 NAMING_MIN_WH = 50.0
+# How many of a current reading's own changes to remember while confirming
+# what it can resolve. A pass covers one minute, so the evidence has to be
+# gathered across them or it is never gathered at all.
+AMP_STEP_MEMORY = 600
 
 
 class DetectionRunner:
@@ -102,6 +107,7 @@ class DetectionRunner:
         # V x dI per phase: the apparent power one quantum of the amps
         # behind this role's power factor is worth. Measured, never set.
         self.q_quantum: Dict[str, float] = {}
+        self._amp_steps: Dict[str, List[float]] = {}
         self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
@@ -775,14 +781,23 @@ class DetectionRunner:
                     # the error bar on every factor derived from them. A
                     # power-factor entity needs no amps and carries its own
                     # precision, so it is left ungated.
-                    self.q_quantum.pop(phase, None)
+                    # ACCUMULATED across passes, never re-measured from one.
+                    # A pass reads a single minute of history, which holds
+                    # nowhere near enough changes to confirm a lattice - so
+                    # measuring per pass returned nothing and, because it
+                    # cleared first, threw away what the six-hour backfill
+                    # slices HAD learned. Resolution is a property of the
+                    # instrument; it does not expire between passes.
                     amps = series.get(("current", phase)) or []
                     volts = series.get(("voltage", phase)) or []
                     if amps and volts:
-                        dq = measure_quantum([v for _, v in amps])
+                        steps = self._amp_steps.setdefault(phase, [])
+                        steps.extend(abs(b - a) for (_, a), (_, b)
+                                     in zip(amps, amps[1:]) if b != a)
+                        del steps[:-AMP_STEP_MEMORY]
+                        dq = quantum_of_steps(steps)
                         if dq:
-                            level = _median_of([v for _, v in volts])
-                            self.q_quantum[phase] = dq * level
+                            self.q_quantum[phase] = dq * _median_of([v for _, v in volts])
                 break
         return out
 
