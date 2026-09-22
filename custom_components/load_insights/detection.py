@@ -83,7 +83,11 @@ STORAGE_VERSION = 1
 # 7 = a power factor carries how far wrong it could be, and that error bar -
 #     not a threshold - decides whether it constrains a match or reaches the
 #     classifier. Every stored factor was kept under the old rule.
-DETECTOR_GENERATION = 7
+# 8 = power_mad is PER PHASE, not the deviation of the total, so every
+#     stored spread is three times too large on a three-phase load - and the
+#     relative-noise floor is derived from each phase's measured noise
+#     rather than a flat 300 W, which changes which steps were seen at all.
+DETECTOR_GENERATION = 8
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full

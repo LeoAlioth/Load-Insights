@@ -59,7 +59,17 @@ MIN_NOISE_W = 10.0
 # figure, and NOISE_REL_CAP only stops a pathological signal declaring itself
 # all noise.
 NOISE_REL_CAP = 0.05
-NOISE_REL_MIN_LEVEL = 300.0    # below this a ratio is mostly quantisation
+# How far ABOVE the level at which one quantum equals the cap a reading has
+# to be before its ratio is worth recording. One is the boundary itself, and
+# the boundary is the worst admissible point rather than a safe one: a sample
+# taken there contributes a ratio equal to the cap and drags the estimate to
+# it. Swept on both sites' data - see the commit.
+NOISE_REL_FLOOR_FACTOR = 1.5
+# ...and where a ratio starts to mean something, which is NOT a number of
+# watts. It was 300 W flat, carrying the comment "below this a ratio is
+# mostly quantisation" - standing in for the very thing the detector now
+# measures. See PhaseState.rel_floor, which derives it from the reading's own
+# resolution and noise against the cap above, so no site needs telling.
 # A house-consumption reading below this is not a reading. Home's template
 # sensors are inverter/3 minus the meter, recomputed whenever EITHER input
 # updates against the other's stale value, so a passing cloud puts one sample
@@ -197,6 +207,22 @@ MATCH_PATIENCE_S = 20 * 60.0
 # are exactly the ones energy matching answers best.
 IDLE_WINDOW_S = 900.0
 MATCH_PF_TOL = 0.15
+
+
+def power_tolerance(base: float, *mads: float) -> float:
+    """How far apart two powers may sit on one phase and still be one load.
+
+    ``base`` is the flat part - a tenth of the larger reading, or the measured
+    noise, whichever is bigger - and the rest is what the signatures already
+    know about how much they WANDER. power_mad was computed from the first
+    sighting and then read only by the evidence score: swallow even folds the
+    distance between two merged means into it, and nothing consulted the
+    result when deciding what to merge next (Anze, 2026-09-22).
+
+    A load that genuinely repeats has a small mad and keeps the tight old
+    tolerance; one that has always wandered stops being cut into pieces for
+    wandering again."""
+    return base + sum(mads)
 
 
 def pf_tolerance(a_mad: float, b_mad: float) -> float:
@@ -1047,7 +1073,7 @@ class PhaseState:
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
-            if self.level is not None and abs(self.level) >= NOISE_REL_MIN_LEVEL:
+            if self.level is not None and abs(self.level) >= self.rel_floor:
                 self.rel_diffs.append(abs(w - self.level) / abs(self.level))
                 if len(self.rel_diffs) >= 240:
                     self.noise_rel = min(NOISE_REL_CAP,
@@ -1108,6 +1134,24 @@ class PhaseState:
             # count as running.
             self.open_edges = []
         return closed
+
+    @property
+    def rel_floor(self) -> float:
+        """The level above which a RELATIVE noise figure means anything.
+
+        Two things spoil the ratio |w - level| / level low down, and both are
+        now measured rather than guessed at: one quantum of the reading looks
+        like real wander, and the absolute noise swamps the level it is being
+        divided by. Taking the larger against NOISE_REL_CAP reads as "the
+        level at which a single quantum would on its own saturate the cap" -
+        exactly the point below which the measurement cannot say anything -
+        and it needs no constant of its own, because the cap is already there.
+
+        The flat 300 W it replaces was wrong in both directions at once: too
+        low for Home, whose phase C measures 37 W of noise and so needs 740,
+        and too high for Kozolec at 10 W, which needs 200 (Anze, 2026-09-22).
+        """
+        return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
 
     def noise_at(self, level: Optional[float] = None) -> float:
         """The smallest change worth calling a step, at that level.
@@ -1271,6 +1315,12 @@ class Signature:
     # absolute deviation. A load that repeats to within a few per cent is a
     # real device; one whose power and duration are all over the place is
     # the detector pairing unrelated edges, and the evidence score says so.
+    # PER PHASE, like every tolerance it is ever compared against. It used to
+    # be the deviation of the TOTAL while the bands it met were one leg's, so
+    # a three-phase load was judged by a single-phase yardstick: its total
+    # wanders about three times what one leg does, and it was refused merges
+    # an identical single-phase load was granted (Anze: "why don't we just
+    # assume the noise level per phase everywhere", 2026-09-22).
     power_mad: float = 0.0
     pf_mad: float = 0.0
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
@@ -1296,7 +1346,7 @@ class Signature:
         rel = MATCH_POWER_REL / max(0.25, s.confidence)
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), pw.get(ph, 0.0)
-            tol = max(rel * max(mine, theirs), noise_w)
+            tol = power_tolerance(max(rel * max(mine, theirs), noise_w), self.power_mad)
             if abs(mine - theirs) > tol:
                 return None
             score *= 1.0 - abs(mine - theirs) / (2 * tol)
@@ -1318,6 +1368,16 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
+        # NOT widened by power_mad, unlike matches() - and the difference is
+        # the whole point. Against a SESSION the mad is what the signature
+        # learned from its own sightings, and a single observation cannot
+        # chain, so consulting it lets a genuinely variable load stop being
+        # cut into pieces. Between two SIGNATURES the mad is partly damage
+        # from earlier merges, and letting it widen admission is the walk
+        # feeding itself: each merge grows the mad, a bigger mad admits a
+        # longer stride, and the 400 W to 25 W ladder comes back at a slower
+        # gait. test_a_pool_may_not_be_stretched_wider_than_the_tolerance_
+        # that_made_it caught exactly that when it was tried (2026-09-22).
         spread = 0.0
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), other.power.get(ph, 0.0)
@@ -1338,8 +1398,9 @@ class Signature:
         a, b = max(self.count, 1), max(other.count, 1)
         mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
         mid_w = (mine_w * a + theirs_w * b) / (a + b)
-        after = ((self.power_mad + abs(mine_w - mid_w)) * a
-                 + (other.power_mad + abs(theirs_w - mid_w)) * b) / (a + b)
+        legs = max(len(self.phases), 1)
+        after = ((self.power_mad + abs(mine_w - mid_w) / legs) * a
+                 + (other.power_mad + abs(theirs_w - mid_w) / legs) * b) / (a + b)
         if after > spread:
             return False
         ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
@@ -1368,8 +1429,9 @@ class Signature:
         # user is shown - so a merge made a signature look BETTER measured
         # the further apart the things it merged (2026-09-21).
         mid_w = sum(self.power.values())
-        self.power_mad = ((self.power_mad + abs(mine_w - mid_w)) * a
-                          + (other.power_mad + abs(theirs_w - mid_w)) * b) / n
+        legs = max(len(self.phases), 1)
+        self.power_mad = ((self.power_mad + abs(mine_w - mid_w) / legs) * a
+                          + (other.power_mad + abs(theirs_w - mid_w) / legs) * b) / n
         mid_s = (self.duration_s * a + other.duration_s * b) / n
         self.duration_mad = ((self.duration_mad + abs(self.duration_s - mid_s)) * a
                              + (other.duration_mad + abs(other.duration_s - mid_s)) * b) / n
@@ -1411,7 +1473,9 @@ class Signature:
         n = min(float(self.count), ABSORB_WINDOW)
         k = s.confidence
         pw = s.power_by_phase()
-        self.power_mad = (self.power_mad * n + k * abs(sum(pw.values()) - sum(self.power.values()))) / (n + k)
+        legs = max(len(self.phases), 1)
+        self.power_mad = (self.power_mad * n
+                          + k * abs(sum(pw.values()) - sum(self.power.values())) / legs) / (n + k)
         self.inrush_w = (self.inrush_w * n + k * s.inrush_w) / (n + k)
         self.duration_mad = (self.duration_mad * n + k * abs(s.duration_s - self.duration_s)) / (n + k)
         for ph, w in pw.items():
@@ -1527,7 +1591,8 @@ class Signature:
         seen = min(1.0, (self.count - 1) / 4.0)          # five sightings is plenty
         if self.count < 3:
             return round(0.4 * seen, 2)                  # nothing has repeated enough to measure
-        tight_w = 1.0 - min(1.0, (self.power_mad / max(abs(self.watts), 1.0)) / 0.15)
+        legs = max(len(self.phases), 1)
+        tight_w = 1.0 - min(1.0, (self.power_mad / max(abs(self.watts) / legs, 1.0)) / 0.15)
         tight_d = 1.0 - min(1.0, (self.duration_mad / max(self.duration_s, 1.0)) / 0.5)
         return round(0.5 * seen + 0.3 * tight_w + 0.2 * tight_d, 2)
 
