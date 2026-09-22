@@ -538,6 +538,37 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     return total / 3600.0
 
 
+def names_in_store(raw: dict) -> List[dict]:
+    """Every named signature in a stored library, as a description.
+
+    Deliberately hand-rolled rather than going through ``Fleet.from_dict``:
+    this runs precisely when the stored shape is one the current detector has
+    disowned, so anything that assumes today's schema is the wrong tool. It
+    reaches for four fields, takes what is there, and lets a library it
+    cannot read at all yield nothing rather than raise. A name whose
+    description comes back empty is KEPT even though nothing will ever match
+    it: it then shows on the sensor as still awaiting its load, which is a
+    great deal better than disappearing (2026-09-22).
+    """
+    out: list = []
+    try:
+        fleet = raw.get("fleet") or {}
+        main = fleet.get("main") or raw.get("detector") or {}
+        for sig in main.get("signatures") or []:
+            name = sig.get("name")
+            if not name:
+                continue
+            power = sig.get("power")
+            out.append({"name": name,
+                        "phases": sig.get("phases") or "",
+                        "power": dict(power) if isinstance(power, dict) else {},
+                        "duration_s": sig.get("duration_s") or 0.0,
+                        "pf": sig.get("pf")})
+    except (AttributeError, TypeError, ValueError):
+        return []
+    return out
+
+
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     """Does this reading contain the site's generation, or the house alone?
 
@@ -1425,6 +1456,11 @@ class Detector:
     # ids that consolidation has retired, so a session filed before a merge
     # still resolves to the signature that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
+    # Names whose signature is gone - after a reset, or after an upgrade that
+    # could not read the old library. They hold enough of a description to be
+    # recognised again, and are handed back to the first signature that looks
+    # like them (see _reclaim).
+    orphan_names: List[dict] = field(default_factory=list)
     next_id: int = 1
     tz_offset_s: float = 0.0
 
@@ -1535,6 +1571,11 @@ class Detector:
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
         self.consolidate(noise)
+        if self.orphan_names:
+            # after consolidate, so a name lands on the signature that survived
+            # the merge rather than on one about to be swallowed
+            for sig in self.signatures:
+                self._reclaim(sig, noise)
         self._prune(s.end)
 
     def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
@@ -1751,6 +1792,37 @@ class Detector:
                 out.setdefault(sig.name, []).append(sig.id)
         return out
 
+    def name_descriptors(self) -> List[dict]:
+        """What a named load would need to be recognised again.
+
+        Naming a load is the one thing in the library the USER put there, and
+        it is the only thing worth carrying across a library that is about to
+        be thrown away. The rest - the counts, the hours, the locations - is
+        re-learned from history in a few minutes; a name is not."""
+        return [{"name": sig.name, "phases": sig.phases, "power": dict(sig.power),
+                 "duration_s": sig.duration_s, "pf": sig.pf}
+                for sig in self.signatures if sig.name]
+
+    def _reclaim(self, sig: "Signature", noise_w: float) -> None:
+        """Give a rebuilt signature back the name a reset took from it.
+
+        The same test that decides two signatures are one load decides this,
+        so a name only returns to something that looks like what wore it. If
+        the site really did change - the reason to reset by hand - nothing
+        matches and the name simply never comes back, which is the right
+        answer rather than a special case."""
+        if sig.name or not self.orphan_names:
+            return
+        for i, orphan in enumerate(self.orphan_names):
+            stub = Signature(id=-1, phases=orphan.get("phases") or "",
+                             power=dict(orphan.get("power") or {}),
+                             duration_s=orphan.get("duration_s") or 0.0,
+                             pf=orphan.get("pf"), count=1, first_seen=0.0, last_seen=0.0)
+            if stub.alike(sig, noise_w):
+                sig.name = orphan.get("name")
+                self.orphan_names.pop(i)
+                return
+
     def rename(self, signature_id: int, name: Optional[str]) -> bool:
         for sig in self.signatures:
             if sig.id == signature_id:
@@ -1794,7 +1866,7 @@ class Detector:
     def to_dict(self) -> dict:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
-                "tz_offset_s": self.tz_offset_s}
+                "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -1807,6 +1879,7 @@ class Detector:
         det.recent = list(d.get("recent") or [])
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
+        det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
         return det
 
 

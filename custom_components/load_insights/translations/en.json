@@ -167,7 +167,7 @@
             },
             "reset_detection": {
                 "title": "Reset load detection?",
-                "description": "The signature library and every name in it are forgotten, and the last ten days of the meter are read again from scratch. It runs on its own and takes a while. Do this after a change to the meter, a rewired phase, or an update that changes how loads are found.",
+                "description": "The signature library is forgotten and the last ten days of the meter are read again from scratch. Names you have given are kept: each is handed back to whatever the rebuild finds that looks like it, and where nothing matches - which is what a genuinely changed site looks like - the name does not return. It runs on its own and takes a while. Do this after a change to the meter, a rewired phase, or an update that changes how loads are found.",
                 "menu_options": {
                     "reset_confirmed": "Yes, forget everything",
                     "overview": "← Cancel"
