@@ -374,6 +374,7 @@ class DetectedLoadsSensor(_DetectionBase):
         tz = dt_util.DEFAULT_TIME_ZONE
         def iso(ts):
             return datetime.fromtimestamp(ts, tz).isoformat()
+        running = det.running_now(now)
         return {
             "active": [
                 {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
@@ -381,7 +382,9 @@ class DetectedLoadsSensor(_DetectionBase):
                 for a in det.active(now)
             ],
             "signatures": [
-                {"id": s.id, "name": s.name, "description": s.describe(tz), "phases": s.phases.upper(),
+                {"id": s.id, "name": s.name, "description": s.describe(tz, now, s.id in running),
+                 "running": s.id in running, "last_seen_ago_s": round(max(0.0, now - s.last_seen)),
+                 "phases": s.phases.upper(),
                  "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
                  "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen),

@@ -1219,7 +1219,7 @@ class Signature:
     def per_run_wh(self) -> float:
         return self.energy_wh / max(self.count, 1)
 
-    def row(self, tz) -> str:
+    def row(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """One line for a menu, and a MENU ROW IS NARROW - it truncated at
         about sixty characters and took the useful half with it (Anze,
         2026-09-18). So: what it draws, what it costs a week and a run, how
@@ -1241,6 +1241,9 @@ class Signature:
         tag = self.guess().tag
         if tag:
             bits.append(tag)
+        when = last_run_phrase(self.last_seen, now, running)
+        if when:
+            bits.append(when)
         line = ", ".join(bits)
         bars = sparkline(self.day_wh)          # seven characters, one per day
         return f"{line} {bars}" if bars else line
@@ -1328,7 +1331,7 @@ class Signature:
             self.day_wh[moment.weekday()] += wh
             t += step
 
-    def describe(self, tz) -> str:
+    def describe(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
         258 times - maybe a heating element (power factor 1.00, one level)'."""
         phases = "+".join(p.upper() for p in self.phases)
@@ -1338,8 +1341,9 @@ class Signature:
         pf = f", PF {self.pf:.2f}" if self.pf is not None else ""
         span = max(self.last_seen - self.first_seen, 0.0)
         over = f" over {_fmt_s(span)}" if span > 0 else ""
+        when = last_run_phrase(self.last_seen, now, running)
         line = (f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, "
-                f"seen {self.count} times{over}")
+                f"seen {self.count} times{over}" + (f", {when}" if when else ""))
         guess = self.guess()
         # the short form: the line above already carries the factor, the
         # levels and the size the guess rests on
@@ -1426,6 +1430,26 @@ def _fmt_s(x: Optional[float]) -> str:
     if x < 172800:                      # past two days, hours stop being readable
         return f"{x / 3600:.1f} h"
     return f"{x / 86400:.1f} days"
+
+
+def last_run_phrase(last_seen: float, now: Optional[float], running: bool = False) -> str:
+    """"running now", or how long ago it last did.
+
+    The single most useful thing for telling one row from another, and it was
+    the one thing the page did not say. Someone naming a load has just been
+    living in the house: they know the dishwasher went on after dinner and
+    that nothing has run in the workshop since Tuesday. A row that says it is
+    on RIGHT NOW turns naming into walking over and looking (Anze, 2026-09-22:
+    "is a last run or currently running something we could display on the
+    naming menu pages?")."""
+    if running:
+        return "running now"
+    if not now or not last_seen or now < last_seen:
+        return ""
+    ago = now - last_seen
+    if ago < 120:
+        return "just finished"
+    return f"last ran {_fmt_s(ago)} ago"
 
 
 # ------------------------------------------------------------------ the detector
@@ -1801,6 +1825,10 @@ class Detector:
             if floor > out.get(name, 0.0):
                 out[name] = floor
         return out
+
+    def running_now(self, now_ts: float) -> set:
+        """Signature ids believed to be on right now."""
+        return {a.get("signature") for a in self.active(now_ts) if a.get("signature")}
 
     def names(self) -> Dict[str, List[int]]:
         """name -> the signature ids filed under it."""

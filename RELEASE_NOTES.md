@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.4.0
+
+### New Features
+
+- **The naming page says what is running now, and when each load last ran.** Everything on that page described a load in the abstract - what it draws, how long for, how often, what it might be - and left out the one thing the person reading it actually has to go on: their own memory of the last hour. They know the dishwasher went on after dinner and that nothing has run in the workshop since Tuesday. A row now ends with **running now**, **just finished**, or **last ran 15 min ago**, which turns naming a load from a puzzle into walking over and looking at what is on. A load is recognised as running from the moment it starts, by the size of the step, so it does not have to finish first - though the very first time a load ever runs there is nothing to compare it with, because a signature is a step up paired with the step down that undoes it. The *Detected loads* sensor carries `running` and `last_seen_ago_s` per signature for anyone building their own card.
+
+---
+
 ## 0.3.1
 
 ### Fixes

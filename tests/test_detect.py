@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from datetime import timezone  # noqa: E402
 from _load import load, run_main  # noqa: E402
 
 D = load("insights.detect")
@@ -1460,6 +1461,53 @@ def test_the_only_paths_that_discard_the_library_both_carry_names():
     a, b = D.Detector(), D.Detector()
     a.carry_names(by_reset); b.carry_names(by_bump)
     assert round(a.energy_floor["Kiln"]) == round(b.energy_floor["Kiln"])
+
+
+def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
+    """What someone naming a load actually has to go on is their own memory of
+    the last hour: the dishwasher went on after dinner, nothing has run in the
+    workshop since Tuesday. A row that says a load is on RIGHT NOW turns
+    naming into walking over and looking at it."""
+    now = 1_000_000.0
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
+                      count=9, first_seen=now - 86400.0, last_seen=now - 600.0)
+    assert "last ran 10 min ago" in sig.row(timezone.utc, now)
+    assert "last ran 10 min ago" in sig.describe(timezone.utc, now)
+    assert "running now" in sig.row(timezone.utc, now, running=True)
+    assert "last ran" not in sig.row(timezone.utc, now, running=True)
+    # a run that has only just stopped reads better as that
+    sig.last_seen = now - 30.0
+    assert "just finished" in sig.row(timezone.utc, now)
+    # and without a clock the row is exactly what it always was
+    assert "ran" not in sig.row(timezone.utc)
+    assert "running" not in sig.row(timezone.utc)
+
+
+def test_running_now_names_the_signatures_that_are_on():
+    """A signature only exists once a run has FINISHED - the session is the
+    step up paired with the step down that undoes it - so the first time a
+    load ever runs there is nothing to say it is on. From the second time,
+    the open edge is matched on its size and the row can say so."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    rows, t = [], T0
+    for _ in range(40):
+        rows.append((t, 200.0)); t += 10.0
+    for _ in range(40):                     # a complete run, so a signature exists
+        rows.append((t, 2200.0)); t += 10.0
+    for _ in range(40):
+        rows.append((t, 200.0)); t += 10.0
+    det.process({"a": rows}, now_ts=t)
+    assert det.signatures, "a finished run should have made a signature"
+    assert det.running_now(t) == set(), "nothing is on between runs"
+
+    rows2 = []
+    for _ in range(20):                     # it starts again, and stays on
+        rows2.append((t, 2200.0)); t += 10.0
+    det.process({"a": rows2}, now_ts=t)
+    on = det.running_now(t)
+    assert on, "a load that has not stopped should read as running"
+    assert on <= {x.id for x in det.signatures}
 
 
 if __name__ == "__main__":
