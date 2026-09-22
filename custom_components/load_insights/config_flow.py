@@ -473,12 +473,14 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         self._naming_rows = [s.id for s in shown]
 
         tz = dt_util.DEFAULT_TIME_ZONE
+        now_ts = dt_util.utcnow().timestamp()
+        running = runner.detector.running_now(now_ts)
         levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
         placeholders = {"count": str(len(candidates)),
                         "hidden": str(max(0, len(candidates) - len(shown)))}
         options = []
         for index, sig in enumerate(shown):
-            label = sig.row(tz)
+            label = sig.row(tz, now_ts, sig.id in running)
             if sig.name:
                 label = f"{sig.name} — {label}"
             if sig.id in levels:
