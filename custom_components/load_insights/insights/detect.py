@@ -1323,10 +1323,14 @@ class Signature:
         return round(sum(v * w for v, w in bits) / weight, 3)
 
     def guess(self) -> Guess:
-        """What KIND of thing this might be. Never a claim - see classify."""
+        """What KIND of thing this might be. Never a claim - see classify.
+
+        Except where it sits on a meter whose NAME says what it is, which is
+        knowledge rather than inference and is treated as such."""
+        where = self.location
         return classify(self.watts, self.pf, self.level_count, self.duration_s,
                         self.phases, self.interval_s, self.interval_mad, self.hour_wh,
-                        self.low, self.high)
+                        self.low, self.high, None if where == "main" else where)
 
     def _spread(self, s: Session, tz) -> None:
         """Put a session's energy into every hour and day it occupied.

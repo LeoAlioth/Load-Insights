@@ -25,6 +25,7 @@ rather than inventing something from size alone.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -69,6 +70,10 @@ class Guess:
     alternative: Optional[str] = None      # a family scoring nearly as well
     appliance: Optional[str] = None        # a specific thing it might be - a question, not a claim
     appliance_confidence: float = 0.0
+    # ...unless it came from the METER'S OWN NAME, which is not a guess about
+    # houses but something the owner wrote down, and is said without the
+    # question mark the shape-based ones carry
+    named: bool = False
 
     @property
     def tag(self) -> str:
@@ -76,7 +81,8 @@ class Guess:
         "dishwasher?" tells someone more about their own house than
         "an appliance running a programme" ever does."""
         if self.appliance:
-            return APPLIANCE_SHORT.get(self.appliance, "") + "?"
+            short = APPLIANCE_SHORT.get(self.appliance, "")
+            return short if self.named else short + "?"
         return SHORT.get(self.kind or "", "")
 
     @property
@@ -160,6 +166,59 @@ APPLIANCE_SHORT = {WORKSHOP: "workshop", PUMP: "pump", WATER_TANK: "hot water",
                    COOKING: "cooking", DISHWASHER: "dishwasher", WASHER: "washing machine",
                    DRYER: "dryer", FRIDGE: "fridge"}
 
+# What a meter is CALLED, when a load turns out to sit on it. This is the
+# best evidence the integration ever gets about what something is, and for a
+# long time it went unused: shape can only say a load draws 1.8 kW at a
+# heating element's power factor, while the person who wired the site already
+# wrote "Boiler" on it. A name is knowledge; the rest is inference.
+#
+# Both languages the integration ships in, because the names are the owner's
+# and Anze's two sites run half in each - "Hidrofor" and "Water Pump" are the
+# same thing on the same page. Matched on whole words against the friendly
+# name AND the entity id, since a device the Energy dashboard knows only by
+# its statistic shows up as sensor.workshop_boiler_energy.
+#
+# Device words only. Most meters are named after ROOMS - Mansarda, Hiša,
+# Blaževa Soba, Vtičnice - pisarna - and a room says nothing about what is
+# plugged into it (Anze, 2026-09-22).
+NAME_HINTS = (
+    (WATER_TANK, ("boiler", "bojler", "tank", "hot_water", "water_heater",
+                  "grelnik", "vodni_grelnik", "bojlerja")),
+    (PUMP, ("pump", "pumpa", "crpalka", "črpalka", "hidrofor", "hydrofor")),
+    (DISHWASHER, ("dishwasher", "pomivalni", "pomivalec")),
+    (WASHER, ("washer", "washing_machine", "pralni", "pralka", "pralnega")),
+    (DRYER, ("dryer", "susilni", "sušilni", "susilnik", "sušilnik", "susilna", "sušilna")),
+    (FRIDGE, ("fridge", "freezer", "hladilnik", "zamrzovalnik", "zamrzovalna")),
+    (COOKING, ("oven", "hob", "stove", "cooker", "cooktop", "pecica", "pečica",
+               "stedilnik", "štedilnik", "kuhalnik", "indukcija", "indukcijska")),
+    (WORKSHOP, ("workshop", "delavnica", "delavnici")),
+)
+# The one FAMILY worth reading off a name. The others are settled by the
+# electrics; this one is a thing people label and nothing else looks like it.
+CAR_WORDS = ("evse", "wallbox", "charger", "polnilnica", "polnilnice", "ev_charger")
+
+
+def _name_tokens(*parts: Optional[str]) -> str:
+    return "_" + re.sub(r"[^a-z0-9\u0100-\u024f]+", "_",
+                        " ".join(x for x in parts if x).lower()).strip("_") + "_"
+
+
+def appliance_from_name(*parts: Optional[str]) -> Optional[str]:
+    """The appliance a meter's own name gives away, or None.
+
+    Only whole words, so "ac" cannot match inside "Mansarda"."""
+    text = _name_tokens(*parts)
+    for name, words in NAME_HINTS:
+        if any(f"_{w}_" in text for w in words):
+            return name
+    return None
+
+
+def family_from_name(*parts: Optional[str]) -> Optional[str]:
+    text = _name_tokens(*parts)
+    return CAR if any(f"_{w}_" in text for w in CAR_WORDS) else None
+
+
 APPLIANCE_MIN = 0.35       # below this it is not worth asking
 APPLIANCE_MARGIN = 0.1     # and it must be clearly ahead of the next one
 
@@ -202,7 +261,8 @@ def _regularity(interval_s: Optional[float], interval_mad: Optional[float]) -> O
 def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: float,
               duration_s: float, phases: str = "", interval_s: Optional[float] = None,
               interval_mad: Optional[float] = None,
-              hour_wh: Optional[Sequence[float]] = None) -> Tuple[Optional[str], float]:
+              hour_wh: Optional[Sequence[float]] = None,
+              hint: Optional[str] = None) -> Tuple[Optional[str], float]:
     """A specific appliance this might be, and how well it fits.
 
     Every profile requires its FAMILY first, so nothing here can turn a motor
@@ -262,6 +322,18 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
                     * _band(watts, 300, 500, 2800, 4000)
                     * _band(levels, 1.2, 1.5, 4, 7))
 
+    # The meter's own name, where a load turned out to sit on one, and it
+    # wins outright - over the family gate as well as the scores.
+    #
+    # That is the point rather than a shortcut. Kozolec's boiler cycles for
+    # seventy seconds where a hot-water profile expects a quarter of an hour,
+    # so the shape scores it zero; its pressure pump sits behind a drive that
+    # corrects the power factor to 0.96 and reads as a heating element. Both
+    # are named on their own meters. A shape is evidence about what a load
+    # might be; a name is a record of what it IS, and gating the second on
+    # the first would have thrown away every case worth having.
+    if hint:
+        return hint, MAX_CONFIDENCE
     ranked = sorted(((v, k) for k, v in s.items() if v > 0), reverse=True)
     if not ranked or ranked[0][0] < APPLIANCE_MIN:
         return None, 0.0
@@ -276,8 +348,12 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
              duration_s: float = 0.0, phases: str = "",
              interval_s: Optional[float] = None, interval_mad: Optional[float] = None,
              hour_wh: Optional[Sequence[float]] = None,
-             low: Optional[float] = None, high: Optional[float] = None) -> Guess:
-    """``watts`` is the load's total across its phases."""
+             low: Optional[float] = None, high: Optional[float] = None,
+             where: Optional[str] = None) -> Guess:
+    """``watts`` is the load's total across its phases.
+
+    ``where`` is the meter this load was found to sit on, if any - its NAME,
+    which is the best evidence there is about what the thing is."""
     scores: Dict[str, float] = {}
     # A load either holds its level or it does not, and there are two ways to
     # not hold it: stepping between levels, which LEVELS counts, and gliding,
@@ -319,6 +395,18 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     if levels >= 2.5 and duration_s >= 900:
         scores[PROGRAMME] = min(1.0, (levels - 1.5) / 2.0)
 
+    # A meter someone called EVSE, wallbox or polnilnica is a car charger, and
+    # that is worth more than the power factor it is inferred from elsewhere.
+    # It still has to be the right SIZE and last long enough - a name explains
+    # what a reading is, it does not excuse one that disagrees - and where no
+    # power factor is configured the name supplies exactly the term that was
+    # missing rather than the whole answer (Anze, 2026-09-22).
+    if where and family_from_name(where) == CAR:
+        shape = (_band(watts, 1200, 1400, 11500, 23000)
+                 * _band(duration_s, 1800, 3600, 86400, 86400))
+        if shape > 0:
+            scores[CAR] = max(scores.get(CAR, 0.0), shape)
+
     ranked = sorted(((v, k) for k, v in scores.items() if v > 0), reverse=True)
     if not ranked or ranked[0][0] < MIN_SCORE:
         return NOTHING if pf is None else Guess(None, 0.0, (f"power factor {pf:.2f}",))
@@ -342,7 +430,11 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
         because.append(_fmt_w(watts))
     if duration_s >= 1800:
         because.append(f"for {_fmt_s(duration_s)}")
+    hint = appliance_from_name(where) if where else None
     which, how_sure = appliance(kind, watts, pf, levels, duration_s, phases,
-                                interval_s, interval_mad, hour_wh)
+                                interval_s, interval_mad, hour_wh, hint=hint)
+    if hint and which == hint:
+        because = [f"the meter it is on is called {where}"] + because
     return Guess(kind, round(confidence, 2), tuple(because), alternative,
-                 appliance=which, appliance_confidence=how_sure)
+                 appliance=which, appliance_confidence=how_sure,
+                 named=bool(hint) and which == hint)

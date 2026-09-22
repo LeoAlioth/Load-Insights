@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.5.0
+
+### New Features
+
+- **A load on a named meter is told by that name, not by its shape.** When a load turns out to sit on one of your device meters, whatever you called that meter now decides what it is - and it is stated without the question mark the shape-based guesses carry. This is the best evidence the integration ever gets and it went unused: shape can only say a load draws 1.8 kW at a heating element's power factor, while whoever wired the site already wrote `Boiler` on the meter. It wins in exactly the cases worth having, both of them real: a boiler that cycles for 70 seconds looks nothing like the quarter of an hour a hot water tank is expected to run, and a pressure pump behind a variable-speed drive corrects its own power factor to 0.96 and reads as a heating element. Matched on whole words, against the friendly name and the entity id both, in English and Slovene - `Water Pump`, `Hidrofor` and `sensor.kotlovnica_well_pump_energy` all say pump. **Device words only**: most meters are named after rooms, and a room says nothing about what is plugged into it. And a name explains a reading rather than excusing one that disagrees, so a 40 W load on a meter called `EVSE` is still not a car charging.
+- **The README lists what the classifier can say**, as the two layers it actually has - the physics stated plainly, and beneath each family the specific appliances it may be asked about, with the readings each rests on.
+
+---
+
 ## 0.4.0
 
 ### New Features

@@ -103,5 +103,60 @@ def test_a_balanced_three_phase_motor_says_so():
     assert one.kind != C.MOTOR_3P
 
 
+def test_a_meters_name_says_what_is_on_it_where_shape_cannot():
+    """The best evidence the integration ever gets, and it went unused for a
+    long time: shape can only say a load draws 1.8 kW at a heating element's
+    power factor, while whoever wired the site already wrote "Boiler" on the
+    meter. Both cases here are real and both defeat the shape - Kozolec's
+    boiler cycles 70 s where a hot-water profile wants a quarter of an hour,
+    and its pressure pump sits behind a drive that corrects the factor to 0.96
+    and reads as a heating element."""
+    boiler = dict(watts=1822, pf=0.99, levels=1.0, duration_s=70, phases="a")
+    assert C.classify(**boiler).appliance is None
+    named = C.classify(where="Boiler", **boiler)
+    assert named.appliance == C.WATER_TANK
+    assert named.named and named.tag == "hot water"       # not "hot water?"
+    assert any("called Boiler" in b for b in named.because)
+
+    pump = dict(watts=236, pf=0.96, levels=1.0, duration_s=66, phases="a")
+    assert C.classify(**pump).appliance is None
+    assert C.classify(where="Hidrofor", **pump).appliance == C.PUMP
+
+
+def test_a_room_is_not_a_device():
+    """Most meters are named after ROOMS, and a room says nothing about what
+    is plugged into it. Whole words only, so "ac" cannot match inside
+    "Mansarda"."""
+    for room in ("Mansarda", "Hiša", "Blaževa Soba", "Vtičnice - pisarna",
+                 "Pond", "Pastir Staja", "Bug Lamp", "main", ""):
+        assert C.appliance_from_name(room) is None, room
+        assert C.family_from_name(room) is None, room
+
+
+def test_both_languages_and_the_entity_id_when_that_is_all_there_is():
+    """The names are the owner's. Anze's two sites run half in Slovene, and a
+    device the Energy dashboard knows only by its statistic arrives as
+    sensor.workshop_boiler_energy rather than as a name at all."""
+    assert C.appliance_from_name("Water Pump") == C.PUMP
+    assert C.appliance_from_name("Hidrofor") == C.PUMP
+    assert C.appliance_from_name("sensor.kotlovnica_well_pump_energy") == C.PUMP
+    assert C.appliance_from_name("Washing Machine") == C.WASHER
+    assert C.appliance_from_name("sensor.dryer_energy") == C.DRYER
+    assert C.appliance_from_name("sensor.workshop_boiler_energy") == C.WATER_TANK
+    for charger in ("Pond EVSE", "Car charger", "Polnilnica", "wallbox"):
+        assert C.family_from_name(charger) == C.CAR, charger
+
+
+def test_a_named_charger_still_has_to_look_like_one():
+    """A name explains what a reading is; it does not excuse one that
+    disagrees. A 40 W thing on a meter called EVSE is not a car charging."""
+    big = dict(watts=3566, pf=0.99, levels=1.0, duration_s=7200, phases="a")
+    assert C.classify(where="Pond EVSE", **big).kind == C.CAR
+    tiny = dict(watts=40, pf=0.99, levels=1.0, duration_s=7200, phases="a")
+    assert C.classify(where="Pond EVSE", **tiny).kind != C.CAR
+    brief = dict(watts=3566, pf=0.99, levels=1.0, duration_s=20, phases="a")
+    assert C.classify(where="Pond EVSE", **brief).kind != C.CAR
+
+
 if __name__ == "__main__":
     run_main(dict(globals()))
