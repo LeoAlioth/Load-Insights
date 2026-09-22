@@ -1667,5 +1667,40 @@ def test_a_thermostat_absorbs_its_own_short_and_long_runs():
     assert det.signatures[watts.index(around[0])].count >= 6
 
 
+def test_the_naming_page_lengthens_as_loads_are_named():
+    """No percentile suits two sites: set high it hides a big house's real
+    loads for ever, set low it opens with two hundred rows and is put down
+    unread. The right number of rows is not a property of the site but of how
+    much work the person has already done (Anze, 2026-09-22)."""
+    sigs = []
+    for i in range(40):
+        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
+                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig.hour_wh = [40.0] * 24
+        sigs.append(sig)
+    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+
+    def offer(named):
+        return D.offer_for_naming(sigs, named, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+
+    assert len(offer(0)) == 6, "opens with a handful"
+    assert len(offer(1)) == 10
+    assert len(offer(3)) == 18
+    assert len(offer(100)) == len(sigs), "and never more than there are"
+
+
+def test_the_naming_page_never_runs_dry():
+    """A bar that hides everything is worse than one set too low."""
+    weak = [D.Signature(id=i, phases="a", power={"a": 500.0}, duration_s=60.0, pf=0.9,
+                        count=2, first_seen=0.0, last_seen=1.0) for i in range(9)]
+    assert all(s.evidence < 0.7 for s in weak), "none of these clears the bar"
+    got = D.offer_for_naming(weak, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(got) == 5, "the best of the rest come along anyway"
+    # a named load is always offered, whatever its evidence
+    weak[0].name = "Kiln"
+    got = D.offer_for_naming(weak, 1, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert weak[0] in got
+
+
 if __name__ == "__main__":
     run_main(globals())

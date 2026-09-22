@@ -29,6 +29,8 @@ from .const import (
     CONF_MIN_STEP_W,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
+    NAMING_ROWS_PER_NAME,
+    NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_DETECTION_INTERVAL,
     DETECTION_INTERVAL_MINUTES,
@@ -52,6 +54,7 @@ from .insights.detect import (
     exports_positive,
     mean_power,
     most_specific,
+    offer_for_naming,
 )
 from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
@@ -389,21 +392,11 @@ class DetectionRunner:
         return self._by_evidence(worth)
 
     def _by_evidence(self, worth: list) -> list:
-        """Only the ones it is reasonably sure are real loads.
-
-        A house makes far more shapes than it has appliances, and a list of
-        two hundred is a list nobody reads. But a bar that hides everything
-        is worse than one set too low, so when fewer than NAMING_MIN_ROWS
-        clear it the best of the rest come along - which is the "lower it if
-        we are not getting good hits" with nothing to decay."""
-        bar = self.min_evidence
-        clear = [s for s in worth if s.evidence >= bar or s.name
-                 or self.detector.predecessor_of(s.id) is not None]
-        if len(clear) >= NAMING_MIN_ROWS or len(clear) == len(worth):
-            return clear
-        rest = [s for s in worth if s not in clear]
-        rest.sort(key=lambda s: -s.evidence)
-        return clear + rest[:NAMING_MIN_ROWS - len(clear)]
+        """See offer_for_naming, which is where this lives so it can be tested."""
+        return offer_for_naming(
+            worth, len(self.detector.names()), self.min_evidence,
+            NAMING_MIN_ROWS, NAMING_START_ROWS, NAMING_ROWS_PER_NAME,
+            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
     @property
     def min_step_w(self) -> float:
