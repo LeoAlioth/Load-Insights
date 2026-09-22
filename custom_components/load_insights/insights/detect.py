@@ -132,6 +132,25 @@ NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE
 NOISE_SESSION_S = 20.0
 MATCH_POWER_REL = 0.10
 MATCH_DURATION_FACTOR = 3.0
+# Duration CAN be part of a load's fingerprint and is not necessarily one
+# (Anze, 2026-09-22). A kettle boils the same volume every time and always
+# takes about two minutes; a thermostat runs for twenty seconds or for
+# twenty minutes depending how cold the tank is. Measured against the
+# submeters at Kozolec, the boiler's runs spread by 0.12 of their median and
+# the pressure pump's by 0.48 - so whether duration identifies a load is
+# something the load itself says, and the library already records it as
+# duration_mad. A signature that has shown it keeps a clock is held to
+# MATCH_DURATION_FACTOR; one that has shown it does not gets only the loose
+# bound below, which exists to stop a minute-long load joining an
+# afternoon-long one rather than to tell two appliances apart.
+LOOSE_DURATION_FACTOR = 30.0
+# Before this many sightings a signature has not said anything about its own
+# duration yet, and judging it on one or two would freeze whatever the first
+# runs happened to be - which is the failure the whole change is about, since
+# a signature that enforces a duration it has not earned never absorbs the
+# runs that would have taught it otherwise.
+DURATION_IDENTITY_COUNT = 4
+DURATION_IDENTITY_SPREAD = 0.35
 # Two METERS may disagree about a run's length far more than two sightings of
 # one load may: a 66-second boiler cycle is 66 seconds on its own meter and
 # often minutes on a busy main one, where the down-step pairs with a
@@ -1072,7 +1091,8 @@ class Signature:
                 return None
             score *= 1.0 - abs(mine - theirs) / (2 * tol)
         ratio = max(s.duration_s, 1.0) / max(self.duration_s, 1.0)
-        if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
+        factor = self.duration_factor
+        if ratio > factor or ratio < 1.0 / factor:
             return None
         if self.pf is not None and s.pf is not None and abs(self.pf - s.pf) > MATCH_PF_TOL:
             return None
@@ -1112,7 +1132,8 @@ class Signature:
         if after > spread:
             return False
         ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
-        if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
+        factor = min(self.duration_factor, other.duration_factor)
+        if ratio > factor or ratio < 1.0 / factor:
             return False
         if self.pf is not None and other.pf is not None and abs(self.pf - other.pf) > MATCH_PF_TOL:
             return False
@@ -1262,6 +1283,17 @@ class Signature:
         # anyone who wants the actual shape.
         bars = "" if generally else sparkline(self.day_wh)
         return f"{line} {bars}" if bars else line
+
+    @property
+    def keeps_time(self) -> bool:
+        """Has this load shown that its duration is part of what it is?"""
+        if self.count < DURATION_IDENTITY_COUNT:
+            return False
+        return self.duration_mad / max(self.duration_s, 1.0) <= DURATION_IDENTITY_SPREAD
+
+    @property
+    def duration_factor(self) -> float:
+        return MATCH_DURATION_FACTOR if self.keeps_time else LOOSE_DURATION_FACTOR
 
     @property
     def evidence(self) -> float:
