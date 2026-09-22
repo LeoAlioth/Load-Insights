@@ -43,6 +43,7 @@ from .insights.detect import (
     carries_generation,
     MIN_NOISE_W,
     _sum_series,
+    names_in_store,
     carries_load,
     classify_source,
     site_topology,
@@ -501,15 +502,28 @@ class DetectionRunner:
 
     async def async_start(self) -> None:
         raw = await self._store.async_load() or {}
+        orphans: list = []
         if raw and raw.get("generation") != DETECTOR_GENERATION:
+            # The library was learned by a detector that no longer exists, so
+            # it goes. The NAMES do not: they are the user's, not ours, and
+            # dropping them behind a log line would take their devices, their
+            # energy meters and their place on the Energy dashboard with them
+            # - on every installation at once, the first time this constant
+            # moves (Anze asked what an update does to a named load,
+            # 2026-09-22). Read defensively: the whole point is that the old
+            # shape may not be one we still understand.
+            orphans = names_in_store(raw)
             _LOGGER.info(
-                "Load detection was learned by an older detector; starting its library again"
+                "Load detection was learned by an older detector; starting its "
+                "library again, keeping %d name(s) to re-attach", len(orphans)
             )
             raw = {}
         if raw.get("fleet"):
             self.fleet = Fleet.from_dict(raw.get("fleet"))
         else:                                   # a store written before downstream meters existed
             self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
+        if orphans:
+            self.fleet.main.orphan_names = orphans
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
@@ -519,8 +533,17 @@ class DetectionRunner:
         self.hass.async_create_task(self._run())
 
     async def async_reset(self) -> None:
-        """Forget everything learned and start the backfill again."""
+        """Forget everything learned and start the backfill again.
+
+        Everything except the NAMES. They are the one thing in the library
+        the user put there by hand, and the backfill re-learns everything
+        else in minutes. Each is carried across as a description and handed
+        back to the first rebuilt signature that looks like it; where the
+        site really has changed - the reason to do this by hand - nothing
+        matches and the name does not return."""
+        orphans = self.fleet.main.name_descriptors() if self.fleet else []
         self.fleet = Fleet()
+        self.fleet.main.orphan_names = orphans
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
