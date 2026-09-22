@@ -523,7 +523,7 @@ class DetectionRunner:
         else:                                   # a store written before downstream meters existed
             self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
         if orphans:
-            self.fleet.main.orphan_names = orphans
+            self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
@@ -543,7 +543,7 @@ class DetectionRunner:
         matches and the name does not return."""
         orphans = self.fleet.main.name_descriptors() if self.fleet else []
         self.fleet = Fleet()
-        self.fleet.main.orphan_names = orphans
+        self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
