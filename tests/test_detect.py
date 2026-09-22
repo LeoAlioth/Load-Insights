@@ -1572,5 +1572,47 @@ def test_the_row_drops_the_sparkline_when_it_has_words_for_the_week():
     assert not any(b in worded for b in "▁▂▃▄▅▆▇█"), worded
 
 
+def _lvl(id, watts, dur=100.0, pf=0.96, phases="a", count=5):
+    return D.Signature(id=id, phases=phases, power={p: watts / len(phases) for p in phases},
+                       duration_s=dur, pf=pf, count=count, first_seen=0.0, last_seen=1.0)
+
+
+def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
+    """"Never two of them at once" has to be OBSERVED. The session list is
+    finite - two hundred entries against a library several times that at a
+    busy house - so for most pairs there is nothing recorded either way, and
+    reading that silence as "they never overlap" offered a 149 W load and a
+    2.7 kW one as one device (Anze's house, 2026-09-22)."""
+    a, b = _lvl(1, 150.0), _lvl(2, 2700.0)
+    assert D.suggest_levels([a, b], []) == []               # nothing seen of either
+    seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
+    assert D.suggest_levels([a, b], seen_a) == []           # only one side seen
+    both = seen_a + [{"signature": 2, "start": 500.0, "end": 550.0}]
+    assert D.suggest_levels([a, b], both) == [[1, 2]]       # both seen, never together
+
+
+def test_levels_of_one_device_run_for_about_as_long_each_time():
+    """Sizes are not compared - a setting can be any fraction of another - but
+    duration is a different question, and leaving it out was most of what let
+    unrelated loads group. A hob on three settings boils the same pan for
+    about as long each time; what differs is the power."""
+    seen = [{"signature": 1, "start": 0.0, "end": 30.0},
+            {"signature": 2, "start": 500.0, "end": 530.0},
+            {"signature": 3, "start": 1000.0, "end": 1600.0}]
+    brief_a, brief_b = _lvl(1, 3000.0, dur=25.0), _lvl(2, 5900.0, dur=23.0)
+    lengthy = _lvl(3, 4100.0, dur=600.0)
+    groups = D.suggest_levels([brief_a, brief_b, lengthy], seen)
+    assert groups == [[1, 2]], groups
+
+
+def test_a_load_that_overlaps_another_is_never_the_same_device():
+    """The whole test: one appliance cannot run two of its own settings at
+    once, so an observed overlap rules the pair out however well they match."""
+    a, b = _lvl(1, 1000.0), _lvl(2, 2000.0)
+    together = [{"signature": 1, "start": 0.0, "end": 100.0},
+                {"signature": 2, "start": 50.0, "end": 150.0}]
+    assert D.suggest_levels([a, b], together) == []
+
+
 if __name__ == "__main__":
     run_main(globals())

@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.5.2
+
+### Fixes
+
+- **"Looks like one device" needed evidence it did not have.** The suggestion that two signatures are one appliance on different settings rests on their never having been seen running at once - but the session list is finite, two hundred entries against a library several times that at a busy house, so for most pairs there is nothing recorded either way. Silence was being read as "they never overlap", which offered a 149 W load and a 2.7 kW one as the same device. Both sides must now have been seen before their not having been seen together means anything.
+- **And a duration test.** Sizes are deliberately not compared, since one setting can be any fraction of another, but duration is a different question and leaving it out was most of what let unrelated loads group: a hob on three settings boils the same pan for about as long each time, and what differs is the power. At one house this is exactly the line between a kiln's elements, all firing for 23 to 51 seconds, and the three other loads on the same phases and power factor that run for 106, 203 and 517.
+
+---
+
 ## 0.5.1
 
 ### Fixes

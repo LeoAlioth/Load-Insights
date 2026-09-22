@@ -2282,11 +2282,39 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         return False
 
     def compatible(a: Signature, b: Signature) -> bool:
+        # Identical phase sets, deliberately. A device with two elements does
+        # draw on A alone, on C alone and on both - Anze's kiln does exactly
+        # that, 3031 W on A and 2680 W on C being the 5918 W on A+C it is
+        # named for - so allowing one set inside another was tried. It groups
+        # the kiln, and it also groups a 156 W load with it, because this
+        # rule compares no sizes at all and a subset relation removes the only
+        # thing that was holding it. Recognising one device across phase sets
+        # wants size arithmetic this does not do (2026-09-22).
         if a.phases != b.phases:
             return False
         if (a.pf is None) != (b.pf is None):
             return False
         if a.pf is not None and abs(a.pf - b.pf) > MATCH_PF_TOL:
+            return False
+        # Sizes are not compared - a setting can be any fraction of another -
+        # but DURATION is a different question, and leaving it out was what
+        # let a 178 W thing and a 2.7 kW one be called one device. A hob on
+        # three settings boils the same pan for about as long each time; what
+        # differs is the power. At Anze's house this is exactly the line
+        # between the kiln's elements, all firing for 23 to 51 seconds, and
+        # the three other loads on the same phases and factor that run for
+        # 106, 203 and 517 (2026-09-22).
+        ratio = max(a.duration_s, 1.0) / max(b.duration_s, 1.0)
+        if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
+            return False
+        # "Never two of them at once" has to be OBSERVED. The session list is
+        # finite - two hundred against a library several times that at a busy
+        # house - so for most pairs there is nothing recorded either way, and
+        # reading that silence as "they never overlap" is what let a 149 W
+        # thing and a 2.7 kW one be offered as one device (Anze's house,
+        # 2026-09-22). Both sides have to have been seen before their not
+        # having been seen together means anything.
+        if not times.get(a.id) or not times.get(b.id):
             return False
         return not overlap(a.id, b.id)
 
