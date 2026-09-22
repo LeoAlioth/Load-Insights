@@ -239,8 +239,17 @@ def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
     det.process({"a": [(t + 3000, w) for t, w in a2]}, now_ts=T0 + 5600)
     groups = D.suggest_levels(det.signatures, det.recent)
     assert len(groups) == 1 and len(groups[0]) == 2, (groups, [s.describe(None) for s in det.signatures])
-    # naming one removes it from the pool: a named signature is settled
+    # Naming one does NOT settle the others, which is what the old rule
+    # assumed: it dropped named signatures from the pool, so naming a single
+    # setting switched off the suggestion that would have found the rest of
+    # the same machine. Anze's kiln is split across sixteen balanced A+C
+    # signatures holding 304 sessions and only 205 of them are named, and it
+    # was never offered a single one of them (2026-09-22).
     det.rename(groups[0][0], "Hob")
+    still = D.suggest_levels(det.signatures, det.recent)
+    assert still == groups, "the unnamed sibling still belongs with the Hob"
+    # ...and once every member is named there is nothing left to suggest
+    det.rename(groups[0][1], "Hob")
     assert D.suggest_levels(det.signatures, det.recent) == []
 
 
@@ -1607,12 +1616,21 @@ def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     busy house - so for most pairs there is nothing recorded either way, and
     reading that silence as "they never overlap" offered a 149 W load and a
     2.7 kW one as one device (Anze's house, 2026-09-22)."""
-    a, b = _lvl(1, 150.0), _lvl(2, 2700.0)
+    a, b = _lvl(1, 1000.0), _lvl(2, 2700.0)
     assert D.suggest_levels([a, b], []) == []               # nothing seen of either
     seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
     assert D.suggest_levels([a, b], seen_a) == []           # only one side seen
     both = seen_a + [{"signature": 2, "start": 500.0, "end": 550.0}]
     assert D.suggest_levels([a, b], both) == [[1, 2]]       # both seen, never together
+
+    # ...and the pair this test was written around - 150 W against 2.7 kW,
+    # eighteen to one - is refused whatever the recording says, because the
+    # recording was never the whole fault. Being seen apart is necessary and
+    # nowhere near sufficient: most short loads in a house never overlap.
+    far = [_lvl(3, 150.0), _lvl(4, 2700.0)]
+    apart = [{"signature": 3, "start": 0.0, "end": 50.0},
+             {"signature": 4, "start": 500.0, "end": 550.0}]
+    assert D.suggest_levels(far, apart) == []
 
 
 def test_levels_of_one_device_run_for_about_as_long_each_time():

@@ -305,6 +305,16 @@ QUANTUM_LATTICE_SHARE = 0.9
 
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
+# How many of its OWN run windows each signature remembers, so "these two are
+# never on at once" can be asked about a load that runs every few days. It
+# was asked of the rolling session list, which a busy house burns through in
+# about two hours - 40 sessions spanning 2.1 h and holding 11 of Home's 199
+# signatures - so the kiln, last fired 8.6 days ago, could never be compared
+# with anything (Anze, 2026-09-22).
+RUN_MEMORY = 12
+# The widest a device's settings may span before they are two devices. See
+# suggest_levels: generous, because it only has to beat 36 to 1.
+MATCH_LEVEL_RATIO = 10.0
 HELD_TAIL_S = 60.0             # closed sessions wait this long for a partner on another phase
 
 
@@ -1323,6 +1333,8 @@ class Signature:
     # assume the noise level per phase everywhere", 2026-09-22).
     power_mad: float = 0.0
     pf_mad: float = 0.0
+    # the last RUN_MEMORY windows this ran in, for "never two at once"
+    runs: List[Tuple[float, float]] = field(default_factory=list)
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
     # motor does this and nothing else in a house does, so it is evidence
     # rather than noise once it is kept out of the power (Anze, 2026-09-22:
@@ -1447,6 +1459,7 @@ class Signature:
             self.pf = other.pf
         elif other.pf is not None:
             self.pf = (self.pf * a + other.pf * b) / n
+        self.runs = sorted(self.runs + other.runs)[-RUN_MEMORY:]
         if other.interval_s is not None and (self.interval_s is None or b > a):
             self.interval_s, self.interval_mad = other.interval_s, other.interval_mad
         if other.low is not None and other.high is not None:
@@ -1482,6 +1495,8 @@ class Signature:
             self.power[ph] = (self.power.get(ph, w) * n + k * w) / (n + k)
         self.duration_s = (self.duration_s * n + k * s.duration_s) / (n + k)
         self.level_count = (self.level_count * n + k * s.level_count) / (n + k)
+        self.runs.append((s.start, s.end))
+        del self.runs[:-RUN_MEMORY]
         if s.pf is not None:
             # the spread owns BOTH the session's own uncertainty and how far
             # this sighting sits from the mean, the same way power_mad does
@@ -1741,6 +1756,7 @@ class Signature:
                 "level_count": _trim(self.level_count, 3), "name": self.name,
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1), "pf_mad": _trim(self.pf_mad, 4),
+                "runs": [[round(x, 1), round(y, 1)] for x, y in self.runs[-RUN_MEMORY:]],
                 "inrush_w": _trim(self.inrush_w, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
@@ -1755,7 +1771,8 @@ class Signature:
                    day_wh=list(d.get("day_wh") or [0.0] * 7),
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
-                   power_mad=d.get("power_mad", 0.0), pf_mad=d.get("pf_mad", 0.0), inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   power_mad=d.get("power_mad", 0.0), pf_mad=d.get("pf_mad", 0.0),
+                   runs=[tuple(x) for x in (d.get("runs") or [])], inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))
@@ -2734,7 +2751,14 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
     running at once. That is the whole test; the sizes are deliberately not
     compared, since settings can be any ratio. It is only a suggestion, and
     confirming it means giving them the same name."""
-    times: Dict[int, List[Tuple[float, float]]] = {}
+    # Each signature's OWN record first, and the rolling session list on top
+    # of it. The list alone was the whole evidence and it is far too short to
+    # answer this at a busy house: 40 sessions over 2.1 hours holding 11 of
+    # Home's 199 signatures, so the kiln - fired 8.6 days ago, and split
+    # across sixteen balanced A+C signatures holding 304 sessions - could
+    # never be compared with a single one of its own settings.
+    times: Dict[int, List[Tuple[float, float]]] = {
+        sig.id: list(sig.runs) for sig in signatures if sig.runs}
     for r in recent:
         times.setdefault(r["signature"], []).append((r["start"], r["end"]))
 
@@ -2746,6 +2770,13 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         return False
 
     def compatible(a: Signature, b: Signature) -> bool:
+        # A NAMED signature belongs in this: naming one setting of a device is
+        # the moment its owner proved it real, and excluding it from the pool
+        # switched off the very suggestion that would have found the other
+        # fifteen settings of the same machine (Anze's kiln, 2026-09-22).
+        # Two loads named DIFFERENTLY were told apart on purpose.
+        if a.name and b.name and a.name != b.name:
+            return False
         # Identical phase sets, deliberately. A device with two elements does
         # draw on A alone, on C alone and on both - Anze's kiln does exactly
         # that, 3031 W on A and 2680 W on C being the 5918 W on A+C it is
@@ -2771,6 +2802,17 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         ratio = max(a.duration_s, 1.0) / max(b.duration_s, 1.0)
         if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
             return False
+        # Sizes are not compared CLOSELY - a setting really can be any
+        # fraction - but they cannot be ignored either, which is what this
+        # did. A 165 W load was offered as a setting of the 5.9 kW kiln, and
+        # a 100 W one as a setting of a 2.9 kW load: at 36 to 1 that is not a
+        # setting, it is another device that happens to run for about as long.
+        # The kiln's own real span is 5918 W down to about 1045, near six to
+        # one, so the bound leaves it room and still cuts both (2026-09-22).
+        big, small = sorted((sum(abs(w) for w in a.power.values()),
+                             sum(abs(w) for w in b.power.values())))[::-1]
+        if small <= 0 or big / small > MATCH_LEVEL_RATIO:
+            return False
         # "Never two of them at once" has to be OBSERVED. The session list is
         # finite - two hundred against a library several times that at a busy
         # house - so for most pairs there is nothing recorded either way, and
@@ -2782,7 +2824,7 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
             return False
         return not overlap(a.id, b.id)
 
-    pool = [s for s in signatures if not s.name and s.count >= 2]
+    pool = [s for s in signatures if s.count >= 2]
     groups: List[List[Signature]] = []
     for sig in sorted(pool, key=lambda x: -x.count):
         for g in groups:
@@ -2791,7 +2833,12 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
                 break
         else:
             groups.append([sig])
-    return [sorted(x.id for x in g) for g in groups if len(g) > 1]
+    # A group needs something to DO: at least one signature still unnamed.
+    # A named one may anchor it - that is the whole point, since "these
+    # fifteen belong to Peč za Glino" is the useful sentence - but once every
+    # member is named the matter is settled and repeating it is noise.
+    return [sorted(x.id for x in g) for g in groups
+            if len(g) > 1 and any(not x.name for x in g)]
 
 
 def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[str, Optional[str]]] = None) -> str:
