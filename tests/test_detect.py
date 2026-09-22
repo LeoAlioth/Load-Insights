@@ -1404,5 +1404,63 @@ def test_the_meter_reading_survives_a_restart_mid_rebuild():
     assert [o["name"] for o in back.orphan_names] == ["Kiln"]
 
 
+def test_a_generation_bump_keeps_names_and_their_meter_readings():
+    """The path nobody has ever walked: DETECTOR_GENERATION moves, the whole
+    stored library is discarded, and every installation in the world does this
+    at once on the next update. It is simulated here against a store in the
+    shape the current code writes - which is what an installation would
+    actually be holding - because the alternative is discovering it went wrong
+    from someone's Energy dashboard (Anze, 2026-09-22: "i just want this fixed
+    for future updates/of the detection library versions/resets")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    sig = det.signatures[0]
+    det.rename(sig.id, "Kiln")
+    sig.carried_wh = 10436.2 - sum(sig.hour_wh)
+    stored = {"generation": 5, "fleet": {"main": det.to_dict()}}
+
+    # the bump: the store is read by a detector that has disowned its shape
+    orphans = D.names_in_store(stored)
+    assert [o["name"] for o in orphans] == ["Kiln"]
+    assert round(orphans[0]["energy_wh"], 1) == 10436.2, orphans[0]["energy_wh"]
+
+    fresh = D.Detector()                        # what `raw = {}` leaves behind
+    fresh.tz_offset_s = 0.0
+    fresh.carry_names(orphans)
+    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
+
+    samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
+    fresh.process(samples, now_ts=t2)
+    assert [x.name for x in fresh.signatures] == ["Kiln"]
+    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
+    assert fresh.orphan_names == []
+
+
+def test_the_only_paths_that_discard_the_library_both_carry_names():
+    """Two ways the library goes: the reset the user asks for, and the
+    generation bump they never see. Both take the same road out - a list of
+    descriptors into carry_names - so neither can quietly grow a third
+    behaviour."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    det.rename(det.signatures[0].id, "Kiln")
+    det.signatures[0].carried_wh = 9000.0
+
+    by_reset = det.name_descriptors()
+    by_bump = D.names_in_store({"generation": 4, "fleet": {"main": det.to_dict()}})
+    for got in (by_reset, by_bump):
+        assert [g["name"] for g in got] == ["Kiln"]
+        assert round(got[0]["energy_wh"]) == round(det.energy_by_name()["Kiln"])
+        assert got[0]["phases"] == "a" and got[0]["power"]
+    # and both produce the same floor
+    a, b = D.Detector(), D.Detector()
+    a.carry_names(by_reset); b.carry_names(by_bump)
+    assert round(a.energy_floor["Kiln"]) == round(b.energy_floor["Kiln"])
+
+
 if __name__ == "__main__":
     run_main(globals())
