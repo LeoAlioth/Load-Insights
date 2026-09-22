@@ -130,6 +130,21 @@ WELL_SAMPLED = 12.0
 ABSORB_WINDOW = 100.0
 NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
 NOISE_SESSION_S = 20.0
+# A motor draws several times its running current for the moment it starts,
+# and a meter catches one sample of it: Anze's pressure pump reads 8886 W in
+# one sample and 830 W in every sample after, four times over in a day. Held
+# for the length of a sample that single reading dominates the run - a 40 s
+# session came out at 2.8 kW for an 830 W pump - so a quarter of Kozolec's
+# multi-level runs recorded a load that does not exist, at a power that
+# depends on how long the session happened to last (2026-09-22).
+#
+# It is the START and it is BRIEF: over within a sample or two, where a real
+# first stage - a washing machine heating before it spins - runs for minutes.
+# So the window is taken from the session's own sampling rate rather than a
+# constant, which is what tells 10 seconds on a slow meter from 10 minutes of
+# heating on a fast one.
+INRUSH_RATIO = 2.5
+INRUSH_SAMPLES = 2.0
 MATCH_POWER_REL = 0.10
 MATCH_DURATION_FACTOR = 3.0
 # Duration CAN be part of a load's fingerprint and is not necessarily one
@@ -272,15 +287,44 @@ class Session:
         return self.end - self.start
 
     def power_by_phase(self) -> Dict[str, float]:
-        """Energy-weighted mean watts per phase - the dominant level."""
+        """Energy-weighted mean watts per phase - the dominant level, with a
+        motor's starting surge left out of it. See INRUSH_RATIO."""
         out = {}
         for ph, lv in self.levels.items():
-            e = 0.0
-            for i, (since, w) in enumerate(lv):
-                until = lv[i + 1][0] if i + 1 < len(lv) else self.end
+            levels, start = self._without_inrush(lv)
+            e, span = 0.0, max(self.end - start, 0.0)
+            for i, (since, w) in enumerate(levels):
+                until = levels[i + 1][0] if i + 1 < len(levels) else self.end
                 e += w * max(0.0, until - since)
-            out[ph] = e / self.duration_s if self.duration_s > 0 else 0.0
+            out[ph] = e / span if span > 0 else 0.0
         return out
+
+    def _without_inrush(self, lv: List[Tuple[float, float]]):
+        """The levels past the starting surge, and when the run really began.
+
+        Only ever the first one, only when it towers over what follows, and
+        only when it is over within a sample or two - which is what separates
+        a motor starting from a washing machine heating before it spins."""
+        if len(lv) < 2:
+            return lv, self.start
+        rest = max(w for _, w in lv[1:])
+        if rest <= 0 or lv[0][1] < INRUSH_RATIO * rest:
+            return lv, self.start
+        interval = self.duration_s / max(self.samples - 1, 1) if self.samples > 1 else 0.0
+        if interval <= 0 or (lv[1][0] - lv[0][0]) > INRUSH_SAMPLES * interval:
+            return lv, self.start
+        return lv[1:], lv[1][0]
+
+    @property
+    def inrush_w(self) -> float:
+        """How far the start towered over the run, or 0 - which is evidence of
+        a motor that nothing else in a house produces."""
+        peak = 0.0
+        for ph, lv in self.levels.items():
+            levels, _ = self._without_inrush(lv)
+            if levels is not lv and levels:
+                peak += lv[0][1] - max(w for _, w in levels)
+        return peak
 
     @property
     def energy_wh(self) -> float:
@@ -1069,6 +1113,12 @@ class Signature:
     # real device; one whose power and duration are all over the place is
     # the detector pairing unrelated edges, and the evidence score says so.
     power_mad: float = 0.0
+    # how far the start towers over the run, averaged - see INRUSH_RATIO. A
+    # motor does this and nothing else in a house does, so it is evidence
+    # rather than noise once it is kept out of the power (Anze, 2026-09-22:
+    # "that spike is a very good device signature, but it has to be taken
+    # into account properly to not show as separate loads").
+    inrush_w: float = 0.0
     duration_mad: float = 0.0
     interval_mad: Optional[float] = None
 
@@ -1163,6 +1213,7 @@ class Signature:
                              + (other.duration_mad + abs(other.duration_s - mid_s)) * b) / n
         self.duration_s = (self.duration_s * a + other.duration_s * b) / n
         self.level_count = (self.level_count * a + other.level_count * b) / n
+        self.inrush_w = (self.inrush_w * a + other.inrush_w * b) / n
         if self.pf is None:
             self.pf = other.pf
         elif other.pf is not None:
@@ -1194,6 +1245,7 @@ class Signature:
         k = s.confidence
         pw = s.power_by_phase()
         self.power_mad = (self.power_mad * n + k * abs(sum(pw.values()) - sum(self.power.values()))) / (n + k)
+        self.inrush_w = (self.inrush_w * n + k * s.inrush_w) / (n + k)
         self.duration_mad = (self.duration_mad * n + k * abs(s.duration_s - self.duration_s)) / (n + k)
         for ph, w in pw.items():
             self.power[ph] = (self.power.get(ph, w) * n + k * w) / (n + k)
@@ -1362,7 +1414,8 @@ class Signature:
         where = self.location
         return classify(self.watts, self.pf, self.level_count, self.duration_s,
                         self.phases, self.interval_s, self.interval_mad, self.hour_wh,
-                        self.low, self.high, None if where == "main" else where)
+                        self.low, self.high, None if where == "main" else where,
+                        self.inrush_w)
 
     def _spread(self, s: Session, tz) -> None:
         """Put a session's energy into every hour and day it occupied.
@@ -1449,7 +1502,7 @@ class Signature:
                 "day_wh": [_trim(x, 1) for x in self.day_wh],
                 "level_count": _trim(self.level_count, 3), "name": self.name,
                 "last_start": self.last_start, "locations": self.locations,
-                "power_mad": _trim(self.power_mad, 1),
+                "power_mad": _trim(self.power_mad, 1), "inrush_w": _trim(self.inrush_w, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
@@ -1463,7 +1516,7 @@ class Signature:
                    day_wh=list(d.get("day_wh") or [0.0] * 7),
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
-                   power_mad=d.get("power_mad", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   power_mad=d.get("power_mad", 0.0), inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))
