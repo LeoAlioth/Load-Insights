@@ -300,3 +300,62 @@ def sweep(sessions, labels, rels=(0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.65
         r = score(a, labels, sessions)
         frag = " ".join(f"{n.split()[0][:8]}:{c[0]:.0%}" for n, c in r["concentration"].items())
         print(f"     {rel:>5.2f}  {r['clusters']:>8}  {r['purity']:>5.0%}   {frag}")
+
+
+def regroup(det, rel=0.25, respect_time=False):
+    """Merge the LIBRARY by seeking modes, after it has been filed as usual.
+
+    Greedy filing walks along a continuous distribution laying down a chain of
+    signatures - which is why Kozolec's variable-speed pump, whose power is a
+    smooth spread from 0 to 250 W with no gaps, ends up in thirty of them.
+    Seeking the modes asks a different question: not "is this within tolerance
+    of that" but "where are the peaks". It runs over the library rather than
+    the sessions, so nothing has to be kept that is not kept already.
+
+    Returns {old signature id -> surviving id}.
+    """
+    by_phase = defaultdict(list)
+    for sig in det.signatures:
+        w = sum(sig.power.values())
+        if w > 0:
+            by_phase[sig.phases].append((sig, math.log(w)))
+    moved = {}
+    for phases, items in by_phase.items():
+        # weighted by how often each was seen: a signature with 400 sightings
+        # says more about where a mode is than one with two
+        xs = [lw for sig, lw in items for _ in range(min(sig.count, 50))]
+        if not xs:
+            continue
+        modes = _mean_shift(xs, math.log1p(rel))
+        buckets = defaultdict(list)
+        for sig, lw in items:
+            k = min(range(len(modes)), key=lambda j: abs(modes[j] - lw))
+            buckets[k].append(sig)
+        for k, group in buckets.items():
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda s: -s.count)
+            keep = group[0]
+            for other in group[1:]:
+                if keep.name and other.name and keep.name != other.name:
+                    continue
+                if respect_time:
+                    # a load that has shown it keeps a clock keeps it here too
+                    f = min(keep.duration_factor, other.duration_factor)
+                    ratio = max(other.duration_s, 1.0) / max(keep.duration_s, 1.0)
+                    if ratio > f or ratio < 1.0 / f:
+                        continue
+                moved[other.id] = keep.id
+    return moved
+
+
+def cluster_regrouped(sessions, det_for_noise, rel=0.25, respect_time=False):
+    fresh = D.Detector()
+    fresh.tz_offset_s = 0.0
+    fresh.phases = det_for_noise.phases
+    assign = {}
+    for i, s in enumerate(sessions):
+        fresh._file(s)
+        assign[i] = s.signature_id
+    moved = regroup(fresh, rel, respect_time)
+    return {i: moved.get(cid, cid) for i, cid in assign.items()}
