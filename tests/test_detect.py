@@ -1223,6 +1223,30 @@ def test_a_pool_may_not_be_stretched_wider_than_the_tolerance_that_made_it():
     assert not stretched.alike(_plain(6, 260.0, 10), 115.0)  # the pool would not
 
 
+def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
+    """power_mad and the distance travelled are TOTALS across the phases;
+    the tolerance that bounds them is one phase's. A three-phase load's total
+    wanders about three times what one leg does, so it was refused merges an
+    identical single-phase load was granted (Anze, 2026-09-22)."""
+    def leg(i, per_phase, count, phases, mad=0.0):
+        sig = D.Signature(id=i, phases=phases, power={p: per_phase for p in phases},
+                          duration_s=60.0, pf=None, count=count,
+                          first_seen=0.0, last_seen=1.0, power_mad=mad)
+        sig.hour_wh = [10.0] * 24
+        return sig
+
+    # one leg apart by 70 W, tolerance 115 W: fine on any number of phases
+    single = leg(1, 400.0, 10, "a")
+    assert single.alike(leg(2, 330.0, 10, "a"), 115.0)
+    triple = leg(3, 400.0, 10, "abc")
+    assert triple.alike(leg(4, 330.0, 10, "abc"), 115.0), \
+        "each leg is 70 W apart, exactly as in the single-phase case"
+
+    # and the guard still bites when the pool really would be stretched
+    stretched = leg(5, 330.0, 100, "abc", mad=120.0)
+    assert not stretched.alike(leg(6, 260.0, 10, "abc"), 115.0)
+
+
 def test_consolidation_re_asks_as_the_mean_moves():
     """The merge list is chosen against the signature as it stands BEFORE any
     of them go in. Swallowing them all without re-asking carried it somewhere
@@ -1786,6 +1810,28 @@ def test_two_factors_agree_when_their_error_bars_overlap():
     assert D.pf_tolerance(0.2, 0.2) > 0.5
     # and a wide bar never tightens the test
     assert D.pf_tolerance(0.3, 0.0) > D.pf_tolerance(0.0, 0.0)
+
+
+def test_where_a_relative_noise_figure_starts_to_mean_something():
+    """The 300 W it replaces was wrong in both directions at once - too low
+    for Home's noisier phases, too high for Kozolec's quiet one."""
+    quiet = D.PhaseState(min_noise=10.0)
+    quiet.noise, quiet.quantum = 10.0, 1.0
+    assert quiet.rel_floor == 300.0, quiet.rel_floor
+
+    noisy = D.PhaseState(min_noise=10.0)
+    noisy.noise, noisy.quantum = 37.0, 1.0
+    assert noisy.rel_floor == 1110.0, noisy.rel_floor
+
+    # a coarse reading is held to its resolution even when it sits still
+    coarse = D.PhaseState(min_noise=10.0)
+    coarse.noise, coarse.quantum = 10.0, 46.0
+    assert coarse.rel_floor == 1380.0, coarse.rel_floor
+
+    # one quantum at the floor is exactly the cap, which is the whole idea
+    for st in (quiet, noisy, coarse):
+        assert abs(max(st.quantum, st.noise) / st.rel_floor
+                   - D.NOISE_REL_CAP / D.NOISE_REL_FLOOR_FACTOR) < 1e-9
 
 
 def test_the_same_constant_serves_both_sites():
