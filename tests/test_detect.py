@@ -1510,5 +1510,67 @@ def test_running_now_names_the_signatures_that_are_on():
     assert on <= {x.id for x in det.signatures}
 
 
+def test_when_a_load_generally_runs_is_said_only_when_it_keeps_a_time():
+    """A phrase on every row distinguishes nothing, so this stays quiet unless
+    the load really does keep to a time. It is a MEASUREMENT where the
+    appliance guess is a prior - "runs in the evening" is a fact about this
+    house, not a belief about houses - which is why it can be stated plainly
+    rather than as a question."""
+    week = 14 * 86400.0
+    evening = [0.0] * 18 + [100.0, 120.0, 90.0, 40.0] + [0.0, 0.0]
+    flat = [50.0] * 24
+    assert D.when_phrase(evening, None, week, 12) == "evenings"
+    assert D.when_phrase([0.0] * 22 + [80.0, 90.0], None, week, 9) == "overnight"
+    # eight to five belongs to neither morning nor afternoon, and is plainly
+    # a daytime load - with only the narrow windows it got no phrase at all
+    assert D.when_phrase([0.0] * 8 + [60.0] * 9 + [0.0] * 7, None, week, 20) == "daytime"
+    # a load scattered through the day keeps no time worth mentioning
+    assert D.when_phrase(flat, None, week, 30) == ""
+
+
+def test_the_weekday_split_is_per_day_not_per_group():
+    """There are five weekdays and two weekend days, so a load running
+    UNIFORMLY puts 71 % of its energy on weekdays. Comparing the groups'
+    totals therefore called almost everything a weekday load - twenty of
+    Anze's twenty-four rows, which distinguished nothing from nothing."""
+    week = 14 * 86400.0
+    flat = [50.0] * 24
+    assert D.when_phrase(flat, [10.0] * 7, week, 30) == ""
+    assert D.when_phrase(flat, [12, 12, 12, 12, 12, 8, 8], week, 30) == ""
+    assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], week, 30) == "weekdays"
+    assert D.when_phrase(flat, [0, 0, 0, 0, 0, 10, 10], week, 30) == "weekends"
+
+
+def test_a_time_is_not_claimed_on_the_strength_of_one_occasion():
+    """Every run inside one evening falls in the same hours by construction,
+    so a load seen five times over four hours would say "evenings" about what
+    is really a single occasion. And two sightings can agree by chance about
+    anything."""
+    evening = [0.0] * 18 + [100.0, 120.0, 90.0, 40.0] + [0.0, 0.0]
+    assert D.when_phrase(evening, None, 4 * 3600.0, 5) == ""       # one evening
+    assert D.when_phrase(evening, None, 14 * 86400.0, 2) == ""     # twice
+    assert D.when_phrase(evening, None, 14 * 86400.0, 3) == "evenings"
+    # the weekday split wants a week, or one quiet weekend decides it
+    flat = [50.0] * 24
+    assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], 3 * 86400.0, 9) == ""
+
+
+def test_the_row_drops_the_sparkline_when_it_has_words_for_the_week():
+    """Seven characters of bars and the word "weekdays" are the same fact, and
+    a menu row is too narrow to spend on both."""
+    now = 1_700_000_000.0
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
+                      count=20, first_seen=now - 20 * 86400.0, last_seen=now - 900.0)
+    sig.hour_wh = [50.0] * 24
+    sig.day_wh = [10.0] * 7
+    plain = sig.row(timezone.utc, now)
+    assert sig.when == "" and any(b in plain for b in "▁▂▃▄▅▆▇█")
+
+    sig.day_wh = [10.0, 10.0, 10.0, 10.0, 10.0, 0.0, 0.0]
+    worded = sig.row(timezone.utc, now)
+    assert "weekdays" in worded
+    assert not any(b in worded for b in "▁▂▃▄▅▆▇█"), worded
+
+
 if __name__ == "__main__":
     run_main(globals())
