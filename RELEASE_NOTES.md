@@ -1,5 +1,17 @@
 # Release Notes
 
+## 0.5.1
+
+### Fixes
+
+- **A car charger is measured in amps per phase, not in watts.** That is what the standard limits and what a charger is actually set to: 6 A is the floor in IEC 61851 (a Tesla will go to 5), 32 A is the common ceiling, and 63 A on three phases or about 80 A on one are the extremes. A band on total watts described none of it - it called a three-phase charger idling at its 6 A minimum a 4.1 kW load and scored it as large, while the same 4.1 kW on one phase is 18 A and quite a different thing. The old band also stopped at 11.5 kW, so a 22 kW wallbox at 32 A three-phase - entirely ordinary - scored barely at all.
+- **The biggest resistive loads are heating elements again.** The band stopped at 9 kW, which ruled out an electric boiler or the backup heat in a heat pump's air handler; both are 10 to 20 kW and nothing else about them is unusual. Its duration ceiling moves with it, but only as far as two hours: a heating element and a car charging share a power factor and duration is most of what separates them, so buying room for whole-house heat costs exactly the discrimination that matters. Past two hours the two are offered as alternatives, and a meter with a name settles it outright.
+- **A whole induction hob is not one ring.** Cooking stopped at 3.5 kW; in Europe a hob is commonly wired across two phases and peaks around 7 kW.
+- **Programmes may run far longer than they were allowed.** A dishwasher's eco cycle reaches four hours where the profile stopped at two and a half, and a washer-dryer combination runs a washing and a drying programme back to back - eight hours is not unusual, against a ceiling of one hour forty. Widening them makes the two overlap, and the margin test then declines to choose rather than guessing, which is the honest answer where the meter has no name to settle it.
+- **Where a family reaches further than the appliances beneath it, that is deliberate** - a 150 W towel rail and a 15 kW boiler are both heating elements and neither is a hot water tank, so they are named as the family and nothing more. Now said in the README, since the numbers no longer look like an oversight.
+
+---
+
 ## 0.5.0
 
 ### New Features

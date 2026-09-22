@@ -228,6 +228,28 @@ MEALS = (7, 8, 11, 12, 13, 17, 18, 19, 20)
 WORKING = tuple(range(8, 20))
 
 
+# A charger's limits are stated in AMPS PER PHASE, not in watts: 6 A is the
+# floor in IEC 61851 (a Tesla will go to 5), 32 A is the common ceiling, 63 A
+# on three phases and about 80 A on one are the extremes (Anze, 2026-09-22).
+# A band on total watts therefore describes nothing real - it calls a
+# three-phase charger at its 6 A minimum a 4.1 kW load and scores it as large,
+# while the same 4.1 kW on one phase is 18 A and quite different. Dividing by
+# the phase count is what makes the number mean something.
+#
+# Volts are assumed rather than known - the classifier is handed watts, not a
+# voltage - so this is 230 V line to neutral. On a 120 V supply the band sits
+# twice as high in amps as it reads, which widens it rather than breaking it.
+CAR_VOLTS = 230.0
+CAR_AMPS = (4.5, 6.0, 80.0, 100.0)
+
+
+def _car_size(watts: float, phases: str) -> float:
+    """How much this looks like a car charging, by current per phase."""
+    n = max(len(set(phases)), 1)
+    lo, plateau_lo, plateau_hi, hi = (a * CAR_VOLTS for a in CAR_AMPS)
+    return _band(watts / n, lo, plateau_lo, plateau_hi, hi)
+
+
 def _share(hour_wh: Optional[Sequence[float]], hours: Sequence[int]) -> Optional[float]:
     """What fraction of this load's energy falls in those hours."""
     if not hour_wh:
@@ -300,22 +322,32 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
     if family == HEATER:
         s[WATER_TANK] = (_band(watts, 800, 1200, 4000, 6000)
                          * _band(duration_s, 900, 1800, 18000, 28800))
-        s[COOKING] = (_band(watts, 700, 1000, 3500, 5000)
+        # 3.5 kW is one ring. A whole induction hob in Europe is commonly
+        # wired across two phases and peaks around 7 kW, which the old
+        # ceiling scored at zero (Anze, 2026-09-22).
+        s[COOKING] = (_band(watts, 700, 1000, 7000, 9000)
                       * _band(duration_s, 120, 240, 3600, 7200)
                       * (0.2 + 0.8 * (_share(hour_wh, MEALS) or 0.3)))
     if family == VARIABLE:
         s[COOKING] = max(s.get(COOKING, 0.0),
-                         _band(watts, 800, 1200, 3700, 6000)
+                         _band(watts, 800, 1200, 7000, 9000)
                          * _band(duration_s, 120, 300, 3600, 7200)
                          * (0.2 + 0.8 * (_share(hour_wh, MEALS) or 0.3)))
     if family == PROGRAMME or levels >= 2.5:
         # A dishwasher heats twice and runs long; a washer is shorter. The
         # industrial washer at home has NO heaters, so it leans on levels and
         # duration alone, which is why neither profile asks for a heat spike.
-        s[DISHWASHER] = (_band(duration_s, 2700, 4500, 9000, 14400)
+        # Both ceilings were too low by half. An eco cycle runs a dishwasher
+        # to four hours, and a washer-dryer combination does a washing and a
+        # drying programme back to back - eight hours is not unusual (Anze,
+        # 2026-09-22, who has one). Widening them makes the two overlap more,
+        # and the margin test below then declines to choose rather than
+        # guessing - which is the honest answer, and the meter's own name
+        # settles it wherever the device has one.
+        s[DISHWASHER] = (_band(duration_s, 2700, 4500, 14400, 21600)
                          * _band(watts, 400, 700, 2500, 3500)
                          * _band(levels, 1.8, 2.5, 6, 9))
-        s[WASHER] = (_band(duration_s, 900, 1800, 6000, 10800)
+        s[WASHER] = (_band(duration_s, 900, 1800, 28800, 36000)
                      * _band(watts, 200, 350, 2500, 3500)
                      * _band(levels, 1.8, 2.5, 6, 9))
         s[DRYER] = (_band(duration_s, 1800, 2700, 10800, 18000)
@@ -374,9 +406,18 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     steady = (1.0 if levels < 1.5 else 0.3) * (0.25 if glides else 1.0)
     stepped = 1.0 if (levels >= 1.5 or glides) else 0.25
     if pf is not None:
+        # The top used to sit at 9 kW, which quietly ruled out the biggest
+        # resistive loads there are: an electric boiler, or the backup heat in
+        # a heat pump's air handler, is 10 to 20 kW and nothing else about it
+        # is unusual (Anze, 2026-09-22). The duration ceiling moves with it,
+        # but only to two hours - a heating element and a car charging share a
+        # power factor, and DURATION is most of what separates them, so buying
+        # room for whole-house heat costs exactly the discrimination that
+        # matters. Past two hours the two are named as alternatives, and where
+        # the meter has a name it settles the question outright.
         scores[HEATER] = (_band(pf, 0.93, 0.97, 1.01, 1.01) * steady
-                          * _band(watts, 80, 300, 9000, 12000)
-                          * _band(duration_s, 0, 0, 3600, 14400))
+                          * _band(watts, 80, 300, 20000, 27000)
+                          * _band(duration_s, 0, 0, 7200, 21600))
         motor = _band(pf, 0.35, 0.55, 0.85, 0.93) * _band(watts, 20, 60, 4000, 7000)
         if len(set(phases)) >= 3:
             # all three legs, at a motor's power factor: a three-phase motor,
@@ -388,7 +429,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
         scores[VARIABLE] = (_band(pf, 0.88, 0.94, 1.01, 1.01) * stepped
                             * _band(watts, 100, 300, 9000, 12000))
         scores[CAR] = (_band(pf, 0.93, 0.97, 1.01, 1.01) * steady
-                       * _band(watts, 1200, 1400, 11500, 23000)
+                       * _car_size(watts, phases)
                        * _band(duration_s, 1800, 3600, 86400, 86400))
     # a programme steps through its stages whatever its factor, so this one
     # stands without a power factor at all
@@ -402,10 +443,13 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     # power factor is configured the name supplies exactly the term that was
     # missing rather than the whole answer (Anze, 2026-09-22).
     if where and family_from_name(where) == CAR:
-        shape = (_band(watts, 1200, 1400, 11500, 23000)
+        shape = (_car_size(watts, phases)
                  * _band(duration_s, 1800, 3600, 86400, 86400))
         if shape > 0:
-            scores[CAR] = max(scores.get(CAR, 0.0), shape)
+            # decisive, not merely competitive: a heating element and a car
+            # charging draw at the same power factor for the same hours, and
+            # on a meter someone called EVSE there is nothing left to weigh
+            scores[CAR] = max(scores.get(CAR, 0.0), shape) + 1.0
 
     ranked = sorted(((v, k) for k, v in scores.items() if v > 0), reverse=True)
     if not ranked or ranked[0][0] < MIN_SCORE:
