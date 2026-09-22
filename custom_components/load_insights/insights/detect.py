@@ -563,7 +563,10 @@ def names_in_store(raw: dict) -> List[dict]:
                         "phases": sig.get("phases") or "",
                         "power": dict(power) if isinstance(power, dict) else {},
                         "duration_s": sig.get("duration_s") or 0.0,
-                        "pf": sig.get("pf")})
+                        "pf": sig.get("pf"),
+                        # the meter reading comes across too, or it steps down
+                        "energy_wh": (sum(sig.get("hour_wh") or [])
+                                      + (sig.get("carried_wh") or 0.0))})
     except (AttributeError, TypeError, ValueError):
         return []
     return out
@@ -1461,6 +1464,10 @@ class Detector:
     # recognised again, and are handed back to the first signature that looks
     # like them (see _reclaim).
     orphan_names: List[dict] = field(default_factory=list)
+    # name -> watt-hours its meter had already reached. A rebuilt library
+    # covers ten days where the old one had accumulated since it was
+    # installed, so without this the meter steps DOWN when a name comes back.
+    energy_floor: Dict[str, float] = field(default_factory=dict)
     next_id: int = 1
     tz_offset_s: float = 0.0
 
@@ -1782,6 +1789,17 @@ class Detector:
         for sig in self.signatures:
             if sig.name:
                 out[sig.name] = out.get(sig.name, 0.0) + sig.energy_wh
+        # A library rebuilt from ten days does not know what the meter read
+        # before it, so the old reading is a FLOOR rather than something to
+        # add: the two periods overlap, and adding them would count those ten
+        # days twice. Once the rebuilt library has accumulated past the old
+        # total the floor stops mattering of its own accord. It is kept per
+        # NAME rather than on the signature so that per_run_wh and the hour
+        # and weekday charts still describe the load, not its lifetime
+        # (Anze, 2026-09-22: "is there a way we could also fix this?").
+        for name, floor in self.energy_floor.items():
+            if floor > out.get(name, 0.0):
+                out[name] = floor
         return out
 
     def names(self) -> Dict[str, List[int]]:
@@ -1799,9 +1817,17 @@ class Detector:
         it is the only thing worth carrying across a library that is about to
         be thrown away. The rest - the counts, the hours, the locations - is
         re-learned from history in a few minutes; a name is not."""
+        totals = self.energy_by_name()
         return [{"name": sig.name, "phases": sig.phases, "power": dict(sig.power),
-                 "duration_s": sig.duration_s, "pf": sig.pf}
+                 "duration_s": sig.duration_s, "pf": sig.pf,
+                 "energy_wh": totals.get(sig.name, 0.0)}
                 for sig in self.signatures if sig.name]
+
+    def carry_names(self, descriptors: List[dict]) -> None:
+        """Take names, and the meter readings they had, into a fresh library."""
+        self.orphan_names = [dict(d) for d in descriptors if d.get("name")]
+        self.energy_floor = {d["name"]: float(d.get("energy_wh") or 0.0)
+                             for d in self.orphan_names}
 
     def _reclaim(self, sig: "Signature", noise_w: float) -> None:
         """Give a rebuilt signature back the name a reset took from it.
@@ -1866,7 +1892,8 @@ class Detector:
     def to_dict(self) -> dict:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
-                "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names}
+                "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
+                "energy_floor": {k: _trim(v, 1) for k, v in self.energy_floor.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -1880,6 +1907,7 @@ class Detector:
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
+        det.energy_floor = {k: float(v) for k, v in (d.get("energy_floor") or {}).items()}
         return det
 
 

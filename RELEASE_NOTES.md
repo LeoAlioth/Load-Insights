@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.3.1
+
+### Fixes
+
+- **A named load's meter no longer steps down when the library is rebuilt.** 0.3.0 gave a name back to the load that wore it, but the rebuilt library only covers ten days where the old one had been accumulating since the day it was installed - so the name returned attached to far less energy than its meter had already published, and Home Assistant read the drop as a meter reset. Anze's compressor went from 18.98 kWh to 7.30. The old reading is now carried across as a **floor** rather than something to add: the two periods overlap, so adding them would count those ten days twice, while a floor simply stops the meter going backwards and ceases to matter of its own accord once the rebuilt library has accumulated past it. It is kept per name rather than on the signature, so `per_run_wh` and the hour and weekday charts still describe the load rather than its lifetime - and it holds the reading steady even while a name is still waiting for its load to turn up again.
+
+---
+
 ## 0.3.0
 
 ### New Features
