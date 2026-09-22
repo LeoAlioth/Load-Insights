@@ -20,6 +20,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -30,7 +31,35 @@ from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, classify
 
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
-MIN_NOISE_W = 100.0            # never call a change smaller than this a transition
+# Never call a change smaller than this a transition. A FLOOR under the
+# measured figure, not a replacement for it - the detector works out each
+# phase's own noise from how much it wanders while idle, and this stops a
+# pathological signal from setting it at nothing.
+#
+# It was 100 W, which on both of Anze's sites was eight times the real noise:
+# their median sample-to-sample change is 3 to 5 W, so the measured figure
+# would have been 12 to 20 W and the floor was the binding constraint on
+# everything. A fridge compressor steps 60 to 150 W and could never clear it,
+# which is why Kozolec has two fridges and detected neither (2026-09-18).
+# At 10 W it is barely above the quantisation of the readings themselves, and
+# it is safe to be that low because the level-dependent part below is
+# MEASURED rather than assumed.
+MIN_NOISE_W = 10.0
+# ...and a reading wanders more when more is flowing through it, so the floor
+# is not the whole story either (Anze, 2026-09-18: "can the noise scale with
+# total load or be adaptive in some other way?").
+#
+# It can, and the share is MEASURED rather than picked, because the two sites
+# disagree by a factor of three about what it should be: fitting the observed
+# median sample-to-sample change against level gives 0.61% at home and about
+# 0.2% at Kozolec - home's signal being a template of two sensors subtracted,
+# which is noisier than either. A square root was tried against the same data
+# and fitted worse than a straight line (7.4 W of mean error against 5.4).
+# So each phase learns its own, the same way it already learns the idle
+# figure, and NOISE_REL_CAP only stops a pathological signal declaring itself
+# all noise.
+NOISE_REL_CAP = 0.05
+NOISE_REL_MIN_LEVEL = 300.0    # below this a ratio is mostly quantisation
 # A house-consumption reading below this is not a reading. Home's template
 # sensors are inverter/3 minus the meter, recomputed whenever EITHER input
 # updates against the other's stale value, so a passing cloud puts one sample
@@ -103,6 +132,36 @@ NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE
 NOISE_SESSION_S = 20.0
 MATCH_POWER_REL = 0.10
 MATCH_DURATION_FACTOR = 3.0
+# Two METERS may disagree about a run's length far more than two sightings of
+# one load may: a 66-second boiler cycle is 66 seconds on its own meter and
+# often minutes on a busy main one, where the down-step pairs with a
+# different edge. A wide bound is only safe because the cross-meter match
+# scores every passing pair and takes the closest - with first-fit it made
+# things worse (Anze, 2026-09-18).
+CROSS_METER_DURATION_FACTOR = 12.0
+# How close a device meter's ENERGY over a main-meter session's window must be
+# to that session's own energy for the two to be the same load. Measured at
+# Kozolec over ten days: for boiler-sized sessions the ratio ran 0.97 at the
+# tenth percentile, 1.02 at the median and 1.07 at the ninetieth, and 465 of
+# 479 sessions fell inside this band - where matching the two meters' SESSIONS
+# managed 38 of 381 (2026-09-19). Energy is what a coarse meter can answer.
+ENERGY_MATCH_LO = 0.65
+ENERGY_MATCH_HI = 1.35
+# how much of a device's samples to keep for answering that question
+SUB_SAMPLE_TAIL_S = 2 * 3600.0
+# How long a main-meter session waits for a device meter to say what it saw.
+# HELD_TAIL_S is about two PHASES of one load closing together, which happens
+# within seconds; this is about a Shelly getting round to it, which does not.
+# A session may not even be judgeable when it closes - the reading has to
+# reach past its end before sample-and-hold stops guessing at the tail - so
+# the wait has to outlast the slowest meter's silence, or the answer arrives
+# after the question has been thrown away (2026-09-19).
+MATCH_PATIENCE_S = 20 * 60.0
+# How far back to look for what the device was drawing ANYWAY. Capped,
+# because a session lasting hours would otherwise want hours of readings
+# before it - further back than the tail we keep - and the longest sessions
+# are exactly the ones energy matching answers best.
+IDLE_WINDOW_S = 900.0
 MATCH_PF_TOL = 0.15
 MAX_SIGNATURES = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
@@ -165,6 +224,13 @@ class Session:
     # overlapped and the wander could not be attributed to either.
     low: Optional[float] = None
     high: Optional[float] = None
+    # Which signature took this session. It used to be looked up in ``recent``,
+    # a DISPLAY list capped at 200 - so a backfill slice that filed more than
+    # that lost the answer for all but the last few, and with it every
+    # location. Backfill is exactly when a load's place should be established
+    # (Anze, 2026-09-18: 173 signatures at Kozolec, every one of them "main",
+    # on a site where the boiler and the car charger have their own meters).
+    signature_id: Optional[int] = None
 
     @property
     def ripple(self) -> Optional[float]:
@@ -411,6 +477,67 @@ def unit_scale(unit: Optional[str]) -> float:
     return UNIT_SCALE.get((unit or "").strip(), 1.0)
 
 
+def _sum_series(a: list, b: list) -> list:
+    """Two arrays' power added together, each held forward onto the other's
+    sample times - one site has two trackers and reading only the first
+    would leave half of every cloud unexplained."""
+    if not a:
+        return list(b)
+    if not b:
+        return list(a)
+    stamps = sorted({ts for ts, _ in a} | {ts for ts, _ in b})
+    ia = ib = 0
+    out = []
+    for ts in stamps:
+        ia, ib = _as_of(a, ts, ia), _as_of(b, ts, ib)
+        out.append((ts, (a[ia][1] if ia >= 0 else 0.0) + (b[ib][1] if ib >= 0 else 0.0)))
+    return out
+
+
+def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float) -> Optional[float]:
+    """Watt-hours a reading accounts for between two instants, sample and hold.
+
+    This is what a coarse meter CAN answer. A Shelly reporting once a minute
+    cannot describe a 66-second run - it gets three samples and its session
+    power comes out at half the truth - but the energy it recorded over that
+    minute is right, because energy integrates and sampling error cancels
+    where power's does not (Anze, 2026-09-19, on a Zigbee meter that cannot
+    be made faster at all).
+
+    None when the window is not covered by the reading.
+    """
+    if not rows or end <= start:
+        return None
+    # Both ends, not just the near one. Sample-and-hold carries the last
+    # reading forward for as long as you let it, so a meter that fell silent
+    # an hour ago will answer for a window it never saw - and the answer,
+    # "it drew exactly what it was drawing before", is indistinguishable
+    # from a device that really did stay put. The docstring promised this
+    # check; the code only ever made half of it (2026-09-19).
+    if rows[0][0] > start or rows[-1][0] < end:
+        return None
+    total = 0.0
+    # Seek, don't walk. _as_of scans forward from the index it is handed, and
+    # a session waits MATCH_PATIENCE_S for an answer - so every pending
+    # session asks every device meter twice, every pass, and each of those
+    # questions would otherwise re-read the whole retained tail from the
+    # front (2026-09-19).
+    i = bisect.bisect_right(rows, (start, float("inf"))) - 1
+    if i < 0:
+        return None
+    at = start
+    while at < end:
+        nxt = rows[i + 1][0] if i + 1 < len(rows) else end
+        until = min(nxt, end)
+        total += rows[i][1] * (until - at)
+        at = until
+        if i + 1 < len(rows):
+            i += 1
+        elif at < end:
+            break
+    return total / 3600.0
+
+
 def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     """Does this reading contain the site's generation, or the house alone?
 
@@ -602,6 +729,13 @@ class PhaseState:
     # dragged the idle floor to -569 W for the rest of the day, so every
     # step after it was measured from nonsense (2026-09-18).
     floor_zero: bool = False
+    # this phase's own floor, so a site can ask for more or less sensitivity
+    # than the default without touching the measured part
+    min_noise: float = MIN_NOISE_W
+    # the measured share of the running level that is noise, and the samples
+    # it is measured from
+    noise_rel: float = 0.0
+    rel_diffs: List[float] = field(default_factory=list)
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
@@ -634,9 +768,18 @@ class PhaseState:
                 self.baseline = ordered[int(BASELINE_SEED_PERCENTILE * (len(ordered) - 1))]
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
-                near = [x for x in ordered if x - self.baseline < 2 * MIN_NOISE_W]
-                diffs = [abs(x - self.baseline) for x in near] or [0.0]
-                self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(diffs))
+                # How far the reading moves BETWEEN SAMPLES, not how far it
+                # sits from a percentile. Two reasons. It is the quantity the
+                # step test actually asks about, and it is what was measured
+                # on both real sites when the floor was set (2 to 5 W quiet,
+                # 30 to 55 W under load). And it is blind to a load being on
+                # through the seed: a steady 2 kW contributes no difference at
+                # all, where a deviation-from-baseline measure would call the
+                # whole load noise. The old window was "within twice the
+                # floor", which tied this to a constant meant for something
+                # else and made lowering that constant collapse the estimate.
+                diffs = [abs(b - a) for a, b in zip(self.seed, self.seed[1:])] or [0.0]
+                self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
                 self.q_level = q
                 self.pv_level = pv
@@ -648,7 +791,7 @@ class PhaseState:
             # with an unrelated load hours later
             self.open_edges = [e for e in self.open_edges if ts - e.since <= MAX_OPEN_S]
 
-        if abs(w - self.level) < self.noise:
+        if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
             # With one load running, what the phase does IS what that load
             # does, so its wander can be attributed. With two it cannot, and
@@ -660,6 +803,12 @@ class PhaseState:
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
+            if self.level is not None and abs(self.level) >= NOISE_REL_MIN_LEVEL:
+                self.rel_diffs.append(abs(w - self.level) / abs(self.level))
+                if len(self.rel_diffs) >= 240:
+                    self.noise_rel = min(NOISE_REL_CAP,
+                                         NOISE_MAD_FACTOR * _median(self.rel_diffs))
+                    self.rel_diffs = self.rel_diffs[-120:]
             if q is not None:
                 self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
                 self.q_recent.append(q)
@@ -673,7 +822,7 @@ class PhaseState:
                 self.level = self.baseline
                 self.idle_diffs.append(abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
-                    self.noise = max(MIN_NOISE_W, NOISE_MAD_FACTOR * _median(self.idle_diffs))
+                    self.noise = max(self.min_noise, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
             return []
 
@@ -716,8 +865,19 @@ class PhaseState:
             self.open_edges = []
         return closed
 
+    def noise_at(self, level: Optional[float] = None) -> float:
+        """The smallest change worth calling a step, at that level.
+
+        The measured idle figure is a floor under it, not the whole answer:
+        a phase carrying five kilowatts wanders by tens of watts where the
+        same phase idle wanders by three."""
+        base = self.noise
+        if level is None:
+            level = self.level if self.level is not None else self.baseline
+        return max(base, self.noise_rel * abs(level)) if level else base
+
     def _tol(self, a: float, b: float) -> float:
-        return max(self.noise, MATCH_EDGE_REL * max(a, b))
+        return max(self.noise_at(max(abs(a), abs(b))), MATCH_EDGE_REL * max(a, b))
 
     def _pair(self, at: float, watts: float, var: Optional[float],
               new_level: float) -> List[Session]:
@@ -792,7 +952,8 @@ class PhaseState:
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
-                "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval, "pv_level": self.pv_level, "seed": self.seed,
+                "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval,
+                "min_noise": self.min_noise, "noise_rel": self.noise_rel, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
 
@@ -802,7 +963,7 @@ class PhaseState:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
-                   interval=d.get("interval", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   interval=d.get("interval", 0.0), min_noise=d.get("min_noise", MIN_NOISE_W), noise_rel=d.get("noise_rel", 0.0), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
@@ -892,10 +1053,30 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
+        spread = 0.0
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), other.power.get(ph, 0.0)
-            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise_w):
+            tol = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
+            if abs(mine - theirs) > tol:
                 return False
+            spread = max(spread, tol)
+        # Merging is TRANSITIVE, and that is the trap. Each merge re-centres
+        # the band on the new mean, so A can reach B, the pair can reach C,
+        # and the walk carries on as far as you let it: ten signatures from
+        # 400 W down to 25 W collapsed into one that called itself 94 W and
+        # described none of them. Relative tolerances only make the stride
+        # proportional - they do not stop the walking. So the merged pool
+        # must still be tight enough to be called one load: what it has
+        # already absorbed, plus the distance it is about to travel, has to
+        # stay inside the same tolerance that let the pair match
+        # (Anze asked why consolidation used a fixed figure, 2026-09-21).
+        a, b = max(self.count, 1), max(other.count, 1)
+        mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
+        mid_w = (mine_w * a + theirs_w * b) / (a + b)
+        after = ((self.power_mad + abs(mine_w - mid_w)) * a
+                 + (other.power_mad + abs(theirs_w - mid_w)) * b) / (a + b)
+        if after > spread:
+            return False
         ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
         if ratio > MATCH_DURATION_FACTOR or ratio < 1.0 / MATCH_DURATION_FACTOR:
             return False
@@ -909,12 +1090,24 @@ class Signature:
         n = a + b
         if n <= 0:
             return
+        mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
         for ph in set(self.power) | set(other.power):
             self.power[ph] = (self.power.get(ph, 0.0) * a + other.power.get(ph, 0.0) * b) / n
+        # The gap BETWEEN the two means is part of the merged spread, and
+        # averaging the two deviations alone throws it away: fold two tight
+        # signatures 300 W apart together and the result claimed its
+        # sightings sat within a few watts of each other. That number feeds
+        # tightness, which feeds evidence, which feeds the confidence the
+        # user is shown - so a merge made a signature look BETTER measured
+        # the further apart the things it merged (2026-09-21).
+        mid_w = sum(self.power.values())
+        self.power_mad = ((self.power_mad + abs(mine_w - mid_w)) * a
+                          + (other.power_mad + abs(theirs_w - mid_w)) * b) / n
+        mid_s = (self.duration_s * a + other.duration_s * b) / n
+        self.duration_mad = ((self.duration_mad + abs(self.duration_s - mid_s)) * a
+                             + (other.duration_mad + abs(other.duration_s - mid_s)) * b) / n
         self.duration_s = (self.duration_s * a + other.duration_s * b) / n
         self.level_count = (self.level_count * a + other.level_count * b) / n
-        self.power_mad = (self.power_mad * a + other.power_mad * b) / n
-        self.duration_mad = (self.duration_mad * a + other.duration_mad * b) / n
         if self.pf is None:
             self.pf = other.pf
         elif other.pf is not None:
@@ -1229,6 +1422,9 @@ class Detector:
     held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
     signatures: List[Signature] = field(default_factory=list)
     recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
+    # ids that consolidation has retired, so a session filed before a merge
+    # still resolves to the signature that swallowed it
+    _moved: Dict[int, int] = field(default_factory=dict)
     next_id: int = 1
     tz_offset_s: float = 0.0
 
@@ -1291,11 +1487,18 @@ class Detector:
         return out
 
     def signature_of(self, s: Session) -> Optional["Signature"]:
-        """The signature a just-filed session went into (its recent entry)."""
-        for r in reversed(self.recent):
-            if r["start"] == s.start and r["end"] == s.end and r["phases"] == s.phases:
-                return next((x for x in self.signatures if x.id == r["signature"]), None)
-        return None
+        """The signature a just-filed session went into.
+
+        From the session itself. Reading it back out of ``recent`` worked only
+        while a pass filed fewer sessions than that list keeps."""
+        sid = s.signature_id
+        if sid is None:
+            return None
+        seen = set()
+        while sid in self._moved and sid not in seen:
+            seen.add(sid)
+            sid = self._moved[sid]
+        return next((x for x in self.signatures if x.id == sid), None)
 
     @staticmethod
     def _combine(g: List[Session]) -> Session:
@@ -1327,6 +1530,7 @@ class Detector:
             best.count = 1
         else:
             best.absorb(s, tz)
+        s.signature_id = best.id
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
@@ -1355,14 +1559,29 @@ class Detector:
                 if not doomed:
                     continue
                 moved = {}
+                # Re-ask on every one. ``doomed`` was judged against ``keep``
+                # as it stood BEFORE any of them went in, and each swallow
+                # moves its mean - so a list gathered in one breath could
+                # carry it somewhere none of the later entries would have
+                # been admitted to. Reverse order keeps the lower indices
+                # valid as they are popped, and one that no longer fits is
+                # simply left where it is (2026-09-21).
                 for j in reversed(doomed):
+                    if not keep.alike(self.signatures[j], noise_w):
+                        continue
                     other = self.signatures.pop(j)
                     moved[other.id] = keep.id
                     keep.swallow(other)
                     gone += 1
+                if not moved:
+                    continue
                 for r in self.recent:            # the sessions still point at them
                     if r.get("signature") in moved:
                         r["signature"] = moved[r["signature"]]
+                for s in self.held:
+                    if s.signature_id in moved:
+                        s.signature_id = moved[s.signature_id]
+                self._moved.update(moved)
                 again = True
                 break
         return gone
@@ -1604,6 +1823,10 @@ class Fleet:
     subs: Dict[str, Detector] = field(default_factory=dict)
     pending_main: List[Session] = field(default_factory=list)    # main sessions awaiting a downstream partner
     pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
+    # Each device's raw samples, kept long enough to answer "how much energy
+    # did you record while this was running". A meter too slow to produce a
+    # session of its own can still answer that.
+    sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
@@ -1615,6 +1838,24 @@ class Fleet:
             self.agnostic.update(agnostic)
         # only the main meter needs the array: a downstream meter sees the
         # house side of it and never the sun
+        latest_seen = now_ts or 0.0
+        for name, rows_by_phase in (sub_samples or {}).items():
+            merged: List[Tuple[float, float]] = []
+            for series in rows_by_phase.values():
+                merged = _sum_series(merged, list(series))
+            if not merged:
+                continue
+            kept = self.sub_rows.get(name, []) + merged
+            kept.sort()
+            latest_seen = max(latest_seen, kept[-1][0])
+            # Everything this pass brought, plus a tail before it. Trimming to
+            # a fixed two hours looked thrifty and silently gutted the
+            # backfill, whose slices are six hours long: the sessions being
+            # placed were mostly older than the readings kept to place them
+            # with (2026-09-19).
+            oldest = min((r[0] for r in merged), default=latest_seen)
+            cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
+            self.sub_rows[name] = [r for r in kept if r[0] >= cut]
         closed_main = self.main.process(main_samples, main_q, now_ts, pv)
         closed_sub = {}
         for name, samples in sub_samples.items():
@@ -1627,26 +1868,84 @@ class Fleet:
         self.pending_main += closed_main
         for name, sessions in closed_sub.items():
             self.pending_sub.setdefault(name, []).extend(sessions)
-        still: List[Session] = []
-        for m in self.pending_main:
-            sig = self.main.signature_of(m)
-            hit = None
+        # BEST fit, not first fit. Taking the first session that passed and
+        # popping it is order-dependent, and at Kozolec it was the whole
+        # reason a boiler with its own meter and 367 sightings collected
+        # thirteen locations: a main session that merely fitted consumed the
+        # downstream session a better-matching one needed, and loosening the
+        # test made it worse rather than better (Anze, 2026-09-18). Every
+        # passing pair is scored, the closest is taken first, and each
+        # session is spent once.
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        pairs = []
+        for mi, m in enumerate(self.pending_main):
             for name, subs in self.pending_sub.items():
-                for i, s in enumerate(subs):
-                    if _same_load(m, s, self.agnostic.get(name, False)):
-                        hit = (name, i)
-                        break
-                if hit:
-                    break
-            if hit and sig is not None:
-                name, i = hit
-                self.pending_sub[name].pop(i)
-                sig.locations[name] = sig.locations.get(name, 0) + 1
-            elif latest - m.end < HELD_TAIL_S * 2:
-                still.append(m)          # a partner may still close on a slower meter
+                det = self.subs.get(name)
+                sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+                # one full reporting interval each, since a step can land
+                # anywhere inside one, and never less than the merge tolerance
+                tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+                agnostic = self.agnostic.get(name, False)
+                for si, s in enumerate(subs):
+                    if _same_load(m, s, agnostic, tol):
+                        pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
+        # A device meter too slow to produce a session of its own still knows
+        # how much ENERGY it recorded while a main-meter session ran, and that
+        # answer is right where its session power is not: sampling error
+        # cancels in an integral. So every main session is also offered to the
+        # raw readings, scored by how far the ratio sits from one.
+        for mi, m in enumerate(self.pending_main):
+            want = m.energy_wh
+            span = m.duration_s
+            if want <= 0 or span <= 0:
+                continue
+            for name, rows in self.sub_rows.items():
+                got = energy_between(rows, m.start, m.end)
+                if got is None:
+                    continue
+                # What the device was drawing ANYWAY, over a window of the
+                # same length just before. Without this a device that merely
+                # happened to be running lands inside the band on coincidence:
+                # a workshop meter already making 6 kW collects a heater's
+                # 167 Wh without the heater being anywhere near it. The
+                # detector matches edges everywhere else for the same reason.
+                look = min(span, IDLE_WINDOW_S)
+                before = energy_between(rows, m.start - look, m.start)
+                if before is None:
+                    continue
+                rose = got - before * (span / look)
+                if rose <= 0:
+                    continue
+                ratio = rose / want
+                if ENERGY_MATCH_LO <= ratio <= ENERGY_MATCH_HI:
+                    # slightly worse than a session match of the same quality,
+                    # so a meter that CAN resolve the load still wins
+                    pairs.append((0.5 + abs(ratio - 1.0), mi, name, None))
+        pairs.sort(key=lambda x: (x[0], x[1]))
+        taken_main, taken_sub = set(), set()
+        for _, mi, name, si in pairs:
+            if mi in taken_main or (si is not None and (name, si) in taken_sub):
+                continue
+            sig = self.main.signature_of(self.pending_main[mi])
+            if sig is None:
+                continue
+            taken_main.add(mi)
+            if si is not None:
+                taken_sub.add((name, si))
+            sig.locations[name] = sig.locations.get(name, 0) + 1
+        for name in self.pending_sub:
+            self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
+                                      if (name, i) not in taken_sub]
+        still = [m for i, m in enumerate(self.pending_main)
+                 if i not in taken_main and latest - m.end < MATCH_PATIENCE_S]
         self.pending_main = still
         for name in list(self.pending_sub):
-            self.pending_sub[name] = [s for s in self.pending_sub[name] if latest - s.end < HELD_TAIL_S * 2]
+            # the same patience on both sides: _same_load already demands the
+            # two starts be within tol_s of each other, so holding a session
+            # longer only lets a slow meter's own session find the partner
+            # that is still waiting for it - it cannot pair two unrelated ones
+            self.pending_sub[name] = [s for s in self.pending_sub[name]
+                                      if latest - s.end < MATCH_PATIENCE_S]
 
     def to_dict(self) -> dict:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
@@ -1667,7 +1966,26 @@ class Fleet:
         return f
 
 
-def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
+def _match_cost(a: Session, b: Session, phase_agnostic: bool, tol_s: float) -> float:
+    """How well these two sessions fit, smaller being better.
+
+    Only ever asked of a pair that already passed ``_same_load``; this is
+    what decides which of several passing pairs is the real one."""
+    pa, pb = a.power_by_phase(), b.power_by_phase()
+    ta = sum(pa.values()) if phase_agnostic else sum(pa.get(ph, 0.0) for ph in a.phases)
+    tb = sum(pb.values()) if phase_agnostic else sum(pb.get(ph, 0.0) for ph in a.phases)
+    biggest = max(abs(ta), abs(tb), 1.0)
+    when = abs(a.start - b.start) / max(tol_s, 1.0)
+    size = abs(ta - tb) / biggest
+    da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
+    length = abs(math.log(da / db))
+    # the moment and the size are what two meters can agree on; the length is
+    # what a busy main meter gets wrong, so it only breaks ties
+    return when + size + 0.25 * length
+
+
+def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
+               tol_s: float = MERGE_TOLERANCE_S) -> bool:
     """Is the downstream session ``b`` the same load as the main-meter
     session ``a``? Always the same moment; then the same size.
 
@@ -1675,11 +1993,40 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False) -> bool:
     single-device meters do. It cannot say which phase the load is on, so
     only the magnitude is compared; the main meter's own session supplies the
     phase, which is how a device's phase gets learned for free."""
-    if abs(a.start - b.start) > MERGE_TOLERANCE_S or abs(a.end - b.end) > MERGE_TOLERANCE_S:
+    # The START is the hard test: two meters seeing a load switch on at the
+    # same instant, at the same size, are seeing the same load. The END is
+    # not, and demanding it within the same fifteen seconds is what stopped
+    # Kozolec placing anything - on a busy main meter a load's down-step can
+    # pair with a different edge, so the session runs on. Measured there:
+    # 443 boiler cycles started within a minute of a main-meter session and
+    # their ends differed by 7 s at the median but 438 s at the third
+    # quartile, so only 27 were accepted (Anze, 2026-09-18).
+    #
+    # And ``tol_s`` is not a constant either, because two meters do not
+    # report together: at Kozolec the GX publishes the inverter's output
+    # every 5 s while the Shelly on a device publishes every 52, so a load
+    # can be most of a minute old on one before it appears on the other. The
+    # caller derives it from what each meter actually does.
+    if abs(a.start - b.start) > tol_s:
+        return False
+    # They still have to be roughly the same LENGTH of thing, but the bound
+    # is wide: dropping it entirely placed NOTHING, because a loose test with
+    # first-fit let a wrong pairing eat the session the right one needed.
+    # With best-fit scoring behind it a wide bound is safe, and it has to be
+    # wide - see CROSS_METER_DURATION_FACTOR.
+    da, db = max(a.duration_s, 1.0), max(b.duration_s, 1.0)
+    if max(da, db) / min(da, db) > CROSS_METER_DURATION_FACTOR:
         return False
     pa, pb = a.power_by_phase(), b.power_by_phase()
     if phase_agnostic:
-        ta, tb = sum(pa.values()), sum(pb.values())
+        # The PEAK, not the energy-weighted mean. A meter slower than the load
+        # it watches dilutes that mean with the part of a sample where the
+        # load was off: Kozolec's boiler runs 66 seconds and its Shelly
+        # reports every 52, so its own sessions measured 953 W against the
+        # 1813 W the main meter saw - a factor of two, and the size test threw
+        # out 343 of 381 otherwise-good pairs on it (Anze, 2026-09-18). What
+        # a load PEAKS at survives coarse sampling; what it averages does not.
+        ta, tb = a.max_w, b.max_w
         return abs(ta - tb) <= max(MATCH_POWER_REL * max(ta, tb), MIN_NOISE_W)
     if a.phases != b.phases:
         return False
