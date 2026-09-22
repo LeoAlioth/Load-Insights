@@ -381,11 +381,17 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
              interval_s: Optional[float] = None, interval_mad: Optional[float] = None,
              hour_wh: Optional[Sequence[float]] = None,
              low: Optional[float] = None, high: Optional[float] = None,
-             where: Optional[str] = None) -> Guess:
+             where: Optional[str] = None, inrush_w: float = 0.0) -> Guess:
     """``watts`` is the load's total across its phases.
 
     ``where`` is the meter this load was found to sit on, if any - its NAME,
-    which is the best evidence there is about what the thing is."""
+    which is the best evidence there is about what the thing is.
+
+    ``inrush_w`` is how far the load's start towered over its run. Only a
+    motor does that - an induction motor draws several times its running
+    current until it is up to speed - so where it is seen it is a measurement
+    rather than a guess, and it says MOTOR the way a balanced three-phase
+    draw says three-phase motor."""
     scores: Dict[str, float] = {}
     # A load either holds its level or it does not, and there are two ways to
     # not hold it: stepping between levels, which LEVELS counts, and gliding,
@@ -405,6 +411,14 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     holds = ripple is None or ripple <= RIPPLE_STEADY
     steady = (1.0 if levels < 1.5 else 0.3) * (0.25 if glides else 1.0)
     stepped = 1.0 if (levels >= 1.5 or glides) else 0.25
+    # A start that towers over the run is an induction motor coming up to
+    # speed, and nothing else in a house produces it. Where it is seen it
+    # carries the family on its own - a pump behind a variable-speed drive
+    # corrects its power factor to near unity and reads as a heating element
+    # without this (Anze, 2026-09-22). Judged against the load's OWN running
+    # power, since a surge is a multiple of it rather than a number of watts.
+    surge = _band(inrush_w / max(watts, 1.0), 0.8, 1.5, 40.0, 80.0)
+
     if pf is not None:
         # The top used to sit at 9 kW, which quietly ruled out the biggest
         # resistive loads there are: an electric boiler, or the backup heat in
@@ -417,12 +431,15 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
         # the meter has a name it settles the question outright.
         scores[HEATER] = (_band(pf, 0.93, 0.97, 1.01, 1.01) * steady
                           * _band(watts, 80, 300, 20000, 27000)
-                          * _band(duration_s, 0, 0, 7200, 21600))
-        motor = _band(pf, 0.35, 0.55, 0.85, 0.93) * _band(watts, 20, 60, 4000, 7000)
+                          * _band(duration_s, 0, 0, 7200, 21600)
+                          * (0.2 if surge > 0.5 else 1.0))
+        motor = max(_band(pf, 0.35, 0.55, 0.85, 0.93)
+                    * _band(watts, 20, 60, 4000, 7000), surge)
         if len(set(phases)) >= 3:
             # all three legs, at a motor's power factor: a three-phase motor,
             # and the band runs higher because they are bigger machines
-            scores[MOTOR_3P] = _band(pf, 0.35, 0.55, 0.88, 0.95) * _band(watts, 300, 700, 9000, 15000)
+            scores[MOTOR_3P] = max(_band(pf, 0.35, 0.55, 0.88, 0.95), surge) \
+                * _band(watts, 300, 700, 9000, 15000)
         else:
             scores[MOTOR] = motor
         scores[SUPPLY] = _band(pf, 0.2, 0.4, 0.75, 0.9) * _band(watts, 1, 5, 300, 600)
@@ -465,6 +482,8 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     because = []
     if pf is not None:
         because.append(f"power factor {pf:.2f}")
+    if inrush_w > 0:
+        because.append(f"starts at {_fmt_w(watts + inrush_w)} before settling")
     if glides and levels < 1.5:
         # the watts someone would see on their own meter, not a ratio - and
         # the range already says the size, so the mean is not repeated

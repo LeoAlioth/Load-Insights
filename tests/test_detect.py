@@ -1777,5 +1777,67 @@ def test_a_small_load_is_described_in_watts():
     assert row(1000).startswith("1.0 kW")
 
 
+def test_a_motors_starting_surge_is_not_a_load_of_its_own():
+    """Anze's pressure pump reads 8886 W in one sample and 830 W in every
+    sample after, four times over in a day. Held for the length of a sample
+    that single reading dominates the run - a 40 s session came out at 2.8 kW
+    for an 830 W pump - and the power it recorded depended on how long the
+    session happened to last, so one pump arrived as several loads."""
+    t = T0
+    pump = D.Session(phases="a", start=t, end=t + 40.0, samples=5,
+                     levels={"a": [(t, 8886.0), (t + 10, 833.0),
+                                   (t + 20, 818.0), (t + 30, 807.0)]})
+    assert round(sum(pump.power_by_phase().values())) == 819, pump.power_by_phase()
+    assert round(pump.inrush_w) == 8053
+
+
+def test_a_first_stage_that_lasts_is_not_a_surge():
+    """A washing machine heats before it spins. That is a real stage of a real
+    programme, it runs for minutes, and it must not be mistaken for a motor
+    coming up to speed - which is over within a sample or two. The window
+    comes from the session's own sampling rate, which is what tells ten
+    seconds on a slow meter from ten minutes of heating on a fast one."""
+    t = T0
+    washer = D.Session(phases="a", start=t, end=t + 3000.0, samples=200,
+                       levels={"a": [(t, 2000.0), (t + 600, 200.0)]})
+    assert round(sum(washer.power_by_phase().values())) == 560
+    assert washer.inrush_w == 0.0
+
+    # and a run with a single level has nothing to strip
+    flat = D.Session(phases="a", start=t, end=t + 60.0, samples=12,
+                     levels={"a": [(t, 1800.0)]})
+    assert round(sum(flat.power_by_phase().values())) == 1800
+    assert flat.inrush_w == 0.0
+
+
+def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
+    """It is the most diagnostic thing a house produces - only a motor does it
+    - so once it is out of the power it is worth keeping as a feature (Anze,
+    2026-09-22: "that spike is a very good device signature, but it has to be
+    taken into account properly to not show as separate loads")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    t, rows = T0, []
+    for _ in range(5):                                 # one pump, started five times
+        for _ in range(20):
+            rows.append((t, 100.0)); t += 5.0
+        rows.append((t, 9000.0)); t += 5.0             # the surge, one sample of it
+        for _ in range(12):
+            rows.append((t, 930.0)); t += 5.0
+        for _ in range(20):
+            rows.append((t, 100.0)); t += 5.0
+    det.process({"a": rows}, now_ts=t)
+
+    # ONE load, not several, and at what it actually draws
+    assert len(det.signatures) == 1, [round(sum(x.power.values())) for x in det.signatures]
+    sig = det.signatures[0]
+    assert sig.count == 5
+    assert 750 <= sum(sig.power.values()) <= 900, sum(sig.power.values())
+    # with the surge kept beside it as evidence
+    assert sig.inrush_w > 1000, sig.inrush_w
+    back = D.Signature.from_dict(sig.to_dict())
+    assert round(back.inrush_w, 1) == round(sig.inrush_w, 1)
+
+
 if __name__ == "__main__":
     run_main(globals())

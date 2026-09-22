@@ -223,5 +223,35 @@ def test_a_family_may_reach_further_than_the_appliances_under_it():
         assert g.appliance is None, (watts, g.appliance)
 
 
+def test_a_starting_surge_says_motor_where_the_power_factor_cannot():
+    """A pump behind a variable-speed drive corrects its factor to near unity
+    and reads as a heating element. The surge settles it: an induction motor
+    draws several times its running current until it is up to speed, and
+    nothing else in a house does that (Anze, 2026-09-22)."""
+    pump = dict(watts=830, pf=0.97, levels=1.0, duration_s=40, phases="a")
+    assert C.classify(**pump).kind == C.HEATER          # what the factor alone says
+    seen = C.classify(inrush_w=8053.0, **pump)
+    assert seen.kind == C.MOTOR, seen.kind
+    assert any("starts at" in b for b in seen.because), seen.because
+
+
+def test_a_heating_element_has_no_surge_and_is_unaffected():
+    heater = dict(watts=1800, pf=0.99, levels=1.0, duration_s=2700, phases="a")
+    assert C.classify(**heater).kind == C.HEATER
+    assert C.classify(inrush_w=0.0, **heater).kind == C.HEATER
+
+
+def test_the_surge_is_judged_against_the_load_it_belongs_to():
+    """A surge is a MULTIPLE of the running power, not a number of watts: 400 W
+    on top of a 100 W fan is a motor starting, and on top of a 10 kW element it
+    is nothing at all."""
+    small = C.classify(watts=100, pf=0.98, levels=1.0, duration_s=300,
+                       phases="a", inrush_w=400.0)
+    assert small.kind == C.MOTOR, small.kind
+    big = C.classify(watts=10000, pf=0.99, levels=1.0, duration_s=1800,
+                     phases="a", inrush_w=400.0)
+    assert big.kind == C.HEATER, big.kind
+
+
 if __name__ == "__main__":
     run_main(dict(globals()))

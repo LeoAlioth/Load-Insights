@@ -186,7 +186,7 @@ the first - it only asks *which* motor, *which* heating element.
 - **a heating element** - power factor 0.93-1.0, holds one flat level, 80 W to 20 kW. The range is wide because the family is: a towel rail and the backup resistive heat in a heat pump's air handler are the same physics two hundred-fold apart
   - **a hot water tank?** - 800 W to 4 kW, running 15 min to 5 h
   - **cooking?** - 700 W to 7 kW for a few minutes to an hour, weighted by whether it runs at meal times. A whole induction hob is commonly wired across two phases and peaks far above one ring
-- **a motor** - power factor 0.35-0.93, 20 W to 4 kW
+- **a motor** - power factor 0.35-0.93, 20 W to 4 kW, *or* a start that towers over the run. An induction motor draws several times its running current until it is up to speed, and nothing else in a house does - so where the meter catches it, it identifies a motor on its own, even one behind a variable-speed drive whose power factor would otherwise read as a heating element
   - **a pump?** - 250 W to 2.2 kW in bursts of 20 s to 15 min
   - **a fridge or freezer?** - 30 to 350 W, 5 min to an hour, flat across the day, keeping a regular interval
 - **a three-phase motor** - the same factor but *balanced on all three legs*, 300 W to 9 kW. Its own family rather than a guess: nothing else in a house draws the same power on each leg at a motor's power factor
