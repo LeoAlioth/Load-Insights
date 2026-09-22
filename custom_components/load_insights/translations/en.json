@@ -270,6 +270,10 @@
         "devices_without_power": {
             "title": "Some metered devices cannot be detected",
             "description": "{devices} appear on the Energy dashboard but publish no power reading, only energy. Hourly energy is far too coarse to line up with a load switching on, so these devices cannot locate or name anything in load detection. Their forecasts are unaffected."
+        },
+        "house_reading_negative": {
+            "title": "The house reading goes negative",
+            "description": "What Load Insights works out the house is drawing settles BELOW ZERO on phase {phases} ({watts}) when nothing is running. A house does not draw less than nothing, so the reading is something other than consumption.\n\nAlmost always one of two things. Either a grid meter is set as the house reading on **Detection settings** when it belongs on **Grid connection** - many meters report import as negative, and only the grid role applies that polarity. Or an inverter is missing from **Inverters**, so what it generates is never added back and the house appears to shrink as the sun rises.\n\nDetection carries on meanwhile, and everything it finds is unreliable."
         }
     },
     "selector": {

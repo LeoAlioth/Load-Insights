@@ -1736,5 +1736,25 @@ def test_a_real_house_reading_is_left_alone():
     assert D.drop_stale_load_override({}) == {}
 
 
+def test_a_house_does_not_draw_less_than_nothing():
+    """The check that would have caught Home days earlier. A load reading is
+    what the house DRAWS, so its quiet floor is a small positive number; when
+    it settles deeply negative the reading is something else wearing that name
+    - most often a grid meter reporting import as negative, or generation
+    still in it with no inverter configured to take it back out. Home sat at
+    -6318, -4554 and -4340 W and detected loads in that for days in silence,
+    because nothing breaks: sessions still open and close, signatures still
+    form, and every one of them is nonsense (2026-09-22)."""
+    assert D.implausible_baseline({"a": -6318.0, "b": -4554.0, "c": -4340.0}) == ["A", "B", "C"]
+    assert D.implausible_baseline({"a": 120.0, "b": 80.0, "c": 260.0}) == []
+    # one phase upside down is worth saying on its own
+    assert D.implausible_baseline({"a": -5000.0, "b": 80.0}) == ["A"]
+    # a shallow dip is ordinary: the sum is a difference of meters that do not
+    # sample together, so it can cross zero briefly without anything being wrong
+    assert D.implausible_baseline({"a": -50.0}) == []
+    assert D.implausible_baseline({"a": None}) == []
+    assert D.implausible_baseline({}) == []
+
+
 if __name__ == "__main__":
     run_main(globals())
