@@ -2294,6 +2294,30 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
     return True
 
 
+# How negative a house may idle before something is plainly wrong with the
+# reading rather than with the house. A little below zero is ordinary - the
+# arithmetic is a difference of meters that do not sample together, and a
+# reading can dip briefly - but a house does not DRAW minus a kilowatt.
+IMPLAUSIBLE_BASELINE_W = -400.0
+
+
+def implausible_baseline(baselines: Dict[str, float]) -> List[str]:
+    """Phases whose idle floor says the reading is not house consumption.
+
+    A load reading is what the house DRAWS, so its quiet floor is a small
+    positive number. When it settles deeply negative the reading is something
+    else wearing that name - most often a grid meter that reports import as
+    negative, or one with generation still in it and no inverter configured to
+    take it back out. Home settled at -6318, -4554 and -4340 W on its three
+    phases and detected loads in that for days without a word (2026-09-22).
+
+    Worth saying out loud precisely because nothing breaks: sessions still
+    open and close, signatures still form, and every one of them is nonsense.
+    """
+    return sorted(p.upper() for p, v in (baselines or {}).items()
+                  if v is not None and v <= IMPLAUSIBLE_BASELINE_W)
+
+
 def drop_stale_load_override(detection: dict) -> dict:
     """Remove a load reading that is really the grid meter, filed twice.
 

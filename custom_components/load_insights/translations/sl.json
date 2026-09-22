@@ -270,6 +270,10 @@
         "devices_without_power": {
             "title": "Nekaterih merjenih naprav ni mogoče zaznati",
             "description": "{devices} so na nadzorni plošči Energija, a objavljajo le energijo in ne moči. Urna energija je veliko pregroba, da bi se ujela z vklopom porabnika, zato te naprave v zaznavanju porabnikov ne morejo ničesar locirati ali poimenovati. Na njihove napovedi to ne vpliva."
+        },
+        "house_reading_negative": {
+            "title": "Odčitek porabe hiše gre pod nič",
+            "description": "Izračunana poraba hiše pade POD NIČ na fazi {phases} ({watts}), ko nič ne teče. Hiša ne more porabiti manj kot nič, zato odčitek ni poraba.\n\nSkoraj vedno gre za eno od dveh stvari. Ali je števec omrežja nastavljen kot odčitek hiše na strani **Nastavitve zaznavanja**, čeprav sodi na **Priključek na omrežje** - mnogo števcev odvzem sporoča negativno, polariteto pa upošteva samo omrežna vloga. Ali pa med **Razsmerniki** manjka razsmernik, zato se proizvedena energija nikoli ne prišteje nazaj in poraba hiše navidezno pada, ko sonce vzhaja.\n\nZaznavanje medtem teče naprej, vse najdeno pa je nezanesljivo."
         }
     },
     "selector": {
