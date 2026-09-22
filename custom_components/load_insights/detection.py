@@ -25,6 +25,7 @@ from .const import (
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
     CONF_MIN_EVIDENCE,
+    CONF_MIN_STEP_W,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
     DETECTION_BACKFILL_DAYS,
@@ -40,6 +41,8 @@ from .insights.detect import (
     Detector,
     Fleet,
     carries_generation,
+    MIN_NOISE_W,
+    _sum_series,
     carries_load,
     classify_source,
     site_topology,
@@ -385,6 +388,13 @@ class DetectionRunner:
         return clear + rest[:NAMING_MIN_ROWS - len(clear)]
 
     @property
+    def min_step_w(self) -> float:
+        try:
+            return max(1.0, float(self.config.get(CONF_MIN_STEP_W, MIN_NOISE_W)))
+        except (TypeError, ValueError):
+            return MIN_NOISE_W
+
+    @property
     def min_evidence(self) -> float:
         try:
             return max(0.0, min(1.0, float(self.config.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))))
@@ -557,6 +567,7 @@ class DetectionRunner:
                     pv[p] = _align(generation[p], target)
             for p, rows in samples.items():
                 if p in self.fleet.main.phases:
+                    self.fleet.main.phases[p].min_noise = self.min_step_w
                     # a reading that never exports is the house alone, and
                     # the house cannot draw less than nothing
                     self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
@@ -777,23 +788,6 @@ class DetectionRunner:
                 if var:
                     q[p] = var
         return samples, q
-
-
-def _sum_series(a: list, b: list) -> list:
-    """Two arrays' power added together, each held forward onto the other's
-    sample times - one site has two trackers and reading only the first
-    would leave half of every cloud unexplained."""
-    if not a:
-        return list(b)
-    if not b:
-        return list(a)
-    stamps = sorted({ts for ts, _ in a} | {ts for ts, _ in b})
-    ia = ib = 0
-    out = []
-    for ts in stamps:
-        ia, ib = _as_of(a, ts, ia), _as_of(b, ts, ib)
-        out.append((ts, (a[ia][1] if ia >= 0 else 0.0) + (b[ib][1] if ib >= 0 else 0.0)))
-    return out
 
 
 def _as_of(rows: list, ts: float, i: int) -> int:

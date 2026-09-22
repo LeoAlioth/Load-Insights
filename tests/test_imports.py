@@ -11,6 +11,7 @@ This reads the source rather than importing it, so it needs no Home
 Assistant installed - which is the whole premise of the pure tier.
 """
 import ast
+import pathlib
 import builtins
 import sys
 from pathlib import Path
@@ -78,6 +79,31 @@ def test_no_class_reads_an_attribute_it_never_sets():
     # subclasses legitimately read what their own base sets in __init__
     bad = [b for b in bad if not b.startswith("sensor.py:")]
     assert not bad, bad
+
+
+def test_no_test_is_written_where_nothing_will_run_it():
+    """Two ways a test can sit in the file and never execute, both of which
+    happened here on the same afternoon: a second ``def`` of a name silently
+    replaces the first, and anything below ``run_main(globals())`` is defined
+    after the collection that would have found it. Neither fails, neither
+    warns, and the only symptom is a test that cannot be made to fail
+    (2026-09-19 - test_detect.py had 27 of the first kind and then, while
+    they were being removed, gained three of the second)."""
+    dead = []
+    for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        main = next((n.lineno for n in tree.body if isinstance(n, ast.If)
+                     and ast.dump(n.test).find("__main__") >= 0), None)
+        seen = set()
+        for n in tree.body:
+            if not isinstance(n, ast.FunctionDef) or not n.name.startswith("test_"):
+                continue
+            if n.name in seen:
+                dead.append(f"{path.name}:{n.lineno} {n.name} shadows an earlier one")
+            if main is not None and n.lineno > main:
+                dead.append(f"{path.name}:{n.lineno} {n.name} is below run_main")
+            seen.add(n.name)
+    assert not dead, dead
 
 
 if __name__ == "__main__":

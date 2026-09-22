@@ -31,6 +31,8 @@ from .const import (
     CONF_DETECTION,
     CONF_DETECTION_INTERVAL,
     CONF_MIN_EVIDENCE,
+    CONF_MIN_STEP_W,
+    STEP_CHOICES,
     DEFAULT_MIN_EVIDENCE,
     DETECTION_BACKFILL_DAYS,
     EVIDENCE_CHOICES,
@@ -49,7 +51,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import suggest_levels
+from .insights.detect import MIN_NOISE_W, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -103,6 +105,16 @@ def _inverter_fields(defaults: dict) -> dict:
             key = f"{prefix}power_{p}"
             out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
                 selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+    # The OUTPUT side's volts and amps. Where the loads hang off an inverter -
+    # Kozolec, where the MultiPlus output IS the house - this is the circuit
+    # they are in, so it is the only place a power factor for them can come
+    # from. The grid side's own readings live on the Grid connection page.
+    for kind, device_class in (("voltage", "voltage"), ("current", "current"), ("pf", "power_factor")):
+        for p in ("a", "b", "c"):
+            key = f"{kind}_{p}"
+            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
+                selector.EntitySelector(selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class))
     out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
         selector.SelectSelector(selector.SelectSelectorConfig(
             options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
@@ -181,6 +193,11 @@ def _interval_field(defaults: dict) -> dict:
            selector.SelectSelector(selector.SelectSelectorConfig(
                options=[str(x) for x in EVIDENCE_CHOICES], translation_key=CONF_MIN_EVIDENCE,
                mode=selector.SelectSelectorMode.DROPDOWN))}
+    out[vol.Optional(CONF_MIN_STEP_W,
+                     default=str(defaults.get(CONF_MIN_STEP_W, int(MIN_NOISE_W))))] = \
+        selector.SelectSelector(selector.SelectSelectorConfig(
+            options=[str(n) for n in STEP_CHOICES], translation_key=CONF_MIN_STEP_W,
+            mode=selector.SelectSelectorMode.DROPDOWN))
     out.update({vol.Optional(CONF_DETECTION_INTERVAL,
                          default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
             selector.SelectSelector(selector.SelectSelectorConfig(
@@ -380,16 +397,32 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         current = list(self.config_entry.options.get(CONF_INVERTERS) or [])
         if user_input is not None:
             device = user_input.get(CONF_INV_DEVICE)
-            powers = {k: v for k, v in user_input.items() if k.startswith("power") and v}
+            # every reading, not just the ones whose key starts with "power":
+            # that filter silently dropped the grid-side input the form had
+            # just collected, and would have dropped the volts and amps too
+            readings = {k: v for k, v in user_input.items() if v
+                        and k not in (CONF_INV_DEVICE, CONF_INV_TOPOLOGY)}
             rest = [inv for inv in current if inv.get(CONF_INV_DEVICE) != device]
-            if device and powers:
-                rest.append({CONF_INV_DEVICE: device, **powers,
+            if device and any(k.endswith("power") or "power_" in k for k in readings):
+                rest.append({CONF_INV_DEVICE: device, **readings,
                              CONF_INV_TOPOLOGY: user_input.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL)})
             return self.async_create_entry(
                 data={**dict(self.config_entry.options), CONF_INVERTERS: rest})
         return self.async_show_form(
             step_id="inverters", data_schema=vol.Schema(_inverter_fields({})),
             description_placeholders={"found": _inverter_line(current)})
+
+    async def async_step_inverter_found(self, user_input: dict[str, Any] | None = None):
+        """Confirm what picking a device found, before it is saved."""
+        offer = dict(self._pending_inverter or {})
+        if user_input is not None:
+            self._pending_inverter = None
+            return await self.async_step_inverters(user_input)
+        return self.async_show_form(
+            step_id="inverters", data_schema=vol.Schema(_inverter_fields(offer)),
+            description_placeholders={"found": _found_line(self.hass, {
+                **{k: v for k, v in offer.items() if k not in (CONF_INV_DEVICE, CONF_INV_TOPOLOGY)},
+                "device": offer.get(CONF_INV_DEVICE)})})
 
     async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
         """Ask before forgetting: the library and every name in it go."""

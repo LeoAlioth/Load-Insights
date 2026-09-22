@@ -156,9 +156,6 @@ def test_a_plain_grid_meter_is_unaffected_by_that_preference():
     assert got["power_a"] == "sensor.solaredge_se17k_m1_ac_power_a", got["power_a"]
 
 
-if __name__ == "__main__":
-    run_main(dict(globals()))
-
 def test_a_power_reading_with_its_own_volts_and_amps_beside_it_wins():
     """Two readings of the same house at Kozolec, one on the GX device and
     one on the MultiPlus, differed by twenty characters of name and by the
@@ -224,3 +221,7 @@ def test_the_watts_that_go_with_a_meters_amps_are_the_ones_beside_them():
     # a tie is broken the same way every time rather than by registry order
     tie = ["sensor.b_power_a", "sensor.a_power_a"]
     assert D.closest_by_name(tie, "sensor.z_current_a") == D.closest_by_name(list(reversed(tie)), "sensor.z_current_a")
+
+
+if __name__ == "__main__":
+    run_main(dict(globals()))
