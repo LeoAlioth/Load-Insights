@@ -14,7 +14,7 @@
   "iot_class": "calculated",
   "issue_tracker": "https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights/issues",
   "requirements": [],
-  "version": "0.1.0",
+  "version": "0.2.0",
   "after_dependencies": [
     "workday"
   ]

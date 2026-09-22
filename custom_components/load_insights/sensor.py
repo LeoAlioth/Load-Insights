@@ -345,7 +345,20 @@ class DetectedLoadsSensor(_DetectionBase):
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 0
-    _unrecorded_attributes = frozenset({"active", "signatures", "recent_sessions"})
+    # EVERY attribute, not a chosen few. These are a live inspection surface -
+    # the library, what each submeter saw, what is on right now - and none of
+    # it is a measurement with a history worth keeping; the state, how many
+    # unexplained loads are on, is. Naming three of them and letting the rest
+    # through put the recorder over its 16 KB ceiling on a real site, which
+    # logs a warning, refuses to store the attributes and says the database
+    # will suffer - 989 times at Anze's house (2026-09-22). The list drifted
+    # because it was a list; test_sensor_attributes.py now fails if a key is
+    # added without it.
+    _unrecorded_attributes = frozenset({
+        "active", "signatures", "recent_sessions", "meters", "meter_hierarchy",
+        "named_loads", "looks_like_one_device", "noise_floor_w", "baseline_w",
+        "processed_until", "caught_up",
+    })
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "detected_loads")
