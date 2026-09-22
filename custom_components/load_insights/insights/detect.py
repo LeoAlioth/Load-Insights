@@ -1263,7 +1263,7 @@ class Signature:
         how_long = _fmt_s(self.duration_s)
         if self.regular and self.interval_s:
             how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
-        bits = [f"{self.watts / 1000:.1f} kW ({phases})",
+        bits = [f"{_fmt_w(self.watts)} ({phases})",
                 f"{_fmt_wh(self.weekly_wh)}/{_fmt_wh(self.per_run_wh)}",
                 how_long]
         tag = self.guess().tag
@@ -1394,7 +1394,7 @@ class Signature:
         over = f" over {_fmt_s(span)}" if span > 0 else ""
         when = last_run_phrase(self.last_seen, now, running)
         generally = f", {self.when}" if self.when else ""
-        line = (f"{self.watts / 1000:.1f} kW on {phases}, ~{dur}{gap}{lvl}{pf}, "
+        line = (f"{_fmt_w(self.watts)} on {phases}, ~{dur}{gap}{lvl}{pf}, "
                 f"seen {self.count} times{over}{generally}"
                 + (f", {when}" if when else ""))
         guess = self.guess()
@@ -1467,6 +1467,16 @@ class Signature:
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))
+
+
+def _fmt_w(x: float) -> str:
+    """Watts below a kilowatt, kilowatts above.
+
+    Everything was printed as kilowatts to one decimal, which is fine for a
+    kettle and useless for everything a submeter sees: a whole library of a
+    computer, a UPS and an office plug read "0.0 kW on A" line after line,
+    every row identical and none of them wrong (Anze, 2026-09-22)."""
+    return f"{x:.0f} W" if abs(x) < 1000 else f"{x / 1000:.1f} kW"
 
 
 def _fmt_wh(x: float) -> str:

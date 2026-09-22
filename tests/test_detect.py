@@ -1756,5 +1756,26 @@ def test_a_house_does_not_draw_less_than_nothing():
     assert D.implausible_baseline({}) == []
 
 
+def test_a_small_load_is_described_in_watts():
+    """Everything was printed as kilowatts to one decimal, which is fine for a
+    kettle and useless for everything a submeter sees. A whole library of an
+    office plug - a couple of computers and a power station behind one meter -
+    read "0.0 kW on A" line after line, every row identical and none of them
+    wrong (Anze, 2026-09-22)."""
+    def row(watts):
+        sig = D.Signature(id=1, phases="a", power={"a": float(watts)}, duration_s=180.0,
+                          pf=0.95, count=50, first_seen=0.0, last_seen=9 * 86400.0)
+        return sig.describe(timezone.utc)
+    assert row(28).startswith("28 W on A")
+    assert row(92).startswith("92 W on A")
+    assert row(345).startswith("345 W on A")
+    # and a kilowatt is still a kilowatt
+    assert row(4400).startswith("4.4 kW on A")
+    assert row(5918).startswith("5.9 kW on A")
+    # the boundary belongs to kW, not to 1000 W
+    assert row(999).startswith("999 W")
+    assert row(1000).startswith("1.0 kW")
+
+
 if __name__ == "__main__":
     run_main(globals())
