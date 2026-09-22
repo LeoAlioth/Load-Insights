@@ -52,6 +52,7 @@ from .insights.detect import (
     site_topology,
     unit_scale,
     exports_positive,
+    drop_stale_load_override,
     mean_power,
     most_specific,
     offer_for_naming,
@@ -124,7 +125,11 @@ class DetectionRunner:
 
     @property
     def config(self) -> dict:
-        return dict(self.entry.options.get(CONF_DETECTION) or {})
+        # Cleaned on the way out rather than migrated in place: the stale copy
+        # is harmless in storage and the fix has to hold for an entry written
+        # by an older version that nobody re-saves. See
+        # drop_stale_load_override for what it removes and why.
+        return drop_stale_load_override(dict(self.entry.options.get(CONF_DETECTION) or {}))
 
     # Meters below the main one come from the Energy dashboard, resolved once
     # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}

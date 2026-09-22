@@ -1702,5 +1702,39 @@ def test_the_naming_page_never_runs_dry():
     assert weak[0] in got
 
 
+def test_a_grid_meter_filed_as_the_house_is_dropped():
+    """power_a means "this reading already IS the house" and wins outright
+    over grid-plus-inverters. When setup became three pages the flat fields
+    from before stayed put and nothing offers them any more, so a meter
+    configured before the change sits in BOTH roles and the older copy quietly
+    wins. At Anze's house that was the grid meter read as the house - sign
+    inverted, solar never added back, the detector settling on a baseline of
+    minus six kilowatts - while the pages he had just filled in did nothing
+    (2026-09-22)."""
+    home = {"power_a": "sensor.m1_a", "power_b": "sensor.m1_b", "power_c": "sensor.m1_c",
+            "grid_power_a": "sensor.m1_a", "grid_power_b": "sensor.m1_b",
+            "grid_power_c": "sensor.m1_c",
+            "current_a": "sensor.m1_ca", "grid_current_a": "sensor.m1_ca",
+            "source_kind": "auto"}
+    got = D.drop_stale_load_override(home)
+    assert not any(k.startswith("power_") for k in got), got
+    assert not any(k == "current_a" for k in got), got
+    # everything the grid role owns survives untouched
+    assert got["grid_power_a"] == "sensor.m1_a"
+    assert got["grid_current_a"] == "sensor.m1_ca"
+    assert got["source_kind"] == "auto"
+
+
+def test_a_real_house_reading_is_left_alone():
+    """The override is a feature: a dedicated CT, or a template someone built
+    before any of this existed, really is the house and should win. Only the
+    same entity in both roles is a duplicate rather than a choice."""
+    both = {"power_a": "sensor.house_ct_a", "grid_power_a": "sensor.m1_a"}
+    assert D.drop_stale_load_override(both) == both
+    alone = {"power_a": "sensor.house_ct_a"}
+    assert D.drop_stale_load_override(alone) == alone
+    assert D.drop_stale_load_override({}) == {}
+
+
 if __name__ == "__main__":
     run_main(globals())

@@ -2294,6 +2294,34 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
     return True
 
 
+def drop_stale_load_override(detection: dict) -> dict:
+    """Remove a load reading that is really the grid meter, filed twice.
+
+    ``power_a`` and friends mean "this reading already IS the house" and win
+    outright over the grid-plus-inverters arithmetic - a dedicated CT, or a
+    template someone built before any of this existed. When setup became three
+    pages, the flat fields from before stayed where they were, and nothing
+    offers them any more: the Grid connection page keeps every key it does not
+    own, so a meter configured before the change sits in BOTH places and the
+    older copy quietly wins. At Anze's house that meant the grid meter being
+    read as the house - sign inverted, solar never added back, the detector
+    settling on a baseline of minus six kilowatts - while the pages he had just
+    filled in did nothing (2026-09-22).
+
+    Only the unambiguous case: the same entity in both roles is a duplicate,
+    not a choice. A genuinely different house reading is left alone, because
+    that one is the feature working as intended.
+    """
+    out = dict(detection)
+    for p in PHASES:
+        load, grid = out.get(f"power_{p}"), out.get(f"grid_power_{p}")
+        if load and grid and load == grid:
+            for kind in ("power", "pf", "current", "voltage"):
+                if out.get(f"{kind}_{p}") == out.get(f"grid_{kind}_{p}"):
+                    out.pop(f"{kind}_{p}", None)
+    return out
+
+
 def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: float,
                      min_rows: int, start_rows: int, rows_per_name: int,
                      is_heir=None) -> List["Signature"]:
