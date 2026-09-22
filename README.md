@@ -176,6 +176,54 @@ on different settings, and the page suggests candidates for that: same phases,
 same power factor, never running at once. Naming signatures, explaining them with the dashboard's known
 devices, and feeding them back into the forecast are the next stages.
 
+## What a load might be
+
+Every signature is offered a guess at what kind of thing it is, in two layers.
+The first is physics and is stated plainly; the second is a guess about houses
+and is always asked as a question. Nothing in the second layer can contradict
+the first - it only asks *which* motor, *which* heating element.
+
+- **a heating element** - power factor 0.93-1.0, holds one flat level, 80 W to 9 kW
+  - **a hot water tank?** - 800 W to 4 kW, running 15 min to 5 h
+  - **cooking?** - 700 W to 3.5 kW for a few minutes to an hour, weighted by whether it runs at meal times
+- **a motor** - power factor 0.35-0.93, 20 W to 4 kW
+  - **a pump?** - 250 W to 2.2 kW in bursts of 20 s to 15 min
+  - **a fridge or freezer?** - 30 to 350 W, 5 min to an hour, flat across the day, keeping a regular interval
+- **a three-phase motor** - the same factor but *balanced on all three legs*, 300 W to 9 kW. Its own family rather than a guess: nothing else in a house draws the same power on each leg at a motor's power factor
+  - **a three-phase workshop machine?** - 700 W to 7 kW, seconds to minutes, mostly during working hours
+  - **a pump?**
+- **an appliance that varies its own power** - near-unity factor but stepping or gliding rather than holding
+  - **a pump?** - 80 W to 700 W. A pump behind a variable-speed drive corrects its own factor back to near unity, so a window that fits a straight-to-line induction pump would exclude it; size and burst length carry this one
+  - **cooking?** - an induction hob modulates the same way
+- **an appliance running a programme** - 2.5 levels or more over at least 15 minutes. The only family that stands without a power factor at all, since a programme steps through its stages whatever its factor
+  - **a dishwasher?** - 45 min to 2.5 h, 400 W to 2.5 kW, many levels
+  - **a washing machine?** - shorter, 15 min to 1.7 h. Neither profile asks for a heat spike, because an industrial washing machine has no heaters
+  - **a tumble dryer?** - 30 min to 3 h, fewer levels
+- **electronics** - power factor 0.2-0.9, 1 W to 300 W
+- **a car charging** - a heating element's factor at 1.2 kW to 11.5 kW for half an hour or more
+
+Two families within 0.15 of each other are **both** named. Below the margin the
+second layer says nothing rather than guessing, and no guess is ever certain:
+a hair dryer and a fan heater are the same reading, and the ceiling says so.
+
+### Except where the meter's name says what it is
+
+A load that turns out to sit on a device meter takes that meter's **name** over
+anything inferred from its shape, and is then stated without the question mark.
+This is the best evidence there is - shape can only say a load draws 1.8 kW at a
+heating element's power factor, while whoever wired the site already wrote
+`Boiler` on it - and it beats the shape in exactly the cases worth having: a
+boiler that cycles for 70 seconds is nothing like the quarter-hour a hot water
+tank is expected to run, and a pressure pump behind a variable-speed drive reads
+as a heating element at 0.96.
+
+Matched on whole words, against the friendly name and the entity id both, in
+English and Slovene - so `Water Pump`, `Hidrofor` and
+`sensor.kotlovnica_well_pump_energy` all say pump. Only device words: most
+meters are named after **rooms**, and a room says nothing about what is plugged
+into it. A name explains a reading; it does not excuse one that disagrees, so a
+40 W load on a meter called `EVSE` is still not a car charging.
+
 ## What the meter will do
 
 Consumption answers how much the house needs; the grid forecast answers what
