@@ -135,6 +135,15 @@ EVIDENCE_CHOICES = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9)
 # "lower it slowly if we are not getting good hits" without any state to
 # decay: the bar is what it is, and the list simply never runs dry.
 NAMING_MIN_ROWS = 5
+# The naming page earns its length. It opens with a handful - the few loads the
+# library is surest of - and lengthens as the user names them, because the
+# right number of rows is not a property of the site but of how much work the
+# person has already done (Anze, 2026-09-22). A static bar cannot do this: set
+# high it hides a big house's real loads for ever, set low it opens with two
+# hundred rows and is put down unread. Nothing is lost either way - the library
+# holds every signature and the page says how many are waiting.
+NAMING_START_ROWS = 6
+NAMING_ROWS_PER_NAME = 4
 # The smallest change to call a step, as a floor under what each phase
 # measures for itself. Anze asked whether it was configurable - it was not,
 # and at 100 W it was the binding constraint on both sites, which is why

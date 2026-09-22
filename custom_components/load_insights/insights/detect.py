@@ -2294,6 +2294,34 @@ def _same_load(a: Session, b: Session, phase_agnostic: bool = False,
     return True
 
 
+def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: float,
+                     min_rows: int, start_rows: int, rows_per_name: int,
+                     is_heir=None) -> List["Signature"]:
+    """Which of the namable signatures to put in front of someone, and how
+    many.
+
+    Two separate questions, and only the first is about the loads. WHICH is
+    evidence: a house makes far more shapes than it has appliances, so a
+    signature has to have repeated, and repeated tightly, before it is worth
+    anyone's attention - but a bar that hides everything is worse than one set
+    too low, so when too few clear it the best of the rest come along.
+
+    HOW MANY is about the person. No threshold answers it: set high it hides a
+    big house's real loads for ever, set low it opens with two hundred rows and
+    is put down unread. So the page opens with a handful and lengthens each
+    time one is named - the right number of rows being a property of how much
+    work someone has already done rather than of their house (Anze,
+    2026-09-22). Nothing is hidden for good; the library keeps every signature
+    and naming one brings more.
+    """
+    clear = [s for s in worth
+             if s.evidence >= min_evidence or s.name or (is_heir and is_heir(s.id))]
+    if len(clear) < min_rows and len(clear) != len(worth):
+        rest = sorted((s for s in worth if s not in clear), key=lambda s: -s.evidence)
+        clear = clear + rest[:min_rows - len(clear)]
+    return clear[:max(start_rows + named * rows_per_name, min_rows)]
+
+
 def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> List[List[int]]:
     """Signatures that look like different settings of ONE device.
 
