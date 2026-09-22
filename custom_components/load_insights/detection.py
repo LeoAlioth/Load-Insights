@@ -10,6 +10,7 @@ from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -162,9 +163,25 @@ class DetectionRunner:
         return out
 
     def _device_rows(self, registry, device_id: str) -> list:
-        """A device's sensors in the shape the meter matcher reads."""
+        """A device's sensors in the shape the meter matcher reads, INCLUDING
+        those of the devices that hang off it.
+
+        A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
+        totals, each phase pointing at the parent with via_device_id. The
+        Energy dashboard names the parent - that is where the energy
+        statistic lives - so reading only the parent's own entities found a
+        single total and nothing else, and a three-phase meter was taken for
+        a one-phase one. It is the commonest three-phase meter there is
+        (Anze's attic and grid meters are both this, 2026-09-22)."""
+        ids = [device_id]
+        try:
+            dev_reg = dr.async_get(self.hass)
+            ids += [d.id for d in dev_reg.devices.values() if d.via_device_id == device_id]
+        except Exception:                        # a registry we cannot read is not fatal
+            pass
         rows = []
-        for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
+        for e in [x for i in ids
+                  for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
             if e.domain != "sensor":
                 continue
             st = self.hass.states.get(e.entity_id)
