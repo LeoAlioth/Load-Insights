@@ -183,9 +183,9 @@ The first is physics and is stated plainly; the second is a guess about houses
 and is always asked as a question. Nothing in the second layer can contradict
 the first - it only asks *which* motor, *which* heating element.
 
-- **a heating element** - power factor 0.93-1.0, holds one flat level, 80 W to 9 kW
+- **a heating element** - power factor 0.93-1.0, holds one flat level, 80 W to 20 kW. The range is wide because the family is: a towel rail and the backup resistive heat in a heat pump's air handler are the same physics two hundred-fold apart
   - **a hot water tank?** - 800 W to 4 kW, running 15 min to 5 h
-  - **cooking?** - 700 W to 3.5 kW for a few minutes to an hour, weighted by whether it runs at meal times
+  - **cooking?** - 700 W to 7 kW for a few minutes to an hour, weighted by whether it runs at meal times. A whole induction hob is commonly wired across two phases and peaks far above one ring
 - **a motor** - power factor 0.35-0.93, 20 W to 4 kW
   - **a pump?** - 250 W to 2.2 kW in bursts of 20 s to 15 min
   - **a fridge or freezer?** - 30 to 350 W, 5 min to an hour, flat across the day, keeping a regular interval
@@ -196,15 +196,21 @@ the first - it only asks *which* motor, *which* heating element.
   - **a pump?** - 80 W to 700 W. A pump behind a variable-speed drive corrects its own factor back to near unity, so a window that fits a straight-to-line induction pump would exclude it; size and burst length carry this one
   - **cooking?** - an induction hob modulates the same way
 - **an appliance running a programme** - 2.5 levels or more over at least 15 minutes. The only family that stands without a power factor at all, since a programme steps through its stages whatever its factor
-  - **a dishwasher?** - 45 min to 2.5 h, 400 W to 2.5 kW, many levels
-  - **a washing machine?** - shorter, 15 min to 1.7 h. Neither profile asks for a heat spike, because an industrial washing machine has no heaters
+  - **a dishwasher?** - 45 min to 4 h, 400 W to 2.5 kW, many levels. An eco cycle runs to the top of that
+  - **a washing machine?** - 30 min to 8 h, which is a washer-dryer combination doing both programmes back to back. Neither profile asks for a heat spike, because an industrial washing machine has no heaters
   - **a tumble dryer?** - 30 min to 3 h, fewer levels
 - **electronics** - power factor 0.2-0.9, 1 W to 300 W
-- **a car charging** - a heating element's factor at 1.2 kW to 11.5 kW for half an hour or more
+- **a car charging** - a heating element's factor for half an hour or more, at **6 to 80 A per phase**. Measured in amps rather than watts because that is what the standard limits and what a charger is set to: 6 A is the floor in IEC 61851 (a Tesla will go to 5), 32 A is the common ceiling, and 63 A on three phases or about 80 A on one are the extremes. A band on total watts describes nothing real - it calls a three-phase charger idling at its 6 A minimum a 4.1 kW load and scores it as large, while the same 4.1 kW on one phase is 18 A and quite a different thing
 
 Two families within 0.15 of each other are **both** named. Below the margin the
 second layer says nothing rather than guessing, and no guess is ever certain:
 a hair dryer and a fan heater are the same reading, and the ceiling says so.
+
+**A family reaching further than the appliances beneath it is deliberate.** A
+150 W towel rail and a 15 kW electric boiler are both heating elements and
+neither is a hot water tank, so they are named as the family and nothing more.
+The second layer only asks a question where a profile actually fits; where none
+does it stays quiet rather than reaching for the nearest.
 
 ### Except where the meter's name says what it is
 
