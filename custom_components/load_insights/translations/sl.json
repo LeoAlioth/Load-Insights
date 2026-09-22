@@ -167,7 +167,7 @@
             },
             "reset_detection": {
                 "title": "Ponastavim zaznavanje porabe?",
-                "description": "Knjižnica zaznanih bremen in vsa imena v njej bodo pozabljena, zadnjih deset dni meritev pa se prebere znova. Teče samodejno in traja nekaj časa. Uporabite po zamenjavi števca, prevezavi faze ali posodobitvi, ki spremeni način zaznavanja.",
+                "description": "Knjižnica zaznanih bremen bo pozabljena, zadnjih deset dni meritev pa se prebere znova. Imena, ki ste jih dodelili, se ohranijo: vsako se vrne bremenu, ki mu je po rebuildu podobno, in kjer se ne ujema nič - kar je videti kot resnično spremenjen objekt - se ime ne vrne. Teče samodejno in traja nekaj časa. Uporabite po zamenjavi števca, prevezavi faze ali posodobitvi, ki spremeni način zaznavanja.",
                 "menu_options": {
                     "reset_confirmed": "Da, pozabi vse",
                     "overview": "← Prekliči"

@@ -1241,5 +1241,109 @@ def test_consolidation_re_asks_as_the_mean_moves():
     assert len(det.signatures) >= 2, got
 
 
+def _session(start, watts, dur, phase="a"):
+    """One flat run, long enough to be a session."""
+    rows, t = [], start
+    for _ in range(30):
+        rows.append((t, 100.0)); t += 10.0
+    for _ in range(int(dur // 10)):
+        rows.append((t, 100.0 + watts)); t += 10.0
+    for _ in range(30):
+        rows.append((t, 100.0)); t += 10.0
+    return {phase: rows}, t
+
+
+def test_a_name_outlives_the_library_it_was_written_on():
+    """Naming a load is the one thing in the library the user put there. A
+    reset re-learns everything else from history in minutes; it must not take
+    the name, the device it created, or the energy meter on the Energy
+    dashboard with it (Anze, 2026-09-22: "we dont want people loosing their
+    named entities if they update integration")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    assert det.signatures, "no signature to name"
+    sig = det.signatures[0]
+    assert det.rename(sig.id, "Kiln")
+
+    # what a reset keeps
+    orphans = det.name_descriptors()
+    assert [o["name"] for o in orphans] == ["Kiln"]
+
+    # the library is thrown away and learned again from the same history
+    fresh = D.Detector()
+    fresh.tz_offset_s = 0.0
+    fresh.orphan_names = orphans
+    samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
+    fresh.process(samples, now_ts=t2)
+    assert [s.name for s in fresh.signatures] == ["Kiln"], [s.name for s in fresh.signatures]
+    assert fresh.orphan_names == [], "the name was handed back, so it is no longer waiting"
+
+
+def test_a_name_does_not_come_back_to_a_load_that_is_not_it():
+    """The reason to reset BY HAND is that the site changed - a meter swapped,
+    a phase rewired - and then the library describes something that is not
+    there. A name that finds nothing like itself stays waiting rather than
+    landing on the nearest stranger."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    det.orphan_names = [{"name": "Kiln", "phases": "a", "power": {"a": 6000.0},
+                         "duration_s": 3600.0, "pf": 0.99}]
+    samples, t = _session(T0, 150.0, 120.0)          # a small brief thing, nothing like a kiln
+    det.process(samples, now_ts=t)
+    assert det.signatures, "no signature was filed"
+    assert [s.name for s in det.signatures] == [None]
+    assert [o["name"] for o in det.orphan_names] == ["Kiln"]
+
+
+def test_waiting_names_survive_a_restart():
+    """The backfill takes minutes and Home Assistant may be restarted inside
+    it; a name still looking for its load has to be in the store."""
+    det = D.Detector()
+    det.orphan_names = [{"name": "Kompresor", "phases": "abc",
+                         "power": {"a": 830.0, "b": 850.0, "c": 820.0},
+                         "duration_s": 300.0, "pf": 0.85}]
+    back = D.Detector.from_dict(det.to_dict())
+    assert [o["name"] for o in back.orphan_names] == ["Kompresor"]
+    # and an entry with no name is not carried
+    det.orphan_names.append({"phases": "a"})
+    assert len(D.Detector.from_dict(det.to_dict()).orphan_names) == 1
+
+
+def test_names_are_read_out_of_a_library_the_detector_has_disowned():
+    """This runs exactly when DETECTOR_GENERATION moves - the moment the
+    stored shape is one the current code has given up on - so it may not
+    assume today's schema, and a library it cannot read must yield nothing
+    rather than raise."""
+    today = {"generation": 5, "fleet": {"main": {"signatures": [
+        {"name": "Kiln", "phases": "ac", "power": {"a": 2985, "c": 2937},
+         "duration_s": 1200, "pf": 0.99},
+        {"name": None, "phases": "a", "power": {"a": 50}, "duration_s": 60, "pf": None},
+        {"name": "Compressor", "phases": "abc",
+         "power": {"a": 828, "b": 852, "c": 817}, "duration_s": 300, "pf": 0.85},
+    ]}}}
+    got = D.names_in_store(today)
+    assert [g["name"] for g in got] == ["Kiln", "Compressor"]
+    assert got[0]["power"] == {"a": 2985, "c": 2937}
+
+    # the shape from before downstream meters existed
+    older = {"generation": 3, "detector": {"signatures": [
+        {"name": "Boiler", "phases": "a", "power": {"a": 1800}, "duration_s": 70, "pf": 0.99}]}}
+    assert [g["name"] for g in D.names_in_store(older)] == ["Boiler"]
+
+    # nothing here may raise, whatever the store turns out to hold
+    for bad in ({}, {"fleet": None}, {"fleet": []}, {"detector": 7},
+                {"fleet": {"main": {"signatures": "nonsense"}}}):
+        assert D.names_in_store(bad) == [], bad
+
+    # a name whose description is unreadable is still KEPT - it shows as
+    # awaiting its load, which beats vanishing
+    odd = D.names_in_store({"fleet": {"main": {"signatures": [
+        {"name": "Mystery", "power": "not a dict"}]}}})
+    assert [g["name"] for g in odd] == ["Mystery"]
+    assert odd[0]["power"] == {} and odd[0]["phases"] == ""
+
+
 if __name__ == "__main__":
     run_main(globals())
