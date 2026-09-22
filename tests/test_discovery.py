@@ -223,5 +223,30 @@ def test_the_watts_that_go_with_a_meters_amps_are_the_ones_beside_them():
     assert D.closest_by_name(tie, "sensor.z_current_a") == D.closest_by_name(list(reversed(tie)), "sensor.z_current_a")
 
 
+def test_a_three_phase_shelly_is_one_device_per_phase():
+    """The commonest three-phase meter there is, and it arrives as FOUR
+    devices: a parent carrying the totals, where the Energy dashboard's
+    statistic lives, and one child per phase pointing at it with
+    via_device_id. Reading only the parent's own entities found a single
+    total and nothing else, so a three-phase meter was taken for a one-phase
+    one - which is what stopped Anze's attic and grid meters from ever being
+    subtracted per phase (2026-09-22)."""
+    parent = [
+        {"entity_id": "sensor.attic_total_active_power", "device_class": "power",
+         "name": "Total active power"},
+        {"entity_id": "sensor.attic_total_active_energy", "device_class": "energy",
+         "name": "Total active energy"},
+    ]
+    # a total is not a phase, so the parent alone yields nothing at all
+    assert D.match_meter_entities(parent) == {}
+
+    children = [
+        {"entity_id": f"sensor.attic_phase_{p}_active_power", "device_class": "power",
+         "name": f"Phase {p.upper()} active power"} for p in "abc"
+    ]
+    got = D.match_meter_entities(parent + children)
+    assert got == {f"power_{p}": f"sensor.attic_phase_{p}_active_power" for p in "abc"}, got
+
+
 if __name__ == "__main__":
     run_main(dict(globals()))
