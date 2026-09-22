@@ -106,5 +106,27 @@ def test_no_test_is_written_where_nothing_will_run_it():
     assert not dead, dead
 
 
+def test_every_way_the_library_is_thrown_away_carries_the_names():
+    """Two paths discard the signature library - the reset the user asks for
+    and the generation bump they never see - and both must carry names and
+    their meter readings across. A third path added later would take a user's
+    named devices, their energy sensors and their place on the Energy
+    dashboard with it, silently, on every installation at once. This fails
+    when one appears (Anze, 2026-09-22)."""
+    root = pathlib.Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
+    tree = ast.parse((root / "detection.py").read_text(encoding="utf-8"))
+    bad = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Attribute) and t.attr == "fleet" for t in n.targets)]
+        if not assigns or fn.name == "__init__":     # the constructor's placeholder
+            continue
+        carries = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                      and n.func.attr == "carry_names" for n in ast.walk(fn))
+        if not carries:
+            bad.append(f"{fn.name} (line {fn.lineno}) replaces self.fleet without carry_names")
+    assert not bad, bad
+
+
 if __name__ == "__main__":
     run_main(globals())
