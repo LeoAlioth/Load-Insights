@@ -320,6 +320,22 @@ pulses the grid meter itself shows in them.
 | `NAMING_MIN_WH` | 50 | energy a load must have used to be worth naming | 10–200 |
 | `WHEN_*` | 0.65 / 7 d / 2 d / 3 | when "usually runs mornings" etc. may be said | — |
 
+What the two settings on the detection page actually do, measured 2026-09-23:
+"How sure before offering a load" (min evidence) only filters the naming
+page, and changes it a lot - at Home 69 of 87 namable loads clear 0.5, 30
+clear 0.7, 5 clear 0.9, and the first page differs at each. "Smallest change
+to notice" (min_step_w, 10 W) is a floor under each phase's measured noise:
+Kozolec measures 3 W on its own, so there the floor IS the threshold, but 1
+to 10 W leave its scored loads alone (boiler 338-339); at Home it binds only
+now and then (20 W costs 1.8 points of purity).
+
+A menu row's label is cut at the dialog's width, so each row is two lines:
+the label (`Signature.menu_row`'s headline) and the option's description,
+which wraps - `menu_option_descriptions` in the translations, filled from the
+same placeholders. A menu is also the only way to give a page a Back row: a
+form's one control is Submit, which is why a load's own page is a menu and
+its name box is one step further in.
+
 ## Commit messages carry the evidence
 
 Unusually for a repo this size, commit messages here record what was measured,
@@ -498,14 +514,27 @@ Measured 2026-09-23, before building it (`bench.py` `HOUSE=residual` and
 report every 8-11 s against the house's 6 s (2 s since the polling change),
 Kozolec's boiler Shelly every 52 s. That decides both halves:
 - *Subtracting* them from the house before detecting leaves a phantom pulse
-  wherever the two meters see a step at different moments. Home's residual
-  scored 61.3 / 69.9 % purity against 77.6 / 79.7 % for the whole house, with
-  143 sessions still labelled as the hidrofor that had been subtracted.
+  wherever the two meters see a step at different moments. Home held out:
+  the whole house 80.6 % purity; less its sub-meters 64.3 %, with 106 sessions
+  still labelled as the hidrofor that had been subtracted (phantoms at its
+  switching moments). What is LEFT does gain a little - the workshop boiler,
+  under no sub-meter, 34 -> 39 in its main cluster. Anze asked whether putting
+  every series on one clock first would help: interpolating the sub-meters
+  onto the house's readings gave 64.2 % and 92 phantoms; resampling everything
+  to 1 s gave 57.9 % and 409, since the house's own steps become ramps. A
+  slower meter never recorded WHEN inside its gap a step happened, and a line
+  drawn across the gap only smears it. (Measured with the house PINNED - see
+  `bench.py`: a first run let the replay swap two phases for the attic 3EM's
+  own channels, and the 22 Sep test ran on a mis-configured house.)
 - *Detecting on the circuit* loses what the slower meter cannot see: the kiln
   on the Hiša 3EM gave 236 full-size sessions against 409 on the house.
 So the override has to keep the HOUSE meter's timing and take the sub-meter's
 identity and power - session by session, matched - rather than hand detection
-to the slower meter. That needs the phase mapping above first.
+to the slower meter. That needs the phase mapping above first. Kozolec may be
+different: its Pro 4PM pushes a relay switching within a second (reporting
+power only once a minute in between), so subtracting THAT meter's steps is
+untested and could work. Test it leave-one-out - subtract every meter but the
+one being scored.
 
 **Orphaned starts run for hours.** A start whose stop is taken by another
 edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up.
@@ -516,13 +545,14 @@ alone cannot tell an orphan from a real long run of a size other loads run
 briefly - Home's dryer lost a third of its sessions. A start should be given
 up on when the phase shows it is no longer running, not by the clock.
 
-**Two of Home's sub-meters label their phases differently from the house.**
+**One of Home's sub-meters labels its phases differently from the house.**
 Measured by matching steps: the attic 3EM's phase b carries the house's C and
 its c the house's A; the Hiša 3EM's line up. `_same_load` demands the same
 phase letters, so the attic ("Mansarda") saw 627 main sessions live and is
 credited with 92. The mapping has to be MEASURED - `bench.py`'s `_phase_map`
 does it, a permutation of channels to house phases by coinciding steps - and
-production does not do it yet.
+production does not do it yet. Build it as a pure function that can travel:
+Load Juggler needs the same answer to be easier to set up (Anze, 2026-09-23).
 
 **Live ticks cost a little that a backfill does not.** Production reads a
 minute at a time. The recorder's start-of-window copy was fed in as a reading

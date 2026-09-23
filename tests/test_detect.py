@@ -954,6 +954,23 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     assert len(clock.row(tz)) < 72, clock.row(tz)
 
 
+def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
+    """A menu row's label is cut at the dialog's width, so the naming page
+    lost the end of every row (Anze, 2026-09-23). The headline carries what
+    tells loads apart; everything else goes underneath, where it wraps."""
+    import datetime as _dt
+    tz = _dt.timezone.utc
+    clock = _sig(1, 1800.0, 70.0, 0.96, 60)
+    clock.interval_s, clock.interval_mad = 840.0, 60.0
+    clock.hour_wh = [500.0] * 24
+    clock.day_wh = [100.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0]
+    head, rest = clock.menu_row(tz, clock.last_seen + 600.0)
+    assert len(head) <= 45, head
+    assert "every 14 min" in head, head
+    assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
+    assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
+
+
 def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
     """A fixed 100 W floor was the binding constraint on both real sites,
     whose sample-to-sample movement is 3 to 5 W - which is why Kozolec has
