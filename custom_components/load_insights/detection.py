@@ -98,7 +98,10 @@ STORAGE_VERSION = 1
 # 11 = a reading's interval is the MEDIAN of its recent gaps, its cadence,
 #     not a running mean of the gaps between recorded changes - which gave
 #     one meter's quiet phase a longer interval than its busy ones.
-DETECTOR_GENERATION = 11
+# 12 = phases are walked in time order and one leg of a multi-phase load may
+#     vouch for another's stop, so short off-gaps no longer glue one leg's
+#     pulses together - which changes which sessions exist.
+DETECTOR_GENERATION = 12
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full

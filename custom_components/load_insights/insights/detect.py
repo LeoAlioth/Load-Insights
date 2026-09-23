@@ -128,6 +128,30 @@ INTERVAL_PERCENTILE = 0.5
 # on. See "Sessions filed on one leg" in AGENTS.md for the plan.
 MATCHED_STOP_SAMPLES = 0
 MATCHED_STOP_INTERVALS = 0.0
+# The same relaxation, but only for a leg whose partner on another phase - a
+# balanced edge that started with it - is stopping at the same moment. See
+# Detector._corroborate. One reading is enough: the other leg is the evidence.
+# Swept on Home (Kozolec is single-phase and so, correctly, untouched):
+#   the kiln   full-size sessions 337 -> 374 of 441 real pulses,
+#              single-leg 154 -> 96, ladder 92 -> 98
+#   held out   workshop boiler 34 -> 39, hidrofor 216 -> 208, NASA 17 -> 23,
+#              purity 77.6 -> 75.0 %
+# The hidrofor's loss is small, consistent across every variant, and not yet
+# explained; the kiln's gain is the point, and steady loads come first
+# (2026-09-23).
+CORROBORATED_STOP_SAMPLES = 1
+CORROBORATED_STOP_INTERVALS = 0.0
+# What counts as "the same load on another leg": started and stopping within
+# this many sample intervals of each other, and drawing at least this share
+# of each other's power. Far tighter than the merge test on purpose - see
+# Detector._corroborate. 1.0 kept the most of the hidrofor.
+CORROBORATE_INTERVALS = 1.0
+CORROBORATE_BALANCE = 0.7
+# When a stop is corroborated, close the edge the other legs vouched for, not
+# whichever open edge of that size is newest. Home's Kompresor leg (~840 W)
+# and hidrofor (~870 W) share phase A inside one pairing tolerance, and the
+# compressor's corroborated stop was closing the pump's session.
+CORROBORATED_CLOSES_ITS_EDGE = 1
 INTERVAL_GAPS = 60
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
@@ -1093,6 +1117,14 @@ class PhaseState:
     # limits any power factor derived here. Supplied by whoever read the
     # amps, since the detector only ever sees the VAr they produced.
     q_quantum: float = 0.0
+    # Set by the Detector for a pass: asks whether another phase's leg of the
+    # same load is stopping too. Never persisted - it is rebuilt every pass.
+    corroborate: Optional[object] = field(default=None, repr=False, compare=False)
+    # (since, watts, closed_at) of edges closed in the last minute, for the
+    # same question from the other side. Transient, never persisted.
+    recent_closed: List[Tuple[float, float, float]] = field(default_factory=list, repr=False, compare=False)
+    # the open edge another leg vouched is stopping, for _pair to close
+    close_hint: Optional[object] = field(default=None, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
     noise_rel: float = 0.0
@@ -1220,7 +1252,11 @@ class PhaseState:
         sustain = (SUSTAIN_INTERVALS * self.interval if self.interval
                    else SUSTAIN_SECONDS)
         need = SUSTAIN_SAMPLES
-        if MATCHED_STOP_SAMPLES and self._matched_stop():
+        if CORROBORATED_STOP_SAMPLES and self._corroborated_stop(ts):
+            # another leg of the same load is stopping at the same moment
+            need = CORROBORATED_STOP_SAMPLES
+            sustain = CORROBORATED_STOP_INTERVALS * self.interval if self.interval else 0.0
+        elif MATCHED_STOP_SAMPLES and self._matched_stop():
             # a stop the open start already vouches for - see MATCHED_STOP_SAMPLES
             need = MATCHED_STOP_SAMPLES
             sustain = MATCHED_STOP_INTERVALS * self.interval if self.interval else 0.0
@@ -1281,14 +1317,42 @@ class PhaseState:
         """
         return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
 
+    def _matched_edge(self):
+        """The open edge whose size what is pending has dropped by, if any."""
+        if self.level is None or not self.open_edges:
+            return None
+        drop = self.level - _median([x for _, x, _, _ in self.pending])
+        if drop <= self.noise_at(self.level):
+            return None
+        return next((o for o in reversed(self.open_edges)
+                     if abs(o.watts - drop) <= self._tol(o.watts, drop)), None)
+
     def _matched_stop(self) -> bool:
         """Is what is pending a DROP the size of a load already running?"""
-        if self.level is None or not self.open_edges:
+        return self._matched_edge() is not None
+
+    def _corroborated_stop(self, ts: float) -> bool:
+        """...and does another leg of the same load say it is stopping too?
+
+        Every open edge the drop could be is asked, not just the newest: two
+        loads of one size on one phase are exactly where the newest is the
+        wrong answer. The one the other legs vouch for is remembered, so that
+        it - and not a same-sized neighbour - is the edge that closes."""
+        self.close_hint = None
+        if self.level is None or not self.open_edges or not self.corroborate:
             return False
         drop = self.level - _median([x for _, x, _, _ in self.pending])
         if drop <= self.noise_at(self.level):
             return False
-        return any(abs(o.watts - drop) <= self._tol(o.watts, drop) for o in self.open_edges)
+        for o in reversed(self.open_edges):
+            if abs(o.watts - drop) <= self._tol(o.watts, drop) and self.corroborate(o.since, o.watts, ts):
+                self.close_hint = o
+                return True
+        return False
+
+    def _remember_close(self, o, at: float) -> None:
+        self.recent_closed.append((o.since, o.watts, at))
+        self.recent_closed = [c for c in self.recent_closed if at - c[2] <= 60.0]
 
     def _declare_surge(self, first: float, new_level: float) -> float:
         """How far a start's FIRST reading towered over the level it settled
@@ -1356,6 +1420,13 @@ class PhaseState:
         # pulse of 48, where recency gives 42.1 s. So the durations are
         # measurably wrong and the fix is not this one - probably a cost
         # combining size gap AND age rather than either alone.
+        hint, self.close_hint = self.close_hint, None
+        if hint is not None and CORROBORATED_CLOSES_ITS_EDGE:
+            for i, o in enumerate(self.open_edges):
+                if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
+                    self.open_edges.pop(i)
+                    self._remember_close(o, at)
+                    return [self._close(o, at, watts, var)]
         cands = []
         for i, o in enumerate(self.open_edges):
             tol = self._tol(o.watts, watts)
@@ -1367,6 +1438,7 @@ class PhaseState:
             band = PAIR_TIE_BAND * max(t for _, _, t in cands)
             i = max(i for i, g, _ in cands if g <= best_gap + band)   # newest of the tied
             o = self.open_edges.pop(i)
+            self._remember_close(o, at)
             return [self._close(o, at, watts, var)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
@@ -2162,20 +2234,29 @@ class Detector:
         derived from it. Returns the sessions this batch closed."""
         closed: List[Session] = []
         latest = now_ts or 0.0
+        # ALL phases in time order, not one phase after another. Each phase's
+        # state is its own, so the order changes nothing by itself - but it
+        # means that when one leg of a load is judged, the other legs' state is
+        # as of the same moment rather than the end of the previous batch,
+        # which is what lets one leg vouch for another (see _corroborate).
+        stream = []
         for ph, rows in samples.items():
             if ph not in self.phases:
                 continue
             st = self.phases[ph]
             if q_quantum and q_quantum.get(ph):
                 st.q_quantum = q_quantum[ph]
+            st.corroborate = self._corroborate(ph, samples)
+            stream.extend((ts, i, ph, w) for i, (ts, w) in enumerate(rows))
+        stream.sort()
+        for ts, _, ph, w in stream:
+            latest = max(latest, ts)
             qm = (q or {}).get(ph) or {}
             pvm = (pv or {}).get(ph) or {}
-            for ts, w in rows:
-                latest = max(latest, ts)
-                for s in st.process(ts, w, qm.get(ts), pvm.get(ts)):
-                    s.phases = ph
-                    s.levels = {ph: s.levels.pop("")}
-                    closed.append(s)
+            for s in self.phases[ph].process(ts, w, qm.get(ts), pvm.get(ts)):
+                s.phases = ph
+                s.levels = {ph: s.levels.pop("")}
+                closed.append(s)
         out = self._merge_and_file(closed, latest)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
@@ -2183,6 +2264,61 @@ class Detector:
         if latest:
             self._link_successors(latest)
         return out
+
+    def _corroborate(self, ph: str, samples):
+        """Build the question one phase may ask of the others for this pass:
+        is a leg of the same load stopping on another phase right now?
+
+        "The same load" is the test multi-phase detection already trusts: an
+        edge on another phase that started within MERGE_TOLERANCE_S of this
+        one and is balanced with it. "Stopping" is either that it has already
+        closed, within the same window, or that its own reading at this
+        instant shows the same drop. A real multi-phase device switches its
+        legs together, every time - Anze's point about co-occurrence - so one
+        leg seeing its gap is evidence the other's short gap was real too.
+        A single-phase load never has a partner and is never affected."""
+        index = {}
+        for oph, rows in samples.items():
+            if oph != ph and oph in self.phases and rows:
+                index[oph] = ([t for t, _ in rows], rows)
+
+        def as_of(oph: str, ts: float):
+            times, rows = index.get(oph, ((), ()))
+            i = bisect.bisect_right(times, ts) - 1
+            if i < 0:
+                return None
+            st = self.phases[oph]
+            fresh = max(1.5 * (st.interval or 0.0), MERGE_TOLERANCE_S / 2)
+            return rows[i][1] if ts - rows[i][0] <= fresh else None
+
+        def check(since: float, watts: float, ts: float) -> bool:
+            own = self.phases[ph].interval or 0.0
+            for oph, ost in self.phases.items():
+                if oph == ph or ost.level is None:
+                    continue
+                # Far tighter than the merge test on purpose. Borrowing that -
+                # 15 s and a balance of 0.4 - let an unrelated load on another
+                # phase vouch for a single-phase pump's one-reading dip, and
+                # Home's hidrofor lost 20 of its sessions on days the kiln
+                # never fired. A real multi-phase device switches its legs in
+                # the same poll and draws near-equal on them: the kiln's legs
+                # start at +0.0 s and are 98 % balanced.
+                window = CORROBORATE_INTERVALS * max(own, ost.interval or 0.0) or MERGE_TOLERANCE_S
+                for osince, owatts, closed_at in (
+                        [(o.since, o.watts, None) for o in ost.open_edges] + list(ost.recent_closed)):
+                    if abs(osince - since) > window or min(owatts, watts) <= 0:
+                        continue
+                    if min(owatts, watts) / max(owatts, watts) < CORROBORATE_BALANCE:
+                        continue
+                    if closed_at is not None:
+                        if abs(closed_at - ts) <= window:
+                            return True
+                        continue
+                    v = as_of(oph, ts)
+                    if v is not None and abs((ost.level - v) - owatts) <= ost._tol(owatts, abs(ost.level - v)):
+                        return True
+            return False
+        return check
 
     def _merge_and_file(self, closed: List[Session], latest: float) -> List[Session]:
         pool = self.held + closed

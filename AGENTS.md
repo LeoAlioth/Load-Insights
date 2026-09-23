@@ -71,6 +71,18 @@ quantisation); at least one remains: **`SUSTAIN_SECONDS = 5.0` is below Home's
 6 s sampling interval, so the guard that should reject a transitional sample
 as a level can never fire.**
 
+## What the detector is for
+
+**Steady-state appliances first.** A kiln, a boiler, a fridge, a switched
+pump, a compressor: these repeat, and the detector should find them well.
+Highly variable loads - computers (Home's NASA station), variable-speed pumps
+(Kozolec's Grundfos Scala2), a UPS - are harder to detect by nature and are
+the better candidates for a meter of their own. So a change that clearly
+improves the steady loads and makes the variable ones somewhat worse is a
+change worth taking (Anze, 2026-09-23). Report the two groups separately so
+the trade is visible, and do not reject a change for losses confined to the
+variable ones.
+
 ## Never ship a detector change unmeasured
 
 There is a bench. Use it — replaying costs minutes and a live site costs a
@@ -175,6 +187,10 @@ held out (18–22 Sep).
 | `SUSTAIN_INTERVALS` | **1.5** | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
 | `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
 | `MATCHED_STOP_SAMPLES` / `_INTERVALS` | **0** (off) / 0.0 | a drop the size of an open edge may pass on fewer readings than a new level | count | 1–2 / 0–1 | **swept, not shipped.** Helps the kiln (single-leg 154 → 114) but costs ramping and wandering loads (Kozolec's Scala2 140 → 106). Awaiting cross-leg corroboration - see the single-leg plan |
+| `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (single-leg 80 vs 136 with the loose partner test). See the single-leg entry for the trade |
+| `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
+| `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
+| `CORROBORATED_CLOSES_ITS_EDGE` | 1 | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward 48 s; did not recover the hidrofor |
 | `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
 | `BASELINE_SEED_SAMPLES` | 24 | readings the first baseline is seeded from | budget | 12–120 | not tested |
 | `BASELINE_SEED_PERCENTILE` | 0.25 | low percentile for the seed, so a load running at start is not the floor | ratio | 0.05–0.5 | not tested |
@@ -355,7 +371,7 @@ starting against pressure, catches its surge on most starts and shows +150 W.
 For rare catches, the largest surge seen or the share of starts showing one
 would keep what the mean discards.
 
-**Sessions filed on one leg of a multi-phase load - diagnosed, not fixed.**
+**Sessions filed on one leg of a multi-phase load - diagnosed, partly fixed.**
 Home's kiln (2-phase A+C, flat ~48 s pulses, ~9 s apart) produces ~150
 single-leg sessions over ten days alongside ~305-337 proper A+C ones; the grid
 meter shows 441 real pulses. Classified by which of `_merge_and_file`'s
@@ -389,24 +405,34 @@ edge needs less sustain; `MATCHED_STOP_SAMPLES`, off) - kiln full-size
 140 -> 106 and, at one reading, Home's wandering NASA station 114 -> 65. It
 cannot tell a switched load stopping from a ramping one dipping.
 
-The plan, in order:
+Where it stands:
 
-1. **Let the new polling rate speak first.** At Home's 2.4 s a 9 s off-gap is
-   three or four readings, which sustain 1.5 (3.6 s) accepts. Cause 1 may
-   largely resolve itself. Re-measure single-leg on a week of 2.4 s data before
-   building anything - `bench.py kiln`, with the raw pulse count as truth.
-2. **Corroborate the stop across legs.** Switch the matched-stop rule on only
-   for a leg of a multi-phase start: another phase opened a balanced edge at
-   the same instant and has just stopped. The kiln's legs corroborate each
-   other; single-phase ramping and wandering loads are untouched. Needs
-   `Detector.process` to walk all phases in time order rather than phase by
-   phase - behaviour-neutral by itself, since each phase's state is
-   independent - so each phase can see its siblings' open edges.
-3. **Split on a coincident drop** (cause 3): a level drop on one leg at the
-   instant a balanced partner leg closes is that load stopping; split the long
-   leg into the stopped part (the drop) and the residual load.
-4. Longer term: know which loads RAMP (the transition-position test that told
-   the Scala2 from an averaging meter) and never ask them for a plateau.
+1. **Cross-leg corroboration - built and shipped.** `Detector.process` now
+   walks all phases in time order (proven neutral: every bench figure
+   identical), so a leg can ask whether a balanced edge on another phase that
+   started with it is stopping at the same moment. If so, the stop passes on
+   one reading, and the edge the other legs vouched for is the one closed -
+   not whichever same-sized edge is newest, which let the Kompresor's stop
+   close the hidrofor's session. Kiln full-size 337 -> 374 of 441, single-leg
+   154 -> 96; Kozolec untouched, as a single-phase site must be. Cost: the
+   hidrofor 216 -> 208 on held-out days and Home purity 77.6 -> 75.0 %, small,
+   consistent, NOT yet explained. Following its sessions by label was
+   misleading: the energy-matched label lands on anything that overlapped a
+   pump run, so 153 of 415 labelled sessions churn for reasons that are not
+   the pump.
+2. **Re-measure on 2.4 s data.** Home now polls at 2.4 s, where a 9 s off-gap
+   is three or four readings. Expected to help further; will not repair the
+   history already recorded, which is why step 1 had to be built.
+3. **Split on a coincident drop** (cause 3, about 11 cases): a level drop on
+   one leg at the instant a balanced partner leg closes is that load stopping;
+   split the long leg into the stopped part and the residual.
+4. Longer term: know which loads RAMP and never ask them for a plateau.
+
+The global matched-stop rule stays off - not for its cost on variable loads,
+which is acceptable, but because it does not help the steady ones either
+(Kozolec's boiler 499 -> 494, Home's workshop boiler 64 -> 62) and, added to
+corroboration, makes the kiln worse (single-leg 80 -> 97): uncorroborated
+one-leg stops pull the legs apart again.
 
 Measure each step against: kiln full-size sessions (toward 441), single-leg and
 ladder (toward 0), and purity and concentration at both sites.
@@ -426,6 +452,14 @@ implemented: *a detection on a sub-meter should always override one at a
 higher level, especially if it is the less noisy one.* The gap is visible in
 the numbers: Kozolec's car charger has 11 clean signatures on its own meter
 and the main meter attributes nothing to it.
+
+**Orphaned starts run for hours.** A start whose stop is taken by another
+edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up:
+Home has 63 sessions over three hours in five days, the longest ten hours at
+a couple of hundred watts. They are not loads, and they soak up stops that
+belong to real ones. Corroboration adds a few (63 -> 69). Expiring a start by
+how long a load of its size is ever seen to run, rather than by a flat day,
+is the natural fix - and is also what the open-edge cap sweep asked for.
 
 **The rolling session list is too short to reason with.** `MAX_RECENT_SESSIONS
 = 200` spans about **2.1 hours** at Home and holds 11 of 199 signatures.
