@@ -96,6 +96,39 @@ SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own inter
 # station (computers) lost ground, since it rarely holds a level for three
 # readings - which ALIKE_MAD_SHARE largely gives back (2026-09-23).
 SUSTAIN_INTERVALS = 1.5
+# How a reading's sample interval is estimated. Home Assistant records only a
+# CHANGE, so a running mean of the gaps measures how often the value changes,
+# not how often the meter reports: Home's grid meter reports every 6 s on all
+# three phases (mode 6 s), but phase A is quieter, records fewer changes, and
+# its mean came out 7.1 s against C's 6.0. One meter then judged its own two
+# legs by different sustain thresholds (10.7 s against 9.0 s). A low
+# percentile of recent gaps is the cadence, since the shortest regular gap is
+# the one where the value did change. The MEDIAN of the last INTERVAL_GAPS
+# gaps puts all three of Home's phases at 6.0 s. Swept 0.1-0.5: the median
+# also takes the kiln's full-size sessions 305 -> 337 and its spurious ladder
+# 130 -> 92, and on held-out days Home 76.7 -> 77.6 % purity, Kozolec's
+# hidrofor 65 -> 75. It does NOT fix the single-leg problem by itself -
+# see MATCHED_STOP_SAMPLES (2026-09-23). 0 keeps the running mean.
+INTERVAL_PERCENTILE = 0.5
+# A step DOWN the size of a load already running is a stop its own start
+# vouches for, and may be accepted on less than SUSTAIN demands of a new,
+# unexplained level. Home's kiln is on ~48 s and off only ~9 s - one or two
+# readings - so the strict guard swallowed its off-gaps, glued consecutive
+# pulses into one long session on whichever leg rejected the gap, and that leg
+# then could not merge with the other: 69 of 71 single-level long legs had
+# real off-gaps inside them (2026-09-23).
+#
+# OFF, deliberately. Swept as a global rule it works on the kiln - full-size
+# sessions 337 -> 364-381 against 441 real pulses, single-leg 154 -> 114 -
+# and costs every load that DIPS without stopping: Kozolec's Scala2 hidrofor,
+# which ramps, 140 -> 106, and at one reading Home's NASA station, which
+# wanders, 114 -> 65. A drop the size of an open edge means "stopped" for a
+# switched load and "dipped" for a ramping one. It needs corroboration - the
+# other leg of a multi-phase start stopping too - before it can be switched
+# on. See "Sessions filed on one leg" in AGENTS.md for the plan.
+MATCHED_STOP_SAMPLES = 0
+MATCHED_STOP_INTERVALS = 0.0
+INTERVAL_GAPS = 60
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
@@ -1054,6 +1087,7 @@ class PhaseState:
     # it can express.
     quantum: float = 0.0
     step_diffs: List[float] = field(default_factory=list)
+    gaps: List[float] = field(default_factory=list)       # recent sample gaps, see INTERVAL_PERCENTILE
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
     # limits any power factor derived here. Supplied by whoever read the
@@ -1098,7 +1132,15 @@ class PhaseState:
         if self.last_ts is not None:
             gap = ts - self.last_ts
             if 0.0 < gap < 120.0:        # a restart gap is not a sampling rate
-                self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
+                if INTERVAL_PERCENTILE:
+                    # the meter's CADENCE, not the gap between recorded
+                    # changes - see INTERVAL_PERCENTILE
+                    self.gaps.append(gap)
+                    del self.gaps[:-INTERVAL_GAPS]
+                    ordered = sorted(self.gaps)
+                    self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
+                else:
+                    self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
         self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
@@ -1177,7 +1219,12 @@ class PhaseState:
         # absolute figure is only a fallback while the interval is unknown.
         sustain = (SUSTAIN_INTERVALS * self.interval if self.interval
                    else SUSTAIN_SECONDS)
-        if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < sustain:
+        need = SUSTAIN_SAMPLES
+        if MATCHED_STOP_SAMPLES and self._matched_stop():
+            # a stop the open start already vouches for - see MATCHED_STOP_SAMPLES
+            need = MATCHED_STOP_SAMPLES
+            sustain = MATCHED_STOP_INTERVALS * self.interval if self.interval else 0.0
+        if len(self.pending) < need or (ts - self.pending[0][0]) < sustain:
             return []
         new_level = _median([x for _, x, _, _ in self.pending])
         surge = self._declare_surge(self.pending[0][1], new_level)
@@ -1233,6 +1280,15 @@ class PhaseState:
         and too high for Kozolec at 10 W, which needs 200 (Anze, 2026-09-22).
         """
         return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
+
+    def _matched_stop(self) -> bool:
+        """Is what is pending a DROP the size of a load already running?"""
+        if self.level is None or not self.open_edges:
+            return False
+        drop = self.level - _median([x for _, x, _, _ in self.pending])
+        if drop <= self.noise_at(self.level):
+            return False
+        return any(abs(o.watts - drop) <= self._tol(o.watts, drop) for o in self.open_edges)
 
     def _declare_surge(self, first: float, new_level: float) -> float:
         """How far a start's FIRST reading towered over the level it settled
