@@ -1187,6 +1187,22 @@ class PhaseState:
         which case the level is recorded and the session stays open. Anything
         else is a stop we never saw start, and is dropped rather than pinned
         on an unrelated load."""
+        # MOST RECENT first, and deliberately - do NOT "fix" this into the
+        # best-size-fit that _locate uses. Tried, measured, worse at both
+        # sites: Kozolec's boiler fell from 89.2 % of its sessions in one
+        # signature to 79.0 %, and Home's purity from 67.6 % to 65.0 % with
+        # the hidrofor spreading over 61 signatures instead of 49
+        # (2026-09-23). Recency carries information here that it does not
+        # carry there: a step DOWN most likely belongs to the load that most
+        # recently started and matches, whereas _locate is choosing between
+        # sessions that already exist and has no such prior. Size-matching
+        # alone lets a stop close against an older edge of similar size.
+        #
+        # What best-fit DID improve is worth knowing if this is revisited:
+        # the kiln's merged sessions reported a median 47.8 s against a true
+        # pulse of 48, where recency gives 42.1 s. So the durations are
+        # measurably wrong and the fix is not this one - probably a cost
+        # combining size gap AND age rather than either alone.
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if abs(o.watts - watts) <= self._tol(o.watts, watts):
