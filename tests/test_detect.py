@@ -1182,6 +1182,22 @@ def test_a_summed_reading_keeps_only_the_last_of_each_burst():
     assert len(D.combine([(night, 1.0), (quiet, 1.0)], settle_s=0.3)) == len(night)
 
 
+def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
+    """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
+    records fewer, so a running mean of its gaps came out 7.1 s against the
+    busy phases' 6.0 - one meter, three cadences - and the sustain guard judged
+    two legs of one load by different thresholds (2026-09-23)."""
+    busy, quiet = D.PhaseState(min_noise=10.0), D.PhaseState(min_noise=10.0)
+    t = 0.0
+    for i in range(400):
+        t += 6.0
+        busy.process(t, 500.0 + (i % 2) * 40.0)          # changes every reading
+        if i % 3 != 0:                                     # a third unrecorded:
+            quiet.process(t, 500.0 + (i % 2) * 40.0)      # the value repeated
+    assert abs(busy.interval - 6.0) < 0.01, busy.interval
+    assert abs(quiet.interval - 6.0) < 0.01, f"the cadence is still 6 s ({quiet.interval})"
+
+
 def test_energy_between_is_watt_hours_by_sample_and_hold():
     """A meter holds its last reading until it sends another, so the energy
     it accounts for over a window is each level times the time it stood."""

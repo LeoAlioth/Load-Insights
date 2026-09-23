@@ -95,7 +95,10 @@ STORAGE_VERSION = 1
 # 10 = a summed house reading keeps only the last of each burst of readings
 #     (COMBINE_SETTLE_S), so a third of Home's sessions - built on phantom
 #     sums against a stale partner - no longer exist.
-DETECTOR_GENERATION = 10
+# 11 = a reading's interval is the MEDIAN of its recent gaps, its cadence,
+#     not a running mean of the gaps between recorded changes - which gave
+#     one meter's quiet phase a longer interval than its busy ones.
+DETECTOR_GENERATION = 11
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full

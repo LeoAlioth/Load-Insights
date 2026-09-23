@@ -173,6 +173,8 @@ held out (18–22 Sep).
 | `SUSTAIN_SAMPLES` | 2 | readings a new level must hold before it counts | count | 2–4 | Kozolec: 3 ≈ `SUSTAIN_INTERVALS` 1.5 (86.3 vs 87.3 % wconc); 4 is worse (80.6 %) |
 | `SUSTAIN_SECONDS` | 5.0 | ...and at least this long | **physical** | — | **defective**: below the 6 s sampling interval at both sites, so it never fires |
 | `SUSTAIN_INTERVALS` | **1.5** | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
+| `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
+| `MATCHED_STOP_SAMPLES` / `_INTERVALS` | **0** (off) / 0.0 | a drop the size of an open edge may pass on fewer readings than a new level | count | 1–2 / 0–1 | **swept, not shipped.** Helps the kiln (single-leg 154 → 114) but costs ramping and wandering loads (Kozolec's Scala2 140 → 106). Awaiting cross-leg corroboration - see the single-leg plan |
 | `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
 | `BASELINE_SEED_SAMPLES` | 24 | readings the first baseline is seeded from | budget | 12–120 | not tested |
 | `BASELINE_SEED_PERCENTILE` | 0.25 | low percentile for the seed, so a load running at start is not the floor | ratio | 0.05–0.5 | not tested |
@@ -353,13 +355,61 @@ starting against pressure, catches its surge on most starts and shows +150 W.
 For rare catches, the largest surge seen or the share of starts showing one
 would keep what the mean discards.
 
-**Sessions filed on one leg of a multi-phase load.** 75 of a kiln firing's
-pulses file as single-phase at half power. The legs are NOT missed - 91 % of
-A-side edge opens have a C-side open within 8 s, and the phases sample
-together (0.0 s offset). The congested phase (up to 12 simultaneous open
-edges against the other's 8) pairs the stop against the wrong start, giving a
-72 s session where the pulse is 48, and a duration that wrong can no longer
-merge with the other leg inside `MERGE_TOLERANCE_S`.
+**Sessions filed on one leg of a multi-phase load - diagnosed, not fixed.**
+Home's kiln (2-phase A+C, flat ~48 s pulses, ~9 s apart) produces ~150
+single-leg sessions over ten days alongside ~305-337 proper A+C ones; the grid
+meter shows 441 real pulses. Classified by which of `_merge_and_file`'s
+conditions refused each lone leg against its partner: **ends apart** is
+involved in ~150 of 175 and the sole reason in 88. The legs start at the same
+instant (+0.0 s) but one runs on - median 72 s past its partner, up to 10 min
+- which is why no merge window up to 40 s helped. Causes, by weight:
+
+1. **The sustain guard swallows the kiln's short OFF-gaps.** The kiln is off
+   for one or two readings between pulses; a dip that short is rejected like
+   any transient, so consecutive pulses glue into one long session on
+   whichever leg rejected the gap. 69 of 71 single-level long legs contain
+   real off-gaps in the raw data (23 of one reading, 64 of two). Single-leg
+   sessions rose 87 -> 147 when sustain went 0 -> 1.5, the direct cost of the
+   day's biggest win.
+2. **Each leg had a different interval.** A running mean of recorded gaps
+   measures how often a value CHANGES; Home's quiet phase A came out 7.1 s
+   against C's 6.0, so one meter judged its two legs by different sustain
+   thresholds. Fixed by `INTERVAL_PERCENTILE = 0.5` (all three now 6.0 s) -
+   real, but single-leg barely moved, so it was not the driver.
+3. **A coincident load on one leg** (11 of 88): the step up included another
+   load, so the kiln's stop read as a step DOWN of a still-running load and
+   the session ran on with the leftover.
+4. Minor: starts apart, a partner already taken by a first-fit group, an
+   unrelated load being the nearest partner.
+
+Tried: merge window 8-40 s and interval-based - no effect. Open-edge cap 4-40
+- no effect on single-leg. **Matched-stop rule** (a drop the size of an open
+edge needs less sustain; `MATCHED_STOP_SAMPLES`, off) - kiln full-size
+337 -> 364-381, single-leg 154 -> 114, but Kozolec's ramping Scala2 hidrofor
+140 -> 106 and, at one reading, Home's wandering NASA station 114 -> 65. It
+cannot tell a switched load stopping from a ramping one dipping.
+
+The plan, in order:
+
+1. **Let the new polling rate speak first.** At Home's 2.4 s a 9 s off-gap is
+   three or four readings, which sustain 1.5 (3.6 s) accepts. Cause 1 may
+   largely resolve itself. Re-measure single-leg on a week of 2.4 s data before
+   building anything - `bench.py kiln`, with the raw pulse count as truth.
+2. **Corroborate the stop across legs.** Switch the matched-stop rule on only
+   for a leg of a multi-phase start: another phase opened a balanced edge at
+   the same instant and has just stopped. The kiln's legs corroborate each
+   other; single-phase ramping and wandering loads are untouched. Needs
+   `Detector.process` to walk all phases in time order rather than phase by
+   phase - behaviour-neutral by itself, since each phase's state is
+   independent - so each phase can see its siblings' open edges.
+3. **Split on a coincident drop** (cause 3): a level drop on one leg at the
+   instant a balanced partner leg closes is that load stopping; split the long
+   leg into the stopped part (the drop) and the residual load.
+4. Longer term: know which loads RAMP (the transition-position test that told
+   the Scala2 from an averaging meter) and never ask them for a plateau.
+
+Measure each step against: kiln full-size sessions (toward 441), single-leg and
+ladder (toward 0), and purity and concentration at both sites.
 
 **`_pair` reports durations ~12 % short** (42.1 s median against a true 48 s).
 Best-size-fit corrects that but is measurably worse overall - see the long
