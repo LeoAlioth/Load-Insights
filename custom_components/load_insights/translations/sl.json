@@ -123,7 +123,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica pove, koliko breme vleče in na katerih fazah, koliko traja en zagon in kaj bi lahko bilo; pod njo pa, koliko porabi na teden in na zagon, kdaj je nazadnje delovalo in njegov teden od ponedeljka do nedelje. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica pove, koliko breme vleče in na katerih fazah, koliko traja en zagon in kaj bi lahko bilo. Pod njo: koliko porabi na teden in na zagon, kolikokrat je delovalo in v kolikšnem času, kdaj je nazadnje delovalo, kdaj običajno dela, njegov teden od ponedeljka do nedelje in - če je morda druga nastavitev iste naprave - kakšno je tisto drugo breme. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",

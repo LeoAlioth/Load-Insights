@@ -46,7 +46,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import suggest_levels
+from .insights.detect import same_device_phrase, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -469,7 +469,11 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         tz = dt_util.DEFAULT_TIME_ZONE
         now_ts = dt_util.utcnow().timestamp()
         running = runner.detector.running_now(now_ts)
-        levels = {i: n for n, group in enumerate(suggest_levels(runner.detector.signatures, runner.detector.recent), 1) for i in group}
+        # the other settings each load may be of the same device as
+        partners = {i: [g for g in group if g != i]
+                    for group in suggest_levels(runner.detector.signatures, runner.detector.recent)
+                    for i in group}
+        by_id = {s.id: s for s in runner.detector.signatures}
         # What is WAITING, not what was cut off this menu. The two are not the
         # same: the list arrives already shortened to the length the user has
         # earned, so subtracting the menu from it said "0 more" to everyone -
@@ -487,8 +491,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             label, rest = sig.menu_row(tz, now_ts, sig.id in running)
             if sig.name:
                 label = f"{sig.name} — {label}"
-            if sig.id in levels:
-                rest += f" · set {levels[sig.id]} of one device"
+            maybe = same_device_phrase([by_id[i] for i in partners.get(sig.id, []) if i in by_id])
+            if maybe:
+                rest += f" · {maybe}"
             placeholders[f"load_{index}"] = label
             placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")

@@ -123,7 +123,7 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be; under it, what it uses a week and a run, when it last ran, and its week from Monday to Sunday. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be. Under it: what it uses a week and a run, how many times it ran and over how long, when it last ran, when it usually runs, its week from Monday to Sunday, and - if it may be another setting of the same device - what that other load looks like. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",

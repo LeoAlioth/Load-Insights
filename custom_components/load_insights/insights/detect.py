@@ -307,6 +307,9 @@ NOISE_SESSION_S = 20.0
 # constant, which is what tells 10 seconds on a slow meter from 10 minutes of
 # heating on a fast one.
 INRUSH_RATIO = 2.5
+# How far a load's own band must span, as a share of its power, before the
+# naming page says it VARIES. Below this the band is a steady load's jitter.
+WANDER_SHARE = 0.2
 INRUSH_SAMPLES = 2.0
 
 MATCH_POWER_REL = 0.10
@@ -2049,22 +2052,38 @@ class Signature:
         rest without losing any of it. One line had to choose between the
         week in words and the week drawn; the second line has room for both
         (Anze, 2026-09-23: the naming page "does not fit all the text")."""
-        phases = "+".join(p.upper() for p in self.phases)
         how_long = _fmt_s(self.duration_s)
         if self.regular and self.interval_s:
             how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
-        head = [f"{_fmt_w(self.watts)} ({phases})", how_long]
+        head = [f"{_fmt_w(self.watts)} {on_phases(self.phases)}", how_long]
         tag = self.guess().tag
         if tag:
             head.append(tag)
         rest = [f"{_fmt_wh(self.weekly_wh)} a week, {_fmt_wh(self.per_run_wh)} a run"]
+        # how often, in words a person can check against the appliance: a
+        # load seen five times in five hours is not one seen five times a week
+        span = max(self.last_seen - self.first_seen, 0.0)
+        if self.count <= 1:
+            rest.append("ran once")
+        else:
+            rest.append(f"{self.count} runs in {_fmt_s(span)}" if span > 0 else f"{self.count} runs")
+        if self.level_count >= 1.5:
+            rest.append(f"{round(self.level_count)} levels")
+        if (self.low is not None and self.high is not None
+                and self.high - self.low >= WANDER_SHARE * self.watts):
+            rest.append(f"varies {_fmt_w(self.low)}-{_fmt_w(self.high)}")
         when = last_run_phrase(self.last_seen, now, running)
         if when:
             rest.append(when)
         generally = self.when
         if generally:
             rest.append(generally)
-        rest.append(f"Mon-Sun {sparkline(self.day_wh)}")
+        bars = sparkline(self.day_wh)
+        if bars:
+            # A day with nothing is a SPACE, and a space is where a line
+            # wraps: the week broke in two on the naming page. A no-break
+            # space holds it, and holds "Mon-Sun" to it.
+            rest.append("Mon-Sun\u00a0" + bars.replace(" ", "\u00a0"))
         return ", ".join(head), " · ".join(rest)
 
     @property
@@ -2179,7 +2198,6 @@ class Signature:
     def describe(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
         258 times - maybe a heating element (power factor 1.00, one level)'."""
-        phases = "+".join(p.upper() for p in self.phases)
         dur = _fmt_s(self.duration_s)
         gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
@@ -2189,7 +2207,7 @@ class Signature:
         over = f" over {_fmt_s(span)}" if span > 0 else ""
         when = last_run_phrase(self.last_seen, now, running)
         generally = f", {self.when}" if self.when else ""
-        line = (f"{_fmt_w(self.watts)} on {phases}, ~{dur}{gap}{lvl}{pf}, "
+        line = (f"{_fmt_w(self.watts)} {on_phases(self.phases)}, ~{dur}{gap}{lvl}{pf}, "
                 f"seen {self.count} times{over}{generally}"
                 + (f", {when}" if when else ""))
         guess = self.guess()
@@ -3659,6 +3677,33 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
 
 
 _BARS = " ▁▂▃▄▅▆▇█"
+
+
+def on_phases(phases: str) -> str:
+    """"on phase A", "on phases A and C", "on all three phases" - read
+    rather than decoded. "(A)" was what the naming page said (Anze,
+    2026-09-23)."""
+    ps = [p.upper() for p in phases]
+    if len(ps) == 1:
+        return f"on phase {ps[0]}"
+    if len(ps) == len(PHASES):
+        return "on all three phases"
+    return "on phases " + ", ".join(ps[:-1]) + f" and {ps[-1]}"
+
+
+def same_device_phrase(others: Sequence["Signature"], limit: int = 2) -> str:
+    """What the naming page says about a load that may be another setting of
+    the same device: the OTHER loads, described, since the rows they are on
+    are often not on the page at all. "set 4 of one device" said nothing to
+    anyone looking at five rows in five different sets (Anze, 2026-09-23)."""
+    if not others:
+        return ""
+    named = [f"the {_fmt_w(o.watts)}, {_fmt_s(o.duration_s)} load" for o in others[:limit]]
+    more = len(others) - len(named)
+    words = " and ".join(named) if len(named) <= 2 else ", ".join(named)
+    if more:
+        words += f" and {more} more"
+    return f"maybe the same device as {words}"
 
 
 def sparkline(counts: Sequence[float]) -> str:
