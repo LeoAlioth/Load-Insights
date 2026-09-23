@@ -80,7 +80,7 @@ NOISE_REL_FLOOR_FACTOR = 1.5
 GLITCH_FLOOR_W = 200.0
 NOISE_MAD_FACTOR = 4.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
-SUSTAIN_SECONDS = 5.0          # ...and at least this long
+SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
 # which is what the guard needed all along: SUSTAIN_SECONDS is below both
 # sites' 6 s interval, so any two consecutive samples cleared it and a
@@ -135,6 +135,15 @@ PAIR_TIE_BAND = 1.0
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
+# Readings of a summed house value closer together than this are one update
+# arriving in pieces; only the last is kept - see combine(). At Home the
+# inverter is read about 20 ms before the meter on every poll, so a third of
+# the summed readings were phantoms computed against the meter's previous
+# value (26,310 of 26,466 sub-second gaps under 50 ms). Swept on the
+# production input path: purity 68.4 -> 75.7 %, concentration 31.7 -> 50.9 %,
+# and on held-out days 68.6 -> 76.7 % and 25.9 -> 42.7 %. Flat from 0.1 to
+# 0.3 s, and well under the 2.4 s Home now polls at (2026-09-23).
+COMBINE_SETTLE_S = 0.3
 # ...AND this close in SIZE. A real multi-phase load is balanced by design -
 # a two-phase element, a three-phase motor - and over ten days at home the
 # smallest-to-largest ratio inside kiln-sized groups sat at a median of 0.98.
@@ -175,6 +184,7 @@ NOISE_SESSION_S = 20.0
 # heating on a fast one.
 INRUSH_RATIO = 2.5
 INRUSH_SAMPLES = 2.0
+
 MATCH_POWER_REL = 0.10
 # How much of two signatures' OWN measured wander may widen the band that
 # admits them to a merge. 0 was the historical behaviour - power_mad computed
@@ -582,7 +592,7 @@ def site_topology(inverters: Sequence[dict], stored: Optional[str] = None) -> Op
 
 
 def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
-            max_skew_s: float = 0.0) -> List[Tuple[float, float]]:
+            max_skew_s: float = 0.0, settle_s: float = 0.0) -> List[Tuple[float, float]]:
     """Add several readings into one, each held forward onto the others' times.
 
     ``terms`` is (rows, sign). The house is a SUM and nothing else:
@@ -624,6 +634,20 @@ def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
             total += sign * rows[j][1]
         if ok:
             out.append((ts, total))
+    if settle_s > 0 and len(out) > 1:
+        # Keep only the LAST reading of each burst. When two inputs update
+        # within moments of each other the sum is computed twice: once against
+        # the partner's stale value and once correctly. The first of the pair
+        # is a phantom - a step of the whole change in whichever input moved
+        # first - and a third of Home's house readings came in such pairs,
+        # which also dragged the measured sample interval down to about 3 s.
+        # max_skew_s was meant for this and cannot do it on recorder data:
+        # Home Assistant only records a CHANGE, so an inverter sitting at 0 W
+        # all night looks hours stale and every night-time sample is dropped,
+        # the kiln with them (347 -> 119 sessions). A burst needs no judgement
+        # about freshness, only about what came after (2026-09-23).
+        out = [r for r, nxt in zip(out, out[1:] + [None])
+               if nxt is None or nxt[0] - r[0] > settle_s]
     return out
 
 
@@ -1145,7 +1169,14 @@ class PhaseState:
             return []
 
         self.pending.append((ts, w, q, pv))
-        sustain = max(SUSTAIN_SECONDS, SUSTAIN_INTERVALS * (self.interval or 0.0))
+        # In the reading's OWN intervals once it has one, so the guard means the
+        # same number of readings at any polling rate. max() with an absolute
+        # floor did not: at 6 s the interval term won (9 s, three readings),
+        # but at Home's new 2.4 s the 5 s floor bound instead and meant three
+        # OR four readings on timing jitter, and at 1 s would mean six. The
+        # absolute figure is only a fallback while the interval is unknown.
+        sustain = (SUSTAIN_INTERVALS * self.interval if self.interval
+                   else SUSTAIN_SECONDS)
         if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < sustain:
             return []
         new_level = _median([x for _, x, _, _ in self.pending])
@@ -1431,6 +1462,14 @@ class Signature:
     # "that spike is a very good device signature, but it has to be taken
     # into account properly to not show as separate loads").
     inrush_w: float = 0.0
+    # How many sightings caught a surge, and how big it was when they did. The
+    # mean above is diluted by every start the meter missed: Home's Kompresor
+    # caught 3 of 396, so its mean said nothing although each catch was 3x.
+    # Recorded, not yet used: weighing the when-seen size instead was tried and
+    # inflated the small electronic loads' false surges 5-20x (see AGENTS.md).
+    # What would separate a motor from a coincidence is CONSISTENCY.
+    inrush_seen: int = 0
+    inrush_when_seen: float = 0.0
     duration_mad: float = 0.0
     interval_mad: Optional[float] = None
 
@@ -1544,6 +1583,11 @@ class Signature:
         self.duration_s = (self.duration_s * a + other.duration_s * b) / n
         self.level_count = (self.level_count * a + other.level_count * b) / n
         self.inrush_w = (self.inrush_w * a + other.inrush_w * b) / n
+        seen = self.inrush_seen + other.inrush_seen
+        if seen:
+            self.inrush_when_seen = ((self.inrush_when_seen * self.inrush_seen
+                                      + other.inrush_when_seen * other.inrush_seen) / seen)
+        self.inrush_seen = seen
         if self.pf is not None and other.pf is not None:
             self.pf_mad = min(1.0, ((self.pf_mad + abs(self.pf - other.pf)) * a
                                     + (other.pf_mad + abs(other.pf - self.pf)) * b) / n)
@@ -1584,6 +1628,10 @@ class Signature:
         self.power_mad = (self.power_mad * n
                           + k * abs(sum(pw.values()) - sum(self.power.values())) / legs) / (n + k)
         self.inrush_w = (self.inrush_w * n + k * s.inrush_w) / (n + k)
+        if s.inrush_w > 0:
+            self.inrush_when_seen = ((self.inrush_when_seen * self.inrush_seen + s.inrush_w)
+                                     / (self.inrush_seen + 1))
+            self.inrush_seen += 1
         self.duration_mad = (self.duration_mad * n + k * abs(s.duration_s - self.duration_s)) / (n + k)
         for ph, w in pw.items():
             self.power[ph] = (self.power.get(ph, w) * n + k * w) / (n + k)
@@ -1689,6 +1737,14 @@ class Signature:
 
     @property
     def duration_factor(self) -> float:
+        """How far a sighting's duration may stray and still be this load: 3x
+        for a load that keeps time, 30x for one that does not.
+
+        It looks like a cliff that ought to be continuous, and was swept as one
+        - exp(z * measured spread), held between the same bounds, z from 2 to 6
+        at both sites (2026-09-23). Tight values lose clearly (Home's workshop
+        boiler halves, Kozolec's hidrofor 142 -> 99) and loose ones converge
+        back to what the cliff already does. The cliff measures as right."""
         return MATCH_DURATION_FACTOR if self.keeps_time else LOOSE_DURATION_FACTOR
 
     @property
@@ -1851,7 +1907,8 @@ class Signature:
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1), "pf_mad": _trim(self.pf_mad, 4),
                 "runs": [[round(x, 1), round(y, 1)] for x, y in self.runs[-RUN_MEMORY:]],
-                "inrush_w": _trim(self.inrush_w, 1),
+                "inrush_w": _trim(self.inrush_w, 1), "inrush_seen": self.inrush_seen,
+                "inrush_when_seen": _trim(self.inrush_when_seen, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
@@ -1866,7 +1923,8 @@ class Signature:
                    level_count=d.get("level_count", 1.0), name=d.get("name"),
                    last_start=d.get("last_start"), locations=dict(d.get("locations") or {}),
                    power_mad=d.get("power_mad", 0.0), pf_mad=d.get("pf_mad", 0.0),
-                   runs=[tuple(x) for x in (d.get("runs") or [])], inrush_w=d.get("inrush_w", 0.0), duration_mad=d.get("duration_mad", 0.0),
+                   runs=[tuple(x) for x in (d.get("runs") or [])], inrush_w=d.get("inrush_w", 0.0), inrush_seen=d.get("inrush_seen", 0),
+                   inrush_when_seen=d.get("inrush_when_seen", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"))

@@ -1162,6 +1162,26 @@ def test_a_negative_sample_on_a_house_reading_is_a_glitch_not_a_load():
     assert sessions2 or st2.open_edges, "a real reading, a real step"
 
 
+def test_a_summed_reading_keeps_only_the_last_of_each_burst():
+    """Home's inverter is read about 20 ms before its meter on every poll, so
+    summing them emits each update twice: first against the partner's stale
+    value - a phantom step of the whole change - then correctly. A third of
+    Home's house readings were phantoms (2026-09-23)."""
+    meter = [(0.0, 1000.0), (6.02, 4000.0), (12.02, 4000.0)]
+    inverter = [(0.0, 300.0), (6.00, 330.0), (12.00, 330.0)]
+    raw = D.combine([(meter, 1.0), (inverter, 1.0)])
+    assert (6.00, 1330.0) in raw, "the phantom: new inverter, old meter"
+    settled = D.combine([(meter, 1.0), (inverter, 1.0)], settle_s=0.3)
+    assert all(abs(t - 6.00) > 1e-9 for t, _ in settled), settled
+    assert (6.02, 4330.0) in settled, "the corrected sum is what survives"
+    # an input that records nothing - an inverter at 0 W all night - costs
+    # nothing: there is no burst, so every reading stays. This is what
+    # max_skew_s got wrong on recorder data.
+    night = [(t, 500.0 + 3000.0 * (40 <= t < 90)) for t in range(0, 200, 6)]
+    quiet = [(0.0, 0.0)]
+    assert len(D.combine([(night, 1.0), (quiet, 1.0)], settle_s=0.3)) == len(night)
+
+
 def test_energy_between_is_watt_hours_by_sample_and_hold():
     """A meter holds its last reading until it sends another, so the energy
     it accounts for over a window is each level times the time it stood."""

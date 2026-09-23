@@ -16,6 +16,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `custom_components/load_insights/sensor.py` | entities and the diagnostic attributes |
 | `tests/replay.py` | run the detector over exported CSVs, no HA |
 | `tests/cluster_lab.py` | ground-truth scoring, and each site's device-meter list |
+| `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything
@@ -76,9 +77,11 @@ There is a bench. Use it — replaying costs minutes and a live site costs a
 deploy cycle plus a ten-day rebuild.
 
 ```bash
-python3 tests/run_all.py                       # 15 files, all must pass
-python3 tests/replay.py data/history/kozolec   # the detector over real history
-python3 tests/replay.py data/history/home
+python3 tests/run_all.py                                  # 15 files, all must pass
+python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration
+python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
+python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
+python3 tests/replay.py data/history/kozolec              # the raw detector output
 ```
 
 `data/` is gitignored twice over; site history never reaches the remote. Each
@@ -186,25 +189,27 @@ held out (18–22 Sep).
 | `PAIR_TIE_BAND` | **1.0** | how much better a size match must be to override recency. 0 = best-fit, 1 = newest that passes. Above 1 is identical to 1 | ratio | 0–1 | **swept** at both: Home prefers 1.0 clearly (purity 67.6 vs 64.8 % at 0.5); Kozolec flat 0.5–1.0. Stays |
 | ~~`PAIR_AGE_WEIGHT`~~ | removed | weighted ABSOLUTE age rather than rank when choosing | — | — | **swept 0–3 at Kozolec, then removed**: every positive value cost ~6 points. Recency rank carries the information, magnitude does not |
 | `MAX_OPEN_S` | 86400 | a start whose stop never came is dropped after this | physical | 3600–172800 | not tested |
-| `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **not tested — and binding**: Home's phase C sits at exactly 12 through a kiln firing, which is where the single-leg mis-pairing happens |
+| `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **swept at both** (production path). Lower looks better at Home by share - cap 4 gives purity 84.9 % - but that is the population trap: NASA's dominant cluster falls 113 → 78. On absolute clusters Home's best is 8 (+3/+8/+1); Kozolec's hidrofor loses 10 at 8. Small, opposite, so it stays. Raising it is worse at Home (24: NASA 113 → 68). Wants eviction by staleness rather than by count |
 | `NOISE_SESSION_WH` / `_S` | 3.0 Wh / 20 s | a session smaller AND shorter than both is dropped as a blip | physical | 1–10 Wh / 5–60 s | not tested |
 
 ### Combining phases
 
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
-| `MERGE_TOLERANCE_S` | 15 | per-phase sessions this close in start AND end are one load. Flat here; only the cross-meter match widens it by measured intervals | physical | 5–30 | not tested; the single-leg problem is largely sessions that miss this window, and it is a candidate for the same interval-based widening |
+| `MERGE_TOLERANCE_S` | 15 | per-phase sessions this close in start AND end are one load | physical | 5–30 | **swept 8–40 s and interval-based (2×, 4×)**: no effect; single-leg sessions stay at 144–161 throughout. So the single-leg problem is NOT a merge-window problem |
 | `HELD_TAIL_S` | 60 | closed sessions wait this long for a partner on another phase | physical | 15–180 | not tested |
 | `PHASE_BALANCE_MIN` | 0.4 | smallest leg / largest leg for a multi-phase session to stand | ratio | 0.2–0.7 | not tested. Note imbalance alone is weak evidence of two loads |
+
+| `COMBINE_SETTLE_S` | **0.3** | readings of a summed house value closer than this are one update in pieces; only the last is kept | physical | 0.1–0.5 (bursts are < 50 ms, cadence ≥ 2.4 s) | **swept; shipping.** Home, production path: purity 68.4 → 75.7 %, wconc 31.7 → 50.9 %, hidrofor dominant cluster 356 → 471. Flat from 0.1 to 0.3. Kiln 347 → 305: the lost sessions are one-reading pulses that passed sustain only because a phantom reading supplied their second sample |
 
 ### Signatures: matching and merging
 
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
 | `MATCH_POWER_REL` | 0.10 | power tolerance for a session to match a signature | ratio | 0.05–0.25 | not tested |
-| `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' measured spread that may widen merge admission | ratio | 0–0.20 (above 0.20 the anti-walk guarantee breaks) | **swept; shipped.** Against the old sustain: Kozolec worse, Home better. On top of sustain 1.5, on held-out days, better at both: Home NASA 22 → 35, both hidrofors up, purity flat. 0.15 costs Home purity for nothing |
+| `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' measured spread that may widen merge admission | ratio | 0–0.20 (above 0.20 the anti-walk guarantee breaks) | **swept.** On the template path it recovered Home's NASA station 22 → 35; on the production path with phantoms removed it does nothing at Home (0, 0.10 and 0.15 identical) - it was compensating for phantom fragmentation. Still positive at Kozolec on held-out days (hidrofor 58 → 65), where nothing is summed. Kept |
 | `MATCH_DURATION_FACTOR` | 3.0 | duration tolerance for a load that keeps time | ratio | 1.5–6 | not tested |
-| `LOOSE_DURATION_FACTOR` | 30.0 | duration tolerance for one that does not | ratio | 5–100 | not tested; the 3× → 30× switch is a cliff and a candidate for a continuous `duration_mad` tolerance |
+| `LOOSE_DURATION_FACTOR` | 30.0 | duration tolerance for one that does not | ratio | 5–100 | the 3× → 30× switch looks like a cliff and was **swept as a continuous tolerance** (`exp(z × measured spread)`, z 2–6, at both sites): tight values lose clearly (Home's workshop boiler halves, Kozolec's hidrofor 142 → 99), loose ones converge back to the cliff. The cliff measures as right; the dial was removed |
 | `DURATION_IDENTITY_COUNT` | 4 | sightings before a signature's duration can identify it | count | 2–10 | not tested |
 | `DURATION_IDENTITY_SPREAD` | 0.35 | `duration_mad / duration` below which duration identifies the load | ratio | 0.1–0.6 | not tested |
 | `MATCH_PF_TOL` | 0.15 | power-factor tolerance, now widened by both sides' `pf_mad` | ratio | 0.05–0.3 | not swept; the `pf_mad` widening replaced a hard gate and took Kozolec 86 → 30 signatures |
@@ -327,15 +332,26 @@ recovers most of it. A cleaner fix would be to know which loads ramp or
 wander - the transition-position test that told Kozolec's Scala2 pump apart
 from an averaging meter - and not demand a plateau of them.
 
-**The pairing cap binds.** `MAX_OPEN_EDGES = 12`, and Home's phase C sits at
-exactly 12 open starts through a kiln firing, evicting the oldest every time a
-new one arrives. That is the phase where single-leg mis-pairing happens, and
-it is the strongest lead on the next item. Not yet investigated.
+**The pairing cap binds, but moving it does not fix single-leg.** Home's
+phase C sits at `MAX_OPEN_EDGES = 12` through a kiln firing. Swept 4-40 at
+both sites: lower looks better by share at Home, which is mostly the
+population trap; on absolute clusters Home prefers 8 and Kozolec 12, small and
+opposite. Single-leg sessions stay at 134-184 throughout, and so they do across
+every merge window from 8 to 40 s. The single-leg mechanism is still unknown -
+it is neither the cap nor the merge window.
 
-**The Kompresor never shows a surge.** A three-phase motor should, and
-Kozolec's fridge does (+150 W on 53 W). Either it has a soft starter, or its
-inrush lasts well under a second and an instantaneous 6 s meter rarely lands
-a reading inside it. Unknown which.
+**A short surge is invisible at 6 s sampling, and a mean hides the rare
+catch.** Home's Kompresor is an ABAC LN1 A39B 100 T3 DOL: 2.2 kW, three-phase,
+started direct on line (no soft start, no star-delta) with a head unloader, so
+it spins up against no compression and the inrush is over in well under a
+second. Of 396 starts over fifteen days, the first reading caught a surge
+>= 2.5x on 3 (0.8 %), up to 3.5x; the median first reading is exactly the
+running level. That is an instrument limit, not a detector bug. But
+`Signature.inrush_w` is a running MEAN, so three catches in 396 average to
+nothing and the evidence is lost. Kozolec's fridge, a hermetic compressor
+starting against pressure, catches its surge on most starts and shows +150 W.
+For rare catches, the largest surge seen or the share of starts showing one
+would keep what the mean discards.
 
 **Sessions filed on one leg of a multi-phase load.** 75 of a kiln firing's
 pulses file as single-phase at half power. The legs are NOT missed - 91 % of
@@ -365,6 +381,37 @@ and the main meter attributes nothing to it.
 = 200` spans about **2.1 hours** at Home and holds 11 of 199 signatures.
 `suggest_levels` was fixed by giving each signature its own `runs` memory, but
 anything else reading `recent` inherits the same blindness.
+
+**Surge evidence: when-seen is not better than the mean.** Tried keeping a
+surge's size WHEN caught (`SURGE_MIN_SEEN`) so rare catches count. It rescues
+Home's hidrofor (7 catches at +1828 W on 871 W) but inflates the small
+electronic signatures 5-20x - NASA station 0.34 -> 5.22, the 32 W signature
+Server UPS and Susilna share 0.36 -> 8.63 - which would reach their
+descriptions as "starts at 334 W before settling". A noise guard
+(`SURGE_MIN_NOISE`) did nothing: those catches are genuine 270-340 W first
+readings, most likely another load switching at the same moment, not noise.
+The classifier's final guess changed for no device either way. Not adopted.
+What would separate a motor from a coincidence is CONSISTENCY - a motor's
+surge ratio repeats, a coincidence's is random. The counters are kept.
+Physically checked: kiln and both boilers carry no surge under any rule.
+Kozolec's hidrofor is a Grundfos Scala2 with a built-in frequency converter,
+so it soft-starts and should NOT surge.
+
+**About a third of Home's house readings are phantoms.** Production sums grid
+and inverter with `combine()`, which emits at every input's timestamp against
+the other input's last value. When both update together - 26,310 of 26,466
+sub-second gaps are under 50 ms - the first sum is computed against a stale
+partner and corrected within 50 ms. `max_skew_s` was meant to catch this and
+must not be used on recorder data: Home Assistant only records a CHANGE, so an
+inverter at 0 W all night looks hours stale and every night sample is dropped
+(the kiln fell from 347 sessions to 119). `COMBINE_SETTLE_S` keeps only the
+last reading of each burst instead, which needs no judgement about freshness.
+
+**The bench read a slightly different input than production at Home.** The
+replay read Anze's template sensor; production sums grid and inverter itself.
+Values agree to 0.1 W, but timestamps and change-only recording differ, and
+the scores did too (purity 67.6 vs 68.4 %). Replay Home through
+`combine()` - the bench's `benchhouse.py` - so it matches production.
 
 ### Instrument limits, not bugs
 

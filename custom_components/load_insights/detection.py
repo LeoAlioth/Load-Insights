@@ -40,6 +40,7 @@ from .const import (
 )
 from .insights.detect import (
     combine,
+    COMBINE_SETTLE_S,
     PHASES,
     Detector,
     Fleet,
@@ -91,7 +92,10 @@ STORAGE_VERSION = 1
 #     sample interval, so transitional samples no longer found levels, and a
 #     merge may admit ALIKE_MAD_SHARE of the pair's spread. Both change which
 #     sessions and signatures exist at all.
-DETECTOR_GENERATION = 9
+# 10 = a summed house reading keeps only the last of each burst of readings
+#     (COMBINE_SETTLE_S), so a third of Home's sessions - built on phantom
+#     sums against a stale partner - no longer exist.
+DETECTOR_GENERATION = 10
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -299,7 +303,7 @@ class DetectionRunner:
         for p in PHASES:
             per_phase = [(rows[p], sign) for rows, sign in terms if rows.get(p)]
             if per_phase:
-                out[p] = combine(per_phase)
+                out[p] = combine(per_phase, settle_s=COMBINE_SETTLE_S)
         return {p: rows for p, rows in out.items() if rows}
 
     async def _grid_sign(self, grid_rows: Dict[str, list],
