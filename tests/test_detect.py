@@ -1293,6 +1293,63 @@ def test_the_recorders_start_of_window_copy_is_not_a_reading():
     assert D.without_window_start(rows, 60.0) == {"a": [(62.1, 510.0)], "b": [(61.0, 20.0)]}
 
 
+def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
+    """Home's attic 3EM calls the house's C "b" and its A "c". Its channels are
+    mapped onto the house's phases by which house phase each one's sessions
+    coincide with - as a permutation, so a two-phase load cannot tie - and
+    its own labels stand until there is evidence (2026-09-23)."""
+    rotated = {"a": {"b": 20}, "b": {"c": 60, "b": 2}, "c": {"a": 64}}
+    assert D.phase_mapping(rotated, min_votes=30) == {"a": "b", "b": "c", "c": "a"}
+    assert D.phase_mapping({"b": {"c": 3}}, min_votes=30) == {"b": "b"}, "too little evidence"
+    # the kiln steps on house A and C at once: channel a ties between them
+    # alone, and the permutation settles it with the other channels
+    kiln = {"a": {"a": 79, "c": 79}, "b": {"b": 23}, "c": {"c": 55, "a": 17}}
+    assert D.phase_mapping(kiln, min_votes=30) == {"a": "a", "b": "b", "c": "c"}
+    s = D.Session(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
+    moved = D._relabel(s, {"a": "b", "b": "c", "c": "a"})
+    assert moved.phases == "ac" and set(moved.levels) == {"c", "a"}
+
+
+def test_a_sub_meter_decides_which_signature_a_session_joins_when_it_fits():
+    """A detection on a sub-meter overrides the house's: the preferred
+    signature wins whenever it fits at all, and is ignored when it does not
+    (Anze, 2026-09-22)."""
+    det = D.Detector()
+    for p in "a":
+        det.phases[p].noise = 10.0
+    near = D.Signature(id=1, phases="a", power={"a": 1000.0}, duration_s=60.0, pf=None,
+                       count=5, first_seen=0.0, last_seen=0.0)
+    other = D.Signature(id=2, phases="a", power={"a": 1040.0}, duration_s=60.0, pf=None,
+                        count=5, first_seen=0.0, last_seen=0.0)
+    far = D.Signature(id=3, phases="a", power={"a": 3000.0}, duration_s=60.0, pf=None,
+                      count=5, first_seen=0.0, last_seen=0.0)
+    det.signatures = [near, other, far]
+    s = D.Session(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
+    det._file(s, prefer=2)
+    assert s.signature_id == 2, "the sub-meter's choice, although 1 fits a little better"
+    t = D.Session(phases="a", start=200.0, end=260.0, levels={"a": [(200.0, 1000.0)]})
+    det._file(t, prefer=3)
+    assert t.signature_id != 3, "a preference that does not fit is ignored"
+
+
+def test_a_session_waits_only_for_meters_that_could_have_seen_it():
+    """Filing waits for a sub-meter partner - but only from a meter that reads
+    at least twice inside the run. Home's workshop boiler meter reports every
+    seven minutes and can partner no one-minute pump run."""
+    fleet = D.Fleet()
+    fast, slow = D.Detector(), D.Detector()
+    fast.phases["a"].interval, slow.phases["a"].interval = 10.0, 420.0
+    slow.phases["a"].last_ts = 0.0
+    fleet.subs = {"plug": fast, "workshop": slow}
+    run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
+    fast.phases["a"].last_ts = 90.0
+    assert not fleet._heard_from_all(run, 6.0, 90.0), "the plug has not reported far enough yet"
+    fast.phases["a"].last_ts = 110.0
+    assert fleet._heard_from_all(run, 6.0, 110.0), "and the slow meter is not waited for"
+    fast.phases["a"].last_ts = 0.0
+    assert fleet._heard_from_all(run, 6.0, 60.0 + D.MATCH_PATIENCE_S), "never past the patience"
+
+
 def test_energy_between_is_watt_hours_by_sample_and_hold():
     """A meter holds its last reading until it sends another, so the energy
     it accounts for over a window is each level times the time it stood."""

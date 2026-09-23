@@ -21,9 +21,10 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 from __future__ import annotations
 
 import bisect
+import itertools
 import math
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -363,6 +364,47 @@ SUB_SAMPLE_TAIL_S = 2 * 3600.0
 # the wait has to outlast the slowest meter's silence, or the answer arrives
 # after the question has been thrown away (2026-09-19).
 MATCH_PATIENCE_S = 20 * 60.0
+# How many single-phase sessions a three-phase meter must have shared with the
+# house before its channels are mapped onto the house's phases. Until then its
+# own labels stand. Home's attic 3EM calls the house's C "b" and its A "c", so
+# with its labels trusted it never matched a session by phase at all (627 seen
+# live, 92 credited, all of them by energy - 2026-09-23).
+PHASE_MAP_MIN_VOTES = 30
+# A detection on a sub-meter overrides the house meter's (Anze, 2026-09-22:
+# "a detection on a sub meter level should always override one on a higher
+# level, especially if it is the less noisy one"). Not by handing detection to
+# the sub-meter - they are quieter but SLOWER, and the kiln on its circuit's
+# 3EM gave 236 full-size sessions against 409 on the house - but session by
+# session: the house meter's session keeps its TIMING, and a sub-meter
+# session that is the same load decides WHICH signature it joins (the one
+# that sub-meter signature's sessions went to before, when it fits there).
+# House sessions wait to be filed until every sub-meter fast enough to have
+# seen them has reported past their end. 0 files at once, as before.
+# Measured with production's meters fed in (bench SUBS=prod, 2026-09-23),
+# against the same with this off: Kozolec's Scala2 pump 128 -> 195 sessions in
+# its main signature (held out 53 -> 61) at unchanged purity; Home purity
+# 78.6 / 80.6 -> 79.1 / 80.7 %; the kiln's main signature x397 -> x392, the
+# small price of filing later. Almost all of it comes from SUB_METER_IDENTITY:
+# a session partner is rarely there in time, and when it is, the house's own
+# choice agrees with it all but 65 times in 1338.
+SUB_OVERRIDE = 1
+# ...and takes the sub-meter's POWER as well, when that meter is the quieter
+# one and measured the run with at least as many readings. OFF: measured
+# slightly worse (Home's NASA station held out 26 -> 22).
+SUB_POWER = 0
+# A house session whose ENERGY a device meter accounts for - the meter too slow
+# or too coarse to have a session of its own for it - joins the house
+# signature most of that meter's sessions went to, when it fits there. Only
+# for a meter that holds one device: one whose own library puts at least
+# SUB_DEVICE_SHARE of its sightings in a single signature (Home's hidrofor
+# plug 99 %, its Hiša circuit 55 %). 0 is off.
+SUB_METER_IDENTITY = 1
+SUB_DEVICE_SHARE = 0.5
+# Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
+# 3EM - may decide a signature too, or only a meter that holds one device.
+# Off: one-device meters only was better at Home (79.1 / 80.7 % against
+# 78.5 / 80.5) and identical everywhere else.
+SUB_IDENTITY_CIRCUITS = 0
 # How far back to look for what the device was drawing ANYWAY. Capped,
 # because a session lasting hours would otherwise want hours of readings
 # before it - further back than the tail we keep - and the longest sessions
@@ -604,6 +646,9 @@ class Session:
     def from_dict(cls, d: dict) -> "Session":
         return cls(phases=d["phases"], start=d["start"], end=d["end"], pf=d.get("pf"),
                    pf_mad=d.get("pf_mad", 0.0), surge_w=d.get("surge_w", 0.0),
+                   # written by to_dict all along and never read back, so a
+                   # session that waited across a restart came back unsampled
+                   samples=d.get("samples", 0), low=d.get("low"), high=d.get("high"),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()})
 
 
@@ -2392,8 +2437,11 @@ class Detector:
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
                 q: Optional[Dict[str, Dict[float, float]]] = None, now_ts: Optional[float] = None,
                 pv: Optional[Dict[str, Dict[float, float]]] = None,
-                q_quantum: Optional[Dict[str, float]] = None) -> List[Session]:
+                q_quantum: Optional[Dict[str, float]] = None, file: bool = True) -> List[Session]:
         """Feed new (ts, watts) samples per phase, in time order per phase.
+        With ``file`` False the sessions are closed and merged but not filed:
+        the Fleet files them once their sub-meter partners have had a chance
+        to report (see SUB_OVERRIDE).
         ``q`` is reactive VAr keyed by the SAME timestamps, where the meter
         gives enough to work it out, and ``q_quantum`` how much apparent power
         one quantum of the amps behind it is worth - the limit on any factor
@@ -2424,7 +2472,7 @@ class Detector:
                 s.phases = ph
                 s.levels = {ph: s.levels.pop("")}
                 closed.append(s)
-        out = self._merge_and_file(closed, latest)
+        out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
         # between one filing and the next
@@ -2512,7 +2560,7 @@ class Detector:
             return best
         return seen
 
-    def _merge_and_file(self, closed: List[Session], latest: float) -> List[Session]:
+    def _merge_and_file(self, closed: List[Session], latest: float, file: bool = True) -> List[Session]:
         pool = self.held + closed
         pool.sort(key=lambda s: s.start)
         groups: List[List[Session]] = []
@@ -2537,7 +2585,8 @@ class Detector:
         for s in done:
             if s.energy_wh < NOISE_SESSION_WH and s.duration_s < NOISE_SESSION_S:
                 continue
-            self._file(s)
+            if file:
+                self._file(s)
             out.append(s)
         return out
 
@@ -2570,11 +2619,22 @@ class Detector:
                        surge_w=sum(m.surge_w for m in g),
                        pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0))
 
-    def _file(self, s: Session) -> None:
+    def _file(self, s: Session, prefer: Optional[int] = None) -> None:
+        """File a closed session into the library. ``prefer`` is a signature
+        a sub-meter's own detection says this load belongs to; it wins over
+        the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
-        for sig in self.signatures:
+        if prefer is not None:
+            seen = set()
+            while prefer in self._moved and prefer not in seen:
+                seen.add(prefer)
+                prefer = self._moved[prefer]
+            want = next((x for x in self.signatures if x.id == prefer), None)
+            if want is not None and want.matches(s, noise) is not None:
+                best = want
+        for sig in ([] if best is not None else self.signatures):
             sc = sig.matches(s, noise)
             if sc is not None and sc > best_score:
                 best, best_score = sig, sc
@@ -2961,6 +3021,13 @@ class Fleet:
     # its error bar - and Home has a workshop boiler publishing in 46 W steps
     # about every seven minutes (Anze, 2026-09-22).
     sub_quantum: Dict[str, float] = field(default_factory=dict)
+    # meter -> its own phase label -> house phase -> sessions that matched,
+    # for phase_mapping
+    phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
+    # house sessions not yet filed, waiting for a sub-meter partner
+    unfiled: List[Session] = field(default_factory=list)
+    # meter -> its signature id -> the house signature its sessions joined
+    identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
                 main_q=None, sub_q=None, now_ts: Optional[float] = None,
@@ -2994,46 +3061,124 @@ class Fleet:
             q = measure_quantum([v for _, v in self.sub_rows[name]])
             if q:
                 self.sub_quantum[name] = q
-        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum)
+        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum,
+                                        file=not SUB_OVERRIDE)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
             closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
                                            None, (sub_q_quantum or {}).get(name))
+        if SUB_OVERRIDE:
+            self._file_waiting(closed_main, closed_sub, latest)
+            closed_main, closed_sub = [], {}
         self._locate(closed_main, closed_sub, latest)
 
-    def _locate(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]], latest: float) -> None:
-        self.pending_main += closed_main
+    def _file_waiting(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]],
+                      latest: float) -> None:
+        """File the house's sessions, each with its sub-meter partner's say
+        in which signature it joins - see SUB_OVERRIDE. What is filed without
+        a partner goes on to _locate, which places it as it always has."""
+        self.unfiled += closed_main
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        self._vote_phases(closed_sub, main_iv, self.unfiled + self.pending_main)
         for name, sessions in closed_sub.items():
             self.pending_sub.setdefault(name, []).extend(sessions)
-        # BEST fit, not first fit. Taking the first session that passed and
-        # popping it is order-dependent, and at Kozolec it was the whole
-        # reason a boiler with its own meter and 367 sightings collected
-        # thirteen locations: a main session that merely fitted consumed the
-        # downstream session a better-matching one needed, and loosening the
-        # test made it worse rather than better (Anze, 2026-09-18). Every
-        # passing pair is scored, the closest is taken first, and each
-        # session is spent once.
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        pairs = sorted(self._session_pairs(self.unfiled, main_iv), key=lambda x: (x[0], x[1]))
+        taken_m, taken_s = set(), set()
+        for _, mi, name, si in pairs:
+            if mi in taken_m or (name, si) in taken_s:
+                continue
+            taken_m.add(mi)
+            taken_s.add((name, si))
+            self._file_as(self.unfiled[mi], name, self.pending_sub[name][si])
+        for name in self.pending_sub:
+            self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
+                                      if (name, i) not in taken_s]
+        waiting, ready = [], []
+        for i, m in enumerate(self.unfiled):
+            if i in taken_m:
+                continue
+            (ready if self._heard_from_all(m, main_iv, latest) else waiting).append(m)
+        self.unfiled = waiting
+        by_energy = {}
+        if SUB_METER_IDENTITY:
+            for cost, mi, name, _ in sorted(self._energy_pairs(ready), key=lambda x: (x[0], x[1])):
+                if mi not in by_energy and self._one_device(name):
+                    by_energy[mi] = name
+        for mi, m in enumerate(ready):
+            name = by_energy.get(mi)
+            if name is None:
+                self.main._file(m)
+                self.pending_main.append(m)          # placed later, as ever
+                continue
+            self.main._file(m, prefer=self._meter_home(name))
+            sig = self.main.signature_of(m)
+            if sig is not None:
+                sig.locations[name] = sig.locations.get(name, 0) + 1
+
+    def _one_device(self, name: str) -> bool:
+        """Does this meter hold ONE device, by its own library's shape?"""
+        det = self.subs.get(name)
+        counts = [s.count for s in det.signatures] if det else []
+        return bool(counts) and max(counts) >= SUB_DEVICE_SHARE * sum(counts)
+
+    def _meter_home(self, name: str) -> Optional[int]:
+        """The house signature most of this meter's sessions went to."""
+        best = max(self.main.signatures, key=lambda s: s.locations.get(name, 0), default=None)
+        return best.id if best is not None and best.locations.get(name, 0) else None
+
+    def _heard_from_all(self, m: Session, main_iv: float, latest: float) -> bool:
+        """Has every sub-meter that COULD have a session for ``m`` reported
+        long enough past its end to have closed one? A meter is only waited
+        for if it reads at least twice within the run - Home's workshop boiler
+        meter reports every seven minutes and can partner no two-minute run -
+        and never past MATCH_PATIENCE_S."""
+        if latest - m.end >= MATCH_PATIENCE_S:
+            return True
+        for name, det in self.subs.items():
+            iv = max((st.interval for st in det.phases.values()), default=0.0)
+            if not iv or 2.0 * iv > m.duration_s:
+                continue
+            heard = max((st.last_ts or 0.0 for st in det.phases.values()), default=0.0)
+            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_INTERVALS + 1.0) * iv
+            if heard < need:
+                return False
+        return True
+
+    def _file_as(self, m: Session, name: str, s: Session) -> None:
+        """File the house's session ``m`` as the sub-meter session ``s`` says."""
+        det = self.subs.get(name)
+        mp = {} if self.agnostic.get(name, False) else self.phase_map(name)
+        own = _relabel(s, mp)
+        if SUB_POWER and det is not None and own.samples >= m.samples > 0:
+            quiet = max((st.noise for st in det.phases.values() if st.baseline is not None), default=None)
+            loud = max((self.main.phases[p].noise for p in m.phases if p in self.main.phases), default=None)
+            got, had = sum(own.power_by_phase().values()), sum(m.power_by_phase().values())
+            if quiet is not None and loud is not None and quiet < loud and had > 0 and got > 0:
+                k = got / had
+                m.levels = {p: [(ts, w * k) for ts, w in lv] for p, lv in m.levels.items()}
+        sub_sig = det.signature_of(s) if det is not None else None
+        prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
+        if not SUB_IDENTITY_CIRCUITS and not self._one_device(name):
+            prefer = None
+        self.main._file(m, prefer=prefer)
+        sig = self.main.signature_of(m)
+        if sig is not None:
+            sig.locations[name] = sig.locations.get(name, 0) + 1
+            if sub_sig is not None:
+                self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
+
+    def _energy_pairs(self, mains: List[Session]) -> list:
+        """(cost, main index, meter, None) for every house session whose energy
+        a device meter's own readings account for."""
         pairs = []
-        for mi, m in enumerate(self.pending_main):
-            for name, subs in self.pending_sub.items():
-                det = self.subs.get(name)
-                sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
-                # one full reporting interval each, since a step can land
-                # anywhere inside one, and never less than the merge tolerance
-                tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
-                agnostic = self.agnostic.get(name, False)
-                for si, s in enumerate(subs):
-                    if _same_load(m, s, agnostic, tol):
-                        pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         # A device meter too slow to produce a session of its own still knows
         # how much ENERGY it recorded while a main-meter session ran, and that
         # answer is right where its session power is not: sampling error
         # cancels in an integral. So every main session is also offered to the
         # raw readings, scored by how far the ratio sits from one.
-        for mi, m in enumerate(self.pending_main):
+        for mi, m in enumerate(mains):
             want = m.energy_wh
             span = m.duration_s
             if want <= 0 or span <= 0:
@@ -3068,6 +3213,78 @@ class Fleet:
                     # slightly worse than a session match of the same quality,
                     # so a meter that CAN resolve the load still wins
                     pairs.append((0.5 + abs(ratio - 1.0), mi, name, None))
+        return pairs
+
+    def _session_pairs(self, mains: List[Session], main_iv: float) -> list:
+        """(cost, main index, meter, sub index) for every house session and
+        sub-meter session that could be the same load."""
+        pairs = []
+        for mi, m in enumerate(mains):
+            for name, subs in self.pending_sub.items():
+                det = self.subs.get(name)
+                sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+                # one full reporting interval each, since a step can land
+                # anywhere inside one, and never less than the merge tolerance
+                tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+                agnostic = self.agnostic.get(name, False)
+                # a three-phase meter's sessions under the HOUSE's phase names
+                mp = {} if agnostic else self.phase_map(name)
+                for si, s in enumerate(subs):
+                    s = _relabel(s, mp)
+                    if _same_load(m, s, agnostic, tol):
+                        pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
+        return pairs
+
+    def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
+                     pool: Optional[List[Session]] = None) -> None:
+        """Each new single-channel session on a three-phase meter votes for
+        the house phase whose single-phase session started with it at the
+        same size - by size and moment only, never by label."""
+        for name, sessions in closed_sub.items():
+            if self.agnostic.get(name, False):
+                continue
+            det = self.subs.get(name)
+            sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+            tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+            votes = self.phase_votes.setdefault(name, {})
+            for s in sessions:
+                if len(s.levels) != 1:
+                    continue
+                (own,), w = s.levels.keys(), sum(s.power_by_phase().values())
+                best = None
+                for m in (self.pending_main if pool is None else pool):
+                    if len(m.levels) != 1 or abs(m.start - s.start) > tol:
+                        continue
+                    mw = sum(m.power_by_phase().values())
+                    if abs(mw - w) > max(MATCH_POWER_REL * max(mw, w), MIN_NOISE_W):
+                        continue
+                    if best is None or abs(m.start - s.start) < abs(best.start - s.start):
+                        best = m
+                if best is not None:
+                    (house,) = best.levels.keys()
+                    row = votes.setdefault(own, {})
+                    row[house] = row.get(house, 0) + 1
+
+    def phase_map(self, name: str) -> Dict[str, str]:
+        return phase_mapping(self.phase_votes.get(name) or {})
+
+    def _locate(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]], latest: float) -> None:
+        self.pending_main += closed_main
+        if closed_sub:
+            self._vote_phases(closed_sub, max((st.interval for st in self.main.phases.values()), default=0.0))
+        for name, sessions in closed_sub.items():
+            self.pending_sub.setdefault(name, []).extend(sessions)
+        # BEST fit, not first fit. Taking the first session that passed and
+        # popping it is order-dependent, and at Kozolec it was the whole
+        # reason a boiler with its own meter and 367 sightings collected
+        # thirteen locations: a main session that merely fitted consumed the
+        # downstream session a better-matching one needed, and loosening the
+        # test made it worse rather than better (Anze, 2026-09-18). Every
+        # passing pair is scored, the closest is taken first, and each
+        # session is spent once.
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        pairs = self._session_pairs(self.pending_main, main_iv)
+        pairs += self._energy_pairs(self.pending_main)
         pairs.sort(key=lambda x: (x[0], x[1]))
         taken_main, taken_sub = set(), set()
         for _, mi, name, si in pairs:
@@ -3098,7 +3315,8 @@ class Fleet:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
                 "pending_main": [s.to_dict() for s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
-                "agnostic": self.agnostic}
+                "agnostic": self.agnostic, "phase_votes": self.phase_votes,
+                "unfiled": [s.to_dict() for s in self.unfiled], "identity": self.identity}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Fleet":
@@ -3110,7 +3328,48 @@ class Fleet:
         f.pending_main = [Session.from_dict(x) for x in d.get("pending_main") or []]
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
         f.agnostic = dict(d.get("agnostic") or {})
+        f.phase_votes = {n: {p: dict(r) for p, r in v.items()}
+                         for n, v in (d.get("phase_votes") or {}).items()}
+        f.unfiled = [Session.from_dict(x) for x in d.get("unfiled") or []]
+        f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         return f
+
+
+def phase_mapping(votes: Dict[str, Dict[str, int]], phases: Sequence[str] = PHASES,
+                  min_votes: Optional[int] = None) -> Dict[str, str]:
+    """Which house phase each of a meter's own channels carries.
+
+    ``votes[channel][house_phase]`` counts sessions that started on that
+    channel and on that house phase at the same moment and the same size.
+    The answer is a PERMUTATION - each channel its own phase - chosen to agree
+    with the most sessions, not a separate vote per channel: a two-phase load
+    such as Home's kiln steps on two house phases at once, and one channel on
+    its own would tie between them. With fewer than ``min_votes`` sessions in
+    all, a meter's own labels stand (identity), and a tie keeps them too.
+
+    Pure and self-contained on purpose: Load Juggler has the same question to
+    answer about a charger's phases (Anze, 2026-09-23)."""
+    channels = sorted(votes)
+    ident = {c: c for c in channels}
+    if min_votes is None:
+        min_votes = PHASE_MAP_MIN_VOTES
+    if not channels or sum(sum(r.values()) for r in votes.values()) < min_votes:
+        return ident
+    pool = sorted(set(phases) | set(channels))
+    best, best_score = ident, sum(votes[c].get(c, 0) for c in channels)
+    for perm in itertools.permutations(pool, len(channels)):
+        score = sum(votes[c].get(p, 0) for c, p in zip(channels, perm))
+        if score > best_score:
+            best, best_score = dict(zip(channels, perm)), score
+    return best
+
+
+def _relabel(s: Session, mapping: Dict[str, str]) -> Session:
+    """A session under another meter's phase names."""
+    if not mapping or all(mapping.get(p, p) == p for p in s.levels):
+        return s
+    levels = {mapping.get(p, p): lv for p, lv in s.levels.items()}
+    return replace(s, phases="".join(sorted(levels)), levels=levels)
 
 
 def _match_cost(a: Session, b: Session, phase_agnostic: bool, tol_s: float) -> float:

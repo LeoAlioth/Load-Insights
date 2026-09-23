@@ -25,8 +25,6 @@ from .const import (
     CONF_DETECTION,
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
-    CONF_MIN_EVIDENCE,
-    CONF_MIN_STEP_W,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
     NAMING_ROWS_PER_NAME,
@@ -106,7 +104,11 @@ STORAGE_VERSION = 1
 #     half-way; a leg's start that swallowed a coincident load is split when
 #     its partner leg closes; and the recorder's start-of-window copy is no
 #     longer fed in as a reading, once a minute on every phase.
-DETECTOR_GENERATION = 13
+# 14 = a three-phase sub-meter's channels are mapped onto the grid
+#     connection's phases from the data, and a one-device meter decides which
+#     signature a matched session joins - so which sessions share a signature,
+#     and where signatures are placed, both change.
+DETECTOR_GENERATION = 14
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -453,29 +455,16 @@ class DetectionRunner:
     def _clearing(self) -> list:
         """Everything worth naming, before the page's length is applied."""
         return clears_for_naming(
-            self._worth(), self.min_evidence, NAMING_MIN_ROWS,
+            self._worth(), DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
             is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
     def _by_evidence(self, worth: list) -> list:
         """See offer_for_naming, which is where this lives so it can be tested."""
         return offer_for_naming(
-            worth, len(self.detector.names()), self.min_evidence,
+            worth, len(self.detector.names()), DEFAULT_MIN_EVIDENCE,
             NAMING_MIN_ROWS, NAMING_START_ROWS, NAMING_ROWS_PER_NAME,
             is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
-    @property
-    def min_step_w(self) -> float:
-        try:
-            return max(1.0, float(self.config.get(CONF_MIN_STEP_W, MIN_NOISE_W)))
-        except (TypeError, ValueError):
-            return MIN_NOISE_W
-
-    @property
-    def min_evidence(self) -> float:
-        try:
-            return max(0.0, min(1.0, float(self.config.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))))
-        except (TypeError, ValueError):
-            return DEFAULT_MIN_EVIDENCE
 
     async def async_adopt(self, signature_id: int) -> Optional[str]:
         """Move a predecessor's name onto this signature, and persist."""
@@ -665,7 +654,9 @@ class DetectionRunner:
                     pv[p] = _align(generation[p], target)
             for p, rows in samples.items():
                 if p in self.fleet.main.phases:
-                    self.fleet.main.phases[p].min_noise = self.min_step_w
+                    # a fixed floor since 2026-09-23 - see _interval_field in
+                    # config_flow; a value stored by an older version is not read
+                    self.fleet.main.phases[p].min_noise = MIN_NOISE_W
                     # a reading that never exports is the house alone, and
                     # the house cannot draw less than nothing
                     self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
