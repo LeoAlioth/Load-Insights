@@ -1198,6 +1198,50 @@ def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
     assert abs(quiet.interval - 6.0) < 0.01, f"the cadence is still 6 s ({quiet.interval})"
 
 
+def test_another_leg_of_the_same_load_vouches_for_a_stop():
+    """A real multi-phase device switches its legs together, so one leg
+    closing is evidence the other's short off-gap was real. Home's kiln is off
+    only one or two readings between pulses; without this, whichever leg
+    swallowed its gap ran on and could not merge with the other (2026-09-23)."""
+    det = D.Detector()
+    a, c = det.phases["a"], det.phases["c"]
+    for st in (a, c):
+        st.level, st.baseline, st.interval, st.noise = 3500.0, 500.0, 6.0, 20.0
+    a.open_edges = [D._Open(since=100.0, watts=3000.0, var=None, levels=[(100.0, 3000.0)])]
+    check = det._corroborate("a", {"a": [], "c": []})
+    c.recent_closed = [(100.0, 2950.0, 148.0)]          # C's leg: same start, just closed
+    assert check(100.0, 3000.0, 148.0)
+    assert not check(100.0, 3000.0, 400.0), "closed long before now"
+    c.recent_closed = [(130.0, 2950.0, 148.0)]
+    assert not check(100.0, 3000.0, 148.0), "started 30 s later: another load"
+    c.recent_closed = [(100.0, 600.0, 148.0)]
+    assert not check(100.0, 3000.0, 148.0), "a fifth of the power: not the same device"
+    # a phase with nothing on another leg - any single-phase site - never vouches
+    lone = D.Detector()
+    lone.phases["a"].level = 3500.0
+    assert not lone._corroborate("a", {"a": []})(100.0, 3000.0, 148.0)
+
+
+def test_a_vouched_stop_closes_the_edge_it_was_vouched_for():
+    """Two loads of one size on one phase - Home's Kompresor leg (~840 W) and
+    hidrofor (~870 W) on A - are where closing the NEWEST same-sized edge is
+    wrong. The edge the other legs vouch for is the one that closes."""
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 2210.0, 500.0, 6.0, 20.0
+    kompresor = D._Open(since=100.0, watts=840.0, var=None, levels=[(100.0, 840.0)])
+    pump = D._Open(since=130.0, watts=870.0, var=None, levels=[(130.0, 870.0)])
+    st.open_edges = [kompresor, pump]                    # the pump is the newer
+    st.pending = [(160.0, 2210.0 - 840.0, None, None)]
+    st.corroborate = lambda since, watts, ts: since == 100.0   # only the Kompresor's legs agree
+    assert st._corroborated_stop(160.0) and st.close_hint is kompresor
+    closed = st._pair(160.0, 840.0, None, 2210.0 - 840.0)
+    assert closed and closed[0].start == 100.0, "the Kompresor closed, not the pump"
+    assert st.open_edges == [pump]
+    st.corroborate = lambda since, watts, ts: False
+    st.pending = [(170.0, 500.0, None, None)]
+    assert not st._corroborated_stop(170.0) and st.close_hint is None
+
+
 def test_energy_between_is_watt_hours_by_sample_and_hold():
     """A meter holds its last reading until it sends another, so the energy
     it accounts for over a window is each level times the time it stood."""
