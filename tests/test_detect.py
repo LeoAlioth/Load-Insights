@@ -966,11 +966,12 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     clock.day_wh = [100.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0]
     head, rest = clock.menu_row(tz, clock.last_seen + 600.0)
     assert len(head) <= 45, head
-    assert "every 14 min" in head, head
+    assert "starts every 14 min" in rest, rest
     assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
     assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
     assert " " not in rest.split("Mon-Sun")[1], "no day of the week may be a place to wrap"
-    assert head.startswith("1.8 kW on phase A, 70 s every 14 min"), head
+    assert head.startswith("1.8 kW on phase A, runs 70 s"), head
+    assert "every" not in head, "how often goes underneath, said as how often"
     assert "runs in" in rest, rest
 
 
