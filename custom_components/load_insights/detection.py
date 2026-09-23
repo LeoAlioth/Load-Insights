@@ -87,7 +87,11 @@ STORAGE_VERSION = 1
 #     stored spread is three times too large on a three-phase load - and the
 #     relative-noise floor is derived from each phase's measured noise
 #     rather than a flat 300 W, which changes which steps were seen at all.
-DETECTOR_GENERATION = 8
+# 9 = a level must hold for SUSTAIN_INTERVALS of the reading's own measured
+#     sample interval, so transitional samples no longer found levels, and a
+#     merge may admit ALIKE_MAD_SHARE of the pair's spread. Both change which
+#     sessions and signatures exist at all.
+DETECTOR_GENERATION = 9
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full

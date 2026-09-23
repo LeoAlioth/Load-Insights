@@ -97,7 +97,178 @@ trade, not a win, and the numbers belong in the commit message.
 
 Beware the metric's own trap: changing detection changes the *session set*, so
 percentages are over different populations. Only devices with 100+ labelled
-sessions are readable; ignore anything with single digits.
+sessions are readable; ignore anything with single digits. Better still,
+report the ABSOLUTE size of each device's dominant cluster beside the
+percentage: if a change removes sessions, a share can rise with nothing
+improved, but a dominant cluster that GROWS while the total shrinks means
+spurious sessions went and real ones consolidated.
+
+### How to tune without fooling yourself
+
+- **Sweep the dial; a single trial is not a verdict.** A degradation says that
+  one setting is wrong, not that the mechanism is. Best-fit pairing, the
+  `alike` spread and the sustain guard were each dismissed once on a single
+  bad point; two had interior optima and one was the biggest win found.
+- **Solve each site on its own, then compare.** Where both agree, the value is
+  real. Where they disagree, look for the measured quantity that explains the
+  difference before averaging them. `NOISE_REL_FLOOR_FACTOR` was found this
+  way: Kozolec's best floor and Home's best factor back-solved to the same 1.5.
+- **Tune on one window, validate on days the tuning never saw.** Fetch the
+  newest days with `tests/fetch_history.py` (it skips days already on disk)
+  and keep them out of every sweep until the choice is made.
+- **Dials interact.** Once a large change is decided, re-sweep the small ones
+  on top of it rather than against the old baseline.
+- **Ground truth only sees loads that have a sub-meter.** Home's kiln has none,
+  so a change can raise every score while wiping it out. Check unmetered loads
+  of interest separately at every point of a sweep.
+- **Point sweeps at a fixed folder.** Build tuning and hold-out folders of
+  symlinks and never replay `data/history/<site>` while a fetch is writing to
+  it - runs started a few seconds apart will read different days.
+- The laptop runs a Home replay in about two minutes on 0.1 GB, and ten at
+  once. The sites are Raspberry Pis and a rebuild takes a ten-day backfill.
+  Tune here; deploy only to confirm.
+
+## The dials
+
+Every tunable in the detector, what it does, whether it should exist as a
+fixed number at all, and what has actually been measured. **Kind** is the
+thing to check first:
+
+- **count** — a multiple of something measured per reading. The good kind:
+  one value serves every site.
+- **ratio** — a relative tolerance. Usually fine, occasionally hides a count.
+- **physical** — an absolute number about the world (watts, seconds). A
+  candidate for replacing with a measurement; see the one rule above.
+- **policy** — what to put in front of a person. Legitimately a judgement.
+- **budget** — memory or time bounds. Change for resources, not accuracy.
+
+"Tested" means swept against sub-meter ground truth unless it says otherwise.
+*Not tested* is the honest default and most rows have it. Values are those in
+the code; the sweeps are over the ten tuning days (8–17 Sep) unless marked as
+held out (18–22 Sep).
+
+### Reading the meter
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `QUANTUM_MIN_SAMPLES` | 40 | changes to see before a resolution is believed | budget | 20–200 | estimator checked on real sensors (1 W, 0.01 A, 0.1 A found correctly); not swept |
+| `QUANTUM_PERCENTILE` | 0.05 | which low percentile of changes is the quantum candidate | ratio | 0.01–0.2 | as above |
+| `QUANTUM_LATTICE_TOL` | 0.25 | how close to a whole multiple a change must be | ratio | 0.1–0.4 | as above; without the lattice check Home got 37/38/58 W phantom floors |
+| `QUANTUM_LATTICE_SHARE` | 0.9 | share of changes that must sit on the lattice | ratio | 0.7–0.98 | as above |
+| `MIN_NOISE_W` | 10 | floor under measured noise; also the user's min-step setting | physical/policy | 5–80 (UI offers 5–80) | not tested |
+| `NOISE_MAD_FACTOR` | 4.0 | measured noise = this × median idle deviation | count | 2–6 | not tested |
+| `NOISE_REL_CAP` | 0.05 | ceiling on relative noise, so a bad signal cannot call itself all noise | ratio | 0.02–0.1 | not tested |
+| `NOISE_REL_FLOOR_FACTOR` | **1.5** | level above which relative noise is measured, in units of `max(quantum, noise) / NOISE_REL_CAP` | count | 1–4 | **swept**: Kozolec's best absolute floor (300 W at 10 W noise) and Home's best factor both back-solve to 1.5. Replaced a flat 300 W |
+| `GLITCH_FLOOR_W` | 200 | a house reading this far below zero is skipped as a glitch | physical | 50–500 | not tested |
+| `IMPLAUSIBLE_BASELINE_W` | −400 | raises a repair when the idle floor goes this negative | physical | −1000 – −100 | not tested |
+| `AMP_STEP_MEMORY` | 600 | current changes remembered for measuring the amps' resolution | budget | 200–2000 | not tested; measuring per pass instead silently disabled the PF gate |
+
+### Finding steps and levels
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `SUSTAIN_SAMPLES` | 2 | readings a new level must hold before it counts | count | 2–4 | Kozolec: 3 ≈ `SUSTAIN_INTERVALS` 1.5 (86.3 vs 87.3 % wconc); 4 is worse (80.6 %) |
+| `SUSTAIN_SECONDS` | 5.0 | ...and at least this long | **physical** | — | **defective**: below the 6 s sampling interval at both sites, so it never fires |
+| `SUSTAIN_INTERVALS` | **1.5** | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
+| `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
+| `BASELINE_SEED_SAMPLES` | 24 | readings the first baseline is seeded from | budget | 12–120 | not tested |
+| `BASELINE_SEED_PERCENTILE` | 0.25 | low percentile for the seed, so a load running at start is not the floor | ratio | 0.05–0.5 | not tested |
+| `SLOW_FOLLOW` | 0.02 | how fast the tracked level follows drift, so a ramp is never a step | ratio | 0.005–0.1 | not tested |
+| `Q_RECENT_SAMPLES` | 8 | idle readings the pre-step reactive median is taken over | count | 4–20 | not tested |
+| `INRUSH_RATIO` | 2.5 | a start's first reading or level this many times the settled one is a motor's surge | ratio | 1.5–5 | on/off only; not swept. Checked physically: resistive loads (kiln, boilers) carry none, Kozolec's fridge carries +150 W. Home's Kompresor has never shown one, under old or new code |
+| `INRUSH_SAMPLES` | 2.0 | ...if it lasts no more than this many sample intervals | count | 1–3 | not tested |
+
+### Pairing steps into sessions
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `MATCH_EDGE_REL` | 0.15 | a step down pairs with a step up this close in size (or the noise) | ratio | 0.05–0.3 | **swept at both**, on top of sustain 1.5. Kozolec 0.10 → 84.1, **0.15 → 87.3**, 0.20 → 86.3 % wconc; Home 0.10 drops purity to 63.9 %, 0.20 costs the workshop boiler 57 → 40. Stays |
+| `PAIR_TIE_BAND` | **1.0** | how much better a size match must be to override recency. 0 = best-fit, 1 = newest that passes. Above 1 is identical to 1 | ratio | 0–1 | **swept** at both: Home prefers 1.0 clearly (purity 67.6 vs 64.8 % at 0.5); Kozolec flat 0.5–1.0. Stays |
+| ~~`PAIR_AGE_WEIGHT`~~ | removed | weighted ABSOLUTE age rather than rank when choosing | — | — | **swept 0–3 at Kozolec, then removed**: every positive value cost ~6 points. Recency rank carries the information, magnitude does not |
+| `MAX_OPEN_S` | 86400 | a start whose stop never came is dropped after this | physical | 3600–172800 | not tested |
+| `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **not tested — and binding**: Home's phase C sits at exactly 12 through a kiln firing, which is where the single-leg mis-pairing happens |
+| `NOISE_SESSION_WH` / `_S` | 3.0 Wh / 20 s | a session smaller AND shorter than both is dropped as a blip | physical | 1–10 Wh / 5–60 s | not tested |
+
+### Combining phases
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `MERGE_TOLERANCE_S` | 15 | per-phase sessions this close in start AND end are one load. Flat here; only the cross-meter match widens it by measured intervals | physical | 5–30 | not tested; the single-leg problem is largely sessions that miss this window, and it is a candidate for the same interval-based widening |
+| `HELD_TAIL_S` | 60 | closed sessions wait this long for a partner on another phase | physical | 15–180 | not tested |
+| `PHASE_BALANCE_MIN` | 0.4 | smallest leg / largest leg for a multi-phase session to stand | ratio | 0.2–0.7 | not tested. Note imbalance alone is weak evidence of two loads |
+
+### Signatures: matching and merging
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `MATCH_POWER_REL` | 0.10 | power tolerance for a session to match a signature | ratio | 0.05–0.25 | not tested |
+| `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' measured spread that may widen merge admission | ratio | 0–0.20 (above 0.20 the anti-walk guarantee breaks) | **swept; shipped.** Against the old sustain: Kozolec worse, Home better. On top of sustain 1.5, on held-out days, better at both: Home NASA 22 → 35, both hidrofors up, purity flat. 0.15 costs Home purity for nothing |
+| `MATCH_DURATION_FACTOR` | 3.0 | duration tolerance for a load that keeps time | ratio | 1.5–6 | not tested |
+| `LOOSE_DURATION_FACTOR` | 30.0 | duration tolerance for one that does not | ratio | 5–100 | not tested; the 3× → 30× switch is a cliff and a candidate for a continuous `duration_mad` tolerance |
+| `DURATION_IDENTITY_COUNT` | 4 | sightings before a signature's duration can identify it | count | 2–10 | not tested |
+| `DURATION_IDENTITY_SPREAD` | 0.35 | `duration_mad / duration` below which duration identifies the load | ratio | 0.1–0.6 | not tested |
+| `MATCH_PF_TOL` | 0.15 | power-factor tolerance, now widened by both sides' `pf_mad` | ratio | 0.05–0.3 | not swept; the `pf_mad` widening replaced a hard gate and took Kozolec 86 → 30 signatures |
+| `ABSORB_WINDOW` | 100 | caps the weight of history in a signature's running means | budget | 20–500 | not tested (Anze chose 100 over 50) |
+
+### Power factor
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `PF_TRUST_MAD` | 0.05 | widest error bar a factor may carry and still reach the classifier | ratio | 0.02–0.15 | judgement from the classifier's band width (heater starts at 0.93); not swept |
+| `PF_MIN_QUANTA` | 10 | load size, in quanta of apparent power, below which factors stop meaning much. Now only published as `pf_floor_w` | count | 5–20 | the swing measurement it rests on (0.20 below 100 W at Kozolec) was measured; not swept |
+
+### Attribution to device meters
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `ENERGY_MATCH_LO` / `_HI` | 0.65 / 1.35 | a device's energy rise must be within this band of the session's | ratio | 0.5–0.9 / 1.1–1.5 | not tested; flat band that could be widened by the measured quantum instead |
+| `ENERGY_MIN_QUANTA` | 2.0 | an energy rise must span this many power quanta × duration | count | 1–4 | not tested |
+| `IDLE_WINDOW_S` | 900 | the preceding window the rise is measured against | physical | 300–1800 | not tested |
+| `MATCH_PATIENCE_S` | 1200 | how long a main session waits for a slow device meter | physical | 300–3600 | set from observed Shelly reporting lag; not swept |
+| `CROSS_METER_DURATION_FACTOR` | 12.0 | duration tolerance between a main and a device session | ratio | 3–30 | not tested |
+| `SUB_SAMPLE_TAIL_S` | 7200 | device readings kept for the energy answer | budget | 3600–43200 | not tested |
+
+### Suggesting one device across settings
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `MATCH_LEVEL_RATIO` | 10.0 | widest span of power a device's settings may have | ratio | 6–30 | **swept** at Home: the kiln's group holds 17 members for every value 10–25 with the smallest at 667 W; unbounded admits a 165 W load. Kozolec has no group wider than 9.4× |
+| `RUN_MEMORY` | 12 | run windows each signature remembers for "never two at once" | budget | 6–50 | not tested |
+| `MAX_RECENT_SESSIONS` | 200 | the rolling session list | budget | — | spans only ~2 h at Home; do not build new logic on it |
+
+### Library housekeeping
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `MAX_SIGNATURES` | 200 | soft cap on the library; only unprotected signatures are evicted | budget | 100–500 | not tested; Home sits right at it |
+| `ESTABLISHED_EVIDENCE` | 0.5 | evidence at which a signature is never evicted | policy | 0.3–0.7 | not tested |
+| `ESTABLISHED_HORIZON_S` | 400 days | ...while seen within this | policy | — | not tested |
+| `YOUNG_COUNT` | 3 | sightings under which a new signature is protected... | policy | 2–5 | not tested |
+| `PRUNE_GRACE_S` | 6 h | ...for this long | policy | 1–48 h | not tested |
+| `SUCCESSOR_*` | 7 d, 6 intervals, 0.5, 5 | when a quiet named load hints that an unnamed one is what it became | policy | — | not tested |
+
+### Solar and supply
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `PV_SHARE_MIN` / `_MAX` | 0.25 / 1.25 | share of an array's step that may explain a phase's step | ratio | — | not tested |
+| `PV_MIN_SWING_W`, `PV_MIN_SAMPLES` | 200 W, 30 | evidence needed before deciding whether a reading sees the sun | physical/count | — | not tested |
+| `EXPORT_FLOOR_W`, `EXPORT_SHARE` | 50 W, 0.005 | how much export marks a reading as carrying generation | physical/ratio | — | not tested |
+| `SOURCE_IDLE_W`, `SOURCE_IDLE_SHARE` | 25 W, 0.9 | how an AC input is told apart as utility, generator or nothing | physical/ratio | — | not tested |
+| `LIVE_SHARE` | 0.2 | how often a reference circuit must carry something to be one | ratio | — | not tested |
+
+### Naming page (policy, `const.py` / `detection.py` / `config_flow.py`)
+
+| dial | value | what it does | valid range |
+|---|---|---|---|
+| `DEFAULT_MIN_EVIDENCE` | 0.7 | evidence needed to be offered (user-configurable) | 0.3–0.9 |
+| `NAMING_START_ROWS` | 6 | rows the page opens with | 3–12 |
+| `NAMING_ROWS_PER_NAME` | 4 | rows added per name given | 2–8 |
+| `NAMING_MIN_ROWS` | 5 | rows shown even when too few clear the bar | 3–10 |
+| `NAMING_MAX_ROWS` | 24 | the menu's hard length | 12–40 |
+| `MIN_COUNT_TO_NAME` | 2 | a load seen once is not offered | 2–3 |
+| `NAMING_MIN_WH` | 50 | energy a load must have used to be worth naming | 10–200 |
+| `WHEN_*` | 0.65 / 7 d / 2 d / 3 | when "usually runs mornings" etc. may be said | — |
 
 ## Commit messages carry the evidence
 
@@ -147,15 +318,24 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
-**`SUSTAIN_SECONDS = 5.0` cannot fire.** It exists to stop a transitional
-sample being taken for a level, but Home samples every 6 s, so any two
-consecutive samples clear it. Raising it to ~8 s collapses spurious
-intermediate multi-phase sessions from 53 to 15 in one kiln firing and moves
-the merged duration from 42.1 s to a correct 48.0 s. It is not a free change:
-single-leg sessions get worse (75 -> 123) and past ~13 s the kiln itself
-disappears (100 -> 40 detections), because a 48 s pulse is only ~7 samples.
-Should be expressed in measured sample intervals, alongside a fix for the
-next item.
+**Sustain now costs loads that wander.** `SUSTAIN_SECONDS = 5.0` could never
+fire at 6 s sampling; `SUSTAIN_INTERVALS = 1.5` fixed that, and was the
+largest improvement found. But a level must now hold for about three
+readings, and a continuously varying load rarely does: Home's NASA station
+(computers) lost ground on both halves of the data. `ALIKE_MAD_SHARE`
+recovers most of it. A cleaner fix would be to know which loads ramp or
+wander - the transition-position test that told Kozolec's Scala2 pump apart
+from an averaging meter - and not demand a plateau of them.
+
+**The pairing cap binds.** `MAX_OPEN_EDGES = 12`, and Home's phase C sits at
+exactly 12 open starts through a kiln firing, evicting the oldest every time a
+new one arrives. That is the phase where single-leg mis-pairing happens, and
+it is the strongest lead on the next item. Not yet investigated.
+
+**The Kompresor never shows a surge.** A three-phase motor should, and
+Kozolec's fridge does (+150 W on 53 W). Either it has a soft starter, or its
+inrush lasts well under a second and an instantaneous 6 s meter rarely lands
+a reading inside it. Unknown which.
 
 **Sessions filed on one leg of a multi-phase load.** 75 of a kiln firing's
 pulses file as single-phase at half power. The legs are NOT missed - 91 % of
