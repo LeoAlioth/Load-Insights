@@ -2052,14 +2052,16 @@ class Signature:
         rest without losing any of it. One line had to choose between the
         week in words and the week drawn; the second line has room for both
         (Anze, 2026-09-23: the naming page "does not fit all the text")."""
-        how_long = _fmt_s(self.duration_s)
-        if self.regular and self.interval_s:
-            how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
-        head = [f"{_fmt_w(self.watts)} {on_phases(self.phases)}", how_long]
+        # "runs" and "starts every", in so many words: a bare "2 min" read as
+        # either how long it runs or how often it comes (Anze, 2026-09-23)
+        head = [f"{_fmt_w(self.watts)} {on_phases(self.phases)}", f"runs {_fmt_s(self.duration_s)}"]
         tag = self.guess().tag
         if tag:
             head.append(tag)
-        rest = [f"{_fmt_wh(self.weekly_wh)} a week, {_fmt_wh(self.per_run_wh)} a run"]
+        rest = []
+        if self.regular and self.interval_s:
+            rest.append(f"starts every {_fmt_s(self.interval_s)}")
+        rest.append(f"{_fmt_wh(self.weekly_wh)} a week, {_fmt_wh(self.per_run_wh)} a run")
         # how often, in words a person can check against the appliance: a
         # load seen five times in five hours is not one seen five times a week
         span = max(self.last_seen - self.first_seen, 0.0)
@@ -2199,7 +2201,7 @@ class Signature:
         """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
         258 times - maybe a heating element (power factor 1.00, one level)'."""
         dur = _fmt_s(self.duration_s)
-        gap = f", every {_fmt_s(self.interval_s)}" if self.interval_s else ""
+        gap = f", starts every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
         pf = (f", PF {self.pf:.2f}"
               if self.pf is not None and self.pf_mad <= PF_TRUST_MAD else "")
@@ -2207,7 +2209,7 @@ class Signature:
         over = f" over {_fmt_s(span)}" if span > 0 else ""
         when = last_run_phrase(self.last_seen, now, running)
         generally = f", {self.when}" if self.when else ""
-        line = (f"{_fmt_w(self.watts)} {on_phases(self.phases)}, ~{dur}{gap}{lvl}{pf}, "
+        line = (f"{_fmt_w(self.watts)} {on_phases(self.phases)}, runs ~{dur}{gap}{lvl}{pf}, "
                 f"seen {self.count} times{over}{generally}"
                 + (f", {when}" if when else ""))
         guess = self.guess()
