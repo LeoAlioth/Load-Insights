@@ -39,7 +39,7 @@ def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     assert sig.phases == "ac" and sig.count >= 20, (sig.phases, sig.count)
     assert abs(sig.power["a"] - 3000) < 150 and abs(sig.power["c"] - 3000) < 150, sig.power
     assert 60 < sig.duration_s < 100 and 250 < sig.interval_s < 350, (sig.duration_s, sig.interval_s)
-    assert "6.0 kW on A+C" in sig.describe(None) or "5.9 kW on A+C" in sig.describe(None) or "6.1 kW on A+C" in sig.describe(None), sig.describe(None)
+    assert any(f"{w} kW on phases A and C" in sig.describe(None) for w in ("5.9", "6.0", "6.1")), sig.describe(None)
     assert all(s.phases == "ac" for s in closed)
 
 
@@ -969,6 +969,21 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     assert "every 14 min" in head, head
     assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
     assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
+    assert " " not in rest.split("Mon-Sun")[1], "no day of the week may be a place to wrap"
+    assert head.startswith("1.8 kW on phase A, 70 s every 14 min"), head
+    assert "runs in" in rest, rest
+
+
+def test_a_possible_second_setting_is_described_not_numbered():
+    """"set 4 of one device" meant nothing on a page where no other row was in
+    set 4. Say what the other load looks like instead (Anze, 2026-09-23)."""
+    other = _sig(9, 1000.0, 600.0, 0.99, 20)
+    assert D.same_device_phrase([other]) == "maybe the same device as the 1.0 kW, 10 min load"
+    assert D.same_device_phrase([]) == ""
+    three = [_sig(i, 1000.0 * i, 60.0, 0.99, 20) for i in (1, 2, 3)]
+    assert D.same_device_phrase(three).endswith("and 1 more"), D.same_device_phrase(three)
+    assert D.on_phases("a") == "on phase A" and D.on_phases("ac") == "on phases A and C"
+    assert D.on_phases("abc") == "on all three phases"
 
 
 def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
@@ -2119,12 +2134,12 @@ def test_a_small_load_is_described_in_watts():
         sig = D.Signature(id=1, phases="a", power={"a": float(watts)}, duration_s=180.0,
                           pf=0.95, count=50, first_seen=0.0, last_seen=9 * 86400.0)
         return sig.describe(timezone.utc)
-    assert row(28).startswith("28 W on A")
-    assert row(92).startswith("92 W on A")
-    assert row(345).startswith("345 W on A")
+    assert row(28).startswith("28 W on phase A")
+    assert row(92).startswith("92 W on phase A")
+    assert row(345).startswith("345 W on phase A")
     # and a kilowatt is still a kilowatt
-    assert row(4400).startswith("4.4 kW on A")
-    assert row(5918).startswith("5.9 kW on A")
+    assert row(4400).startswith("4.4 kW on phase A")
+    assert row(5918).startswith("5.9 kW on phase A")
     # the boundary belongs to kW, not to 1000 W
     assert row(999).startswith("999 W")
     assert row(1000).startswith("1.0 kW")
