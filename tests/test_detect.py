@@ -1242,6 +1242,40 @@ def test_a_vouched_stop_closes_the_edge_it_was_vouched_for():
     assert not st._corroborated_stop(170.0) and st.close_hint is None
 
 
+def test_a_level_is_the_readings_that_agree_not_the_median_of_a_transition():
+    """Home's hidrofor stopping read [1251, 1082, 436]: a sag, a half-caught
+    switch, the new level. Their median made it a 198 W step, which closed an
+    unrelated 179 W start, and left the pump's own session open for 7.8 hours.
+    The new level is the readings that agree with each other (2026-09-23)."""
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 1280.0, 250.0, 6.0, 20.0
+    st.open_edges = [D._Open(since=0.0, watts=179.0, var=None, levels=[(0.0, 179.0)]),
+                     D._Open(since=500.0, watts=845.0, var=None, levels=[(500.0, 845.0)])]
+    closed = []
+    for t, w in ((560.0, 1251.0), (566.0, 1082.0), (572.0, 436.0), (607.0, 437.0)):
+        closed += st.process(t, w)
+    assert len(closed) == 1 and closed[0].start == 500.0, closed         # the pump, not the 179 W
+    assert abs(closed[0].levels[""][0][1] - 845.0) < 5.0, closed
+    assert [o.watts for o in st.open_edges] == [179.0]
+    # and a real two-reading off-gap after a half-caught reading still counts:
+    # the time away is measured from the first reading that left the level
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 4150.0, 1250.0, 6.0, 16.0
+    st.open_edges = [D._Open(since=0.0, watts=2900.0, var=None, levels=[(0.0, 2900.0)])]
+    closed = []
+    for t, w in ((48.0, 1622.0), (54.0, 1251.0), (60.0, 1232.0)):
+        closed += st.process(t, w)
+    assert len(closed) == 1 and abs(st.level - 1241.5) < 15.0, (closed, st.level)
+
+
+def test_the_recorders_start_of_window_copy_is_not_a_reading():
+    """Asked for the state at a window's start, the recorder returns the last
+    reading again, stamped the start. At one-minute ticks that was a repeat on
+    every phase every minute, and it cost Home 2 points of purity."""
+    rows = {"a": [(60.0, 500.0), (62.1, 510.0)], "b": [(61.0, 20.0)]}
+    assert D.without_window_start(rows, 60.0) == {"a": [(62.1, 510.0)], "b": [(61.0, 20.0)]}
+
+
 def test_energy_between_is_watt_hours_by_sample_and_hold():
     """A meter holds its last reading until it sends another, so the energy
     it accounts for over a window is each level times the time it stood."""

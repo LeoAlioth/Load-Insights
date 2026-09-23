@@ -28,7 +28,7 @@ that needs `hass` belongs in the layer above it.
 |---|---|---|
 | supply | 3-phase, grid-tied | single-phase, off-grid |
 | main meter | SolarEdge SE17K inverter + M1 meter | Victron MultiPlus II 48/15000 |
-| sample interval | ~6 s | ~6 s |
+| sample interval | ~6 s in the history; 2.4 s since Anze sped up SolarEdge polling (22-23 Sep) | ~6 s |
 | power resolution | 1 W | 1 W |
 | current resolution | **0.01 A** (2.4 VA) | **0.1 A** (23 VA) |
 | measured noise | 26 / 25 / 37 W per phase | 10 W |
@@ -67,9 +67,9 @@ put in front of a person, not what an instrument can do.
 
 Watch for absolute constants that should be relative. Two have been found and
 fixed this way (`NOISE_REL_MIN_LEVEL`, a flat 300 W standing in for
-quantisation); at least one remains: **`SUSTAIN_SECONDS = 5.0` is below Home's
-6 s sampling interval, so the guard that should reject a transitional sample
-as a level can never fire.**
+quantisation), and a third since: `SUSTAIN_SECONDS = 5.0` sat below Home's 6 s
+sampling interval, so the guard meant to reject a transitional sample could
+never fire. It is now `SUSTAIN_INTERVALS`, a count of measured intervals.
 
 ## What the detector is for
 
@@ -83,6 +83,18 @@ change worth taking (Anze, 2026-09-23). Report the two groups separately so
 the trade is visible, and do not reject a change for losses confined to the
 variable ones.
 
+## When Anze lists several things to build
+
+Be thorough. Build every item on the list, and account for each one at the
+end: built and measured, or deferred - with the reason said in so many words
+and his agreement. Do not let one item's findings quietly stand in for
+another, and do not decide alone that an item "belongs in its own release"
+and then move on. On 2026-09-22 he said a detection on a sub-meter should
+always override one on a higher level. It was scoped as "the largest
+remaining piece", never built, and he believed a day later that it had been.
+Keep the list in writing while working through it and tick items off
+against it, not against memory.
+
 ## Never ship a detector change unmeasured
 
 There is a bench. Use it — replaying costs minutes and a live site costs a
@@ -93,6 +105,9 @@ python3 tests/run_all.py                                  # 15 files, all must p
 python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
+python3 tests/bench.py score home FOLDER HOUSE=residual   # the house less its sub-meters
+python3 tests/bench.py pump FOLDER HOUSE=prod             # every hidrofor run, run by run
+python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER HOUSE=prod   # lengths vs real ones
 python3 tests/replay.py data/history/kozolec              # the raw detector output
 ```
 
@@ -193,13 +208,17 @@ pulses the grid meter itself shows in them.
 | `SUSTAIN_SAMPLES` | 2 | readings a new level must hold before it counts | count | 2–4 | Kozolec: 3 ≈ `SUSTAIN_INTERVALS` 1.5 (86.3 vs 87.3 % wconc); 4 is worse (80.6 %) |
 | `SUSTAIN_SECONDS` | 5.0 | ...and at least this long | **physical** | — | **defective**: below the 6 s sampling interval at both sites, so it never fires |
 | `SUSTAIN_INTERVALS` | **1.5** | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
-| `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
+| `SUSTAIN_AGREE` | **1** | a new level is only the pending readings that AGREE with the newest; the ones before are the transition | switch | — | **shipped (gen 13).** The old rule took the median of everything away from the old level, so [1251, 1082, 436] - a sag, a half-caught switch, the stop - read as a 198 W step: it closed a 4-hour-old 179 W start and left the hidrofor's session open 7.8 h. Home purity 76.6 → 78.7 %, held out 75.0 → 78.6 %; hidrofor held out 208 → 213; Kozolec's boiler 499 / 337 → 500 / 339. The TIME away is still counted from the first reading that left - timing it from the agreeing readings alone cost the kiln a third of its pulses (399 → 264), whose off-gaps are two readings after a half-caught one |
+| `SUSTAIN_AGREE_TOL` | 1.414 | readings agree within this many `noise_at`s... | count | 1–2 | swept 1.0 / 1.414 / 2.0: Home best at √2 (held out 76.8 / 78.6 / 77.1 %); Kozolec's boiler flat, its Scala2 prefers 1.0. √2 because two readings each carry the noise |
+| `SUSTAIN_AGREE_REL` | 0.15 | ...or within this share of the step they are making | ratio | 0–0.25 | swept 0 / 0.1 / 0.15 / 0.25 on the kiln: 0 lost pulses (345 full-size) because phase A's off readings wander 19 W under load; 0.1-0.25 all ~395. 0.15 is the pairing tolerance, and the best for Kozolec |
+| `SUSTAIN_AGREE_MAX_INTERVALS` | 12 | after this many intervals of readings that never agree, the old median decides - a wandering load | count | 3–∞ | swept 3 / 6 / 12 / 24 / ∞: flat from 12 up (Kozolec identical 12-∞), so it barely binds; kept as a safety net |
+| `STEP_AT_HALFWAY` | **1** | a step is dated at the first reading more than half-way to the new level, not the first that left the old one | switch | — | **shipped (gen 13).** Kiln single-leg 141 → 118, main signature x335 → x384; hidrofor held out 213 → 220; workshop boiler held out 29 → 38; Kozolec's Scala2 held out 67 → 53 (it ramps). The kiln's LENGTHS were already right (42.0 s against 42.0 s off the grid meter) || `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
 | `MATCHED_STOP_SAMPLES` / `_INTERVALS` | **0** (off) / 0.0 | a drop the size of an open edge may pass on fewer readings than a new level | count | 1–2 / 0–1 | **swept, not shipped.** Helps the kiln (single-leg 154 → 114) but costs ramping and wandering loads (Kozolec's Scala2 140 → 106). Awaiting cross-leg corroboration - see the single-leg plan |
 | `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
 | `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
 | `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
-| `CORROBORATED_CLOSES_ITS_EDGE` | 1 | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward 48 s; did not recover the hidrofor |
-| `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
+| `CORROBORATED_CLOSES_ITS_EDGE` | 1 | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward the true 42 s; did not recover the hidrofor |
+| `CORROBORATED_SPLIT` | **1** | a leg whose start was bigger than the drop its closed partner vouches for is split: that part closes, the rest stays open as the coincident load | switch | — | **shipped (gen 13).** With the reading-level partner test it fired 164 times in ten days, 11 on the kiln, and cost Home 1.9 points held out; with only CLOSED partners: Home 77.6 → 78.6 %, held out 79.7 → 80.6 %, kiln main signature x385 → x397, single-leg 116 → 112, ladder 18 → 23. Kozolec identical || `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
 | `BASELINE_SEED_SAMPLES` | 24 | readings the first baseline is seeded from | budget | 12–120 | not tested |
 | `BASELINE_SEED_PERCENTILE` | 0.25 | low percentile for the seed, so a load running at start is not the floor | ratio | 0.05–0.5 | not tested |
 | `SLOW_FOLLOW` | 0.02 | how fast the tracked level follows drift, so a ramp is never a step | ratio | 0.005–0.1 | not tested |
@@ -215,7 +234,7 @@ pulses the grid meter itself shows in them.
 | `PAIR_TIE_BAND` | **1.0** | how much better a size match must be to override recency. 0 = best-fit, 1 = newest that passes. Above 1 is identical to 1 | ratio | 0–1 | **swept** at both: Home prefers 1.0 clearly (purity 67.6 vs 64.8 % at 0.5); Kozolec flat 0.5–1.0. Stays |
 | ~~`PAIR_AGE_WEIGHT`~~ | removed | weighted ABSOLUTE age rather than rank when choosing | — | — | **swept 0–3 at Kozolec, then removed**: every positive value cost ~6 points. Recency rank carries the information, magnitude does not |
 | `MAX_OPEN_S` | 86400 | a start whose stop never came is dropped after this | physical | 3600–172800 | not tested |
-| `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **swept at both** (production path). Lower looks better at Home by share - cap 4 gives purity 84.9 % - but that is the population trap: NASA's dominant cluster falls 113 → 78. On absolute clusters Home's best is 8 (+3/+8/+1); Kozolec's hidrofor loses 10 at 8. Small, opposite, so it stays. Raising it is worse at Home (24: NASA 113 → 68). Wants eviction by staleness rather than by count |
+| `ORPHAN_MARGIN` | 0 (off) | give up on a start once it has run this many times the longest any same-sized load has | count | 2–8 | **swept 3 and 8, not shipped - side effects.** At 3 sessions over 3 h halve (157 → 84) but Home's dryer loses 13 of 34 sessions (it runs long; loads its size run short), pump runs missed 20 → 29, Kozolec's boiler 500 → 496. Needed the bench to slice: fed in one call the library is empty until the end || `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **swept at both** (production path). Lower looks better at Home by share - cap 4 gives purity 84.9 % - but that is the population trap: NASA's dominant cluster falls 113 → 78. On absolute clusters Home's best is 8 (+3/+8/+1); Kozolec's hidrofor loses 10 at 8. Small, opposite, so it stays. Raising it is worse at Home (24: NASA 113 → 68). Wants eviction by staleness rather than by count |
 | `NOISE_SESSION_WH` / `_S` | 3.0 Wh / 20 s | a session smaller AND shorter than both is dropped as a blip | physical | 1–10 Wh / 5–60 s | not tested |
 
 ### Combining phases
@@ -426,18 +445,21 @@ Where it stands:
    pulses the grid meter shows there: full-size 353 -> 399, single-leg
    212 -> 158, ladder 23 -> 22. (The old signature-band count read 337 -> 374
    and 154 -> 96; its "96" was mostly two unrelated 3 kW loads, so fewer kiln
-   legs are fixed than it suggested.) Kozolec untouched, as a single-phase site must be. Cost: the
-   hidrofor 216 -> 208 on held-out days and Home purity 77.6 -> 75.0 %, small,
-   consistent, NOT yet explained. Following its sessions by label was
-   misleading: the energy-matched label lands on anything that overlapped a
-   pump run, so 153 of 415 labelled sessions churn for reasons that are not
-   the pump.
+   legs are fixed than it suggested.) Kozolec untouched, as a single-phase site must be. Its
+   cost - the hidrofor 216 -> 208 held out, Home purity 77.6 -> 75.0 % - is
+   EXPLAINED and gone: checked run by run against the pump's own meter, the
+   runs that went wrong were levels taken as the median of readings that did
+   not agree (a sag, a half-caught switch, the stop), and corroboration only
+   reshuffled which runs that hit. `SUSTAIN_AGREE` fixed the cause; the
+   hidrofor is at 219 held out. Following the pump's sessions by LABEL had
+   been misleading: the energy-matched label lands on anything that overlapped
+   a pump run.
 2. **Re-measure on 2.4 s data.** Home now polls at 2.4 s, where a 9 s off-gap
    is three or four readings. Expected to help further; will not repair the
    history already recorded, which is why step 1 had to be built.
-3. **Split on a coincident drop** (cause 3, about 11 cases): a level drop on
-   one leg at the instant a balanced partner leg closes is that load stopping;
-   split the long leg into the stopped part and the residual.
+3. **Split on a coincident drop - built and shipped** (`CORROBORATED_SPLIT`,
+   gen 13). Only a partner that has CLOSED may vouch for a split; the
+   reading-level test let noisy phases vouch for small loads.
 4. Longer term: know which loads RAMP and never ask them for a plateau.
 
 The global matched-stop rule stays off - not for its cost on variable loads,
@@ -448,13 +470,16 @@ one-leg stops pull the legs apart again.
 
 Measure each step with `bench.py kiln`: full-size sessions toward the pulse
 count (437), single-leg and ladder toward 0 - and purity and concentration at
-both sites. Of the 158 single-leg sessions left, 74 run over 90 s: pulses
-glued across their off-gaps on one leg, cause 1 above, which is where the
-2.4 s data should tell.
+both sites. After generation 13: full-size 410 of 437, single-leg 112 (41 of
+them over 90 s: pulses glued across their off-gaps on one leg, cause 1 above,
+which is where the faster polling should tell), ladder 23.
 
-**`_pair` reports durations ~12 % short** (42.1 s median against a true 48 s).
-Best-size-fit corrects that but is measurably worse overall - see the long
-comment in `_pair`. Likely wants a cost combining size gap and age.
+**The pump's sessions run ~4 s short** (60 s runs, timed off its own meter).
+The kiln's are right - its pulses are 42.0 s off the grid meter, not the 48 s
+this file used to say, and the sessions measure 42.0 - so pairing does not
+shorten sessions in general. What remains is the hidrofor's start reading
++7.6 s late, partly the two meters' own clocks. Measure with `bench.py
+lengths` before changing pairing.
 
 **Edge congestion has no root cause yet.** A phase accumulates open starts
 whose stops are never matched, up to 12 at once. Not caused by the sustain
@@ -462,19 +487,50 @@ problem (peak open edges is unchanged when that is fixed).
 
 **Sub-meter detections are built and discarded.** Each device meter runs its
 own detector - 54 signatures across six meters at Kozolec, far more at Home -
-and none of it reaches the main library. Anze's stated principle, not yet
-implemented: *a detection on a sub-meter should always override one at a
-higher level, especially if it is the less noisy one.* The gap is visible in
-the numbers: Kozolec's car charger has 11 clean signatures on its own meter
-and the main meter attributes nothing to it.
+and none of it reaches the main library. Anze asked for this on 2026-09-22
+and it was NOT built then (see "When Anze lists several things"): *a
+detection on a sub-meter should always override one at a higher level,
+especially if it is the less noisy one.* Kozolec's car charger has 11 clean
+signatures on its own meter and the main meter attributes nothing to it.
+
+Measured 2026-09-23, before building it (`bench.py` `HOUSE=residual` and
+`HOUSE=<circuit>`): the sub-meters are quieter but SLOWER - Home's Shellys
+report every 8-11 s against the house's 6 s (2 s since the polling change),
+Kozolec's boiler Shelly every 52 s. That decides both halves:
+- *Subtracting* them from the house before detecting leaves a phantom pulse
+  wherever the two meters see a step at different moments. Home's residual
+  scored 61.3 / 69.9 % purity against 77.6 / 79.7 % for the whole house, with
+  143 sessions still labelled as the hidrofor that had been subtracted.
+- *Detecting on the circuit* loses what the slower meter cannot see: the kiln
+  on the Hiša 3EM gave 236 full-size sessions against 409 on the house.
+So the override has to keep the HOUSE meter's timing and take the sub-meter's
+identity and power - session by session, matched - rather than hand detection
+to the slower meter. That needs the phase mapping above first.
 
 **Orphaned starts run for hours.** A start whose stop is taken by another
-edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up:
-Home has 63 sessions over three hours in five days, the longest ten hours at
-a couple of hundred watts. They are not loads, and they soak up stops that
-belong to real ones. Corroboration adds a few (63 -> 69). Expiring a start by
-how long a load of its size is ever seen to run, rather than by a flat day,
-is the natural fix - and is also what the open-edge cap sweep asked for.
+edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up.
+`SUSTAIN_AGREE` removed one source (194 -> 157 sessions over three hours in
+ten days at Home, 14 -> 11 at Kozolec). Expiring by how long a load of that
+size is seen to run was built and TESTED (`ORPHAN_MARGIN`) and is off: size
+alone cannot tell an orphan from a real long run of a size other loads run
+briefly - Home's dryer lost a third of its sessions. A start should be given
+up on when the phase shows it is no longer running, not by the clock.
+
+**Two of Home's sub-meters label their phases differently from the house.**
+Measured by matching steps: the attic 3EM's phase b carries the house's C and
+its c the house's A; the Hiša 3EM's line up. `_same_load` demands the same
+phase letters, so the attic ("Mansarda") saw 627 main sessions live and is
+credited with 92. The mapping has to be MEASURED - `bench.py`'s `_phase_map`
+does it, a permutation of channels to house phases by coinciding steps - and
+production does not do it yet.
+
+**Live ticks cost a little that a backfill does not.** Production reads a
+minute at a time. The recorder's start-of-window copy was fed in as a reading
+once a minute on every phase, which cost Home 2 points of purity replayed at
+one-minute slices; generation 13 drops it (`without_window_start`). What is
+left at one-minute slices: Home's hidrofor 219 -> 203 in its main cluster,
+from something done per call rather than per reading - not yet found. The
+bench replays in 6-hour slices, as the backfill does (`SLICE=`).
 
 **The rolling session list is too short to reason with.** `MAX_RECENT_SESSIONS
 = 200` spans about **2.1 hours** at Home and holds 11 of 199 signatures.

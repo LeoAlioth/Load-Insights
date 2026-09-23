@@ -20,6 +20,8 @@ matches a device's sensors, and anything it gets wrong can be pinned with
 --role. Everything is optional except at least one phase of power.
 """
 import argparse
+import bisect
+import math
 import csv
 import sys
 from collections import defaultdict
@@ -237,6 +239,11 @@ def main() -> int:
                         metavar="Name=sensor.x", help="a device's own meter")
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
+    parser.add_argument("--no-start-state", action="store_true",
+                        help="slice without the recorder's start-of-window row")
+    parser.add_argument("--slice-hours", type=float, default=0.0,
+                        help="feed the detector in slices this long, as production's "
+                             "backfill does (6); 0 feeds everything in one call")
     parser.add_argument("--keep-coarse", action="store_true",
                         help="do not drop hourly statistics rows")
     parser.add_argument("--no-q", action="store_true",
@@ -329,8 +336,34 @@ def main() -> int:
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
-    fleet.process(samples, subs, q, None, latest,
-                  {name: True for name in subs}, pv or None, q_quantum)
+    # Production reads the recorder six hours at a time and files what each
+    # slice closed before reading the next, so the library GROWS through a
+    # backfill. Fed in one call, nothing is filed until the end, and anything
+    # that consults the library on the way - how long a load of some size is
+    # known to run, say - finds it empty.
+    first = min(t for rows in samples.values() for t, _ in rows)
+    step = args.slice_hours * 3600.0 if args.slice_hours else (latest - first + 1.0)
+    def cut(rows, a, b):
+        """The rows in [a, b) the way the recorder answers for that window:
+        with include_start_time_state, which production asks for, the first
+        row is the state AS OF a, stamped a - a copy of the last reading,
+        repeated at every slice start (checked on Anze's home, 2026-09-23). At
+        one-minute ticks that is one extra reading a minute on every phase."""
+        i, j = bisect.bisect_left(rows, (a, -math.inf)), bisect.bisect_left(rows, (b, -math.inf))
+        part = rows[i:j]
+        if args.slice_hours and not args.no_start_state and i > 0 and (not part or part[0][0] > a):
+            part = [(a, rows[i - 1][1])] + part
+        return part
+    t = first
+    while t <= latest:
+        e = min(t + step, latest + 1e-6)
+        # sliced the way the recorder answers, then cleaned the way production
+        # cleans it, so both paths are the same code
+        fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
+                      {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
+                       for n, byp in subs.items()},
+                      q, None, e, {name: True for name in subs}, pv or None, q_quantum)
+        t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.
     # This said 100.0 from when MIN_NOISE_W was 100, and left the harness

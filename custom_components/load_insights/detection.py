@@ -47,6 +47,7 @@ from .insights.detect import (
     carries_generation,
     MIN_NOISE_W,
     _sum_series,
+    without_window_start,
     names_in_store,
     carries_load,
     classify_source,
@@ -101,7 +102,11 @@ STORAGE_VERSION = 1
 # 12 = phases are walked in time order and one leg of a multi-phase load may
 #     vouch for another's stop, so short off-gaps no longer glue one leg's
 #     pulses together - which changes which sessions exist.
-DETECTOR_GENERATION = 12
+# 13 = a new level is the readings that AGREE, dated at the first one past
+#     half-way; a leg's start that swallowed a coincident load is split when
+#     its partner leg closes; and the recorder's start-of-window copy is no
+#     longer fed in as a reading, once a minute on every phase.
+DETECTOR_GENERATION = 13
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -677,6 +682,10 @@ class DetectionRunner:
                 if ss:
                     sub_samples[name], sub_q[name] = ss, sq
                     agnostic[name] = meter["agnostic"]
+            # the recorder's start-of-window row is a copy, not a reading - see
+            # without_window_start; the sums above needed it, the detector must not
+            samples = without_window_start(samples, start.timestamp())
+            sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum),

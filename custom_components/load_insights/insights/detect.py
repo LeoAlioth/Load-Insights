@@ -96,6 +96,45 @@ SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own inter
 # station (computers) lost ground, since it rarely holds a level for three
 # readings - which ALIKE_MAD_SHARE largely gives back (2026-09-23).
 SUSTAIN_INTERVALS = 1.5
+# A level HOLDS when its readings agree with each other, not merely when every
+# one of them is away from the old level. The guard above only asked the
+# second, so a run of readings that were each "not the old level" founded a
+# level at their median even when they were a drift, a half-caught switch and
+# the real new value: Home's hidrofor stopping read [1251, 1082, 436], the
+# median made it a 198 W step, which closed a four-hour-old 179 W start, and
+# the pump's own session ran on for 7.8 hours (2026-09-23). With this on, only
+# the readings that agree with the newest one count towards the guard and the
+# level; the ones before them are the transition. 0 is the old rule.
+# Measured on the bench against the old rule (2026-09-23, one-call replay):
+#   Home     purity 76.6 -> 78.7 %, held out 75.0 -> 78.6 %; hidrofor held out
+#            208 -> 213, and the pump's runs filed cleanly 236 -> 247
+#   the kiln full-size 399 -> 397, single-leg 158 -> 141, main signature x321 -> x335
+#   Kozolec  boiler 499 / 337 -> 500 / 339; its Scala2 (which ramps) 140 / 75 -> 121 / 67
+SUSTAIN_AGREE = 1
+# ...but a load that WANDERS never agrees with itself for long, and would hold
+# the level still while it wandered. After this many sample intervals of
+# readings away from the level, the old rule decides.
+SUSTAIN_AGREE_MAX_INTERVALS = 12.0
+# How close two readings must be to AGREE, in multiples of the smallest step
+# worth calling one (noise_at). That figure compares a reading with a smoothed
+# level; two readings each carry the noise, and independent noise adds in
+# quadrature, so the same judgement between two readings is sqrt(2) wider.
+SUSTAIN_AGREE_TOL = 1.414
+# ...or within this share of the step they are making. The noise figure alone
+# was too strict under load: the kiln's off readings on phase A wander 19 W
+# against an idle-noise allowance of 14, and whole pulses were lost. At the
+# pairing tolerance, the step measured from either reading pairs the same way.
+SUSTAIN_AGREE_REL = 0.15
+# WHEN a step happened: 0 dates it at the first reading that left the old
+# level, 1 at the first reading more than half-way to the new one. The first
+# is fooled by a load that sags before it stops - Home's hidrofor then ends a
+# reading early - the second treats a start and a stop alike. On top of
+# SUSTAIN_AGREE (2026-09-23): the kiln single-leg 141 -> 118, main signature
+# x335 -> x384; Home held out hidrofor 213 -> 220, workshop boiler 29 -> 38;
+# Kozolec's boiler unchanged and its Scala2 held out 67 -> 53. The kiln's
+# session LENGTHS were already right - 42.0 s against 42.0 s timed off the
+# grid meter itself - so this is about which readings count, not about length.
+STEP_AT_HALFWAY = 1
 # How a reading's sample interval is estimated. Home Assistant records only a
 # CHANGE, so a running mean of the gaps measures how often the value changes,
 # not how often the meter reports: Home's grid meter reports every 6 s on all
@@ -152,6 +191,18 @@ CORROBORATE_BALANCE = 0.7
 # and hidrofor (~870 W) share phase A inside one pairing tolerance, and the
 # compressor's corroborated stop was closing the pump's session.
 CORROBORATED_CLOSES_ITS_EDGE = 1
+# A leg that drops by its partner's size while its own start was BIGGER - some
+# other load switched on in the same poll and was measured into the step - is
+# that leg stopping, not a step down of one load still running. Split it: the
+# vouched-for part closes, and what is left stays open as the other load.
+# Without this the kiln's leg ran on with the leftover and could not merge
+# with the partner that had stopped (cause 3 of the single-leg entry in
+# AGENTS.md). Only a partner that has actually CLOSED counts here - see
+# Detector._corroborate. Swept on the 6-hour-sliced bench (2026-09-23):
+#   Home     purity 77.6 -> 78.6 %, held out 79.7 -> 80.6 %; hidrofor 493 -> 500
+#   the kiln main signature x385 -> x397, single-leg 116 -> 112, ladder 18 -> 23
+#   Kozolec  identical, as a single-phase site must be
+CORROBORATED_SPLIT = 1
 INTERVAL_GAPS = 60
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
@@ -190,6 +241,21 @@ MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in 
 # did for its whole life. Swept on both sites; see the comment in _pair.
 PAIR_TIE_BAND = 1.0
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
+# ...or sooner: once it has been open this many times longer than any load of
+# its size on its phase has been seen to run. A start whose stop was taken by
+# another edge otherwise stays open for the whole day above, and meanwhile
+# closes against stops that belong to real loads - Home had 194 sessions over
+# three hours in ten days. A size the library has never seen keeps the flat
+# day, so a new load that runs long can still be learned. 0 is off.
+#
+# OFF, for its side effects (swept 3 and 8, 2026-09-23). At 3 the sessions
+# over three hours halve (157 -> 84) and the kiln gains a little (409/115 vs
+# 407/118), but a real long-running load of a size that other loads run
+# briefly loses its starts: Home's dryer went 34 -> 21 sessions, 20 -> 29 pump
+# runs were missed outright, Kozolec's boiler 500 -> 496. At 8 the dryer still
+# lost 9 and the kiln got worse. Kept for a better test of "this start has
+# outlived its load" than size alone.
+ORPHAN_MARGIN = 0.0
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
 # Readings of a summed house value closer together than this are one update
@@ -746,6 +812,20 @@ def unit_scale(unit: Optional[str]) -> float:
     return UNIT_SCALE.get((unit or "").strip(), 1.0)
 
 
+def without_window_start(series: Dict[str, list], start_ts: float) -> Dict[str, list]:
+    """Each series less the row the recorder stamps AT the window's start.
+
+    Asked for include_start_time_state, which the arithmetic needs - a sum
+    of two meters must know each one's value at the boundary - the recorder
+    answers with the state as of the start, stamped the start: a copy of the
+    last reading, not a reading. At one-minute ticks that put a repeat on
+    every phase every minute, and replaying ten days that way cost Home 2
+    points of purity (78.5 -> 76.8 %) and 26 extra signatures; without the
+    copies it scored as one call did (2026-09-23). A real reading landing on
+    the same microsecond is not a case worth keeping."""
+    return {k: [r for r in rows if r[0] != start_ts] for k, rows in series.items()}
+
+
 def _sum_series(a: list, b: list) -> list:
     """Two arrays' power added together, each held forward onto the other's
     sample times - one site has two trackers and reading only the first
@@ -1039,6 +1119,9 @@ class _Open:
     var: Optional[float]                          # the reactive step it started with
     levels: List[Tuple[float, float]] = field(default_factory=list)
     surge: float = 0.0                            # see PhaseState._declare_surge
+    # how long this may stay open before it is given up on - see ORPHAN_MARGIN.
+    # Worked out once, when first needed; never persisted.
+    limit: Optional[float] = None
     # Lowest and highest the phase read while this was the ONLY load running.
     # A resistive element holds its level; anything behind a variable-speed
     # drive glides between them without ever taking a step big enough to be
@@ -1125,6 +1208,9 @@ class PhaseState:
     recent_closed: List[Tuple[float, float, float]] = field(default_factory=list, repr=False, compare=False)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False)
+    # Set by the Detector for a pass: how long a load of a given size on this
+    # phase has been seen to run, or None. See ORPHAN_MARGIN.
+    longest: Optional[object] = field(default=None, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
     noise_rel: float = 0.0
@@ -1202,10 +1288,17 @@ class PhaseState:
                 self.seed = []
             return []
 
-        if self.open_edges and ts - self.open_edges[0].since > MAX_OPEN_S:
-            # a start whose stop was never seen: give up rather than pair it
-            # with an unrelated load hours later
-            self.open_edges = [e for e in self.open_edges if ts - e.since <= MAX_OPEN_S]
+        if self.open_edges:
+            if ORPHAN_MARGIN and self.longest:
+                for e in self.open_edges:
+                    if e.limit is None:
+                        seen = self.longest(e.watts)
+                        e.limit = min(MAX_OPEN_S, ORPHAN_MARGIN * seen) if seen else MAX_OPEN_S
+            if any(ts - e.since > (e.limit or MAX_OPEN_S) for e in self.open_edges):
+                # a start whose stop was never seen: give up rather than pair
+                # it with an unrelated load hours later
+                self.open_edges = [e for e in self.open_edges
+                                   if ts - e.since <= (e.limit or MAX_OPEN_S)]
 
         if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
@@ -1262,13 +1355,28 @@ class PhaseState:
             sustain = MATCHED_STOP_INTERVALS * self.interval if self.interval else 0.0
         if len(self.pending) < need or (ts - self.pending[0][0]) < sustain:
             return []
-        new_level = _median([x for _, x, _, _ in self.pending])
+        # How long the phase has been away is timed from the FIRST reading that
+        # left the old level - a half-caught switch is part of the change, and
+        # the kiln's two-reading off-gaps only clear the guard with it counted.
+        # What it moved TO is only the readings that agree (see SUSTAIN_AGREE).
+        held = self._held()
+        if len(held) < need:
+            # never settled: a load that wanders is decided the old way, or
+            # it would hold the level still for as long as it wandered
+            if not (self.interval and
+                    ts - self.pending[0][0] >= SUSTAIN_AGREE_MAX_INTERVALS * self.interval):
+                return []
+            held = self.pending
+        new_level = _median([x for _, x, _, _ in held])
         surge = self._declare_surge(self.pending[0][1], new_level)
-        known_q = [x for _, _, x, _ in self.pending if x is not None]
-        known_pv = [x for _, _, _, x in self.pending if x is not None]
+        known_q = [x for _, _, x, _ in held if x is not None]
+        known_pv = [x for _, _, _, x in held if x is not None]
         new_q = _median(known_q) if known_q else None
         new_pv = _median(known_pv) if known_pv else None
         since = self.pending[0][0]
+        if STEP_AT_HALFWAY:
+            half = 0.5 * abs(new_level - self.level)
+            since = next((p[0] for p in self.pending if abs(p[1] - self.level) >= half), since)
         self.pending = []
         step = new_level - self.level
         # the level it stepped FROM, measured over the samples just before
@@ -1317,11 +1425,29 @@ class PhaseState:
         """
         return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
 
+    def _held(self) -> list:
+        """The pending readings that agree with the newest one - the plateau,
+        if one is forming. Those before it are the transition. See
+        SUSTAIN_AGREE."""
+        if not SUSTAIN_AGREE or len(self.pending) < 2:
+            return self.pending
+        w = self.pending[-1][1]
+        # Either inside the noise, or close enough that the step measured from
+        # either reading would pair with the same edges - the pairing
+        # tolerance, applied to the step being made.
+        tol = SUSTAIN_AGREE_TOL * self.noise_at(w)
+        if SUSTAIN_AGREE_REL and self.level is not None:
+            tol = max(tol, SUSTAIN_AGREE_REL * abs(w - self.level))
+        k = len(self.pending) - 1
+        while k > 0 and abs(self.pending[k - 1][1] - w) <= tol:
+            k -= 1
+        return self.pending[k:] if k else self.pending
+
     def _matched_edge(self):
         """The open edge whose size what is pending has dropped by, if any."""
         if self.level is None or not self.open_edges:
             return None
-        drop = self.level - _median([x for _, x, _, _ in self.pending])
+        drop = self.level - _median([x for _, x, _, _ in self._held()])
         if drop <= self.noise_at(self.level):
             return None
         return next((o for o in reversed(self.open_edges)
@@ -1341,13 +1467,19 @@ class PhaseState:
         self.close_hint = None
         if self.level is None or not self.open_edges or not self.corroborate:
             return False
-        drop = self.level - _median([x for _, x, _, _ in self.pending])
+        drop = self.level - _median([x for _, x, _, _ in self._held()])
         if drop <= self.noise_at(self.level):
             return False
         for o in reversed(self.open_edges):
             if abs(o.watts - drop) <= self._tol(o.watts, drop) and self.corroborate(o.since, o.watts, ts):
                 self.close_hint = o
                 return True
+        if CORROBORATED_SPLIT:
+            # a start bigger than the drop, whose partner legs match the DROP
+            for o in reversed(self.open_edges):
+                if o.watts - drop > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts, True):
+                    self.close_hint = o
+                    return True
         return False
 
     def _remember_close(self, o, at: float) -> None:
@@ -1427,6 +1559,15 @@ class PhaseState:
                     self.open_edges.pop(i)
                     self._remember_close(o, at)
                     return [self._close(o, at, watts, var)]
+                if o is hint and CORROBORATED_SPLIT and o.watts - watts > self._tol(o.watts, watts):
+                    # the vouched-for leg stopped; the rest is the load that
+                    # started with it, and it is still running
+                    part = _Open(since=o.since, watts=watts, var=None, levels=[(o.since, watts)],
+                                 surge=o.surge)
+                    o.watts -= watts
+                    o.levels, o.var, o.surge, o.lo, o.hi = [(o.since, o.watts)], None, 0.0, None, None
+                    self._remember_close(part, at)
+                    return [self._close(part, at, watts, var)]
         cands = []
         for i, o in enumerate(self.open_edges):
             tol = self._tol(o.watts, watts)
@@ -2247,6 +2388,7 @@ class Detector:
             if q_quantum and q_quantum.get(ph):
                 st.q_quantum = q_quantum[ph]
             st.corroborate = self._corroborate(ph, samples)
+            st.longest = self._longest(ph)
             stream.extend((ts, i, ph, w) for i, (ts, w) in enumerate(rows))
         stream.sort()
         for ts, _, ph, w in stream:
@@ -2291,7 +2433,7 @@ class Detector:
             fresh = max(1.5 * (st.interval or 0.0), MERGE_TOLERANCE_S / 2)
             return rows[i][1] if ts - rows[i][0] <= fresh else None
 
-        def check(since: float, watts: float, ts: float) -> bool:
+        def check(since: float, watts: float, ts: float, closed_only: bool = False) -> bool:
             own = self.phases[ph].interval or 0.0
             for oph, ost in self.phases.items():
                 if oph == ph or ost.level is None:
@@ -2314,11 +2456,36 @@ class Detector:
                         if abs(closed_at - ts) <= window:
                             return True
                         continue
+                    if closed_only:
+                        # a split takes a partner that has actually CLOSED: the
+                        # reading-level test below lets any noisy phase vouch
+                        # for a small load, and the split then fired 164 times
+                        # in ten days, eleven of them on the kiln (2026-09-23)
+                        continue
                     v = as_of(oph, ts)
                     if v is not None and abs((ost.level - v) - owatts) <= ost._tol(owatts, abs(ost.level - v)):
                         return True
             return False
         return check
+
+    def _longest(self, ph: str):
+        """How long a load of a given size on this phase has been seen to run:
+        the longest of its recent runs, or its typical run plus the usual
+        margin for noise, whichever is more - over every signature with a leg
+        that size, since two loads of one size are not told apart here. None
+        when the library knows no such load. See ORPHAN_MARGIN."""
+        def seen(watts: float) -> Optional[float]:
+            st = self.phases[ph]
+            best = None
+            for sig in self.signatures:
+                w = sig.power.get(ph)
+                if not w or sig.count < YOUNG_COUNT or abs(w - watts) > st._tol(w, watts):
+                    continue
+                d = max([e - s for s, e in sig.runs]
+                        + [sig.duration_s + NOISE_MAD_FACTOR * sig.duration_mad])
+                best = d if best is None else max(best, d)
+            return best
+        return seen
 
     def _merge_and_file(self, closed: List[Session], latest: float) -> List[Session]:
         pool = self.held + closed
