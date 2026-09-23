@@ -162,6 +162,14 @@ thing to check first:
 the code; the sweeps are over the ten tuning days (8–17 Sep) unless marked as
 held out (18–22 Sep).
 
+**Kiln figures dated before 2026-09-23 are the OLD kiln metric**: signature
+counts in a power band. That band also caught two other 3 kW single-phase
+loads at Home, 2.5 and 5 minutes long, that run on days the kiln never fired.
+And a signature averaging 5395 W against one at 5436 W moved 39 sessions in or
+out of "full-size". Compare old figures with each other, not with new ones.
+`bench.py kiln` now counts what was filed INSIDE the firings, against the 437
+pulses the grid meter itself shows in them.
+
 ### Reading the meter
 
 | dial | value | what it does | kind | valid range | tested |
@@ -187,7 +195,7 @@ held out (18–22 Sep).
 | `SUSTAIN_INTERVALS` | **1.5** | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
 | `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
 | `MATCHED_STOP_SAMPLES` / `_INTERVALS` | **0** (off) / 0.0 | a drop the size of an open edge may pass on fewer readings than a new level | count | 1–2 / 0–1 | **swept, not shipped.** Helps the kiln (single-leg 154 → 114) but costs ramping and wandering loads (Kozolec's Scala2 140 → 106). Awaiting cross-leg corroboration - see the single-leg plan |
-| `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (single-leg 80 vs 136 with the loose partner test). See the single-leg entry for the trade |
+| `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
 | `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
 | `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
 | `CORROBORATED_CLOSES_ITS_EDGE` | 1 | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward 48 s; did not recover the hidrofor |
@@ -373,9 +381,10 @@ would keep what the mean discards.
 
 **Sessions filed on one leg of a multi-phase load - diagnosed, partly fixed.**
 Home's kiln (2-phase A+C, flat ~48 s pulses, ~9 s apart) produces ~150
-single-leg sessions over ten days alongside ~305-337 proper A+C ones; the grid
-meter shows 441 real pulses. Classified by which of `_merge_and_file`'s
-conditions refused each lone leg against its partner: **ends apart** is
+single-leg sessions over ten days alongside ~305-337 proper A+C ones; the
+grid meter shows 437 real pulses in its two firings. Classified by which of
+`_merge_and_file`'s conditions refused each lone leg against its partner:
+**ends apart** is
 involved in ~150 of 175 and the sole reason in 88. The legs start at the same
 instant (+0.0 s) but one runs on - median 72 s past its partner, up to 10 min
 - which is why no merge window up to 40 s helped. Causes, by weight:
@@ -413,8 +422,11 @@ Where it stands:
    started with it is stopping at the same moment. If so, the stop passes on
    one reading, and the edge the other legs vouched for is the one closed -
    not whichever same-sized edge is newest, which let the Kompresor's stop
-   close the hidrofor's session. Kiln full-size 337 -> 374 of 441, single-leg
-   154 -> 96; Kozolec untouched, as a single-phase site must be. Cost: the
+   close the hidrofor's session. Counted inside the firings, against the 437
+   pulses the grid meter shows there: full-size 353 -> 399, single-leg
+   212 -> 158, ladder 23 -> 22. (The old signature-band count read 337 -> 374
+   and 154 -> 96; its "96" was mostly two unrelated 3 kW loads, so fewer kiln
+   legs are fixed than it suggested.) Kozolec untouched, as a single-phase site must be. Cost: the
    hidrofor 216 -> 208 on held-out days and Home purity 77.6 -> 75.0 %, small,
    consistent, NOT yet explained. Following its sessions by label was
    misleading: the energy-matched label lands on anything that overlapped a
@@ -434,8 +446,11 @@ which is acceptable, but because it does not help the steady ones either
 corroboration, makes the kiln worse (single-leg 80 -> 97): uncorroborated
 one-leg stops pull the legs apart again.
 
-Measure each step against: kiln full-size sessions (toward 441), single-leg and
-ladder (toward 0), and purity and concentration at both sites.
+Measure each step with `bench.py kiln`: full-size sessions toward the pulse
+count (437), single-leg and ladder toward 0 - and purity and concentration at
+both sites. Of the 158 single-leg sessions left, 74 run over 90 s: pulses
+glued across their off-gaps on one leg, cause 1 above, which is where the
+2.4 s data should tell.
 
 **`_pair` reports durations ~12 % short** (42.1 s median against a true 48 s).
 Best-size-fit corrects that but is measurably worse overall - see the long
@@ -495,7 +510,12 @@ last reading of each burst instead, which needs no judgement about freshness.
 replay read Anze's template sensor; production sums grid and inverter itself.
 Values agree to 0.1 W, but timestamps and change-only recording differ, and
 the scores did too (purity 67.6 vs 68.4 %). Replay Home through
-`combine()` - the bench's `benchhouse.py` - so it matches production.
+`combine()` - `bench.py`'s `HOUSE=prod` - so it matches production. Checked
+against the live generation-12 rebuild (2026-09-23): replayed from the same
+start instant, the bench's kiln signatures came out x338 / x39 against live's
+x335 / x38. From midnight instead they came out x319: the library's history
+before a load shows up moves signature counts by tens. Compare runs over the
+same span only.
 
 ### Instrument limits, not bugs
 

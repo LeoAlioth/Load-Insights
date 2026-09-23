@@ -25,13 +25,15 @@ score   purity (does one signature hold one device) and concentration (does
         of its dominant cluster beside the share: a share can rise because
         sessions were removed, a dominant cluster that grows cannot.
 kiln    what a setting does to Home's kiln, which has no sub-meter and so is
-        invisible to `score`: full-size A+C sessions, the spurious ladder of
-        smaller A+C ones, and single-leg sessions.
+        invisible to `score`. Against the pulses the grid meter itself shows,
+        counts what was filed inside the firings: full-size A+C sessions, the
+        spurious ladder of smaller A+C ones, and sessions on one leg only.
 surge   for each metered device, whether its dominant signature carries a
         motor's starting surge - checked against what the device physically is.
 """
 from __future__ import annotations
 
+import bisect
 import collections
 import contextlib
 import io
@@ -44,6 +46,7 @@ import replay as R  # noqa: E402
 
 D = R.D
 MIN_SESSIONS = 60                      # devices below this are too few to read
+FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
 # Grundfos Scala2 with a built-in frequency converter, so it soft-starts.
@@ -135,18 +138,76 @@ def score(site: str, folder: str, dials) -> None:
           f"  wconc {wc*100:5.1f}%   {per}")
 
 
+def _kiln_pulses(folder: str) -> list:
+    """The kiln's pulses as the grid meter itself shows them: A and C dropping
+    ~3 kW together (m1 reads minus the house, so a load switching on is a
+    drop). The truth `kiln` scores against - no detector involved."""
+    s = _read_csv([folder], False)
+    a = s.get("sensor.solaredge_se17k_m1_ac_power_a") or []
+    c = s.get("sensor.solaredge_se17k_m1_ac_power_c") or []
+
+    def at(rows, t):
+        i = bisect.bisect_right(rows, (t, float("inf"))) - 1
+        return rows[i][1] if i >= 0 else None
+
+    pulses = []
+    for i in range(1, len(a)):
+        t, w = a[i]
+        if not 2600 < a[i - 1][1] - w < 3400:
+            continue
+        cb, ca = at(c, a[i - 1][0]), at(c, t + 7.0)
+        if cb is None or ca is None or not 2400 < cb - ca < 3500:
+            continue
+        if pulses and t - pulses[-1] < 20:
+            continue                      # the same pulse's second reading
+        pulses.append(t)
+    return pulses
+
+
+def _firings(pulses: list) -> list:
+    """Group pulses into firings: runs of at least FIRING_MIN_PULSES with no
+    gap over half an hour. A lone coincidence of two 3 kW loads is not one."""
+    runs = []
+    for t in pulses:
+        if runs and t - runs[-1][-1] < 1800:
+            runs[-1].append(t)
+        else:
+            runs.append([t])
+    return [(r[0] - 60, r[-1] + 60) for r in runs if len(r) >= FIRING_MIN_PULSES]
+
+
 def kiln(folder: str, dials) -> None:
+    """Scored by what the detector FILED inside the kiln's firings, against the
+    pulses the raw meter shows. Counting signatures in a power band instead -
+    what this printed until 2026-09-23 - also caught Home's other 3 kW loads
+    on one phase (two of them, 2.5 and 5 min long, run on days the kiln never
+    fired) and depended on which signatures the library happened to keep."""
     tag = _apply(dials)
-    det, _, _ = _run(folder, None)
+    det, filed, _ = _run(folder, None)
+    pulses = _kiln_pulses(folder)
+    fires = _firings(pulses)
+    inside = lambda t: any(a <= t <= b for a, b in fires)  # noqa: E731
+    watts = lambda s: sum(max(v for _, v in lv) for lv in s.levels.values())  # noqa: E731
+    n = collections.Counter()
+    for s in filed:
+        if not inside(s.start):
+            continue
+        w, long = watts(s), s.end - s.start > 90
+        if s.phases == "ac" and 5400 <= w <= 6400:
+            n["full"] += 1
+            n["glued"] += long            # two pulses read as one
+        elif s.phases == "ac" and 600 <= w < 5400:
+            n["ladder"] += 1
+        elif s.phases in ("a", "c") and 2500 <= w <= 3400:
+            n["single long" if long else "single"] += 1
+    raw = sum(1 for t in pulses if inside(t))
     tot = lambda s: sum(s.power.values())  # noqa: E731
-    ac = [s for s in det.signatures if set(s.power) == {"a", "c"}]
-    full = [s for s in ac if 5400 <= tot(s) <= 6400]
-    ladder = [s for s in ac if 600 <= tot(s) < 5400]
-    single = [s for s in det.signatures if set(s.power) in ({"a"}, {"c"}) and 2500 <= tot(s) <= 3400]
+    full = [s for s in det.signatures if set(s.power) == {"a", "c"} and 5400 <= tot(s) <= 6400]
     top = max(full, key=lambda s: s.count) if full else None
-    print(f"  {tag:44s} kiln full-size {sum(s.count for s in full):4d} sessions"
-          f" (top x{top.count if top else 0}, {top.duration_s if top else 0:4.1f} s)"
-          f"   ladder {sum(s.count for s in ladder):4d}   single-leg {sum(s.count for s in single):4d}")
+    print(f"  {tag:44s} kiln {raw} pulses in {len(fires)} firings: full-size {n['full']:4d}"
+          f" ({n['glued']} over 90 s)   ladder {n['ladder']:3d}"
+          f"   single-leg {n['single'] + n['single long']:3d} ({n['single long']} over 90 s)"
+          f"   top signature x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
 
 
 def surge(site: str, folder: str, dials) -> None:
