@@ -81,6 +81,21 @@ GLITCH_FLOOR_W = 200.0
 NOISE_MAD_FACTOR = 4.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and at least this long
+# ...and at least this many of the reading's OWN measured sample intervals,
+# which is what the guard needed all along: SUSTAIN_SECONDS is below both
+# sites' 6 s interval, so any two consecutive samples cleared it and a
+# transitional value - a ramp, a half-caught switch - could found a level.
+# 1.5 means about three readings at 6 s. Swept on both sites and on the kiln,
+# which has no sub-meter and so is invisible to the ground-truth score:
+#   Kozolec  wconc 72.2 -> 87.3 %, purity 96.4 -> 98.0 %; held out 73.8 -> 84.2
+#   the kiln full-size sessions 272 -> 317, spurious ladder 236 -> 145
+#   Home     held-out purity 64.6 -> 68.3 %
+# Home's metered loads alone peak at 2.0, but from 2.0 the kiln loses pulses
+# (-> 239 -> 211): optimising the score alone would have eaten a quarter of
+# it. The cost is on loads that WANDER rather than switch - Home's NASA
+# station (computers) lost ground, since it rarely holds a level for three
+# readings - which ALIKE_MAD_SHARE largely gives back (2026-09-23).
+SUSTAIN_INTERVALS = 1.5
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
@@ -112,6 +127,11 @@ SOURCE_UTILITY = "utility"
 SOURCE_GENERATOR = "generator"
 SOURCE_NONE = "none"
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
+# How much better a size match must be before it overrides RECENCY when a
+# step down chooses which open start it closes. 0 is pure best-fit, 1 treats
+# every passing candidate as tied and takes the newest - which is what this
+# did for its whole life. Swept on both sites; see the comment in _pair.
+PAIR_TIE_BAND = 1.0
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
@@ -156,6 +176,15 @@ NOISE_SESSION_S = 20.0
 INRUSH_RATIO = 2.5
 INRUSH_SAMPLES = 2.0
 MATCH_POWER_REL = 0.10
+# How much of two signatures' OWN measured wander may widen the band that
+# admits them to a merge. 0 was the historical behaviour - power_mad computed
+# and never read here - and above 0.20 the anti-walk guarantee breaks (the
+# 400 W -> 25 W ladder returns). Against the old sustain it looked useless at
+# Kozolec; on top of SUSTAIN_INTERVALS it wins at both sites on days it was
+# never tuned on: Home's NASA station 22 -> 35 in its dominant cluster, both
+# hidrofors up, purity unchanged. A wandering load's signatures carry a big
+# spread, and admitting some of it lets its fragments meet (2026-09-23).
+ALIKE_MAD_SHARE = 0.10
 MATCH_DURATION_FACTOR = 3.0
 # Duration CAN be part of a load's fingerprint and is not necessarily one
 # (Anze, 2026-09-22). A kettle boils the same volume every time and always
@@ -346,6 +375,9 @@ class Session:
     # overlapped and the wander could not be attributed to either.
     low: Optional[float] = None
     high: Optional[float] = None
+    # A starting surge too short to become a LEVEL of its own. PhaseState
+    # catches it while the readings are still separate - see _declare_surge.
+    surge_w: float = 0.0
     # Which signature took this session. It used to be looked up in ``recent``,
     # a DISPLAY list capped at 200 - so a backfill slice that filed more than
     # that lost the answer for all but the last few, and with it every
@@ -412,7 +444,10 @@ class Session:
             levels, _ = self._without_inrush(lv)
             if levels is not lv and levels:
                 peak += lv[0][1] - max(w for _, w in levels)
-        return peak
+        # Disjoint cases, so the larger rather than the sum: a surge shorter
+        # than the sustain window never became a level and is only in
+        # surge_w; one longer than it became its own level and is found above.
+        return max(peak, self.surge_w)
 
     @property
     def energy_wh(self) -> float:
@@ -428,14 +463,14 @@ class Session:
 
     def to_dict(self) -> dict:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
-                "pf_mad": self.pf_mad,
+                "pf_mad": self.pf_mad, "surge_w": self.surge_w,
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
         return cls(phases=d["phases"], start=d["start"], end=d["end"], pf=d.get("pf"),
-                   pf_mad=d.get("pf_mad", 0.0),
+                   pf_mad=d.get("pf_mad", 0.0), surge_w=d.get("surge_w", 0.0),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()})
 
 
@@ -922,6 +957,7 @@ class _Open:
     watts: float
     var: Optional[float]                          # the reactive step it started with
     levels: List[Tuple[float, float]] = field(default_factory=list)
+    surge: float = 0.0                            # see PhaseState._declare_surge
     # Lowest and highest the phase read while this was the ONLY load running.
     # A resistive element holds its level; anything behind a variable-speed
     # drive glides between them without ever taking a step big enough to be
@@ -932,7 +968,8 @@ class _Open:
     hi: Optional[float] = None
 
     def as_list(self) -> list:
-        return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi]
+        return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
+                self.surge]
 
     @classmethod
     def of(cls, raw) -> "_Open":
@@ -940,7 +977,8 @@ class _Open:
         levels = [tuple(x) for x in (raw[3] if len(raw) > 3 else [])] or [(since, watts)]
         return cls(since=since, watts=watts, var=var, levels=levels,
                    lo=raw[4] if len(raw) > 4 else None,
-                   hi=raw[5] if len(raw) > 5 else None)
+                   hi=raw[5] if len(raw) > 5 else None,
+                   surge=raw[6] if len(raw) > 6 else 0.0)
 
 
 @dataclass
@@ -1107,9 +1145,11 @@ class PhaseState:
             return []
 
         self.pending.append((ts, w, q, pv))
-        if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < SUSTAIN_SECONDS:
+        sustain = max(SUSTAIN_SECONDS, SUSTAIN_INTERVALS * (self.interval or 0.0))
+        if len(self.pending) < SUSTAIN_SAMPLES or (ts - self.pending[0][0]) < sustain:
             return []
         new_level = _median([x for _, x, _, _ in self.pending])
+        surge = self._declare_surge(self.pending[0][1], new_level)
         known_q = [x for _, _, x, _ in self.pending if x is not None]
         known_pv = [x for _, _, _, x in self.pending if x is not None]
         new_q = _median(known_q) if known_q else None
@@ -1132,7 +1172,7 @@ class PhaseState:
         if _is_the_sun(step, pv_step):
             return []
         if step > 0:
-            self.open_edges.append(_Open(since, step, step_q, [(since, step)]))
+            self.open_edges.append(_Open(since, step, step_q, [(since, step)], surge=surge))
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
             return []
@@ -1162,6 +1202,25 @@ class PhaseState:
         and too high for Kozolec at 10 W, which needs 200 (Anze, 2026-09-22).
         """
         return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
+
+    def _declare_surge(self, first: float, new_level: float) -> float:
+        """How far a start's FIRST reading towered over the level it settled
+        at, when the tower is too short to be a level of its own.
+
+        A motor's starting surge is one reading, and a level has to hold for
+        SUSTAIN_INTERVALS - about three - so the median of the pending readings
+        swallows it and the surge never becomes a level. The inrush detector
+        recovered surges FROM the levels, so it went blind the moment the
+        sustain guard was made to work. This is the one moment the individual
+        reading is still in hand. Same test as _without_inrush: the first
+        reading's step at least INRUSH_RATIO times the settled one."""
+        if self.level is None:
+            return 0.0
+        step = new_level - self.level
+        first_step = first - self.level
+        if step <= 0 or first_step < INRUSH_RATIO * step:
+            return 0.0
+        return first_step - step
 
     def noise_at(self, level: Optional[float] = None) -> float:
         """The smallest change worth calling a step, at that level.
@@ -1198,16 +1257,30 @@ class PhaseState:
         # sessions that already exist and has no such prior. Size-matching
         # alone lets a stop close against an older edge of similar size.
         #
+        # Then swept properly rather than tried once (2026-09-23): the dial
+        # from pure best-fit (PAIR_TIE_BAND 0) to newest-that-passes (1) has
+        # its optimum at 1 at Home and is flat 0.5-1 at Kozolec; widening the
+        # size tolerance past it (MATCH_EDGE_REL) loses at both; and weighting
+        # ABSOLUTE age rather than rank costs about six points wherever it is
+        # added. Recency rank is the information, not how much newer.
+        #
         # What best-fit DID improve is worth knowing if this is revisited:
         # the kiln's merged sessions reported a median 47.8 s against a true
         # pulse of 48, where recency gives 42.1 s. So the durations are
         # measurably wrong and the fix is not this one - probably a cost
         # combining size gap AND age rather than either alone.
-        for i in range(len(self.open_edges) - 1, -1, -1):
-            o = self.open_edges[i]
-            if abs(o.watts - watts) <= self._tol(o.watts, watts):
-                self.open_edges.pop(i)
-                return [self._close(o, at, watts, var)]
+        cands = []
+        for i, o in enumerate(self.open_edges):
+            tol = self._tol(o.watts, watts)
+            gap = abs(o.watts - watts)
+            if gap <= tol:
+                cands.append((i, gap, tol))
+        if cands:
+            best_gap = min(g for _, g, _ in cands)
+            band = PAIR_TIE_BAND * max(t for _, _, t in cands)
+            i = max(i for i, g, _ in cands if g <= best_gap + band)   # newest of the tied
+            o = self.open_edges.pop(i)
+            return [self._close(o, at, watts, var)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if o.watts - watts > self._tol(o.watts, watts):
@@ -1262,6 +1335,7 @@ class PhaseState:
         # that split the library into 86 signatures where suppressing it
         # gives 24 (Anze, 2026-09-22).
         return Session(phases="", start=o.since, end=at, levels={"": levels},
+                       surge_w=o.surge,
                        pf=_pf_from(levels[0][1], q),
                        pf_mad=_pf_spread(levels[0][1], q, self.q_quantum),
                        samples=self._span(o.since, at), low=o.lo, high=o.hi)
@@ -1409,10 +1483,14 @@ class Signature:
         spread = 0.0
         for ph in self.phases:
             mine, theirs = self.power.get(ph, 0.0), other.power.get(ph, 0.0)
-            tol = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
-            if abs(mine - theirs) > tol:
+            flat = max(MATCH_POWER_REL * max(mine, theirs), noise_w)
+            # ADMISSION may consult what the pair already knows about its own
+            # wander; the anti-walk bound below may not, or the walk rides the
+            # widened band. ALIKE_MAD_SHARE says how much of that spread is
+            # admissible - swept, see the comment at the constant.
+            if abs(mine - theirs) > flat + ALIKE_MAD_SHARE * (self.power_mad + other.power_mad):
                 return False
-            spread = max(spread, tol)
+            spread = max(spread, flat)
         # Merging is TRANSITIVE, and that is the trap. Each merge re-centres
         # the band on the new mean, so A can reach B, the pair can reach C,
         # and the walk carries on as far as you let it: ten signatures from
@@ -2047,6 +2125,7 @@ class Detector:
                 pfs.append(m.pf)
         return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
                        levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None,
+                       surge_w=sum(m.surge_w for m in g),
                        pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0))
 
     def _file(self, s: Session) -> None:

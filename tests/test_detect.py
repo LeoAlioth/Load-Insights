@@ -1136,13 +1136,18 @@ def test_which_way_round_the_grid_meter_is_wired():
 def test_a_negative_sample_on_a_house_reading_is_a_glitch_not_a_load():
     """Home's templates dip to -3000 W when their two inputs update out of
     step, then return - and the return is a +3000 W step on every phase at
-    once. A one-sample dip already fails SUSTAIN; one that lasts two samples
-    would be accepted as a real step, so on a reading that cannot go below
-    zero the samples are simply not readings."""
+    once. A dip too short to satisfy SUSTAIN already fails it; one long
+    enough would be accepted as a real step, so on a reading that cannot go
+    below zero the samples are simply not readings.
+
+    The dip is built long enough to clear SUSTAIN whatever it is set to. It
+    was two samples, written when two samples were enough - and once the
+    sustain guard was made to work, a two-sample dip was rejected before the
+    floor-zero rule this test is about ever got a say (2026-09-23)."""
     n = 200
     house = [(T0 + i * DT, 400.0) for i in range(n)]
-    house[80] = (house[80][0], -3001.0)                  # two samples, so
-    house[81] = (house[81][0], -2950.0)                  # SUSTAIN is satisfied
+    for k in range(80, 86):                              # six samples, so
+        house[k] = (house[k][0], -3000.0 + 10.0 * (k - 80))   # SUSTAIN is satisfied
     def run(floor):
         st = D.PhaseState(); st.floor_zero = floor
         out = []
