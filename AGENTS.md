@@ -106,6 +106,8 @@ python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentra
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
 python3 tests/bench.py score home FOLDER HOUSE=residual   # the house less its sub-meters
+python3 tests/bench.py score SITE FOLDER SUBS=prod        # feed production's meters to the Fleet
+python3 tests/bench.py attrib SITE FOLDER                 # where each device's sessions are placed
 python3 tests/bench.py pump FOLDER HOUSE=prod             # every hidrofor run, run by run
 python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER HOUSE=prod   # lengths vs real ones
 python3 tests/replay.py data/history/kozolec              # the raw detector output
@@ -277,6 +279,11 @@ pulses the grid meter itself shows in them.
 | `MATCH_PATIENCE_S` | 1200 | how long a main session waits for a slow device meter | physical | 300–3600 | set from observed Shelly reporting lag; not swept |
 | `CROSS_METER_DURATION_FACTOR` | 12.0 | duration tolerance between a main and a device session | ratio | 3–30 | not tested |
 | `SUB_SAMPLE_TAIL_S` | 7200 | device readings kept for the energy answer | budget | 3600–43200 | not tested |
+| `PHASE_MAP_MIN_VOTES` | 30 | shared single-phase sessions before a three-phase meter's channels are mapped onto the grid connection's phases (`phase_mapping`) | count | 10–100 | not swept; Home's attic 3EM reaches 147 in five days and maps a→B, b→C, c→A; the Hiša 3EM 1327, identity |
+| `SUB_OVERRIDE` | **1** | house sessions wait to be filed until every sub-meter fast enough to have seen them (two readings inside the run) has reported past their end; a partner then decides the signature | switch | — | **shipped (gen 14)** with the two below: Kozolec's Scala2 128 → 195 in its main signature, held out 53 → 61, purity unchanged; Home 78.6 / 80.6 → 79.1 / 80.7 %; kiln main signature x397 → x392 |
+| `SUB_METER_IDENTITY` / `SUB_DEVICE_SHARE` | **1** / 0.5 | a session whose ENERGY a one-device meter accounts for joins the house signature most of that meter's sessions went to, when it fits; one device = its own library has ≥ this share in one signature | switch / ratio | 0.4–0.8 | almost all of the gain above; share not swept (hidrofor plug 99 %, Hiša 55 %) |
+| `SUB_IDENTITY_CIRCUITS` | 0 | whether a circuit meter (many loads, e.g. Hiša) may decide too | switch | — | off was better at Home (79.1 / 80.7 vs 78.5 / 80.5 %), identical elsewhere |
+| `SUB_POWER` | 0 (off) | take the quieter sub-meter's power for a matched session | switch | — | slightly worse (NASA held out 26 → 22) |
 
 ### Suggesting one device across settings
 
@@ -311,7 +318,7 @@ pulses the grid meter itself shows in them.
 
 | dial | value | what it does | valid range |
 |---|---|---|---|
-| `DEFAULT_MIN_EVIDENCE` | 0.7 | evidence needed to be offered (user-configurable) | 0.3–0.9 |
+| `DEFAULT_MIN_EVIDENCE` | 0.7 | evidence needed to be offered (a setting until 2026-09-23) | 0.3–0.9 |
 | `NAMING_START_ROWS` | 6 | rows the page opens with | 3–12 |
 | `NAMING_ROWS_PER_NAME` | 4 | rows added per name given | 2–8 |
 | `NAMING_MIN_ROWS` | 5 | rows shown even when too few clear the bar | 3–10 |
@@ -320,7 +327,9 @@ pulses the grid meter itself shows in them.
 | `NAMING_MIN_WH` | 50 | energy a load must have used to be worth naming | 10–200 |
 | `WHEN_*` | 0.65 / 7 d / 2 d / 3 | when "usually runs mornings" etc. may be said | — |
 
-What the two settings on the detection page actually do, measured 2026-09-23:
+Two settings were REMOVED from the detection page on 2026-09-23 at Anze's
+request; their values are fixed (`DEFAULT_MIN_EVIDENCE`, `MIN_NOISE_W`) and a
+stored choice is ignored. What they did, measured before removing them:
 "How sure before offering a load" (min evidence) only filters the naming
 page, and changes it a lot - at Home 69 of 87 namable loads clear 0.5, 30
 clear 0.7, 5 clear 0.9, and the first page differs at each. "Smallest change
@@ -501,13 +510,17 @@ lengths` before changing pairing.
 whose stops are never matched, up to 12 at once. Not caused by the sustain
 problem (peak open edges is unchanged when that is fixed).
 
-**Sub-meter detections are built and discarded.** Each device meter runs its
-own detector - 54 signatures across six meters at Kozolec, far more at Home -
-and none of it reaches the main library. Anze asked for this on 2026-09-22
-and it was NOT built then (see "When Anze lists several things"): *a
-detection on a sub-meter should always override one at a higher level,
-especially if it is the less noisy one.* Kozolec's car charger has 11 clean
-signatures on its own meter and the main meter attributes nothing to it.
+**A sub-meter's detection now overrides the main meter's - built (gen 14).**
+Anze asked for it on 2026-09-22 and it was not built then (see "When Anze
+lists several things"): *a detection on a sub-meter should always override
+one at a higher level, especially if it is the less noisy one.* As built
+(`SUB_OVERRIDE`, `SUB_METER_IDENTITY`): the main meter keeps the TIMING, and a
+one-device meter decides which signature a session joins. What it does NOT
+yet fix, with production's meters fed in (`bench.py attrib`): Home's NASA
+station has 0 of its 100 held-out sessions in a signature placed at its plug,
+and 112 of the hidrofor's 361 sit in signatures placed at the main meter -
+sessions the house split so differently that the meter's own signature does
+not fit them, which the override will not force.
 
 Measured 2026-09-23, before building it (`bench.py` `HOUSE=residual` and
 `HOUSE=<circuit>`): the sub-meters are quieter but SLOWER - Home's Shellys
@@ -530,11 +543,12 @@ Kozolec's boiler Shelly every 52 s. That decides both halves:
   on the Hiša 3EM gave 236 full-size sessions against 409 on the house.
 So the override has to keep the HOUSE meter's timing and take the sub-meter's
 identity and power - session by session, matched - rather than hand detection
-to the slower meter. That needs the phase mapping above first. Kozolec may be
-different: its Pro 4PM pushes a relay switching within a second (reporting
-power only once a minute in between), so subtracting THAT meter's steps is
-untested and could work. Test it leave-one-out - subtract every meter but the
-one being scored.
+to the slower meter. Kozolec may be different: its Pro 4PM pushes a relay
+switching within a second (reporting power only once a minute in between),
+so subtracting THAT meter's steps is untested and could work. Test it
+leave-one-out - subtract every meter but the one being scored. Its Shellys'
+outbound websocket is already on and connected (checked on the devices,
+2026-09-23); nothing on them sets how often power is reported.
 
 **Orphaned starts run for hours.** A start whose stop is taken by another
 edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up.
@@ -545,14 +559,17 @@ alone cannot tell an orphan from a real long run of a size other loads run
 briefly - Home's dryer lost a third of its sessions. A start should be given
 up on when the phase shows it is no longer running, not by the clock.
 
-**One of Home's sub-meters labels its phases differently from the house.**
-Measured by matching steps: the attic 3EM's phase b carries the house's C and
-its c the house's A; the Hiša 3EM's line up. `_same_load` demands the same
-phase letters, so the attic ("Mansarda") saw 627 main sessions live and is
-credited with 92. The mapping has to be MEASURED - `bench.py`'s `_phase_map`
-does it, a permutation of channels to house phases by coinciding steps - and
-production does not do it yet. Build it as a pure function that can travel:
-Load Juggler needs the same answer to be easier to set up (Anze, 2026-09-23).
+**A sub-meter's phase labels need not be the grid connection's - fixed
+(gen 14).** Home's attic 3EM ("Mansarda") calls the grid's C "b" and its A
+"c"; the Hiša 3EM's line up. (Hiša is the house CIRCUIT's 3EM - say "under
+the grid connection", not "under the house", for what sits at the top.)
+`_same_load` demands the same letters, so the attic saw 627 main sessions live
+and was credited with 92. `phase_mapping` now learns each channel's phase from
+the single-phase sessions it shares with the main meter - a permutation, so
+the kiln stepping on two phases cannot tie - and matching uses it: the attic's
+credited sessions rose 214 -> 279 on held-out days. It is pure and
+self-contained because Load Juggler needs the same answer to be easier to set
+up (Anze, 2026-09-23).
 
 **Live ticks cost a little that a backfill does not.** Production reads a
 minute at a time. The recorder's start-of-window copy was fed in as a reading

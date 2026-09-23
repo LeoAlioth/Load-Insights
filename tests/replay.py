@@ -238,6 +238,8 @@ def main() -> int:
     parser.add_argument("--sub", action="append", default=[],
                         metavar="Name=sensor.x", help="a device's own meter")
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
+    parser.add_argument("--sub-phases", action="append", default=[],
+                        metavar="Name=sensor.a,sensor.b,sensor.c", help="a three-phase meter, per phase")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
     parser.add_argument("--no-start-state", action="store_true",
                         help="slice without the recorder's start-of-window row")
@@ -325,11 +327,20 @@ def main() -> int:
         if verdict is False:
             pv.pop(p)
 
-    subs = {}
+    subs, agnostic = {}, {}
     for pin in args.sub:
         name, _, eid = pin.partition("=")
         if eid.strip() in series:
             subs[name.strip()] = {"a": series[eid.strip()]}
+            agnostic[name.strip()] = True
+    # A three-phase meter, as production reads one: a reading per phase, under
+    # the phase letters the METER gives them - which need not be the house's.
+    for pin in args.sub_phases:
+        name, _, eids = pin.partition("=")
+        rows = {p: series[e.strip()] for p, e in zip("abc", eids.split(",")) if e.strip() in series}
+        if rows:
+            subs[name.strip()] = rows
+            agnostic[name.strip()] = False
 
     fleet = D.Fleet()
     fleet.main.tz_offset_s = 0.0
@@ -362,7 +373,7 @@ def main() -> int:
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
                       {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
                        for n, byp in subs.items()},
-                      q, None, e, {name: True for name in subs}, pv or None, q_quantum)
+                      q, None, e, agnostic, pv or None, q_quantum)
         t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.

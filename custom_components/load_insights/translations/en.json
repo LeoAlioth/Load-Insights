@@ -115,14 +115,10 @@
                 "title": "Detection settings",
                 "description": "How load detection behaves. What it watches is no longer asked here: given the grid connection and the inverters, what the house draws is worked out rather than chosen.\n\n{found}",
                 "data": {
-                    "interval_minutes": "How often to look",
-                    "min_evidence": "How sure before offering a load",
-                    "min_step_w": "Smallest change to notice"
+                    "interval_minutes": "How often to look"
                 },
                 "data_description": {
-                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage.",
-                    "min_evidence": "A house makes far more shapes than it has appliances. This is how often a load must have repeated, and how tightly, before it appears on the naming page. If too few clear the bar, the best of the rest are shown anyway - the list never runs dry.",
-                    "min_step_w": "A floor under what each phase measures for itself - the threshold also rises with whatever is running, so this is about how quiet a load can be and still register. A fridge steps 60-150 W; raise this if small things clutter the list."
+                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage."
                 }
             },
             "naming": {
@@ -335,25 +331,6 @@
                 "10": "Every 10 minutes",
                 "15": "Every 15 minutes",
                 "30": "Every 30 minutes"
-            }
-        },
-        "min_evidence": {
-            "options": {
-                "0.3": "Almost anything that repeated",
-                "0.5": "Loose - seen a few times",
-                "0.6": "Fairly sure",
-                "0.7": "Balanced",
-                "0.8": "Sure - repeats tightly",
-                "0.9": "Only the unmistakable"
-            }
-        },
-        "min_step_w": {
-            "options": {
-                "5": "5 W - almost anything",
-                "10": "10 W",
-                "20": "20 W",
-                "40": "40 W",
-                "80": "80 W - only big loads"
             }
         }
     }

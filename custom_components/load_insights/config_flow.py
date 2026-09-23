@@ -30,12 +30,7 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_DETECTION_INTERVAL,
-    CONF_MIN_EVIDENCE,
-    CONF_MIN_STEP_W,
-    STEP_CHOICES,
-    DEFAULT_MIN_EVIDENCE,
     DETECTION_BACKFILL_DAYS,
-    EVIDENCE_CHOICES,
     NAMING_MAX_STALE_S,
     DETECTION_INTERVAL_CHOICES,
     DETECTION_INTERVAL_MINUTES,
@@ -51,7 +46,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import MIN_NOISE_W, suggest_levels
+from .insights.detect import suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -187,17 +182,16 @@ def _interval_field(defaults: dict) -> dict:
     """How often the recorder is re-read. Its cost no longer scales with it -
     one query per pass rather than one per entity, and the state written
     hourly rather than every pass - so the default is a minute and slowing it
-    down is for a large site or slow storage, not for a quiet one."""
-    out = {vol.Optional(CONF_MIN_EVIDENCE,
-                        default=str(defaults.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))):
-           selector.SelectSelector(selector.SelectSelectorConfig(
-               options=[str(x) for x in EVIDENCE_CHOICES], translation_key=CONF_MIN_EVIDENCE,
-               mode=selector.SelectSelectorMode.DROPDOWN))}
-    out[vol.Optional(CONF_MIN_STEP_W,
-                     default=str(defaults.get(CONF_MIN_STEP_W, int(MIN_NOISE_W))))] = \
-        selector.SelectSelector(selector.SelectSelectorConfig(
-            options=[str(n) for n in STEP_CHOICES], translation_key=CONF_MIN_STEP_W,
-            mode=selector.SelectSelectorMode.DROPDOWN))
+    down is for a large site or slow storage, not for a quiet one.
+
+    It is the only thing left here. "How sure before offering a load" and
+    "smallest change to notice" were removed (Anze, 2026-09-23): the first
+    only filtered the naming page, which already lengthens as loads are named
+    and never runs dry, and nobody can say what an evidence of 0.7 should be;
+    the second is a floor under each phase's MEASURED noise that 1 to 10 W
+    left the scored loads alone at both sites. Both are fixed values now -
+    DEFAULT_MIN_EVIDENCE and MIN_NOISE_W - and a stored choice is ignored."""
+    out = {}
     out.update({vol.Optional(CONF_DETECTION_INTERVAL,
                          default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
             selector.SelectSelector(selector.SelectSelectorConfig(

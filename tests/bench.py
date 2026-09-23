@@ -36,6 +36,8 @@ kiln    what a setting does to Home's kiln, which has no sub-meter and so is
         spurious ladder of smaller A+C ones, and sessions on one leg only.
 surge   for each metered device, whether its dominant signature carries a
         motor's starting surge - checked against what the device physically is.
+attrib  with production's meters fed in: how many of each device's sessions
+        are placed at its own meter, and what each meter was credited with
 pump    every run Home's hidrofor meter recorded, and what the house detector
         filed for it: clean, long (its stop went elsewhere), short, multi
         (married to another phase), wrong size, missing. Run by run, which is
@@ -59,6 +61,38 @@ import replay as R  # noqa: E402
 
 D = R.D
 MIN_SESSIONS = 60                      # devices below this are too few to read
+# Every meter production reads, the way _resolve_submeters hands them over:
+# a three-phase meter per phase under its OWN labels, anything else as one
+# total whose phase is unknown. SUBS=prod feeds these to the Fleet; the
+# default feeds only cluster_lab's device meters, as the bench always has.
+PROD_SUBS = {
+    "home": {
+        "Hiša": [f"sensor.shellypro3em_34987a459ae0_phase_{p}_active_power" for p in "abc"],
+        "Mansarda": [f"sensor.attic_phase_{p}_active_power" for p in "abc"],
+        "Blaževa Soba": "sensor.shellypmminig3_84fce63c6654_power",
+        "Vtičnice - pisarna": "sensor.nasa_station_power",
+        "Polnilnica": "sensor.evbox_elvi_power_active_import",
+        "Server UPS": "sensor.server_ups_power",
+        "Susilna": "sensor.shellypmminig3_susilna_power",
+        "Workshop charger": "sensor.shellypmminig3_ecda3bc6b054_power",
+        "Hidrofor": "sensor.hidrofor_power",
+        "Attic AC": "sensor.attic_ac_power",
+        "Workshop boiler": "sensor.workshop_boiler_power",
+    },
+    "kozolec": {
+        "Boiler": "sensor.shellypro4pm_kozolec_switch_1_power",
+        "Car charger": "sensor.shellypro4pm_kozolec_switch_0_power",
+        "Washing machine": "sensor.shellypro4pm_kozolec_switch_3_power",
+        "Well pump": "sensor.kotlovnica_well_pump_power",
+        "Water pump": "sensor.kozolec_hidrofor_power",
+        "Pond": "sensor.shelly_pond_switch_0_power",
+        "Pond EVSE": "sensor.pond_evse_power",
+        "Pastir": "sensor.pastir_staja_power",
+        "Bug lamp": "sensor.bug_lamp_power",
+    },
+}
+SUBS = "lab"
+LAST_FLEET = None                      # the Fleet of the last _run, for attrib
 PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
@@ -75,8 +109,9 @@ PHYSICS = {
 _read_csv = R.read_csv
 HOUSE_IDS = {p: f"sensor.se17k_home_power_phase_{p}" for p in "abc"}
 
-# Home's own circuit and device meters that sit directly under the house
-# meter (nothing here is inside another), by the channels each publishes.
+# Home's circuit and device meters that sit directly under the grid
+# connection (nothing here is inside another), by the channels each publishes.
+# "Hiša" is one of them - the house circuit's 3EM, not the whole house.
 # Which HOUSE phase a channel carries is MEASURED - see _phase_map - because
 # the labels lie: the attic 3EM's phase b carries what the house shows on C.
 CIRCUITS = {
@@ -194,6 +229,10 @@ def _house_as(mode: str) -> None:
 def _apply(dials) -> str:
     for d in dials:
         k, v = d.split("=", 1)
+        if k == "SUBS":
+            global SUBS
+            SUBS = v
+            continue
         if k == "START_STATE":
             global START_STATE
             START_STATE = bool(float(v))
@@ -217,13 +256,15 @@ def _run(folder: str, site: str | None):
     filed, seen, full = [], {}, {}
     of, op = D.Detector._file, D.Fleet.process
 
-    def spy_file(self, s):
-        of(self, s)
+    def spy_file(self, s, *a, **kw):
+        of(self, s, *a, **kw)
         if self is seen.get("main"):
             filed.append(s)
 
     def spy_proc(self, m, sub, *a, **kw):
         seen["main"] = self.main
+        global LAST_FLEET
+        LAST_FLEET = self
         for name, byp in (sub or {}).items():
             merged = []                   # this slice's phases summed...
             for rows in byp.values():
@@ -235,7 +276,10 @@ def _run(folder: str, site: str | None):
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
     for pin in PINNED:
         argv += ["--role", pin]
-    if site:
+    if site and SUBS == "prod":
+        for n, e in PROD_SUBS[site].items():
+            argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
+    elif site:
         for n, e in lab.SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]
     saved, sys.argv = sys.argv, argv
@@ -248,9 +292,66 @@ def _run(folder: str, site: str | None):
     return seen["main"], filed, {k: sorted(v) for k, v in full.items() if v}
 
 
+def _labels_from(folder: str, site: str, fed: dict) -> dict:
+    """The device meters the score is labelled by - cluster_lab's, always.
+    Fed production's meters, the Fleet also sees circuit meters, and a circuit
+    would 'label' half the house."""
+    if SUBS != "prod":
+        return fed
+    s = _read_csv([folder], False)
+    return {n: sorted(s[e]) for n, e in lab.SITES[site]["subs"].items() if s.get(e)}
+
+
+# Which production meter each labelled device should end up placed at, and the
+# circuit that contains it where there is one.
+HOME_OF = {
+    "home": {"Hidrofor": ("Hidrofor",), "NASA station": ("Vtičnice - pisarna", "Mansarda"),
+             "Workshop boiler": ("Workshop boiler",), "Server UPS": ("Server UPS",),
+             "Susilna": ("Susilna",), "EVBox": ("Polnilnica",), "Attic AC": ("Attic AC", "Mansarda")},
+    "kozolec": {"Boiler": ("Boiler",), "Hidrofor": ("Water pump",), "Well pump": ("Well pump",),
+                "Pond EVSE": ("Pond EVSE",), "Pastir": ("Pastir",), "Bug lamp": ("Bug lamp",)},
+}
+
+
+def attrib(site: str, folder: str, dials) -> None:
+    """For each metered device: of its labelled sessions, how many went into a
+    signature PLACED at its own meter (or the circuit around it) - and how
+    many main-meter sessions each production meter was credited with."""
+    global SUBS
+    SUBS = "prod"
+    tag = _apply(dials)
+    det, filed, fed = _run(folder, site)
+    labels = lab.label(filed, _labels_from(folder, site, fed))
+    per = collections.defaultdict(lambda: [0, 0])
+    for i, name in labels.items():
+        sig = det.signature_of(filed[i])
+        per[name][0] += 1
+        if sig and sig.location in HOME_OF[site].get(name, ()):
+            per[name][1] += 1
+    credit = collections.Counter()
+    for sig in det.signatures:
+        for m, n in sig.locations.items():
+            credit[m] += n
+    where = collections.defaultdict(collections.Counter)
+    for i, name in labels.items():
+        sig = det.signature_of(filed[i])
+        where[name][sig.location if sig else "-"] += 1
+    print(f"  {tag:44s} placed right: " + "  ".join(
+        f"{n.split()[0]}:{b}/{a}" for n, (a, b) in sorted(per.items(), key=lambda x: -x[1][0]) if a >= 20))
+    print(f"  {'':44s} credited: " + "  ".join(f"{m}:{n}" for m, n in credit.most_common()))
+    print(f"  {'':44s} placed at: " + "  ".join(
+        f"{n.split()[0]}->" + ",".join(f"{w}:{c}" for w, c in where[n].most_common(3))
+        for n in sorted(where, key=lambda n: -sum(where[n].values())) if sum(where[n].values()) >= 20))
+    maps = {n: LAST_FLEET.phase_map(n) for n in LAST_FLEET.phase_votes}
+    print(f"  {'':44s} phase maps: " + "; ".join(
+        f"{n} " + ",".join(f"{k}->{v}" for k, v in sorted(m.items())) + f" ({sum(sum(r.values()) for r in LAST_FLEET.phase_votes[n].values())} votes)"
+        for n, m in maps.items()))
+
+
 def score(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, subs = _run(folder, site)
+    subs = _labels_from(folder, site, subs)
     assign = {i: det.signature_of(s).id for i, s in enumerate(filed) if det.signature_of(s)}
     labels = lab.label(filed, subs)
     r = lab.score(assign, labels, filed)
@@ -309,7 +410,7 @@ def kiln(folder: str, dials) -> None:
     on one phase (two of them, 2.5 and 5 min long, run on days the kiln never
     fired) and depended on which signatures the library happened to keep."""
     tag = _apply(dials)
-    det, filed, _ = _run(folder, None)
+    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
     pulses = _kiln_pulses(folder)
     fires = _firings(pulses)
     inside = lambda t: any(a <= t <= b for a, b in fires)  # noqa: E731
@@ -377,7 +478,7 @@ def _pump_runs(folder: str) -> list:
 
 def pump(folder: str, dials) -> None:
     tag = _apply(dials)
-    det, filed, _ = _run(folder, None)
+    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
     watts = lambda x: sum(max(v for _, v in lv) for lv in x.levels.values())  # noqa: E731
     on_a = sorted((x for x in filed if "a" in x.phases), key=lambda x: x.start)
     starts = [x.start for x in on_a]
@@ -446,6 +547,8 @@ def main() -> int:
         kiln(sys.argv[2], sys.argv[3:])
     elif cmd == "surge":
         surge(sys.argv[2], sys.argv[3], sys.argv[4:])
+    elif cmd == "attrib":
+        attrib(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == "pump":
         pump(sys.argv[2], sys.argv[3:])
     elif cmd == "lengths":
