@@ -486,12 +486,17 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                                       + max(0, len(candidates) - len(shown)))}
         options = []
         for index, sig in enumerate(shown):
-            label = sig.row(tz, now_ts, sig.id in running)
+            # Two lines: a menu row's own label is cut at the dialog's width,
+            # so it carries only what tells one load from another, and the rest
+            # goes in the row's description, which wraps (Anze, 2026-09-23: the
+            # page "does not fit all the text").
+            label, rest = sig.menu_row(tz, now_ts, sig.id in running)
             if sig.name:
                 label = f"{sig.name} — {label}"
             if sig.id in levels:
-                label += f"  [set {levels[sig.id]} of one device]"
+                rest += f" · set {levels[sig.id]} of one device"
             placeholders[f"load_{index}"] = label
+            placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")
         options.append("naming_done")
         return self.async_show_menu(step_id="naming", menu_options=options,
@@ -519,55 +524,86 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return self.async_create_entry(
             data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev})
 
-    async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
-        """The load that was picked, then its name."""
+    def _picked(self):
+        """The runner, and the load chosen from the list - or None for either."""
         runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
         if runner is None:
+            return None, None
+        sid = self.__dict__.get("_naming_selected")
+        return runner, next((s for s in runner.detector.signatures if s.id == sid), None)
+
+    async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
+        """The load that was picked, and what can be done with it.
+
+        A MENU, not a form: a form's only control is Submit, so going back to
+        the list used to mean submitting an empty name box. As a menu, back is
+        a row like any other (Anze, 2026-09-23: "when i click on an entry i
+        would like a back button"), and naming is one click further in."""
+        runner, sig = self._picked()
+        if runner is None:
             return self.async_abort(reason="no_detection")
-        sig = next((s for s in runner.detector.signatures if s.id == self._naming_selected), None)
         if sig is None:
             return await self.async_step_naming()
-        if user_input is not None:
-            self._naming_selected = None
-            name = (user_input.get("name") or "").strip()
-            if user_input.get("forget"):
-                await runner.async_rename(sig.id, None)
-            elif user_input.get("adopt"):
-                # the name moves here and leaves the old fingerprint, which
-                # keeps its history but stops answering to a name nothing
-                # matches any more
-                await runner.async_adopt(sig.id)
-            elif name:
-                await runner.async_rename(sig.id, name)
-            # An EMPTY box changes nothing and lands back on the list, which
-            # is the back button a form cannot have: its only control is
-            # Submit (Anze, 2026-09-18). Forgetting a name is its own tick,
-            # so leaving the box empty can never lose one by accident.
-            return await self.async_step_naming()
-
-        fields = {vol.Optional("name"): selector.TextSelector()}
-        if sig.name:
-            fields[vol.Optional("forget", default=False)] = selector.BooleanSelector()
         detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
         if sig.name:
             detail = f"Named **{sig.name}**.\n\n{detail}"
+        options = ["naming_name"]
         # A named load whose behaviour changed leaves its name on a
         # fingerprint nothing matches, while what replaced it sits here
         # unnamed. Offer the move where the user is already standing.
         was = runner.detector.predecessor_of(sig.id)
         if was is not None and not sig.name:
-            fields[vol.Optional("adopt", default=False)] = selector.BooleanSelector()
+            options.append("naming_adopt")
             quiet = _since(was.last_seen)
             detail = (f"**{was.name}** has not run {quiet}, and this looks like what it became "
                       f"- it was {_w(was.watts)} over {_secs(was.duration_s)}, this is "
                       f"{_w(sig.watts)} over {_secs(sig.duration_s)}, on the same phases.\n\n"
                       f"{detail}")
+        if sig.name:
+            options.append("naming_forget")
+        options.append("naming")                  # back to the list
+        return self.async_show_menu(
+            step_id="naming_detail", menu_options=options,
+            description_placeholders={"detail": detail, "name": sig.name or "",
+                                      "was": was.name if was is not None else ""})
+
+    async def async_step_naming_name(self, user_input: dict[str, Any] | None = None):
+        """The name itself. An empty box changes nothing and goes back to the
+        load, where Back is."""
+        runner, sig = self._picked()
+        if runner is None or sig is None:
+            return await self.async_step_naming()
+        if user_input is not None:
+            name = (user_input.get("name") or "").strip()
+            if not name:
+                return await self.async_step_naming_detail()
+            await runner.async_rename(sig.id, name)
+            self._naming_selected = None
+            return await self.async_step_naming()
+        head, rest = sig.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
         return self.async_show_form(
-            step_id="naming_detail",
-            data_schema=vol.Schema(fields),
-            description_placeholders={"detail": detail},
+            step_id="naming_name",
+            data_schema=vol.Schema({vol.Optional("name", description={"suggested_value": sig.name or ""}):
+                                    selector.TextSelector()}),
+            description_placeholders={"row": f"{head}\n\n{rest}"},
             last_step=False,
         )
+
+    async def async_step_naming_forget(self, user_input: dict[str, Any] | None = None):
+        runner, sig = self._picked()
+        if runner is not None and sig is not None:
+            await runner.async_rename(sig.id, None)
+        self._naming_selected = None
+        return await self.async_step_naming()
+
+    async def async_step_naming_adopt(self, user_input: dict[str, Any] | None = None):
+        # the name moves here and leaves the old fingerprint, which keeps its
+        # history but stops answering to a name nothing matches any more
+        runner, sig = self._picked()
+        if runner is not None and sig is not None:
+            await runner.async_adopt(sig.id)
+        self._naming_selected = None
+        return await self.async_step_naming()
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """How detection behaves - not what it watches.

@@ -127,7 +127,7 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica je: moč (faze), energija na teden in na zagon, koliko traja en zagon, kaj bi lahko bilo, in njegov teden od ponedeljka do nedelje. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
+                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica pove, koliko breme vleče in na katerih fazah, koliko traja en zagon in kaj bi lahko bilo; pod njo pa, koliko porabi na teden in na zagon, kdaj je nazadnje delovalo in njegov teden od ponedeljka do nedelje. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
@@ -154,6 +154,32 @@
                     "load_22": "{load_22}",
                     "load_23": "{load_23}",
                     "naming_done": "— končano, uporabi —"
+                },
+                "menu_option_descriptions": {
+                    "load_0": "{load_0_detail}",
+                    "load_1": "{load_1_detail}",
+                    "load_2": "{load_2_detail}",
+                    "load_3": "{load_3_detail}",
+                    "load_4": "{load_4_detail}",
+                    "load_5": "{load_5_detail}",
+                    "load_6": "{load_6_detail}",
+                    "load_7": "{load_7_detail}",
+                    "load_8": "{load_8_detail}",
+                    "load_9": "{load_9_detail}",
+                    "load_10": "{load_10_detail}",
+                    "load_11": "{load_11_detail}",
+                    "load_12": "{load_12_detail}",
+                    "load_13": "{load_13_detail}",
+                    "load_14": "{load_14_detail}",
+                    "load_15": "{load_15_detail}",
+                    "load_16": "{load_16_detail}",
+                    "load_17": "{load_17_detail}",
+                    "load_18": "{load_18_detail}",
+                    "load_19": "{load_19_detail}",
+                    "load_20": "{load_20_detail}",
+                    "load_21": "{load_21_detail}",
+                    "load_22": "{load_22_detail}",
+                    "load_23": "{load_23_detail}"
                 }
             },
             "overview": {
@@ -198,15 +224,24 @@
                 }
             },
             "naming_detail": {
-                "title": "Poimenujte breme",
-                "description": "{detail}\n\nVpišite ime, da dobi svoje entitete. Če polje pustite prazno, se nič ne spremeni in vrnete se na seznam - to je najbližje gumbu za nazaj, kar obrazec dopušča.",
-                "data": {
-                    "name": "Ime",
-                    "forget": "Pozabi obstoječe ime",
-                    "adopt": "Premakni to ime sem"
+                "title": "To breme",
+                "description": "{detail}",
+                "menu_options": {
+                    "naming_name": "Poimenuj",
+                    "naming_adopt": "Premakni ime {was} sem",
+                    "naming_forget": "Pozabi ime {name}",
+                    "naming": "Nazaj na seznam"
                 },
-                "data_description": {
-                    "adopt": "Stari vnos obdrzi zgodovino, a ne nosi vec imena. Njegova energija se ne pristeje temu - to sta dve vedenji ene naprave, ne en stevec."
+                "menu_option_descriptions": {
+                    "naming_name": "Vpišite ime, da dobi svoje entitete.",
+                    "naming_adopt": "Stari vnos obdrži zgodovino, a ne nosi več imena. Njegova energija se ne prišteje temu - to sta dve vedenji ene naprave, ne en števec."
+                }
+            },
+            "naming_name": {
+                "title": "Poimenujte breme",
+                "description": "{row}\n\nVpišite ime, da dobi svoje entitete. Dvema bremenoma dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Če polje pustite prazno, se vrnete nazaj brez sprememb.",
+                "data": {
+                    "name": "Ime"
                 }
             },
             "inverters": {

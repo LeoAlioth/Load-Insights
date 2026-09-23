@@ -127,7 +127,7 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row is: power (phases), energy per week and per run, how long a run lasts, what it might be, and its week from Monday to Sunday. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be; under it, what it uses a week and a run, when it last ran, and its week from Monday to Sunday. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
@@ -154,6 +154,32 @@
                     "load_22": "{load_22}",
                     "load_23": "{load_23}",
                     "naming_done": "— finished, apply —"
+                },
+                "menu_option_descriptions": {
+                    "load_0": "{load_0_detail}",
+                    "load_1": "{load_1_detail}",
+                    "load_2": "{load_2_detail}",
+                    "load_3": "{load_3_detail}",
+                    "load_4": "{load_4_detail}",
+                    "load_5": "{load_5_detail}",
+                    "load_6": "{load_6_detail}",
+                    "load_7": "{load_7_detail}",
+                    "load_8": "{load_8_detail}",
+                    "load_9": "{load_9_detail}",
+                    "load_10": "{load_10_detail}",
+                    "load_11": "{load_11_detail}",
+                    "load_12": "{load_12_detail}",
+                    "load_13": "{load_13_detail}",
+                    "load_14": "{load_14_detail}",
+                    "load_15": "{load_15_detail}",
+                    "load_16": "{load_16_detail}",
+                    "load_17": "{load_17_detail}",
+                    "load_18": "{load_18_detail}",
+                    "load_19": "{load_19_detail}",
+                    "load_20": "{load_20_detail}",
+                    "load_21": "{load_21_detail}",
+                    "load_22": "{load_22_detail}",
+                    "load_23": "{load_23_detail}"
                 }
             },
             "overview": {
@@ -198,15 +224,24 @@
                 }
             },
             "naming_detail": {
-                "title": "Name this load",
-                "description": "{detail}\n\nType a name to give it entities of its own. Leaving the box empty changes nothing and takes you back to the list, which is as close to a back button as a form allows.",
-                "data": {
-                    "name": "Name",
-                    "forget": "Forget the name it has",
-                    "adopt": "Move that name here"
+                "title": "This load",
+                "description": "{detail}",
+                "menu_options": {
+                    "naming_name": "Name it",
+                    "naming_adopt": "Move the name {was} here",
+                    "naming_forget": "Forget the name {name}",
+                    "naming": "Back to the list"
                 },
-                "data_description": {
-                    "adopt": "The old entry keeps its history but stops carrying the name. Its energy is not added to this one - they are two behaviours of one appliance, not one meter."
+                "menu_option_descriptions": {
+                    "naming_name": "Type a name to give it entities of its own.",
+                    "naming_adopt": "The old entry keeps its history but stops carrying the name. Its energy is not added to this one - they are two behaviours of one appliance, not one meter."
+                }
+            },
+            "naming_name": {
+                "title": "Name this load",
+                "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything.",
+                "data": {
+                    "name": "Name"
                 }
             },
             "inverters": {

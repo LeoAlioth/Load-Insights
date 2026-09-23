@@ -59,6 +59,7 @@ import replay as R  # noqa: E402
 
 D = R.D
 MIN_SESSIONS = 60                      # devices below this are too few to read
+PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
@@ -125,6 +126,13 @@ def _house_as(mode: str) -> None:
     that, less every meter in CIRCUITS, each read as of the house's own
     readings. HOUSE=<a CIRCUITS name>: that meter alone, as if it were the
     house - to see what detecting a load on its own circuit is worth."""
+    global PINNED
+    # Pin the house to the reading built here. Left to guess, the replay
+    # refuses any phase that dips below zero as "carrying generation" - which
+    # a house less its sub-meters does - and silently took the attic 3EM's
+    # own channels instead for two of the three phases (2026-09-23).
+    PINNED = [] if mode == "prod" else [f"power_{p}={HOUSE_IDS[p]}" for p in "abc"]
+
     def read(paths, keep):
         s = _read_csv(paths, keep)
         inv = s.get("sensor.solaredge_se17k_i1_ac_power")
@@ -144,6 +152,34 @@ def _house_as(mode: str) -> None:
             for p, hr in house.items():
                 chans = [s[c] for m in maps.values() for c, q in m.items() if q == p and s.get(c)]
                 s[HOUSE_IDS[p]] = [(ts, w - sum((_at(r, ts) or 0.0) for r in chans)) for ts, w in hr]
+            return s
+        if mode in ("residual_interp", "residual_1s"):
+            # Anze (2026-09-23): what if every series were put on one clock by
+            # interpolating first? Between two readings no further apart than
+            # the meter's own cadence the line is drawn; across a longer gap
+            # the value is HELD, because Home Assistant records only changes
+            # and a line across a quiet hour would invent a ramp.
+            def interp(rows):
+                gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
+                reach = 2.0 * gaps[len(gaps) // 2] if gaps else 0.0
+                times = [r[0] for r in rows]
+                def at(ts):
+                    i = bisect.bisect_right(times, ts) - 1
+                    if i < 0:
+                        return 0.0
+                    if i + 1 < len(rows) and rows[i + 1][0] - rows[i][0] <= reach:
+                        (t0, v0), (t1, v1) = rows[i], rows[i + 1]
+                        return v0 + (v1 - v0) * (ts - t0) / (t1 - t0)
+                    return rows[i][1]
+                return at, reach
+            for p, hr in house.items():
+                chans = [interp(s[c])[0] for m in maps.values() for c, q in m.items() if q == p and s.get(c)]
+                if mode == "residual_interp":
+                    grid = hr
+                else:
+                    hat, _ = interp(hr)
+                    grid = [(float(ts), hat(ts)) for ts in range(int(hr[0][0]) + 1, int(hr[-1][0]))]
+                s[HOUSE_IDS[p]] = [(ts, w - sum(f(ts) for f in chans)) for ts, w in grid]
             return s
         m = maps[mode]
         for p in "abc":
@@ -197,6 +233,8 @@ def _run(folder: str, site: str | None):
 
     D.Detector._file, D.Fleet.process = spy_file, spy_proc
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
+    for pin in PINNED:
+        argv += ["--role", pin]
     if site:
         for n, e in lab.SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]

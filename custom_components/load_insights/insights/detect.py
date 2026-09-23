@@ -1997,6 +1997,31 @@ class Signature:
         bars = "" if generally else sparkline(self.day_wh)
         return f"{line} {bars}" if bars else line
 
+    def menu_row(self, tz, now: Optional[float] = None, running: bool = False) -> Tuple[str, str]:
+        """The same, as a menu row's two lines: a headline short enough never
+        to be cut - what it draws, on which phases, how long a run lasts, what
+        it might be - and underneath, a line that WRAPS, so it can say the
+        rest without losing any of it. One line had to choose between the
+        week in words and the week drawn; the second line has room for both
+        (Anze, 2026-09-23: the naming page "does not fit all the text")."""
+        phases = "+".join(p.upper() for p in self.phases)
+        how_long = _fmt_s(self.duration_s)
+        if self.regular and self.interval_s:
+            how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
+        head = [f"{_fmt_w(self.watts)} ({phases})", how_long]
+        tag = self.guess().tag
+        if tag:
+            head.append(tag)
+        rest = [f"{_fmt_wh(self.weekly_wh)} a week, {_fmt_wh(self.per_run_wh)} a run"]
+        when = last_run_phrase(self.last_seen, now, running)
+        if when:
+            rest.append(when)
+        generally = self.when
+        if generally:
+            rest.append(generally)
+        rest.append(f"Mon-Sun {sparkline(self.day_wh)}")
+        return ", ".join(head), " · ".join(rest)
+
     @property
     def keeps_time(self) -> bool:
         """Has this load shown that its duration is part of what it is?"""
