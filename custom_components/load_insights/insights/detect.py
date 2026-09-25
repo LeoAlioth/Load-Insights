@@ -2198,8 +2198,9 @@ class Signature:
             t += step
 
     def describe(self, tz, now: Optional[float] = None, running: bool = False) -> str:
-        """Words for the naming page: '6.1 kW on A+C, ~80 s, every 3 min, seen
-        258 times - maybe a heating element (power factor 1.00, one level)'."""
+        """Words for the naming page: '6.1 kW on phases A and C, runs ~80 s,
+        starts every 3 min, seen 258 times - maybe a heating element (power
+        factor 1.00, one level)'."""
         dur = _fmt_s(self.duration_s)
         gap = f", starts every {_fmt_s(self.interval_s)}" if self.interval_s else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
