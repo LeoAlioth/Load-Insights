@@ -156,12 +156,16 @@ phase leaving its idle baseline opens a **session**; sustained changes inside
 it are levels, so a washing machine is one session with a heater level and a
 motor level; sessions that start and end together on several phases are one
 multi-phase load. Closed sessions are matched to **signatures** (phase set,
-watts per phase, duration, PF) and described in words - "6.1 kW on A+C, ~80 s,
-every 3 min, seen 258 times". Meters below the main one need no setting up. Every device on your Energy
+watts per phase, duration, PF) and described in words - "6.1 kW on phases A and C,
+runs ~80 s, starts every 3 min, seen 258 times". Meters below the main one need no setting up. Every device on your Energy
 dashboard is resolved to its Home Assistant device and its power readings are
 discovered the same way - per phase where the hardware has them, one total
 where it does not - so a load that the main meter and a device's own meter
-both see is **located and named** at once. `included_in_stat` supplies the
+both see is **located and named** at once. A device meter's phase letters need not be
+the grid connection's - whoever wired it chose which clamp is "a" - so each of its
+channels is matched to a phase by the single-phase loads both meters see. The main
+meter says when a run starts and stops; a device meter with one device on it says
+which load the run was. `included_in_stat` supplies the
 nesting, so a load seen by both the workshop's meter and the boiler's belongs
 to the boiler; a signature's `location` says which, or `main` when no device
 meter saw it. Two sensors: **Detected loads** (how many are on now, with the signature
@@ -173,7 +177,8 @@ once, on the *Name a detected load* page: pick one from the list, described in
 words, and type a name. It then gets a **running** binary sensor and a
 **power** sensor of its own. Two signatures given the same name are one device
 on different settings, and the page suggests candidates for that: same phases,
-same power factor, never running at once. Naming signatures, explaining them with the dashboard's known
+same power factor, about as long a run, within ten times each other's power, and
+never running at once. Naming signatures, explaining them with the dashboard's known
 devices, and feeding them back into the forecast are the next stages.
 
 ## What a load might be
@@ -249,14 +254,16 @@ forecast leaves the rest of the week reading as pure consumption.
 
 ## When something is half-done
 
-Three things leave the integration working and quietly worse, and none is an
+Four things leave the integration working and quietly worse, and none is an
 error, so each is raised as a repair notification while it is true and
 withdrawn the moment it is fixed: a weather entity without an outdoor
 temperature sensor or the reverse (the response needs both halves and can
 never fit); a PV site with no forecast integration linked on the Energy
-dashboard (the grid forecast then predicts a sunless week); and a metered
+dashboard (the grid forecast then predicts a sunless week); a metered
 device whose hardware publishes only energy, never power, which detection
-cannot see.
+cannot see; and a house reading whose idle floor sits well below zero - a grid
+meter set as the house reading, or an inverter left out - where every load
+detection finds is nonsense.
 
 ## Diagnostics
 
