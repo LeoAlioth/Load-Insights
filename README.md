@@ -279,8 +279,10 @@ question about a number.
 `load_insights.refresh` recomputes every forecast now rather than at the top
 of the hour - useful straight after changing an input, to see whether it
 engaged. `load_insights.reset_detection` forgets every signature and starts
-the meter's backfill again, for when a meter changed or a phase was rewired;
-names are lost with the signatures.
+the meter's backfill again, for when a meter changed or a phase was rewired.
+Names are kept and handed back to the rebuilt load that looks like each one;
+where the site really has changed, nothing matches and the name does not
+return.
 
 ## Requirements
 

@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.4.1
+
+### Fixes
+
+- **A house reading's idle floor can no longer be dragged below zero.** A reading that is the house alone cannot draw less than nothing, so a dip below zero is skipped and the floor is held at or above it - but whether a reading is the house alone was judged afresh on every pass, from that pass's readings, and a live pass reads one minute: some 25 readings, where one dip is 4 % of them against the 0.5 % that marks an export, and fewer than 30 counted as "no" outright. So the guard was off on nearly every live pass, and one cloud edge - the meter and the inverter read a moment apart while production swung between 7 and 17 kW - left Home's phase B floor at -1483 W. It never came back: the floor only moves while the phase is idle, and a floor 1.7 kW too low makes it look busy for good, so every load on that phase was measured from it, and a repair said the house reading goes negative. The verdict now needs 200 readings - enough that one reading is no more than the share - is kept where a pass is too short to give one, and is saved with the phase so a restart does not lose it. A floor already stuck stays stuck until `load_insights.reset_detection`, which keeps the names.
+
+---
+
 ## 0.4.0
 
 ### New Features

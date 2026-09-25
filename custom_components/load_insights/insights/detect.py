@@ -226,6 +226,12 @@ PV_MIN_SAMPLES = 30
 # cent of a day is minutes, not a spike.
 EXPORT_FLOOR_W = 50.0
 EXPORT_SHARE = 0.005
+# ...and a share means nothing until one reading is worth no more than it:
+# below this a single dip decides the verdict. Derived from EXPORT_SHARE, not
+# tuned. A live pass reads one minute - some 25 readings - and judged on its
+# own it switched the house's floor guard off on every pass, until one cloud
+# edge left Home's phase B floor at -1483 W for good (2026-09-25).
+GENERATION_MIN_SAMPLES = int(round(1.0 / EXPORT_SHARE))
 # Below this an AC input is carrying nothing; a generator sits here almost
 # always, while a utility connection crosses zero and moves on.
 SOURCE_IDLE_W = 25.0
@@ -985,7 +991,7 @@ def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     negative" survives anything.
 
     None when there is too little to look at."""
-    if len(rows) < PV_MIN_SAMPLES:
+    if len(rows) < max(PV_MIN_SAMPLES, GENERATION_MIN_SAMPLES):
         return None
     below = sum(1 for _, value in rows if value < -EXPORT_FLOOR_W)
     return below >= EXPORT_SHARE * len(rows)
@@ -1701,7 +1707,8 @@ class PhaseState:
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
-                "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts}
+                "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
+                "floor_zero": self.floor_zero}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "PhaseState":
@@ -1714,7 +1721,8 @@ class PhaseState:
                    step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
-                   open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"))
+                   open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
+                   floor_zero=bool(d.get("floor_zero", False)))
 
 
 # ------------------------------------------------------------------ signatures
