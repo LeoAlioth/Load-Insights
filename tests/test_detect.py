@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from datetime import timezone  # noqa: E402
 from _load import load, run_main  # noqa: E402
 
 D = load("insights.detect")
@@ -38,7 +39,7 @@ def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     assert sig.phases == "ac" and sig.count >= 20, (sig.phases, sig.count)
     assert abs(sig.power["a"] - 3000) < 150 and abs(sig.power["c"] - 3000) < 150, sig.power
     assert 60 < sig.duration_s < 100 and 250 < sig.interval_s < 350, (sig.duration_s, sig.interval_s)
-    assert "6.0 kW on A+C" in sig.describe(None) or "5.9 kW on A+C" in sig.describe(None) or "6.1 kW on A+C" in sig.describe(None), sig.describe(None)
+    assert any(f"{w} kW on phases A and C" in sig.describe(None) for w in ("5.9", "6.0", "6.1")), sig.describe(None)
     assert all(s.phases == "ac" for s in closed)
 
 
@@ -238,8 +239,17 @@ def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
     det.process({"a": [(t + 3000, w) for t, w in a2]}, now_ts=T0 + 5600)
     groups = D.suggest_levels(det.signatures, det.recent)
     assert len(groups) == 1 and len(groups[0]) == 2, (groups, [s.describe(None) for s in det.signatures])
-    # naming one removes it from the pool: a named signature is settled
+    # Naming one does NOT settle the others, which is what the old rule
+    # assumed: it dropped named signatures from the pool, so naming a single
+    # setting switched off the suggestion that would have found the rest of
+    # the same machine. Anze's kiln is split across sixteen balanced A+C
+    # signatures holding 304 sessions and only 205 of them are named, and it
+    # was never offered a single one of them (2026-09-22).
     det.rename(groups[0][0], "Hob")
+    still = D.suggest_levels(det.signatures, det.recent)
+    assert still == groups, "the unnamed sibling still belongs with the Hob"
+    # ...and once every member is named there is nothing left to suggest
+    det.rename(groups[0][1], "Hob")
     assert D.suggest_levels(det.signatures, det.recent) == []
 
 
@@ -944,6 +954,39 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     assert len(clock.row(tz)) < 72, clock.row(tz)
 
 
+def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
+    """A menu row's label is cut at the dialog's width, so the naming page
+    lost the end of every row (Anze, 2026-09-23). The headline carries what
+    tells loads apart; everything else goes underneath, where it wraps."""
+    import datetime as _dt
+    tz = _dt.timezone.utc
+    clock = _sig(1, 1800.0, 70.0, 0.96, 60)
+    clock.interval_s, clock.interval_mad = 840.0, 60.0
+    clock.hour_wh = [500.0] * 24
+    clock.day_wh = [100.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0]
+    head, rest = clock.menu_row(tz, clock.last_seen + 600.0)
+    assert len(head) <= 45, head
+    assert "starts every 14 min" in rest, rest
+    assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
+    assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
+    assert " " not in rest.split("Mon-Sun")[1], "no day of the week may be a place to wrap"
+    assert head.startswith("1.8 kW on phase A, runs 70 s"), head
+    assert "every" not in head, "how often goes underneath, said as how often"
+    assert "runs in" in rest, rest
+
+
+def test_a_possible_second_setting_is_described_not_numbered():
+    """"set 4 of one device" meant nothing on a page where no other row was in
+    set 4. Say what the other load looks like instead (Anze, 2026-09-23)."""
+    other = _sig(9, 1000.0, 600.0, 0.99, 20)
+    assert D.same_device_phrase([other]) == "maybe the same device as the 1.0 kW, 10 min load"
+    assert D.same_device_phrase([]) == ""
+    three = [_sig(i, 1000.0 * i, 60.0, 0.99, 20) for i in (1, 2, 3)]
+    assert D.same_device_phrase(three).endswith("and 1 more"), D.same_device_phrase(three)
+    assert D.on_phases("a") == "on phase A" and D.on_phases("ac") == "on phases A and C"
+    assert D.on_phases("abc") == "on all three phases"
+
+
 def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
     """A fixed 100 W floor was the binding constraint on both real sites,
     whose sample-to-sample movement is 3 to 5 W - which is why Kozolec has
@@ -1126,13 +1169,18 @@ def test_which_way_round_the_grid_meter_is_wired():
 def test_a_negative_sample_on_a_house_reading_is_a_glitch_not_a_load():
     """Home's templates dip to -3000 W when their two inputs update out of
     step, then return - and the return is a +3000 W step on every phase at
-    once. A one-sample dip already fails SUSTAIN; one that lasts two samples
-    would be accepted as a real step, so on a reading that cannot go below
-    zero the samples are simply not readings."""
+    once. A dip too short to satisfy SUSTAIN already fails it; one long
+    enough would be accepted as a real step, so on a reading that cannot go
+    below zero the samples are simply not readings.
+
+    The dip is built long enough to clear SUSTAIN whatever it is set to. It
+    was two samples, written when two samples were enough - and once the
+    sustain guard was made to work, a two-sample dip was rejected before the
+    floor-zero rule this test is about ever got a say (2026-09-23)."""
     n = 200
     house = [(T0 + i * DT, 400.0) for i in range(n)]
-    house[80] = (house[80][0], -3001.0)                  # two samples, so
-    house[81] = (house[81][0], -2950.0)                  # SUSTAIN is satisfied
+    for k in range(80, 86):                              # six samples, so
+        house[k] = (house[k][0], -3000.0 + 10.0 * (k - 80))   # SUSTAIN is satisfied
     def run(floor):
         st = D.PhaseState(); st.floor_zero = floor
         out = []
@@ -1145,6 +1193,177 @@ def test_a_negative_sample_on_a_house_reading_is_a_glitch_not_a_load():
     # the same samples on a reading that CAN export are taken at face value
     st2, sessions2 = run(False)
     assert sessions2 or st2.open_edges, "a real reading, a real step"
+
+
+def test_a_summed_reading_keeps_only_the_last_of_each_burst():
+    """Home's inverter is read about 20 ms before its meter on every poll, so
+    summing them emits each update twice: first against the partner's stale
+    value - a phantom step of the whole change - then correctly. A third of
+    Home's house readings were phantoms (2026-09-23)."""
+    meter = [(0.0, 1000.0), (6.02, 4000.0), (12.02, 4000.0)]
+    inverter = [(0.0, 300.0), (6.00, 330.0), (12.00, 330.0)]
+    raw = D.combine([(meter, 1.0), (inverter, 1.0)])
+    assert (6.00, 1330.0) in raw, "the phantom: new inverter, old meter"
+    settled = D.combine([(meter, 1.0), (inverter, 1.0)], settle_s=0.3)
+    assert all(abs(t - 6.00) > 1e-9 for t, _ in settled), settled
+    assert (6.02, 4330.0) in settled, "the corrected sum is what survives"
+    # an input that records nothing - an inverter at 0 W all night - costs
+    # nothing: there is no burst, so every reading stays. This is what
+    # max_skew_s got wrong on recorder data.
+    night = [(t, 500.0 + 3000.0 * (40 <= t < 90)) for t in range(0, 200, 6)]
+    quiet = [(0.0, 0.0)]
+    assert len(D.combine([(night, 1.0), (quiet, 1.0)], settle_s=0.3)) == len(night)
+
+
+def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
+    """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
+    records fewer, so a running mean of its gaps came out 7.1 s against the
+    busy phases' 6.0 - one meter, three cadences - and the sustain guard judged
+    two legs of one load by different thresholds (2026-09-23)."""
+    busy, quiet = D.PhaseState(min_noise=10.0), D.PhaseState(min_noise=10.0)
+    t = 0.0
+    for i in range(400):
+        t += 6.0
+        busy.process(t, 500.0 + (i % 2) * 40.0)          # changes every reading
+        if i % 3 != 0:                                     # a third unrecorded:
+            quiet.process(t, 500.0 + (i % 2) * 40.0)      # the value repeated
+    assert abs(busy.interval - 6.0) < 0.01, busy.interval
+    assert abs(quiet.interval - 6.0) < 0.01, f"the cadence is still 6 s ({quiet.interval})"
+
+
+def test_another_leg_of_the_same_load_vouches_for_a_stop():
+    """A real multi-phase device switches its legs together, so one leg
+    closing is evidence the other's short off-gap was real. Home's kiln is off
+    only one or two readings between pulses; without this, whichever leg
+    swallowed its gap ran on and could not merge with the other (2026-09-23)."""
+    det = D.Detector()
+    a, c = det.phases["a"], det.phases["c"]
+    for st in (a, c):
+        st.level, st.baseline, st.interval, st.noise = 3500.0, 500.0, 6.0, 20.0
+    a.open_edges = [D._Open(since=100.0, watts=3000.0, var=None, levels=[(100.0, 3000.0)])]
+    check = det._corroborate("a", {"a": [], "c": []})
+    c.recent_closed = [(100.0, 2950.0, 148.0)]          # C's leg: same start, just closed
+    assert check(100.0, 3000.0, 148.0)
+    assert not check(100.0, 3000.0, 400.0), "closed long before now"
+    c.recent_closed = [(130.0, 2950.0, 148.0)]
+    assert not check(100.0, 3000.0, 148.0), "started 30 s later: another load"
+    c.recent_closed = [(100.0, 600.0, 148.0)]
+    assert not check(100.0, 3000.0, 148.0), "a fifth of the power: not the same device"
+    # a phase with nothing on another leg - any single-phase site - never vouches
+    lone = D.Detector()
+    lone.phases["a"].level = 3500.0
+    assert not lone._corroborate("a", {"a": []})(100.0, 3000.0, 148.0)
+
+
+def test_a_vouched_stop_closes_the_edge_it_was_vouched_for():
+    """Two loads of one size on one phase - Home's Kompresor leg (~840 W) and
+    hidrofor (~870 W) on A - are where closing the NEWEST same-sized edge is
+    wrong. The edge the other legs vouch for is the one that closes."""
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 2210.0, 500.0, 6.0, 20.0
+    kompresor = D._Open(since=100.0, watts=840.0, var=None, levels=[(100.0, 840.0)])
+    pump = D._Open(since=130.0, watts=870.0, var=None, levels=[(130.0, 870.0)])
+    st.open_edges = [kompresor, pump]                    # the pump is the newer
+    st.pending = [(160.0, 2210.0 - 840.0, None, None)]
+    st.corroborate = lambda since, watts, ts: since == 100.0   # only the Kompresor's legs agree
+    assert st._corroborated_stop(160.0) and st.close_hint is kompresor
+    closed = st._pair(160.0, 840.0, None, 2210.0 - 840.0)
+    assert closed and closed[0].start == 100.0, "the Kompresor closed, not the pump"
+    assert st.open_edges == [pump]
+    st.corroborate = lambda since, watts, ts: False
+    st.pending = [(170.0, 500.0, None, None)]
+    assert not st._corroborated_stop(170.0) and st.close_hint is None
+
+
+def test_a_level_is_the_readings_that_agree_not_the_median_of_a_transition():
+    """Home's hidrofor stopping read [1251, 1082, 436]: a sag, a half-caught
+    switch, the new level. Their median made it a 198 W step, which closed an
+    unrelated 179 W start, and left the pump's own session open for 7.8 hours.
+    The new level is the readings that agree with each other (2026-09-23)."""
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 1280.0, 250.0, 6.0, 20.0
+    st.open_edges = [D._Open(since=0.0, watts=179.0, var=None, levels=[(0.0, 179.0)]),
+                     D._Open(since=500.0, watts=845.0, var=None, levels=[(500.0, 845.0)])]
+    closed = []
+    for t, w in ((560.0, 1251.0), (566.0, 1082.0), (572.0, 436.0), (607.0, 437.0)):
+        closed += st.process(t, w)
+    assert len(closed) == 1 and closed[0].start == 500.0, closed         # the pump, not the 179 W
+    assert abs(closed[0].levels[""][0][1] - 845.0) < 5.0, closed
+    assert [o.watts for o in st.open_edges] == [179.0]
+    # and a real two-reading off-gap after a half-caught reading still counts:
+    # the time away is measured from the first reading that left the level
+    st = D.PhaseState(min_noise=10.0)
+    st.level, st.baseline, st.interval, st.noise = 4150.0, 1250.0, 6.0, 16.0
+    st.open_edges = [D._Open(since=0.0, watts=2900.0, var=None, levels=[(0.0, 2900.0)])]
+    closed = []
+    for t, w in ((48.0, 1622.0), (54.0, 1251.0), (60.0, 1232.0)):
+        closed += st.process(t, w)
+    assert len(closed) == 1 and abs(st.level - 1241.5) < 15.0, (closed, st.level)
+
+
+def test_the_recorders_start_of_window_copy_is_not_a_reading():
+    """Asked for the state at a window's start, the recorder returns the last
+    reading again, stamped the start. At one-minute ticks that was a repeat on
+    every phase every minute, and it cost Home 2 points of purity."""
+    rows = {"a": [(60.0, 500.0), (62.1, 510.0)], "b": [(61.0, 20.0)]}
+    assert D.without_window_start(rows, 60.0) == {"a": [(62.1, 510.0)], "b": [(61.0, 20.0)]}
+
+
+def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
+    """Home's attic 3EM calls the house's C "b" and its A "c". Its channels are
+    mapped onto the house's phases by which house phase each one's sessions
+    coincide with - as a permutation, so a two-phase load cannot tie - and
+    its own labels stand until there is evidence (2026-09-23)."""
+    rotated = {"a": {"b": 20}, "b": {"c": 60, "b": 2}, "c": {"a": 64}}
+    assert D.phase_mapping(rotated, min_votes=30) == {"a": "b", "b": "c", "c": "a"}
+    assert D.phase_mapping({"b": {"c": 3}}, min_votes=30) == {"b": "b"}, "too little evidence"
+    # the kiln steps on house A and C at once: channel a ties between them
+    # alone, and the permutation settles it with the other channels
+    kiln = {"a": {"a": 79, "c": 79}, "b": {"b": 23}, "c": {"c": 55, "a": 17}}
+    assert D.phase_mapping(kiln, min_votes=30) == {"a": "a", "b": "b", "c": "c"}
+    s = D.Session(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
+    moved = D._relabel(s, {"a": "b", "b": "c", "c": "a"})
+    assert moved.phases == "ac" and set(moved.levels) == {"c", "a"}
+
+
+def test_a_sub_meter_decides_which_signature_a_session_joins_when_it_fits():
+    """A detection on a sub-meter overrides the house's: the preferred
+    signature wins whenever it fits at all, and is ignored when it does not
+    (Anze, 2026-09-22)."""
+    det = D.Detector()
+    for p in "a":
+        det.phases[p].noise = 10.0
+    near = D.Signature(id=1, phases="a", power={"a": 1000.0}, duration_s=60.0, pf=None,
+                       count=5, first_seen=0.0, last_seen=0.0)
+    other = D.Signature(id=2, phases="a", power={"a": 1040.0}, duration_s=60.0, pf=None,
+                        count=5, first_seen=0.0, last_seen=0.0)
+    far = D.Signature(id=3, phases="a", power={"a": 3000.0}, duration_s=60.0, pf=None,
+                      count=5, first_seen=0.0, last_seen=0.0)
+    det.signatures = [near, other, far]
+    s = D.Session(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
+    det._file(s, prefer=2)
+    assert s.signature_id == 2, "the sub-meter's choice, although 1 fits a little better"
+    t = D.Session(phases="a", start=200.0, end=260.0, levels={"a": [(200.0, 1000.0)]})
+    det._file(t, prefer=3)
+    assert t.signature_id != 3, "a preference that does not fit is ignored"
+
+
+def test_a_session_waits_only_for_meters_that_could_have_seen_it():
+    """Filing waits for a sub-meter partner - but only from a meter that reads
+    at least twice inside the run. Home's workshop boiler meter reports every
+    seven minutes and can partner no one-minute pump run."""
+    fleet = D.Fleet()
+    fast, slow = D.Detector(), D.Detector()
+    fast.phases["a"].interval, slow.phases["a"].interval = 10.0, 420.0
+    slow.phases["a"].last_ts = 0.0
+    fleet.subs = {"plug": fast, "workshop": slow}
+    run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
+    fast.phases["a"].last_ts = 90.0
+    assert not fleet._heard_from_all(run, 6.0, 90.0), "the plug has not reported far enough yet"
+    fast.phases["a"].last_ts = 110.0
+    assert fleet._heard_from_all(run, 6.0, 110.0), "and the slow meter is not waited for"
+    fast.phases["a"].last_ts = 0.0
+    assert fleet._heard_from_all(run, 6.0, 60.0 + D.MATCH_PATIENCE_S), "never past the patience"
 
 
 def test_energy_between_is_watt_hours_by_sample_and_hold():
@@ -1220,6 +1439,30 @@ def test_a_pool_may_not_be_stretched_wider_than_the_tolerance_that_made_it():
     stretched = _plain(5, 330.0, 100, mad=120.0)
     assert abs(330.0 - 260.0) < 115.0                       # the pair would match
     assert not stretched.alike(_plain(6, 260.0, 10), 115.0)  # the pool would not
+
+
+def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
+    """power_mad and the distance travelled are TOTALS across the phases;
+    the tolerance that bounds them is one phase's. A three-phase load's total
+    wanders about three times what one leg does, so it was refused merges an
+    identical single-phase load was granted (Anze, 2026-09-22)."""
+    def leg(i, per_phase, count, phases, mad=0.0):
+        sig = D.Signature(id=i, phases=phases, power={p: per_phase for p in phases},
+                          duration_s=60.0, pf=None, count=count,
+                          first_seen=0.0, last_seen=1.0, power_mad=mad)
+        sig.hour_wh = [10.0] * 24
+        return sig
+
+    # one leg apart by 70 W, tolerance 115 W: fine on any number of phases
+    single = leg(1, 400.0, 10, "a")
+    assert single.alike(leg(2, 330.0, 10, "a"), 115.0)
+    triple = leg(3, 400.0, 10, "abc")
+    assert triple.alike(leg(4, 330.0, 10, "abc"), 115.0), \
+        "each leg is 70 W apart, exactly as in the single-phase case"
+
+    # and the guard still bites when the pool really would be stretched
+    stretched = leg(5, 330.0, 100, "abc", mad=120.0)
+    assert not stretched.alike(leg(6, 260.0, 10, "abc"), 115.0)
 
 
 def test_consolidation_re_asks_as_the_mean_moves():
@@ -1343,6 +1586,626 @@ def test_names_are_read_out_of_a_library_the_detector_has_disowned():
         {"name": "Mystery", "power": "not a dict"}]}}})
     assert [g["name"] for g in odd] == ["Mystery"]
     assert odd[0]["power"] == {} and odd[0]["phases"] == ""
+
+
+def test_a_named_loads_meter_does_not_step_down_when_the_library_is_rebuilt():
+    """A rebuilt library covers ten days where the old one had accumulated
+    since it was installed, so the name comes back attached to far less
+    energy than its meter had already published. Home Assistant reads a drop
+    on a TOTAL_INCREASING sensor as a meter reset - true, but it need not
+    happen: the old reading is a FLOOR, not something to add, because the two
+    periods overlap and adding them would count those ten days twice."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    sig = det.signatures[0]
+    assert det.rename(sig.id, "Kompresor")
+    sig.carried_wh = 18978.0 - sum(sig.hour_wh)          # as if it had run for months
+    before = det.energy_by_name()["Kompresor"]
+    assert round(before) == 18978
+
+    carried = det.name_descriptors()
+    assert round(carried[0]["energy_wh"]) == 18978
+
+    fresh = D.Detector()
+    fresh.tz_offset_s = 0.0
+    fresh.carry_names(carried)
+    # the meter holds its reading even before the name finds a load again
+    assert round(fresh.energy_by_name().get("Kompresor", 0.0)) == 18978
+
+    samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
+    fresh.process(samples, now_ts=t2)
+    assert [s.name for s in fresh.signatures] == ["Kompresor"]
+    after = fresh.energy_by_name()["Kompresor"]
+    assert after >= before, (before, after)
+    # and it is the floor, NOT a sum - the rebuilt days are not counted twice
+    assert round(after) == 18978, after
+
+
+def test_the_floor_stops_mattering_once_the_meter_passes_it():
+    """It is a floor, not a constant: a rebuilt library that outgrows the old
+    reading publishes its own figure."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    det.carry_names([{"name": "Kettle", "phases": "a", "power": {"a": 2000.0},
+                      "duration_s": 600.0, "pf": None, "energy_wh": 5.0}])
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    assert [s.name for s in det.signatures] == ["Kettle"]
+    own = sum(s.energy_wh for s in det.signatures if s.name == "Kettle")
+    assert own > 5.0, own
+    assert det.energy_by_name()["Kettle"] == own
+
+
+def test_the_meter_reading_survives_a_restart_mid_rebuild():
+    det = D.Detector()
+    det.carry_names([{"name": "Kiln", "phases": "ac", "power": {"a": 2985.0, "c": 2937.0},
+                      "duration_s": 23.0, "pf": 0.96, "energy_wh": 10436.2}])
+    back = D.Detector.from_dict(det.to_dict())
+    assert round(back.energy_floor["Kiln"], 1) == 10436.2
+    assert [o["name"] for o in back.orphan_names] == ["Kiln"]
+
+
+def test_a_generation_bump_keeps_names_and_their_meter_readings():
+    """The path nobody has ever walked: DETECTOR_GENERATION moves, the whole
+    stored library is discarded, and every installation in the world does this
+    at once on the next update. It is simulated here against a store in the
+    shape the current code writes - which is what an installation would
+    actually be holding - because the alternative is discovering it went wrong
+    from someone's Energy dashboard (Anze, 2026-09-22: "i just want this fixed
+    for future updates/of the detection library versions/resets")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    sig = det.signatures[0]
+    det.rename(sig.id, "Kiln")
+    sig.carried_wh = 10436.2 - sum(sig.hour_wh)
+    stored = {"generation": 5, "fleet": {"main": det.to_dict()}}
+
+    # the bump: the store is read by a detector that has disowned its shape
+    orphans = D.names_in_store(stored)
+    assert [o["name"] for o in orphans] == ["Kiln"]
+    assert round(orphans[0]["energy_wh"], 1) == 10436.2, orphans[0]["energy_wh"]
+
+    fresh = D.Detector()                        # what `raw = {}` leaves behind
+    fresh.tz_offset_s = 0.0
+    fresh.carry_names(orphans)
+    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
+
+    samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
+    fresh.process(samples, now_ts=t2)
+    assert [x.name for x in fresh.signatures] == ["Kiln"]
+    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
+    assert fresh.orphan_names == []
+
+
+def test_the_only_paths_that_discard_the_library_both_carry_names():
+    """Two ways the library goes: the reset the user asks for, and the
+    generation bump they never see. Both take the same road out - a list of
+    descriptors into carry_names - so neither can quietly grow a third
+    behaviour."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    det.rename(det.signatures[0].id, "Kiln")
+    det.signatures[0].carried_wh = 9000.0
+
+    by_reset = det.name_descriptors()
+    by_bump = D.names_in_store({"generation": 4, "fleet": {"main": det.to_dict()}})
+    for got in (by_reset, by_bump):
+        assert [g["name"] for g in got] == ["Kiln"]
+        assert round(got[0]["energy_wh"]) == round(det.energy_by_name()["Kiln"])
+        assert got[0]["phases"] == "a" and got[0]["power"]
+    # and both produce the same floor
+    a, b = D.Detector(), D.Detector()
+    a.carry_names(by_reset); b.carry_names(by_bump)
+    assert round(a.energy_floor["Kiln"]) == round(b.energy_floor["Kiln"])
+
+
+def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
+    """What someone naming a load actually has to go on is their own memory of
+    the last hour: the dishwasher went on after dinner, nothing has run in the
+    workshop since Tuesday. A row that says a load is on RIGHT NOW turns
+    naming into walking over and looking at it."""
+    now = 1_000_000.0
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
+                      count=9, first_seen=now - 86400.0, last_seen=now - 600.0)
+    assert "last ran 10 min ago" in sig.row(timezone.utc, now)
+    assert "last ran 10 min ago" in sig.describe(timezone.utc, now)
+    assert "running now" in sig.row(timezone.utc, now, running=True)
+    assert "last ran" not in sig.row(timezone.utc, now, running=True)
+    # a run that has only just stopped reads better as that
+    sig.last_seen = now - 30.0
+    assert "just finished" in sig.row(timezone.utc, now)
+    # and without a clock the row is exactly what it always was
+    assert "ran" not in sig.row(timezone.utc)
+    assert "running" not in sig.row(timezone.utc)
+
+
+def test_running_now_names_the_signatures_that_are_on():
+    """A signature only exists once a run has FINISHED - the session is the
+    step up paired with the step down that undoes it - so the first time a
+    load ever runs there is nothing to say it is on. From the second time,
+    the open edge is matched on its size and the row can say so."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    rows, t = [], T0
+    for _ in range(40):
+        rows.append((t, 200.0)); t += 10.0
+    for _ in range(40):                     # a complete run, so a signature exists
+        rows.append((t, 2200.0)); t += 10.0
+    for _ in range(40):
+        rows.append((t, 200.0)); t += 10.0
+    det.process({"a": rows}, now_ts=t)
+    assert det.signatures, "a finished run should have made a signature"
+    assert det.running_now(t) == set(), "nothing is on between runs"
+
+    rows2 = []
+    for _ in range(20):                     # it starts again, and stays on
+        rows2.append((t, 2200.0)); t += 10.0
+    det.process({"a": rows2}, now_ts=t)
+    on = det.running_now(t)
+    assert on, "a load that has not stopped should read as running"
+    assert on <= {x.id for x in det.signatures}
+
+
+def test_when_a_load_generally_runs_is_said_only_when_it_keeps_a_time():
+    """A phrase on every row distinguishes nothing, so this stays quiet unless
+    the load really does keep to a time. It is a MEASUREMENT where the
+    appliance guess is a prior - "runs in the evening" is a fact about this
+    house, not a belief about houses - which is why it can be stated plainly
+    rather than as a question."""
+    week = 14 * 86400.0
+    evening = [0.0] * 18 + [100.0, 120.0, 90.0, 40.0] + [0.0, 0.0]
+    flat = [50.0] * 24
+    assert D.when_phrase(evening, None, week, 12) == "evenings"
+    assert D.when_phrase([0.0] * 22 + [80.0, 90.0], None, week, 9) == "overnight"
+    # eight to five belongs to neither morning nor afternoon, and is plainly
+    # a daytime load - with only the narrow windows it got no phrase at all
+    assert D.when_phrase([0.0] * 8 + [60.0] * 9 + [0.0] * 7, None, week, 20) == "daytime"
+    # a load scattered through the day keeps no time worth mentioning
+    assert D.when_phrase(flat, None, week, 30) == ""
+
+
+def test_the_weekday_split_is_per_day_not_per_group():
+    """There are five weekdays and two weekend days, so a load running
+    UNIFORMLY puts 71 % of its energy on weekdays. Comparing the groups'
+    totals therefore called almost everything a weekday load - twenty of
+    Anze's twenty-four rows, which distinguished nothing from nothing."""
+    week = 14 * 86400.0
+    flat = [50.0] * 24
+    assert D.when_phrase(flat, [10.0] * 7, week, 30) == ""
+    assert D.when_phrase(flat, [12, 12, 12, 12, 12, 8, 8], week, 30) == ""
+    assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], week, 30) == "weekdays"
+    assert D.when_phrase(flat, [0, 0, 0, 0, 0, 10, 10], week, 30) == "weekends"
+
+
+def test_a_time_is_not_claimed_on_the_strength_of_one_occasion():
+    """Every run inside one evening falls in the same hours by construction,
+    so a load seen five times over four hours would say "evenings" about what
+    is really a single occasion. And two sightings can agree by chance about
+    anything."""
+    evening = [0.0] * 18 + [100.0, 120.0, 90.0, 40.0] + [0.0, 0.0]
+    assert D.when_phrase(evening, None, 4 * 3600.0, 5) == ""       # one evening
+    assert D.when_phrase(evening, None, 14 * 86400.0, 2) == ""     # twice
+    assert D.when_phrase(evening, None, 14 * 86400.0, 3) == "evenings"
+    # the weekday split wants a week, or one quiet weekend decides it
+    flat = [50.0] * 24
+    assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], 3 * 86400.0, 9) == ""
+
+
+def test_the_row_drops_the_sparkline_when_it_has_words_for_the_week():
+    """Seven characters of bars and the word "weekdays" are the same fact, and
+    a menu row is too narrow to spend on both."""
+    now = 1_700_000_000.0
+    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
+                      count=20, first_seen=now - 20 * 86400.0, last_seen=now - 900.0)
+    sig.hour_wh = [50.0] * 24
+    sig.day_wh = [10.0] * 7
+    plain = sig.row(timezone.utc, now)
+    assert sig.when == "" and any(b in plain for b in "▁▂▃▄▅▆▇█")
+
+    sig.day_wh = [10.0, 10.0, 10.0, 10.0, 10.0, 0.0, 0.0]
+    worded = sig.row(timezone.utc, now)
+    assert "weekdays" in worded
+    assert not any(b in worded for b in "▁▂▃▄▅▆▇█"), worded
+
+
+def _lvl(id, watts, dur=100.0, pf=0.96, phases="a", count=5):
+    return D.Signature(id=id, phases=phases, power={p: watts / len(phases) for p in phases},
+                       duration_s=dur, pf=pf, count=count, first_seen=0.0, last_seen=1.0)
+
+
+def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
+    """"Never two of them at once" has to be OBSERVED. The session list is
+    finite - two hundred entries against a library several times that at a
+    busy house - so for most pairs there is nothing recorded either way, and
+    reading that silence as "they never overlap" offered a 149 W load and a
+    2.7 kW one as one device (Anze's house, 2026-09-22)."""
+    a, b = _lvl(1, 1000.0), _lvl(2, 2700.0)
+    assert D.suggest_levels([a, b], []) == []               # nothing seen of either
+    seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
+    assert D.suggest_levels([a, b], seen_a) == []           # only one side seen
+    both = seen_a + [{"signature": 2, "start": 500.0, "end": 550.0}]
+    assert D.suggest_levels([a, b], both) == [[1, 2]]       # both seen, never together
+
+    # ...and the pair this test was written around - 150 W against 2.7 kW,
+    # eighteen to one - is refused whatever the recording says, because the
+    # recording was never the whole fault. Being seen apart is necessary and
+    # nowhere near sufficient: most short loads in a house never overlap.
+    far = [_lvl(3, 150.0), _lvl(4, 2700.0)]
+    apart = [{"signature": 3, "start": 0.0, "end": 50.0},
+             {"signature": 4, "start": 500.0, "end": 550.0}]
+    assert D.suggest_levels(far, apart) == []
+
+
+def test_levels_of_one_device_run_for_about_as_long_each_time():
+    """Sizes are not compared - a setting can be any fraction of another - but
+    duration is a different question, and leaving it out was most of what let
+    unrelated loads group. A hob on three settings boils the same pan for
+    about as long each time; what differs is the power."""
+    seen = [{"signature": 1, "start": 0.0, "end": 30.0},
+            {"signature": 2, "start": 500.0, "end": 530.0},
+            {"signature": 3, "start": 1000.0, "end": 1600.0}]
+    brief_a, brief_b = _lvl(1, 3000.0, dur=25.0), _lvl(2, 5900.0, dur=23.0)
+    lengthy = _lvl(3, 4100.0, dur=600.0)
+    groups = D.suggest_levels([brief_a, brief_b, lengthy], seen)
+    assert groups == [[1, 2]], groups
+
+
+def test_a_load_that_overlaps_another_is_never_the_same_device():
+    """The whole test: one appliance cannot run two of its own settings at
+    once, so an observed overlap rules the pair out however well they match."""
+    a, b = _lvl(1, 1000.0), _lvl(2, 2000.0)
+    together = [{"signature": 1, "start": 0.0, "end": 100.0},
+                {"signature": 2, "start": 50.0, "end": 150.0}]
+    assert D.suggest_levels([a, b], together) == []
+
+
+def test_duration_identifies_some_loads_and_not_others():
+    """Anze, 2026-09-22: "duration can be a part of the fingerprint, but it is
+    not necessarily one." A kettle boils the same volume every time and takes
+    about two minutes; a thermostat runs for twenty seconds or twenty minutes
+    depending how cold the tank is. Measured against Kozolec's submeters, the
+    boiler's runs spread by 0.12 of their median and the pressure pump's by
+    0.48. So the load says which it is, and the library already writes it
+    down."""
+    kettle = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=120.0,
+                         pf=0.99, count=20, first_seen=0.0, last_seen=1.0)
+    kettle.duration_mad = 8.0                      # 0.07 of its length
+    assert kettle.keeps_time
+    assert kettle.duration_factor == D.MATCH_DURATION_FACTOR
+
+    thermostat = D.Signature(id=2, phases="a", power={"a": 1800.0}, duration_s=67.0,
+                             pf=0.99, count=489, first_seen=0.0, last_seen=1.0)
+    thermostat.duration_mad = 40.0                 # 0.6 of its length
+    assert not thermostat.keeps_time
+    assert thermostat.duration_factor == D.LOOSE_DURATION_FACTOR
+
+
+def test_a_young_signature_does_not_enforce_a_duration_it_has_not_earned():
+    """The bootstrapping trap: judged on one or two sightings, a signature
+    freezes whatever its first runs happened to be and then never absorbs the
+    ones that would have taught it otherwise."""
+    young = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=120.0,
+                        pf=0.99, count=2, first_seen=0.0, last_seen=1.0)
+    young.duration_mad = 0.0                       # perfectly consistent, so far
+    assert not young.keeps_time, "two sightings say nothing about keeping time"
+    assert young.duration_factor == D.LOOSE_DURATION_FACTOR
+
+
+def test_a_thermostat_absorbs_its_own_short_and_long_runs():
+    """The whole point, end to end: the same tank reheating from nearly hot and
+    from stone cold is one load, and was two."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    t = T0
+    for seconds in (70, 65, 75, 68, 20, 300, 72):          # one thermostat, varied
+        rows = []
+        for _ in range(30):
+            rows.append((t, 100.0)); t += 5.0
+        for _ in range(max(2, seconds // 5)):
+            rows.append((t, 1900.0)); t += 5.0
+        for _ in range(30):
+            rows.append((t, 100.0)); t += 5.0
+        det.process({"a": rows}, now_ts=t)
+    watts = [round(sum(x.power.values()) / 100) * 100 for x in det.signatures]
+    around = [w for w in watts if 1700 <= w <= 1900]
+    assert len(around) == 1, (watts, [x.count for x in det.signatures])
+    assert det.signatures[watts.index(around[0])].count >= 6
+
+
+def test_the_naming_page_lengthens_as_loads_are_named():
+    """No percentile suits two sites: set high it hides a big house's real
+    loads for ever, set low it opens with two hundred rows and is put down
+    unread. The right number of rows is not a property of the site but of how
+    much work the person has already done (Anze, 2026-09-22)."""
+    sigs = []
+    for i in range(40):
+        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
+                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig.hour_wh = [40.0] * 24
+        sigs.append(sig)
+    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+
+    def offer(named):
+        return D.offer_for_naming(sigs, named, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+
+    assert len(offer(0)) == 6, "opens with a handful"
+    assert len(offer(1)) == 10
+    assert len(offer(3)) == 18
+    assert len(offer(100)) == len(sigs), "and never more than there are"
+
+
+def test_the_naming_page_never_runs_dry():
+    """A bar that hides everything is worse than one set too low."""
+    weak = [D.Signature(id=i, phases="a", power={"a": 500.0}, duration_s=60.0, pf=0.9,
+                        count=2, first_seen=0.0, last_seen=1.0) for i in range(9)]
+    assert all(s.evidence < 0.7 for s in weak), "none of these clears the bar"
+    got = D.offer_for_naming(weak, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(got) == 5, "the best of the rest come along anyway"
+    # a named load is always offered, whatever its evidence
+    weak[0].name = "Kiln"
+    got = D.offer_for_naming(weak, 1, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert weak[0] in got
+
+
+def test_the_page_can_say_how_many_are_waiting():
+    """The page promises it lengthens as loads are named; it has to be able
+    to say there is something to lengthen INTO.
+
+    It could not: the caller had only the already-shortened list and
+    subtracted it from itself, so every site read "0 more than fit here" -
+    Kozolec showing 6 of 12, Home 14 of 60 (Anze's screenshots, 2026-09-22)."""
+    sigs = []
+    for i in range(30):
+        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
+                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig.hour_wh = [40.0] * 24
+        sigs.append(sig)
+    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+
+    clear = D.clears_for_naming(sigs, 0.7, min_rows=5)
+    assert len(clear) == 30, "the bar decides WHICH, and does not shorten"
+    shown = D.offer_for_naming(sigs, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(shown) == 6, "the earned length decides HOW MANY"
+    assert len(clear) - len(shown) == 24, "and 24 are waiting, not 0"
+    # naming eats into the backlog rather than inventing rows
+    after = D.offer_for_naming(sigs, 2, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    assert len(clear) - len(after) == 16
+
+
+def test_a_reading_measures_what_it_can_resolve_not_just_how_it_jitters():
+    """Noise and resolution are different, and the detector measured one.
+
+    A coarse but STEADY reading deviates from its own baseline by nothing at
+    all, so its measured noise is zero and the global floor stands in - and
+    then its first quantum jump is taken for a load. Home's workshop boiler
+    publishes in 46 W steps and was credited with 4 kW of noise."""
+    assert D.measure_quantum([46.0 * (i // 3) for i in range(300)]) == 46.0
+    # a continuous reading is left alone
+    fine = D.measure_quantum([i * 0.01 for i in range(300)])
+    assert fine < 0.02, fine
+    # and nothing is claimed from too little evidence
+    assert D.measure_quantum([0.0, 46.0, 92.0]) == 0.0
+
+    st = D.PhaseState(min_noise=1.0)
+    for i in range(400):
+        st.process(float(i) * 60.0, 46.0 * (i // 3))
+    assert st.quantum == 46.0, st.quantum
+    assert st.noise >= 46.0, "a step it cannot resolve is not a step"
+
+
+def test_a_power_factor_carries_how_far_wrong_it_could_be():
+    """A factor from coarse amps is not thrown away - it is given its error
+    bar, and the bar is what stops it constraining anything.
+
+    Anze asked for this rather than the outright gate it replaces: one
+    mechanism reads cleaner than a cliff, and a factor that IS well measured
+    on a small load still gets to count (2026-09-22)."""
+    coarse = D.PhaseState(min_noise=5.0)
+    coarse.q_quantum = 23.0                  # 0.1 A at 230 V
+    o = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
+    small = coarse._close(o, 600.0, 62.0, 30.0)
+    assert small.pf is not None, "the measurement is kept..."
+    assert small.pf_mad > 0.15, f"...and owns its uncertainty ({small.pf_mad})"
+
+    big = D._Open(since=0.0, watts=2500.0, var=600.0, levels=[(0.0, 2500.0)])
+    large = coarse._close(big, 600.0, 2500.0, 600.0)
+    assert large.pf_mad < 0.02, f"a load many quanta over is measured well ({large.pf_mad})"
+
+    # the same load on amps ten times finer is trusted
+    fine = D.PhaseState(min_noise=5.0)
+    fine.q_quantum = 2.3
+    o2 = D._Open(since=0.0, watts=62.0, var=30.0, levels=[(0.0, 62.0)])
+    assert fine._close(o2, 600.0, 62.0, 30.0).pf_mad <= D.PF_TRUST_MAD, \
+        "fine enough amps: the classifier may still use this factor"
+
+    # a VAr clamped to zero is no measurement at all, not a precise one
+    clamped = D._Open(since=0.0, watts=62.0, var=0.0, levels=[(0.0, 62.0)])
+    assert coarse._close(clamped, 600.0, 62.0, 0.0).pf_mad == 1.0
+
+
+def test_two_factors_agree_when_their_error_bars_overlap():
+    """The flat tolerance assumed every factor was measured equally well, and
+    so REFUSED matches between sightings of one load at Kozolec."""
+    assert D.pf_tolerance(0.0, 0.0) == D.MATCH_PF_TOL, "well measured: unchanged"
+    # two badly-resolved factors 0.5 apart are not evidence of two loads
+    assert D.pf_tolerance(0.2, 0.2) > 0.5
+    # and a wide bar never tightens the test
+    assert D.pf_tolerance(0.3, 0.0) > D.pf_tolerance(0.0, 0.0)
+
+
+def test_where_a_relative_noise_figure_starts_to_mean_something():
+    """The 300 W it replaces was wrong in both directions at once - too low
+    for Home's noisier phases, too high for Kozolec's quiet one."""
+    quiet = D.PhaseState(min_noise=10.0)
+    quiet.noise, quiet.quantum = 10.0, 1.0
+    assert quiet.rel_floor == 300.0, quiet.rel_floor
+
+    noisy = D.PhaseState(min_noise=10.0)
+    noisy.noise, noisy.quantum = 37.0, 1.0
+    assert noisy.rel_floor == 1110.0, noisy.rel_floor
+
+    # a coarse reading is held to its resolution even when it sits still
+    coarse = D.PhaseState(min_noise=10.0)
+    coarse.noise, coarse.quantum = 10.0, 46.0
+    assert coarse.rel_floor == 1380.0, coarse.rel_floor
+
+    # one quantum at the floor is exactly the cap, which is the whole idea
+    for st in (quiet, noisy, coarse):
+        assert abs(max(st.quantum, st.noise) / st.rel_floor
+                   - D.NOISE_REL_CAP / D.NOISE_REL_FLOOR_FACTOR) < 1e-9
+
+
+def test_the_same_constant_serves_both_sites():
+    """Every gate is a COUNT of a reading's own quanta, so neither site is
+    configured for (Anze, 2026-09-22)."""
+    for value in (D.PF_MIN_QUANTA, D.ENERGY_MIN_QUANTA):
+        assert 1.0 <= value <= 50.0, "a count, not a number of watts"
+    # Kozolec's 0.1 A at 230 V and Home's 0.01 A: one rule, two answers
+    assert D.PF_MIN_QUANTA * 0.1 * 230.0 > 200.0
+    assert D.PF_MIN_QUANTA * 0.01 * 230.0 < 30.0
+
+
+def test_a_grid_meter_filed_as_the_house_is_dropped():
+    """power_a means "this reading already IS the house" and wins outright
+    over grid-plus-inverters. When setup became three pages the flat fields
+    from before stayed put and nothing offers them any more, so a meter
+    configured before the change sits in BOTH roles and the older copy quietly
+    wins. At Anze's house that was the grid meter read as the house - sign
+    inverted, solar never added back, the detector settling on a baseline of
+    minus six kilowatts - while the pages he had just filled in did nothing
+    (2026-09-22)."""
+    home = {"power_a": "sensor.m1_a", "power_b": "sensor.m1_b", "power_c": "sensor.m1_c",
+            "grid_power_a": "sensor.m1_a", "grid_power_b": "sensor.m1_b",
+            "grid_power_c": "sensor.m1_c",
+            "current_a": "sensor.m1_ca", "grid_current_a": "sensor.m1_ca",
+            "source_kind": "auto"}
+    got = D.drop_stale_load_override(home)
+    assert not any(k.startswith("power_") for k in got), got
+    assert not any(k == "current_a" for k in got), got
+    # everything the grid role owns survives untouched
+    assert got["grid_power_a"] == "sensor.m1_a"
+    assert got["grid_current_a"] == "sensor.m1_ca"
+    assert got["source_kind"] == "auto"
+
+
+def test_a_real_house_reading_is_left_alone():
+    """The override is a feature: a dedicated CT, or a template someone built
+    before any of this existed, really is the house and should win. Only the
+    same entity in both roles is a duplicate rather than a choice."""
+    both = {"power_a": "sensor.house_ct_a", "grid_power_a": "sensor.m1_a"}
+    assert D.drop_stale_load_override(both) == both
+    alone = {"power_a": "sensor.house_ct_a"}
+    assert D.drop_stale_load_override(alone) == alone
+    assert D.drop_stale_load_override({}) == {}
+
+
+def test_a_house_does_not_draw_less_than_nothing():
+    """The check that would have caught Home days earlier. A load reading is
+    what the house DRAWS, so its quiet floor is a small positive number; when
+    it settles deeply negative the reading is something else wearing that name
+    - most often a grid meter reporting import as negative, or generation
+    still in it with no inverter configured to take it back out. Home sat at
+    -6318, -4554 and -4340 W and detected loads in that for days in silence,
+    because nothing breaks: sessions still open and close, signatures still
+    form, and every one of them is nonsense (2026-09-22)."""
+    assert D.implausible_baseline({"a": -6318.0, "b": -4554.0, "c": -4340.0}) == ["A", "B", "C"]
+    assert D.implausible_baseline({"a": 120.0, "b": 80.0, "c": 260.0}) == []
+    # one phase upside down is worth saying on its own
+    assert D.implausible_baseline({"a": -5000.0, "b": 80.0}) == ["A"]
+    # a shallow dip is ordinary: the sum is a difference of meters that do not
+    # sample together, so it can cross zero briefly without anything being wrong
+    assert D.implausible_baseline({"a": -50.0}) == []
+    assert D.implausible_baseline({"a": None}) == []
+    assert D.implausible_baseline({}) == []
+
+
+def test_a_small_load_is_described_in_watts():
+    """Everything was printed as kilowatts to one decimal, which is fine for a
+    kettle and useless for everything a submeter sees. A whole library of an
+    office plug - a couple of computers and a power station behind one meter -
+    read "0.0 kW on A" line after line, every row identical and none of them
+    wrong (Anze, 2026-09-22)."""
+    def row(watts):
+        sig = D.Signature(id=1, phases="a", power={"a": float(watts)}, duration_s=180.0,
+                          pf=0.95, count=50, first_seen=0.0, last_seen=9 * 86400.0)
+        return sig.describe(timezone.utc)
+    assert row(28).startswith("28 W on phase A")
+    assert row(92).startswith("92 W on phase A")
+    assert row(345).startswith("345 W on phase A")
+    # and a kilowatt is still a kilowatt
+    assert row(4400).startswith("4.4 kW on phase A")
+    assert row(5918).startswith("5.9 kW on phase A")
+    # the boundary belongs to kW, not to 1000 W
+    assert row(999).startswith("999 W")
+    assert row(1000).startswith("1.0 kW")
+
+
+def test_a_motors_starting_surge_is_not_a_load_of_its_own():
+    """Anze's pressure pump reads 8886 W in one sample and 830 W in every
+    sample after, four times over in a day. Held for the length of a sample
+    that single reading dominates the run - a 40 s session came out at 2.8 kW
+    for an 830 W pump - and the power it recorded depended on how long the
+    session happened to last, so one pump arrived as several loads."""
+    t = T0
+    pump = D.Session(phases="a", start=t, end=t + 40.0, samples=5,
+                     levels={"a": [(t, 8886.0), (t + 10, 833.0),
+                                   (t + 20, 818.0), (t + 30, 807.0)]})
+    assert round(sum(pump.power_by_phase().values())) == 819, pump.power_by_phase()
+    assert round(pump.inrush_w) == 8053
+
+
+def test_a_first_stage_that_lasts_is_not_a_surge():
+    """A washing machine heats before it spins. That is a real stage of a real
+    programme, it runs for minutes, and it must not be mistaken for a motor
+    coming up to speed - which is over within a sample or two. The window
+    comes from the session's own sampling rate, which is what tells ten
+    seconds on a slow meter from ten minutes of heating on a fast one."""
+    t = T0
+    washer = D.Session(phases="a", start=t, end=t + 3000.0, samples=200,
+                       levels={"a": [(t, 2000.0), (t + 600, 200.0)]})
+    assert round(sum(washer.power_by_phase().values())) == 560
+    assert washer.inrush_w == 0.0
+
+    # and a run with a single level has nothing to strip
+    flat = D.Session(phases="a", start=t, end=t + 60.0, samples=12,
+                     levels={"a": [(t, 1800.0)]})
+    assert round(sum(flat.power_by_phase().values())) == 1800
+    assert flat.inrush_w == 0.0
+
+
+def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
+    """It is the most diagnostic thing a house produces - only a motor does it
+    - so once it is out of the power it is worth keeping as a feature (Anze,
+    2026-09-22: "that spike is a very good device signature, but it has to be
+    taken into account properly to not show as separate loads")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    t, rows = T0, []
+    for _ in range(5):                                 # one pump, started five times
+        for _ in range(20):
+            rows.append((t, 100.0)); t += 5.0
+        rows.append((t, 9000.0)); t += 5.0             # the surge, one sample of it
+        for _ in range(12):
+            rows.append((t, 930.0)); t += 5.0
+        for _ in range(20):
+            rows.append((t, 100.0)); t += 5.0
+    det.process({"a": rows}, now_ts=t)
+
+    # ONE load, not several, and at what it actually draws
+    assert len(det.signatures) == 1, [round(sum(x.power.values())) for x in det.signatures]
+    sig = det.signatures[0]
+    assert sig.count == 5
+    assert 750 <= sum(sig.power.values()) <= 900, sum(sig.power.values())
+    # with the surge kept beside it as evidence
+    assert sig.inrush_w > 1000, sig.inrush_w
+    back = D.Signature.from_dict(sig.to_dict())
+    assert round(back.inrush_w, 1) == round(sig.inrush_w, 1)
 
 
 if __name__ == "__main__":

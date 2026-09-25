@@ -18,7 +18,8 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
-from .insights.detect import describe_location, location_confidence, most_specific, suggest_levels
+from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
+                              most_specific, suggest_levels)
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -358,6 +359,7 @@ class DetectedLoadsSensor(_DetectionBase):
         "active", "signatures", "recent_sessions", "meters", "meter_hierarchy",
         "named_loads", "looks_like_one_device", "noise_floor_w", "baseline_w",
         "processed_until", "caught_up", "awaiting_name",
+        "resolution_w", "pf_floor_w",
     })
 
     def __init__(self, runner, entry) -> None:
@@ -374,6 +376,7 @@ class DetectedLoadsSensor(_DetectionBase):
         tz = dt_util.DEFAULT_TIME_ZONE
         def iso(ts):
             return datetime.fromtimestamp(ts, tz).isoformat()
+        running = det.running_now(now)
         return {
             "active": [
                 {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
@@ -381,10 +384,13 @@ class DetectedLoadsSensor(_DetectionBase):
                 for a in det.active(now)
             ],
             "signatures": [
-                {"id": s.id, "name": s.name, "description": s.describe(tz), "phases": s.phases.upper(),
+                {"id": s.id, "name": s.name, "description": s.describe(tz, now, s.id in running),
+                 "running": s.id in running, "last_seen_ago_s": round(max(0.0, now - s.last_seen)),
+                 "phases": s.phases.upper(),
                  "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
-                 "pf": None if s.pf is None else round(s.pf, 2), "last_seen": iso(s.last_seen),
+                 "pf": None if s.pf is None else round(s.pf, 2),
+                 "pf_mad": round(s.pf_mad, 3), "last_seen": iso(s.last_seen),
                  # watt-hours per hour of day, and per weekday from Monday
                  "hour_wh": [round(x) for x in s.hour_wh], "day_wh": [round(x) for x in s.day_wh],
                  # the downstream meter that also saw it, or "main" (upstream of every submeter)
@@ -420,6 +426,12 @@ class DetectedLoadsSensor(_DetectionBase):
             ],
             "noise_floor_w": {p.upper(): round(st.noise) for p, st in det.phases.items() if st.baseline is not None},
             "baseline_w": {p.upper(): round(st.baseline) for p, st in det.phases.items() if st.baseline is not None},
+            # What each reading can RESOLVE, measured from its own history,
+            # and the load size below which no power factor is believed
+            # because the amps behind it cannot carry one. Both are here so
+            # the gates can be checked against a site rather than assumed.
+            "resolution_w": {p.upper(): round(st.quantum, 3) for p, st in det.phases.items() if st.quantum},
+            "pf_floor_w": {p.upper(): round(PF_MIN_QUANTA * st.q_quantum) for p, st in det.phases.items() if st.q_quantum},
             "processed_until": self._runner.last_processed.isoformat() if self._runner.last_processed else None,
             "caught_up": self._runner.caught_up,
         }

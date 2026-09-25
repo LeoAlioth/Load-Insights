@@ -121,26 +121,28 @@ NAMING_MAX_STALE_S = 3600.0
 # before it is offered for naming. A house makes far more shapes than it has
 # appliances, and a list of two hundred is a list nobody reads (Anze,
 # 2026-09-18). Evidence is the score: how often it has been seen and how
-# tightly its power and duration repeat.
-CONF_MIN_EVIDENCE = "min_evidence"
+# tightly its power and duration repeat. A fixed policy since 2026-09-23 - it
+# was a setting nobody could judge a value for.
 # 0.7, not 0.5: evidence is 0.5*seen + 0.3*tight_power + 0.2*tight_duration,
 # so anything seen five times already scores 0.5 and a bar there filters
 # nothing at all - 153 of home's 153 namable signatures cleared it. At 0.7 it
 # asks for a load that also REPEATS tightly, which is 99 at home and 13 at
 # Kozolec (measured over ten days, 2026-09-18).
 DEFAULT_MIN_EVIDENCE = 0.7
-EVIDENCE_CHOICES = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9)
 # ...but a threshold that hides everything is worse than one set too low, so
 # when too few clear it, the best of the rest come along anyway. That is the
 # "lower it slowly if we are not getting good hits" without any state to
 # decay: the bar is what it is, and the list simply never runs dry.
 NAMING_MIN_ROWS = 5
-# The smallest change to call a step, as a floor under what each phase
-# measures for itself. Anze asked whether it was configurable - it was not,
-# and at 100 W it was the binding constraint on both sites, which is why
-# Kozolec has two fridges and detected neither.
-CONF_MIN_STEP_W = "min_step_w"
-STEP_CHOICES = (5, 10, 20, 40, 80)
+# The naming page earns its length. It opens with a handful - the few loads the
+# library is surest of - and lengthens as the user names them, because the
+# right number of rows is not a property of the site but of how much work the
+# person has already done (Anze, 2026-09-22). A static bar cannot do this: set
+# high it hides a big house's real loads for ever, set low it opens with two
+# hundred rows and is put down unread. Nothing is lost either way - the library
+# holds every signature and the page says how many are waiting.
+NAMING_START_ROWS = 6
+NAMING_ROWS_PER_NAME = 4
 # Bumped whenever a signature is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"

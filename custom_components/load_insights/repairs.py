@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
+from .insights.detect import implausible_baseline
 
 HALF_TEMPERATURE = "temperature_pair_incomplete"
 NO_PV_FORECAST = "no_pv_forecast"
@@ -24,6 +25,7 @@ DEVICES_WITHOUT_POWER = "devices_without_power"
 BATTERY_NOT_MODELLED = "battery_not_modelled"
 NO_POWER_FACTOR = "no_power_factor"
 FOUND_NOTHING = "detection_found_nothing"
+NEGATIVE_HOUSE = "house_reading_negative"
 
 
 @callback
@@ -80,6 +82,18 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     nothing = bool(cfg) and getattr(runner, "caught_up", False) and not runner.detector.signatures
     _set(hass, entry, FOUND_NOTHING, nothing,
          {"samples": str(getattr(runner, "samples_read", 0))})
+
+    # A house that idles deeply negative is not a house. Nothing breaks -
+    # sessions open and close and signatures form - and every one of them is
+    # nonsense, which is exactly why it needs saying (Anze's Home ran for days
+    # at -6318 W on phase A, its grid meter read as the house with its sign
+    # inverted and its solar never added back, 2026-09-22).
+    floors = {p: st.baseline for p, st in runner.detector.phases.items()} if cfg else {}
+    upside_down = implausible_baseline(floors)
+    _set(hass, entry, NEGATIVE_HOUSE, bool(upside_down), {
+        "phases": ", ".join(upside_down),
+        "watts": ", ".join(f"{floors[p.lower()]:.0f} W" for p in upside_down),
+    })
 
     # A dashboard device whose hardware publishes no power at all cannot be
     # located by detection - hourly energy is far too coarse for a session.
