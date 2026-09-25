@@ -2,6 +2,10 @@
 
 ## 0.4.1
 
+### New Features
+
+- **The naming page is split by meter, and the named loads have a page of their own.** It was one list of the loads no device meter saw, with the named ones mixed in, and a load a circuit meter saw - under Hiša or Mansarda, with a dozen appliances each - was never offered at all. The page now opens on one row per meter: the loads under no meter first, then each device meter by the deepest one that saw its loads, saying how many it has to name, how many more wait, and the area and floor of the device behind it. A named load moves to *Named loads*, where it can be renamed or forgotten, and choosing one from a meter's list comes back to that list. Each meter's list lengthens with the names given, as the single list did. A site with one meter's worth of loads and nothing named goes straight to its list.
+
 ### Fixes
 
 - **A house reading's idle floor can no longer be dragged below zero.** A reading that is the house alone cannot draw less than nothing, so a dip below zero is skipped and the floor is held at or above it - but whether a reading is the house alone was judged afresh on every pass, from that pass's readings, and a live pass reads one minute: some 25 readings, where one dip is 4 % of them against the 0.5 % that marks an export, and fewer than 30 counted as "no" outright. So the guard was off on nearly every live pass, and one cloud edge - the meter and the inverter read a moment apart while production swung between 7 and 17 kW - left Home's phase B floor at -1483 W. It never came back: the floor only moves while the phase is idle, and a floor 1.7 kW too low makes it look busy for good, so every load on that phase was measured from it, and a repair said the house reading goes negative. The verdict now needs 200 readings - enough that one reading is no more than the share - is kept where a pass is too short to give one, and is saved with the phase so a restart does not lose it. A floor already stuck stays stuck until `load_insights.reset_detection`, which keeps the names.

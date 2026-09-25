@@ -417,19 +417,41 @@ class DetectionRunner:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
 
-    def unlocated(self) -> list:
-        """Signatures no device meter accounts for AND seen more than once -
-        the ones worth naming.
+    def naming_groups(self) -> list:
+        """What is waiting to be named, one group per meter: ``(meter, offered,
+        waiting)``, the loads under no meter first as ``"main"``, then the
+        meters by how much their loads use.
 
-        A load seen a single time may not be a load at all, and naming it
-        teaches the library nothing (Anze, 2026-09-17: "as for signatures only
-        seen once, dont show them"). It keeps its place in the library and
-        appears here as soon as it happens again."""
-        return self._by_evidence(self._worth())
+        Split by the deepest meter that saw each load, so the page can be
+        taken one circuit at a time (Anze, 2026-09-25: "any way of splitting
+        the detected loads early would help with organisation and naming").
+        Until then only the loads under no meter were offered at all, and a
+        circuit meter's - Hiša's, Mansarda's - could not be named. A load seen
+        a single time may not be a load at all, and naming it teaches the
+        library nothing (Anze, 2026-09-17: "as for signatures only seen once,
+        dont show them"). Named loads have a page of their own (``named``).
+        Each group gets the length offer_for_naming earns it, and ``waiting``
+        is how many more cleared the bar than that length fits."""
+        is_heir = lambda i: self.detector.predecessor_of(i) is not None  # noqa: E731
+        named = len(self.detector.names())
+        out = []
+        for where, worth in self._worth().items():
+            shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
+                                     NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=is_heir)
+            if shown:
+                clear = clears_for_naming(worth, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS, is_heir)
+                out.append((where, shown, max(0, len(clear) - len(shown))))
+        out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for x in g[1])))
+        return out
 
-    def _worth(self) -> list:
-        """Signatures a person could name: on the main meter, seen more than
-        once, and having used enough to be worth the trouble."""
+    def named(self) -> list:
+        """Every named load, biggest first, wherever it was seen."""
+        return sorted((x for x in self.detector.signatures if x.name), key=lambda x: -x.energy_wh)
+
+    def _worth(self) -> Dict[str, list]:
+        """Signatures a person could name, by the meter they belong to: not
+        named yet, seen more than once, and having used enough to be worth
+        the trouble."""
         parents = self.parents
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
@@ -439,35 +461,17 @@ class DetectionRunner:
         # recognise it (Anze, 2026-09-18).
         def rank(s):
             return -(s.energy_wh * (0.45 + 0.55 * s.recognisable))
-        worth = [s for s in sorted(self.detector.signatures, key=lambda x: (rank(x), -x.evidence))
-                 if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
-                     and most_specific(s.locations, s.count, parents) == "main")
-                 # a load that may be what a NAMED one became belongs on the
-                 # list whatever its size: the offer to move the name is the
-                 # whole reason to open it
-                 or self.detector.predecessor_of(s.id) is not None]
-        return worth
-
-    def unlocated_waiting(self) -> int:
-        """How many more cleared the bar than the page's earned length fits.
-
-        The page promises it will lengthen as loads are named; this is the
-        number that makes the promise concrete."""
-        return max(0, len(self._clearing()) - len(self.unlocated()))
-
-    def _clearing(self) -> list:
-        """Everything worth naming, before the page's length is applied."""
-        return clears_for_naming(
-            self._worth(), DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
-            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
-
-    def _by_evidence(self, worth: list) -> list:
-        """See offer_for_naming, which is where this lives so it can be tested."""
-        return offer_for_naming(
-            worth, len(self.detector.names()), DEFAULT_MIN_EVIDENCE,
-            NAMING_MIN_ROWS, NAMING_START_ROWS, NAMING_ROWS_PER_NAME,
-            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
-
+        groups: Dict[str, list] = {}
+        for s in sorted(self.detector.signatures, key=lambda x: (rank(x), -x.evidence)):
+            if s.name:
+                continue
+            if ((s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH)
+                    # a load that may be what a NAMED one became belongs on
+                    # the list whatever its size: the offer to move the name
+                    # is the whole reason to open it
+                    or self.detector.predecessor_of(s.id) is not None):
+                groups.setdefault(most_specific(s.locations, s.count, parents), []).append(s)
+        return groups
 
     async def async_adopt(self, signature_id: int) -> Optional[str]:
         """Move a predecessor's name onto this signature, and persist."""

@@ -12,7 +12,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry as er, selector
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, selector
 
 from .const import (
     CONF_GRID_DEVICE,
@@ -51,6 +51,8 @@ from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
 NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
+NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
+NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .insights.model import SiteModel
 
@@ -149,6 +151,45 @@ def _load_line(hass, entry) -> str:
     if inverters:
         parts.append(f"{len(inverters)} inverter(s)")
     return "House consumption is worked out from " + " and ".join(parts) + "."
+
+
+def _group_title(where: str) -> str:
+    """A naming group's row: the meter's name, or where there is none."""
+    return "Under no meter" if where == "main" else where
+
+
+def _meter_place(hass, runner, where: str) -> str:
+    """The area and floor of the device behind a meter's readings - the
+    entity's own area where it has one, else its device's."""
+    fields = (runner.submeters.get(where) or {}).get("fields") or {}
+    entity = er.async_get(hass).async_get(next(iter(fields.values()), "")) if fields else None
+    if entity is None:
+        return ""
+    area_id = entity.area_id
+    if not area_id and entity.device_id:
+        device = dr.async_get(hass).async_get(entity.device_id)
+        area_id = device.area_id if device else None
+    area = ar.async_get(hass).async_get_area(area_id) if area_id else None
+    if area is None:
+        return ""
+    floor = None
+    if getattr(area, "floor_id", None):
+        from homeassistant.helpers import floor_registry as fr   # HA 2024.4+
+        found = fr.async_get(hass).async_get_floor(area.floor_id)
+        floor = found.name if found else None
+    return f"{area.name}, {floor}" if floor else area.name
+
+
+def _group_detail(hass, runner, where: str, shown: int, waiting: int) -> str:
+    """Under a group's row: how many loads it offers, how many wait behind
+    them, and where the meter is."""
+    parts = [f"{shown} load{'s' if shown != 1 else ''} to name"]
+    if waiting:
+        parts.append(f"{waiting} more waiting")
+    place = "no meter saw these" if where == "main" else _meter_place(hass, runner, where)
+    if place:
+        parts.append(place)
+    return " · ".join(parts)
 
 
 def _behind(seconds: Optional[float]) -> str:
@@ -430,7 +471,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_overview()
 
     async def async_step_naming(self, user_input: dict[str, Any] | None = None):
-        """The detected loads, biggest first, one clickable row each.
+        """The meters the detected loads were seen on, one row each, and the
+        named loads; each opens its own list (async_step_naming_list).
 
         A MENU rather than a form: its rows are real buttons, so choosing one
         goes straight to it with no submit, which is what a dropdown could
@@ -460,9 +502,48 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 description_placeholders={
                     "progress": done or "0",
                     "behind": _behind(behind)})
-        candidates = runner.unlocated()
-        if not candidates:
+        groups = runner.naming_groups()
+        named = runner.named()
+        if not groups and not named:
             return self.async_abort(reason="nothing_to_name")
+        groups = groups[:NAMING_MAX_GROUPS]
+        self._naming_groups = [g[0] for g in groups]
+        if len(groups) == 1 and not named:
+            # one page of one list is the list
+            self._naming_group = groups[0][0]
+            return await self.async_step_naming_list()
+        placeholders, options = {"named": str(len(named))}, []
+        for index, (where, shown, waiting) in enumerate(groups):
+            placeholders[f"group_{index}"] = _group_title(where)
+            placeholders[f"group_{index}_detail"] = _group_detail(
+                self.hass, runner, where, len(shown), waiting)
+            options.append(f"group_{index}")
+        if named:
+            options.append("naming_named")
+        options.append("naming_done")
+        return self.async_show_menu(step_id="naming", menu_options=options,
+                                    description_placeholders=placeholders)
+
+    async def async_step_naming_named(self, user_input: dict[str, Any] | None = None):
+        self._naming_group = NAMED
+        return await self.async_step_naming_list()
+
+    async def async_step_naming_list(self, user_input: dict[str, Any] | None = None):
+        """One meter's loads, biggest first, one clickable row each - or,
+        for NAMED, every named load wherever it was seen."""
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        if runner is None or not runner.enabled:
+            return self.async_abort(reason="no_detection")
+        where = self.__dict__.get("_naming_group")
+        if where == NAMED:
+            candidates, waiting = runner.named(), 0
+        else:
+            group = next((g for g in runner.naming_groups() if g[0] == where), None)
+            if group is None:
+                return await self.async_step_naming()
+            _, candidates, waiting = group
+        if not candidates:
+            return await self.async_step_naming()
         shown = candidates[:NAMING_MAX_ROWS]
         self._naming_rows = [s.id for s in shown]
 
@@ -479,9 +560,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         # earned, so subtracting the menu from it said "0 more" to everyone -
         # and a page whose whole promise is that it lengthens as you name
         # things then read as "this is all there is" (Anze, 2026-09-22).
-        placeholders = {"count": str(len(shown)),
-                        "hidden": str(runner.unlocated_waiting()
-                                      + max(0, len(candidates) - len(shown)))}
+        placeholders = {"group": "Named loads" if where == NAMED else _group_title(where),
+                        "count": str(len(shown)),
+                        "hidden": str(waiting + max(0, len(candidates) - len(shown)))}
         options = []
         for index, sig in enumerate(shown):
             # Two lines: a menu row's own label is cut at the dialog's width,
@@ -497,8 +578,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             placeholders[f"load_{index}"] = label
             placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")
+        if len(self.__dict__.get("_naming_groups") or []) > 1 or where == NAMED or runner.named():
+            options.append("naming")              # back to the meters
         options.append("naming_done")
-        return self.async_show_menu(step_id="naming", menu_options=options,
+        return self.async_show_menu(step_id="naming_list", menu_options=options,
                                     description_placeholders=placeholders)
 
     def __getattr__(self, name: str):
@@ -509,11 +592,22 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             async def _chosen(user_input: dict[str, Any] | None = None):
                 rows = self.__dict__.get("_naming_rows") or []
                 if index >= len(rows):
-                    return await self.async_step_naming()
+                    return await self.async_step_naming_list()
                 self._naming_selected = rows[index]
                 return await self.async_step_naming_detail()
 
             return _chosen
+        if name.startswith("async_step_group_") and name[17:].isdigit():
+            index = int(name[17:])
+
+            async def _opened(user_input: dict[str, Any] | None = None):
+                groups = self.__dict__.get("_naming_groups") or []
+                if index >= len(groups):
+                    return await self.async_step_naming()
+                self._naming_group = groups[index]
+                return await self.async_step_naming_list()
+
+            return _opened
         raise AttributeError(name)
 
     async def async_step_naming_done(self, user_input: dict[str, Any] | None = None):
@@ -542,7 +636,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is None:
             return self.async_abort(reason="no_detection")
         if sig is None:
-            return await self.async_step_naming()
+            return await self.async_step_naming_list()
         detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
         if sig.name:
             detail = f"Named **{sig.name}**.\n\n{detail}"
@@ -560,7 +654,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                       f"{detail}")
         if sig.name:
             options.append("naming_forget")
-        options.append("naming")                  # back to the list
+        options.append("naming_list")             # back to the list
         return self.async_show_menu(
             step_id="naming_detail", menu_options=options,
             description_placeholders={"detail": detail, "name": sig.name or "",
@@ -571,14 +665,14 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         load, where Back is."""
         runner, sig = self._picked()
         if runner is None or sig is None:
-            return await self.async_step_naming()
+            return await self.async_step_naming_list()
         if user_input is not None:
             name = (user_input.get("name") or "").strip()
             if not name:
                 return await self.async_step_naming_detail()
             await runner.async_rename(sig.id, name)
             self._naming_selected = None
-            return await self.async_step_naming()
+            return await self.async_step_naming_list()
         head, rest = sig.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
         return self.async_show_form(
             step_id="naming_name",
@@ -593,7 +687,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is not None and sig is not None:
             await runner.async_rename(sig.id, None)
         self._naming_selected = None
-        return await self.async_step_naming()
+        return await self.async_step_naming_list()
 
     async def async_step_naming_adopt(self, user_input: dict[str, Any] | None = None):
         # the name moves here and leaves the old fingerprint, which keeps its
@@ -602,7 +696,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is not None and sig is not None:
             await runner.async_adopt(sig.id)
         self._naming_selected = None
-        return await self.async_step_naming()
+        return await self.async_step_naming_list()
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """How detection behaves - not what it watches.

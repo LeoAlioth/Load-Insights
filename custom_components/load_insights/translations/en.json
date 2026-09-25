@@ -123,7 +123,42 @@
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be. Under it: what it uses a week and a run, how many times it ran and over how long, when it last ran, when it usually runs, its week from Monday to Sunday, and - if it may be another setting of the same device - what that other load looks like. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "description": "Detected loads, one page per meter that saw them - the loads under no meter first. Under each: how many loads it has to name, how many more are waiting, and where the meter is. Named loads have a page of their own. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "menu_options": {
+                    "group_0": "{group_0}",
+                    "group_1": "{group_1}",
+                    "group_2": "{group_2}",
+                    "group_3": "{group_3}",
+                    "group_4": "{group_4}",
+                    "group_5": "{group_5}",
+                    "group_6": "{group_6}",
+                    "group_7": "{group_7}",
+                    "group_8": "{group_8}",
+                    "group_9": "{group_9}",
+                    "group_10": "{group_10}",
+                    "group_11": "{group_11}",
+                    "naming_named": "Named loads ({named})",
+                    "naming_done": "— finished, apply —"
+                },
+                "menu_option_descriptions": {
+                    "group_0": "{group_0_detail}",
+                    "group_1": "{group_1_detail}",
+                    "group_2": "{group_2_detail}",
+                    "group_3": "{group_3_detail}",
+                    "group_4": "{group_4_detail}",
+                    "group_5": "{group_5_detail}",
+                    "group_6": "{group_6_detail}",
+                    "group_7": "{group_7_detail}",
+                    "group_8": "{group_8_detail}",
+                    "group_9": "{group_9_detail}",
+                    "group_10": "{group_10_detail}",
+                    "group_11": "{group_11_detail}",
+                    "naming_named": "Rename or forget a load you have named."
+                }
+            },
+            "naming_list": {
+                "title": "{group}",
+                "description": "Biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be. Under it: what it uses a week and a run, how many times it ran and over how long, when it last ran, when it usually runs, its week from Monday to Sunday, and - if it may be another setting of the same device - what that other load looks like. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
@@ -149,6 +184,7 @@
                     "load_21": "{load_21}",
                     "load_22": "{load_22}",
                     "load_23": "{load_23}",
+                    "naming": "Back to the meters",
                     "naming_done": "— finished, apply —"
                 },
                 "menu_option_descriptions": {
@@ -226,7 +262,7 @@
                     "naming_name": "Name it",
                     "naming_adopt": "Move the name {was} here",
                     "naming_forget": "Forget the name {name}",
-                    "naming": "Back to the list"
+                    "naming_list": "Back to the list"
                 },
                 "menu_option_descriptions": {
                     "naming_name": "Type a name to give it entities of its own.",
@@ -274,7 +310,7 @@
         "abort": {
             "no_devices": "The Energy dashboard lists no individual devices.",
             "no_detection": "Load detection is not set up: choose the main meter first.",
-            "nothing_to_name": "Nothing to name yet - either no loads have been detected, or every one is already accounted for by a device meter."
+            "nothing_to_name": "Nothing to name yet - no loads have been detected."
         }
     },
     "issues": {

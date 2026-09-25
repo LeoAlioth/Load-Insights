@@ -172,9 +172,11 @@ meter saw it. Two sensors: **Detected loads** (how many are on now, with the sig
 library and every device meter's in its attributes) and **Unknown load
 power**.
 
-What is left over - the loads no device meter accounts for - is named by you,
-once, on the *Name a detected load* page: pick one from the list, described in
-words, and type a name. It then gets a **running** binary sensor and a
+What a load is, you name, once, on the *Name a detected load* page. It opens
+on one row per meter the loads were seen on - the loads under no meter first,
+then each device meter by the deepest one that saw them, with its area and
+floor - and a row for the loads already named. Pick a meter, pick a load,
+described in words, and type a name. It then gets a **running** binary sensor and a
 **power** sensor of its own. Two signatures given the same name are one device
 on different settings, and the page suggests candidates for that: same phases,
 same power factor, about as long a run, within ten times each other's power, and
