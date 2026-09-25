@@ -123,7 +123,42 @@
             },
             "naming": {
                 "title": "Poimenuj zaznan porabnik",
-                "description": "Bremena, ki jih noben števec naprav ne pokriva, največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica pove, koliko breme vleče in na katerih fazah, koliko traja en zagon in kaj bi lahko bilo. Pod njo: koliko porabi na teden in na zagon, kolikokrat je delovalo in v kolikšnem času, kdaj je nazadnje delovalo, kdaj običajno dela, njegov teden od ponedeljka do nedelje in - če je morda druga nastavitev iste naprave - kakšno je tisto drugo breme. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
+                "description": "Zaznana bremena, po ena stran za vsak števec, ki jih je videl - najprej bremena, ki jih ni videl noben števec. Pod vsakim: koliko bremen je za poimenovati, koliko jih še čaka in kje je števec. Poimenovana bremena imajo svojo stran. Ko končate, izberite *končano* - to na novo zgradi entitete.",
+                "menu_options": {
+                    "group_0": "{group_0}",
+                    "group_1": "{group_1}",
+                    "group_2": "{group_2}",
+                    "group_3": "{group_3}",
+                    "group_4": "{group_4}",
+                    "group_5": "{group_5}",
+                    "group_6": "{group_6}",
+                    "group_7": "{group_7}",
+                    "group_8": "{group_8}",
+                    "group_9": "{group_9}",
+                    "group_10": "{group_10}",
+                    "group_11": "{group_11}",
+                    "naming_named": "Poimenovana bremena ({named})",
+                    "naming_done": "— končano, uporabi —"
+                },
+                "menu_option_descriptions": {
+                    "group_0": "{group_0_detail}",
+                    "group_1": "{group_1_detail}",
+                    "group_2": "{group_2_detail}",
+                    "group_3": "{group_3_detail}",
+                    "group_4": "{group_4_detail}",
+                    "group_5": "{group_5_detail}",
+                    "group_6": "{group_6_detail}",
+                    "group_7": "{group_7_detail}",
+                    "group_8": "{group_8_detail}",
+                    "group_9": "{group_9_detail}",
+                    "group_10": "{group_10_detail}",
+                    "group_11": "{group_11_detail}",
+                    "naming_named": "Preimenujte ali pozabite breme, ki ste ga poimenovali."
+                }
+            },
+            "naming_list": {
+                "title": "{group}",
+                "description": "Največja najprej - skupaj {count}, {hidden} jih tu ni. Kliknite eno, da si ga ogledate in poimenujete; po poimenovanju se vrnete sem.\n\nVsaka vrstica pove, koliko breme vleče in na katerih fazah, koliko traja en zagon in kaj bi lahko bilo. Pod njo: koliko porabi na teden in na zagon, kolikokrat je delovalo in v kolikšnem času, kdaj je nazadnje delovalo, kdaj običajno dela, njegov teden od ponedeljka do nedelje in - če je morda druga nastavitev iste naprave - kakšno je tisto drugo breme. Dvema dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Ko končate, izberite *končano* - to na novo zgradi entitete.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
@@ -149,6 +184,7 @@
                     "load_21": "{load_21}",
                     "load_22": "{load_22}",
                     "load_23": "{load_23}",
+                    "naming": "Nazaj na števce",
                     "naming_done": "— končano, uporabi —"
                 },
                 "menu_option_descriptions": {
@@ -226,7 +262,7 @@
                     "naming_name": "Poimenuj",
                     "naming_adopt": "Premakni ime {was} sem",
                     "naming_forget": "Pozabi ime {name}",
-                    "naming": "Nazaj na seznam"
+                    "naming_list": "Nazaj na seznam"
                 },
                 "menu_option_descriptions": {
                     "naming_name": "Vpišite ime, da dobi svoje entitete.",
@@ -274,7 +310,7 @@
         "abort": {
             "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
             "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
-            "nothing_to_name": "Zaenkrat ni kaj poimenovati - ali ni bil zaznan noben porabnik ali pa vse pojasnijo števci naprav."
+            "nothing_to_name": "Zaenkrat ni kaj poimenovati - zaznan ni bil noben porabnik."
         }
     },
     "issues": {
