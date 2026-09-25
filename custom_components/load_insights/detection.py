@@ -339,8 +339,11 @@ class DetectionRunner:
             for phase, rows in grid_rows.items():
                 verdict = exports_positive(rows, generation.get(phase) or [])
                 if verdict is not None:
-                    return -1.0 if verdict else 1.0
-        return 1.0
+                    self._exports_positive = verdict
+                    break
+        # the last pass that could tell, where this one is too short to
+        exports = getattr(self, "_exports_positive", None)
+        return -1.0 if exports else 1.0
 
     async def _site_grid_power(self) -> list:
         try:
@@ -658,8 +661,12 @@ class DetectionRunner:
                     # config_flow; a value stored by an older version is not read
                     self.fleet.main.phases[p].min_noise = MIN_NOISE_W
                     # a reading that never exports is the house alone, and
-                    # the house cannot draw less than nothing
-                    self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
+                    # the house cannot draw less than nothing. Kept, and
+                    # saved, where a pass is too short to say: "can't tell"
+                    # read as "no" switched the guard off on every live pass.
+                    verdict = carries_generation(rows)
+                    if verdict is not None:
+                        self.fleet.main.phases[p].floor_zero = verdict is False
             for p in list(pv):
                 verdict = carries_generation(samples[p])
                 if verdict is not None:

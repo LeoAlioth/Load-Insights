@@ -561,6 +561,24 @@ def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
     assert D.carries_generation([(T0, 5.0)]) is None
 
 
+def test_a_short_pass_cannot_switch_the_house_floor_guard_off():
+    """A live pass reads one minute - some 25 readings - and judged alone,
+    one dip is 4 % of it, eight times the share that marks an export. Read
+    that way, the guard that keeps the house's floor at or above zero was
+    off on every live pass, and one cloud edge left Home's phase B floor at
+    -1483 W with every later load measured from it (2026-09-25). So a pass
+    that short cannot tell, and the verdict it cannot give is kept - across
+    a restart too."""
+    minute = [(T0 + i * DT, 400.0) for i in range(25)]
+    assert D.carries_generation(minute) is None
+    dipped = [(t, -900.0 if i == 3 else w) for i, (t, w) in enumerate(minute * 4)]
+    assert len(dipped) < D.GENERATION_MIN_SAMPLES
+    assert D.carries_generation(dipped) is None
+    kept = D.PhaseState.from_dict(D.PhaseState(floor_zero=True).to_dict())
+    assert kept.floor_zero is True
+    assert D.PhaseState.from_dict({"baseline": 120.0}).floor_zero is False
+
+
 def test_a_glitch_below_zero_cannot_drag_the_floor_down():
     """A consumption reading cannot go below zero, and Anze's template dips
     there for 49 samples out of 20764 when its own inputs do not line up.

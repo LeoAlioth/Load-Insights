@@ -311,6 +311,7 @@ pulses the grid meter itself shows in them.
 | `PV_SHARE_MIN` / `_MAX` | 0.25 / 1.25 | share of an array's step that may explain a phase's step | ratio | — | not tested |
 | `PV_MIN_SWING_W`, `PV_MIN_SAMPLES` | 200 W, 30 | evidence needed before deciding whether a reading sees the sun | physical/count | — | not tested |
 | `EXPORT_FLOOR_W`, `EXPORT_SHARE` | 50 W, 0.005 | how much export marks a reading as carrying generation | physical/ratio | — | not tested |
+| `GENERATION_MIN_SAMPLES` | 200 (= 1 / `EXPORT_SHARE`) | fewest readings `carries_generation` judges; fewer answer None, and a None keeps the last verdict (`floor_zero` is saved with the phase) | derived | — | **shipped 2026-09-25.** A one-minute live pass (~25 readings) judged alone read one dip as an export and switched `floor_zero` off every pass; one cloud edge then left Home's phase B floor at -1483 W, never corrected because the phase was never idle again. The bench did not show it: `replay.py` judges the whole series once |
 | `SOURCE_IDLE_W`, `SOURCE_IDLE_SHARE` | 25 W, 0.9 | how an AC input is told apart as utility, generator or nothing | physical/ratio | — | not tested |
 | `LIVE_SHARE` | 0.2 | how often a reference circuit must carry something to be one | ratio | — | not tested |
 
