@@ -10,6 +10,7 @@ from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -24,10 +25,10 @@ from .const import (
     CONF_DETECTION,
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
-    CONF_MIN_EVIDENCE,
-    CONF_MIN_STEP_W,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
+    NAMING_ROWS_PER_NAME,
+    NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_DETECTION_INTERVAL,
     DETECTION_INTERVAL_MINUTES,
@@ -37,20 +38,27 @@ from .const import (
 )
 from .insights.detect import (
     combine,
+    COMBINE_SETTLE_S,
     PHASES,
     Detector,
     Fleet,
     carries_generation,
     MIN_NOISE_W,
     _sum_series,
+    without_window_start,
     names_in_store,
     carries_load,
     classify_source,
     site_topology,
     unit_scale,
     exports_positive,
+    drop_stale_load_override,
     mean_power,
     most_specific,
+    measure_quantum,
+    quantum_of_steps,
+    clears_for_naming,
+    offer_for_naming,
 )
 from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
@@ -68,12 +76,48 @@ STORAGE_VERSION = 1
 # 5 = readings are scaled by their UNIT, so a meter publishing kW is no
 #     longer read as watts - which changes what every submeter saw, and so
 #     where loads are placed and what they were classified as.
-DETECTOR_GENERATION = 5
+# 6 = every reading now carries its measured RESOLUTION as well as its
+#     noise, and nothing is derived past what a sensor can express: the
+#     step floor, the power factor and the energy answer are all gated on
+#     it, so steps, factors and placements all differ from generation 5.
+# 7 = a power factor carries how far wrong it could be, and that error bar -
+#     not a threshold - decides whether it constrains a match or reaches the
+#     classifier. Every stored factor was kept under the old rule.
+# 8 = power_mad is PER PHASE, not the deviation of the total, so every
+#     stored spread is three times too large on a three-phase load - and the
+#     relative-noise floor is derived from each phase's measured noise
+#     rather than a flat 300 W, which changes which steps were seen at all.
+# 9 = a level must hold for SUSTAIN_INTERVALS of the reading's own measured
+#     sample interval, so transitional samples no longer found levels, and a
+#     merge may admit ALIKE_MAD_SHARE of the pair's spread. Both change which
+#     sessions and signatures exist at all.
+# 10 = a summed house reading keeps only the last of each burst of readings
+#     (COMBINE_SETTLE_S), so a third of Home's sessions - built on phantom
+#     sums against a stale partner - no longer exist.
+# 11 = a reading's interval is the MEDIAN of its recent gaps, its cadence,
+#     not a running mean of the gaps between recorded changes - which gave
+#     one meter's quiet phase a longer interval than its busy ones.
+# 12 = phases are walked in time order and one leg of a multi-phase load may
+#     vouch for another's stop, so short off-gaps no longer glue one leg's
+#     pulses together - which changes which sessions exist.
+# 13 = a new level is the readings that AGREE, dated at the first one past
+#     half-way; a leg's start that swallowed a coincident load is split when
+#     its partner leg closes; and the recorder's start-of-window copy is no
+#     longer fed in as a reading, once a minute on every phase.
+# 14 = a three-phase sub-meter's channels are mapped onto the grid
+#     connection's phases from the data, and a one-device meter decides which
+#     signature a matched session joins - so which sessions share a signature,
+#     and where signatures are placed, both change.
+DETECTOR_GENERATION = 14
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
 # of those is why the naming page ran to a hundred and eighty rows.
 NAMING_MIN_WH = 50.0
+# How many of a current reading's own changes to remember while confirming
+# what it can resolve. A pass covers one minute, so the evidence has to be
+# gathered across them or it is never gathered at all.
+AMP_STEP_MEMORY = 600
 
 
 class DetectionRunner:
@@ -88,6 +132,11 @@ class DetectionRunner:
         self.entry = entry
         self.submeters = {}
         self.fleet: Fleet = Fleet()
+        # V x dI per phase: the apparent power one quantum of the amps
+        # behind this role's power factor is worth. Measured, never set.
+        self.q_quantum: Dict[str, float] = {}
+        self._amp_steps: Dict[str, List[float]] = {}
+        self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
@@ -120,7 +169,11 @@ class DetectionRunner:
 
     @property
     def config(self) -> dict:
-        return dict(self.entry.options.get(CONF_DETECTION) or {})
+        # Cleaned on the way out rather than migrated in place: the stale copy
+        # is harmless in storage and the fix has to hold for an entry written
+        # by an older version that nobody re-saves. See
+        # drop_stale_load_override for what it removes and why.
+        return drop_stale_load_override(dict(self.entry.options.get(CONF_DETECTION) or {}))
 
     # Meters below the main one come from the Energy dashboard, resolved once
     # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
@@ -162,9 +215,25 @@ class DetectionRunner:
         return out
 
     def _device_rows(self, registry, device_id: str) -> list:
-        """A device's sensors in the shape the meter matcher reads."""
+        """A device's sensors in the shape the meter matcher reads, INCLUDING
+        those of the devices that hang off it.
+
+        A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
+        totals, each phase pointing at the parent with via_device_id. The
+        Energy dashboard names the parent - that is where the energy
+        statistic lives - so reading only the parent's own entities found a
+        single total and nothing else, and a three-phase meter was taken for
+        a one-phase one. It is the commonest three-phase meter there is
+        (Anze's attic and grid meters are both this, 2026-09-22)."""
+        ids = [device_id]
+        try:
+            dev_reg = dr.async_get(self.hass)
+            ids += [d.id for d in dev_reg.devices.values() if d.via_device_id == device_id]
+        except Exception:                        # a registry we cannot read is not fatal
+            pass
         rows = []
-        for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
+        for e in [x for i in ids
+                  for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
             if e.domain != "sensor":
                 continue
             st = self.hass.states.get(e.entity_id)
@@ -247,7 +316,7 @@ class DetectionRunner:
         for p in PHASES:
             per_phase = [(rows[p], sign) for rows, sign in terms if rows.get(p)]
             if per_phase:
-                out[p] = combine(per_phase)
+                out[p] = combine(per_phase, settle_s=COMBINE_SETTLE_S)
         return {p: rows for p, rows in out.items() if rows}
 
     async def _grid_sign(self, grid_rows: Dict[str, list],
@@ -353,6 +422,11 @@ class DetectionRunner:
         teaches the library nothing (Anze, 2026-09-17: "as for signatures only
         seen once, dont show them"). It keeps its place in the library and
         appears here as soon as it happens again."""
+        return self._by_evidence(self._worth())
+
+    def _worth(self) -> list:
+        """Signatures a person could name: on the main meter, seen more than
+        once, and having used enough to be worth the trouble."""
         parents = self.parents
         # biggest first, by energy: what a load COSTS is the reason to name
         # it, and it puts the ones worth the trouble at the top
@@ -369,38 +443,28 @@ class DetectionRunner:
                  # list whatever its size: the offer to move the name is the
                  # whole reason to open it
                  or self.detector.predecessor_of(s.id) is not None]
-        return self._by_evidence(worth)
+        return worth
+
+    def unlocated_waiting(self) -> int:
+        """How many more cleared the bar than the page's earned length fits.
+
+        The page promises it will lengthen as loads are named; this is the
+        number that makes the promise concrete."""
+        return max(0, len(self._clearing()) - len(self.unlocated()))
+
+    def _clearing(self) -> list:
+        """Everything worth naming, before the page's length is applied."""
+        return clears_for_naming(
+            self._worth(), DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
+            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
     def _by_evidence(self, worth: list) -> list:
-        """Only the ones it is reasonably sure are real loads.
+        """See offer_for_naming, which is where this lives so it can be tested."""
+        return offer_for_naming(
+            worth, len(self.detector.names()), DEFAULT_MIN_EVIDENCE,
+            NAMING_MIN_ROWS, NAMING_START_ROWS, NAMING_ROWS_PER_NAME,
+            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
 
-        A house makes far more shapes than it has appliances, and a list of
-        two hundred is a list nobody reads. But a bar that hides everything
-        is worse than one set too low, so when fewer than NAMING_MIN_ROWS
-        clear it the best of the rest come along - which is the "lower it if
-        we are not getting good hits" with nothing to decay."""
-        bar = self.min_evidence
-        clear = [s for s in worth if s.evidence >= bar or s.name
-                 or self.detector.predecessor_of(s.id) is not None]
-        if len(clear) >= NAMING_MIN_ROWS or len(clear) == len(worth):
-            return clear
-        rest = [s for s in worth if s not in clear]
-        rest.sort(key=lambda s: -s.evidence)
-        return clear + rest[:NAMING_MIN_ROWS - len(clear)]
-
-    @property
-    def min_step_w(self) -> float:
-        try:
-            return max(1.0, float(self.config.get(CONF_MIN_STEP_W, MIN_NOISE_W)))
-        except (TypeError, ValueError):
-            return MIN_NOISE_W
-
-    @property
-    def min_evidence(self) -> float:
-        try:
-            return max(0.0, min(1.0, float(self.config.get(CONF_MIN_EVIDENCE, DEFAULT_MIN_EVIDENCE))))
-        except (TypeError, ValueError):
-            return DEFAULT_MIN_EVIDENCE
 
     async def async_adopt(self, signature_id: int) -> Optional[str]:
         """Move a predecessor's name onto this signature, and persist."""
@@ -523,7 +587,7 @@ class DetectionRunner:
         else:                                   # a store written before downstream meters existed
             self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
         if orphans:
-            self.fleet.main.orphan_names = orphans
+            self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
@@ -543,7 +607,7 @@ class DetectionRunner:
         matches and the name does not return."""
         orphans = self.fleet.main.name_descriptors() if self.fleet else []
         self.fleet = Fleet()
-        self.fleet.main.orphan_names = orphans
+        self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
@@ -590,7 +654,9 @@ class DetectionRunner:
                     pv[p] = _align(generation[p], target)
             for p, rows in samples.items():
                 if p in self.fleet.main.phases:
-                    self.fleet.main.phases[p].min_noise = self.min_step_w
+                    # a fixed floor since 2026-09-23 - see _interval_field in
+                    # config_flow; a value stored by an older version is not read
+                    self.fleet.main.phases[p].min_noise = MIN_NOISE_W
                     # a reading that never exports is the house alone, and
                     # the house cannot draw less than nothing
                     self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
@@ -607,8 +673,13 @@ class DetectionRunner:
                 if ss:
                     sub_samples[name], sub_q[name] = ss, sq
                     agnostic[name] = meter["agnostic"]
+            # the recorder's start-of-window row is a copy, not a reading - see
+            # without_window_start; the sums above needed it, the detector must not
+            samples = without_window_start(samples, start.timestamp())
+            sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv
+                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
+                dict(self.q_quantum), dict(self.sub_q_quantum),
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())
@@ -727,6 +798,27 @@ class DetectionRunner:
                     # the reference samples at its own moments; hold each
                     # value forward onto the load's
                     out[phase] = _align(sorted(var.items()), rows)
+                    # ...and what those amps could actually resolve, which is
+                    # the error bar on every factor derived from them. A
+                    # power-factor entity needs no amps and carries its own
+                    # precision, so it is left ungated.
+                    # ACCUMULATED across passes, never re-measured from one.
+                    # A pass reads a single minute of history, which holds
+                    # nowhere near enough changes to confirm a lattice - so
+                    # measuring per pass returned nothing and, because it
+                    # cleared first, threw away what the six-hour backfill
+                    # slices HAD learned. Resolution is a property of the
+                    # instrument; it does not expire between passes.
+                    amps = series.get(("current", phase)) or []
+                    volts = series.get(("voltage", phase)) or []
+                    if amps and volts:
+                        steps = self._amp_steps.setdefault(phase, [])
+                        steps.extend(abs(b - a) for (_, a), (_, b)
+                                     in zip(amps, amps[1:]) if b != a)
+                        del steps[:-AMP_STEP_MEMORY]
+                        dq = quantum_of_steps(steps)
+                        if dq:
+                            self.q_quantum[phase] = dq * _median_of([v for _, v in volts])
                 break
         return out
 
@@ -822,6 +914,15 @@ def _as_of(rows: list, ts: float, i: int) -> int:
     while i + 1 < len(rows) and rows[i + 1][0] <= ts:
         i += 1
     return i
+
+
+def _median_of(values: list) -> float:
+    """Plain median, for the one voltage level a quantum is scaled by."""
+    kept = sorted(values)
+    if not kept:
+        return 0.0
+    mid = len(kept) // 2
+    return kept[mid] if len(kept) % 2 else 0.5 * (kept[mid - 1] + kept[mid])
 
 
 def _align(source: list, target_rows: list) -> Dict[float, float]:
