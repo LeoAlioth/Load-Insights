@@ -6,7 +6,7 @@ import functools
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.energy.websocket_api import async_get_energy_platforms
@@ -194,23 +194,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         tz_offset = now.utcoffset().total_seconds() if now.utcoffset() else 0.0
         horizon_keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
         for eid in input_entities:
-            raw = await self._input_history(eid, start, now)
-            labels, kind = await self.hass.async_add_executor_job(label_history, raw)
-            input_kinds[eid] = kind
-            if not usable(labels):
-                input_kinds[eid] = f"{kind} (too little history)" if kind in ("categorical", "banded") else kind
-                continue
-            st = self.hass.states.get(eid)
-            current = labels.get(max(labels)) if labels else None
-            if st is not None and st.state not in ("unknown", "unavailable", ""):
-                # the label the CURRENT state falls under, for the hold window
-                current = (await self.hass.async_add_executor_job(
-                    label_history, {max(labels) if labels else 0.0: st.state}
-                ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
-            future = await self.hass.async_add_executor_job(project, labels, horizon_keys, tz_offset, current)
-            merged = dict(labels)
-            merged.update(future)
-            cal_signals.append(CalendarSignals.from_labels(eid, merged))
+            signal, input_kinds[eid] = await self._input_signal(eid, start, now, horizon_keys, tz_offset)
+            if signal is not None:
+                cal_signals.append(signal)
 
         consumption = combine(series, site.consumption_terms())
         if not consumption:
@@ -253,7 +239,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             st_hist: Dict[float, float] = {}
             st_now: Optional[float] = None
             st_entity = state_map.get(d.energy)
-            if st_entity:
+            dev_cals = cal_signals
+            if st_entity and st_entity.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
                 srows = await get_instance(self.hass).async_add_executor_job(
                     rec_stats.statistics_during_period,
                     self.hass, start, None, {st_entity}, "hour", None, {"mean"},
@@ -267,9 +254,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 except (TypeError, ValueError):
                     st_now = None
                 state_now[d.energy] = st_now
+            if st_entity and not st_hist:
+                # a STATE rather than a number - a mode, a switch, a status - or a
+                # sensor with no hourly means: fitted like an attached input, but
+                # for this device alone (Anze, 2026-09-28)
+                signal, _ = await self._input_signal(st_entity, start, now, horizon_keys, tz_offset)
+                if signal is not None:
+                    dev_cals = [*cal_signals, signal]
             device_fc[d.energy] = await self.hass.async_add_executor_job(
                 forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
-                cal_signals or None, st_hist or None, st_now,
+                dev_cals or None, st_hist or None, st_now,
             )
             score(d.energy, device_fc[d.energy], rows)
         await self._save_ledgers()
@@ -346,6 +340,27 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 # several arrays on one site sum, as the dashboard sums them
                 out[k] = out.get(k, 0.0) + float(wh) / 1000.0
         return out
+
+    async def _input_signal(self, eid: str, start: datetime, now: datetime,
+                            horizon_keys: List[float], tz_offset: float) -> Tuple[Optional[CalendarSignals], str]:
+        """An attached entity as the fit takes it - its labelled history and
+        the horizon's projected labels - and how it was read. None when it
+        cannot take part yet."""
+        raw = await self._input_history(eid, start, now)
+        labels, kind = await self.hass.async_add_executor_job(label_history, raw)
+        if not usable(labels):
+            return None, (f"{kind} (too little history)" if kind in ("categorical", "banded") else kind)
+        st = self.hass.states.get(eid)
+        current = labels.get(max(labels)) if labels else None
+        if st is not None and st.state not in ("unknown", "unavailable", ""):
+            # the label the CURRENT state falls under, for the hold window
+            current = (await self.hass.async_add_executor_job(
+                label_history, {max(labels) if labels else 0.0: st.state}
+            ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
+        future = await self.hass.async_add_executor_job(project, labels, horizon_keys, tz_offset, current)
+        merged = dict(labels)
+        merged.update(future)
+        return CalendarSignals.from_labels(eid, merged), kind
 
     async def _input_history(self, entity_id: str, start: datetime, end: datetime) -> Dict[float, object]:
         """hour key -> the entity's value in that hour. Hourly statistics when
@@ -470,6 +485,11 @@ def _read_number(hass, entity_ids) -> Optional[float]:
 
 def _to_c(value, unit) -> float:
     return float(TemperatureConverter.convert(float(value), unit, UnitOfTemperature.CELSIUS))
+
+
+# A device state entity in these domains is a NUMBER and nudges its next hours;
+# anything else is a state, fitted like an attached input.
+NUMERIC_STATE_DOMAINS = ("sensor", "input_number", "number")
 
 
 def _rows_to_samples(rows: List[dict], tz) -> List[tuple]:

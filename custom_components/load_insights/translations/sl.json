@@ -104,11 +104,11 @@
                 }
             },
             "device_state": {
-                "title": "Senzor stanja naprave",
-                "description": "Izberite napravo iz nadzorne plošče Energija in senzor, ki pove, kaj bo naprava kmalu počela - temperaturo bojlerja, nivo v cisterni za črpalko. Njegova trenutna vrednost izostri napoved te naprave za naslednjih šest ur. Ena naprava na obisk; pustite senzor prazen, da ga odstranite.",
+                "title": "Stanje naprave",
+                "description": "Izberi napravo z nadzorne plošče Energija in to, kar pove, kaj bo naredila. Število - temperatura bojlerja, nivo rezervoarja pri črpalki, prostor, kjer stoji hladilnik - iz zadnje vrednosti izostri napoved za naslednjih šest ur. Stanje - način, stikalo, status ogrevanja - se upošteva kot priključen vhod, uro za uro, samo za to napravo. Ena naprava na obisk; pusti prazno, da jo počistiš.",
                 "data": {
                     "device": "Naprava",
-                    "state_entity": "Senzor stanja"
+                    "state_entity": "Stanje ali senzor"
                 }
             },
             "detection": {
