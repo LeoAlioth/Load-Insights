@@ -105,10 +105,10 @@
             },
             "device_state": {
                 "title": "Stanje naprave",
-                "description": "Izberi napravo z nadzorne plošče Energija in to, kar pove, kaj bo naredila. Število - temperatura bojlerja, nivo rezervoarja pri črpalki, prostor, kjer stoji hladilnik - iz zadnje vrednosti izostri napoved za naslednjih šest ur. Stanje - način, stikalo, status ogrevanja - se upošteva kot priključen vhod, uro za uro, samo za to napravo. Ena naprava na obisk; pusti prazno, da jo počistiš.",
+                "description": "Izberi napravo z nadzorne plošče Energija in to, kar pove, kaj bo naredila. Število - temperatura bojlerja, nivo rezervoarja pri črpalki, prostor, kjer stoji hladilnik - iz zadnje vrednosti izostri napoved za naslednjih šest ur. Stanje - način, stikalo, status ogrevanja - se upošteva kot priključen vhod, uro za uro, samo za to napravo. Izberi vse, ki o njej kaj povedo: vsako stanje šteje, od števil pa se uporabi tisto, ki največ pojasni. Ena naprava na obisk; pusti prazno, da jo počistiš.",
                 "data": {
                     "device": "Naprava",
-                    "state_entity": "Stanje ali senzor"
+                    "state_entity": "Stanja ali senzorji"
                 }
             },
             "detection": {
