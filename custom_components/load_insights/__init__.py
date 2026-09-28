@@ -4,12 +4,15 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import (
     CONF_NAME,
+    CONF_SIGNATURE_REVISION,
     DEFAULT_NAME,
     DOMAIN,
+    SERVICE_NAME_LOAD,
     SERVICE_REFRESH,
     SERVICE_RESET_DETECTION,
 )
@@ -42,8 +45,31 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
                 await runner.async_reset()
         await _async_for_each_entry(hass, go)
 
+    async def _name_load(call) -> None:
+        """Name a load by its id, for one the naming page does not offer yet -
+        Kozolec's fridge, whose runs the detector measures too loosely to clear
+        the page's bar (Anze, 2026-09-28). An empty name clears it."""
+        load_id = int(call.data["load_id"])
+        name = (call.data.get("name") or "").strip() or None
+        found = False
+
+        async def go(entry_id, _coordinator):
+            nonlocal found
+            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
+            if runner is None or not await runner.async_rename(load_id, name):
+                return
+            found = True
+            # what the naming page's Done does: the entities follow the names
+            entry = hass.config_entries.async_get_entry(entry_id)
+            rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+            hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_SIGNATURE_REVISION: rev})
+        await _async_for_each_entry(hass, go)
+        if not found:
+            raise ServiceValidationError(f"No detected load has id {load_id}")
+
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, _refresh)
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
+    hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)
     return True
 
 
