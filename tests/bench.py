@@ -45,6 +45,9 @@ pump    every run Home's hidrofor meter recorded, and what the house detector
         pump's LABELLED sessions had pointed nowhere.
 lengths how far session lengths sit from the real ones: kiln pulses timed off
         the grid meter, pump runs off the pump's own meter.
+fridge  Kozolec's two fridges, which have no meter: their runs taken off the
+        house reading, each tagged by how it starts, against what was filed -
+        caught, how long, and over how many signatures.
 """
 from __future__ import annotations
 
@@ -437,6 +440,86 @@ def kiln(folder: str, dials) -> None:
           f"   top signature x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
 
 
+FRIDGE_POWER = "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"
+
+
+def _fridge_runs(folder: str) -> list:
+    """Kozolec's compressor runs as the house reading itself shows them - no
+    detector involved: a rise of 40-75 W held for minutes, closed by the first
+    fall of 60-130 % of what it had sagged to, 10 to 60 minutes later. Each
+    tagged by how it STARTED, the one thing that tells the two fridges apart
+    (2026-09-28): "A" a one-reading surge of 250 W or more, "B" a start some
+    12 W above where it settles a minute later, "?" neither seen.
+    Returns (start, end, step, kind)."""
+    import statistics as st
+    rows = _read_csv([folder], False).get(FRIDGE_POWER) or []
+    runs, i = [], 6
+    while i < len(rows) - 25:
+        t0 = rows[i][0]
+        base = st.median(v for _, v in rows[i - 6:i])
+        win = [(t, v) for t, v in rows[i:i + 60] if t - t0 <= 240]
+        m1 = [v for t, v in win if 50 <= t - t0 <= 110]
+        m3 = [v for t, v in win if 150 <= t - t0 <= 240]
+        first = [v for t, v in win if t - t0 <= 12]
+        if not (m1 and m3 and first) or rows[i][1] - base < 35:
+            i += 1
+            continue
+        s1, s3 = st.median(m1) - base, st.median(m3) - base
+        if not (40 <= s1 <= 75 and 30 <= s3 <= 75):
+            i += 1
+            continue
+        end, j = None, i + 5
+        while j < len(rows) - 5 and rows[j][0] - t0 <= 3600:
+            before = st.median(v for _, v in rows[j - 5:j])
+            after = st.median(v for _, v in rows[j:j + 5])
+            if -1.3 * (before - base) <= after - before <= -0.6 * (before - base) and after - base < 0.5 * s3:
+                end = rows[j][0]
+                break
+            j += 1
+        if end is None or not 600 <= end - t0 <= 3600:
+            i += 1
+            continue
+        early = [v for t, v in win if 5 <= t - t0 <= 25 and v - base < 250]
+        e = (st.median(early) - base) if early else s1
+        kind = "A" if max(first) - base >= 250 else ("B" if e - s1 >= 12 else "?")
+        runs.append((t0, end, s1, kind))
+        i = j
+    return runs
+
+
+def fridge(folder: str, dials) -> None:
+    """What the detector filed for Kozolec's two fridges, against their runs
+    in the raw reading: how many it caught at the right moment, how long it
+    thought they ran against how long they did, and how many signatures they
+    were spread over - ideally two, one per fridge."""
+    import statistics as st
+    tag = _apply(dials)
+    det, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
+    truth = _fridge_runs(folder)
+    starts = sorted((f.start, f) for f in filed)
+    keys = [k for k, _ in starts]
+    hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
+    for t0, t1, step, kind in truth:
+        lo = bisect.bisect_left(keys, t0 - 30)
+        near = [f for k, f in starts[lo:lo + 20] if abs(k - t0) <= 30]
+        near = [f for f in near if 30 <= sum(max(v for _, v in lv) for lv in f.levels.values()) <= 130]
+        if not near:
+            continue
+        f = min(near, key=lambda f: abs(f.start - t0))
+        hit[kind] += 1
+        ratio.append((f.end - f.start) / (t1 - t0))
+        sig = det.signature_of(f)
+        per_sig[kind][sig.id if sig else None] += 1
+    n = collections.Counter(k for *_, k in truth)
+    days = (truth[-1][0] - truth[0][0]) / 86400 if len(truth) > 1 else 1
+    top = lambda c: ", ".join(f"#{i}:{k}" for i, k in c.most_common(3))  # noqa: E731
+    print(f"  {tag:44s} fridge runs {len(truth)} ({len(truth) / days:.1f} a day: A {n['A']} B {n['B']} ? {n['?']})"
+          f"  caught A {hit['A']} B {hit['B']} ? {hit['?']}"
+          f"  length filed/true median {st.median(ratio) if ratio else 0:.2f}"
+          f" (within 25 %: {sum(0.75 <= r <= 1.25 for r in ratio)}/{len(ratio)})")
+    print(f"  {'':44s} signatures  A: {top(per_sig['A'])}   B: {top(per_sig['B'])}   ?: {top(per_sig['?'])}")
+
+
 def surge(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, subs = _run(folder, site)
@@ -545,6 +628,8 @@ def main() -> int:
         score(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == "kiln":
         kiln(sys.argv[2], sys.argv[3:])
+    elif cmd == "fridge":
+        fridge(sys.argv[2], sys.argv[3:])
     elif cmd == "surge":
         surge(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == "attrib":
