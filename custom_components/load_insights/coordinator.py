@@ -243,8 +243,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             # reads both the room and the floor). A STATE - a mode, a switch, a
             # status - or a number with no hourly means is fitted like an
             # attached input, for this device alone; every one of them counts.
-            # The numbers each nudge the next hours, and they tell much the
-            # same story, so the one that explains the most is the one used.
+            # The numbers nudge the next hours together (fit_joint), each one
+            # kept only if it adds to what the others already explain.
             dev_cals = list(cal_signals)
             numbers: List[Tuple[str, Dict[float, float], Optional[float]]] = []
             for st_entity in state_map.get(d.energy, []):
@@ -268,18 +268,21 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 signal, _ = await self._input_signal(st_entity, start, now, horizon_keys, tz_offset)
                 if signal is not None:
                     dev_cals.append(signal)
-            best = None
-            for st_entity, st_hist, live in (numbers or [(None, None, None)]):
-                fc = await self.hass.async_add_executor_job(
-                    forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
-                    dev_cals or None, st_hist or None, live,
-                )
-                gain = max(fc.nowcast.explained) if fc.nowcast.engaged and fc.nowcast.explained else -1.0
-                if best is None or gain > best[0]:
-                    best = (gain, fc, st_entity, live)
-            _, device_fc[d.energy], chosen, live = best
-            if chosen:
-                state_used[d.energy], state_now[d.energy] = chosen, live
+            if len(numbers) > 1:
+                hist, live = [h for _, h, _ in numbers], [v for _, _, v in numbers]
+            elif numbers:
+                hist, live = numbers[0][1], numbers[0][2]
+            else:
+                hist, live = None, None
+            fc = await self.hass.async_add_executor_job(
+                forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
+                dev_cals or None, hist or None, live,
+            )
+            device_fc[d.energy] = fc
+            if numbers:
+                kept = [numbers[i] for i in fc.nowcast.used] if fc.nowcast.used else numbers[:1]
+                state_used[d.energy] = ", ".join(e for e, _, _ in kept)
+                state_now[d.energy] = kept[0][2] if len(kept) == 1 else None
             score(d.energy, device_fc[d.energy], rows)
         await self._save_ledgers()
 

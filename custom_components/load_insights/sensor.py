@@ -298,6 +298,11 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     "hours_fitted": fc.nowcast.hours,
                     "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
                 }
+                if fc.nowcast.matrix:
+                    # several states fitted together: one row per state kept
+                    attrs["nowcast"]["kwh_per_unit_by_lead_by_state"] = [
+                        [round(row[j], 4) for row in fc.nowcast.matrix] for j in range(len(fc.nowcast.used))]
+                    attrs["nowcast"]["state_means"] = [round(m, 2) for m in fc.nowcast.means]
         return attrs
 
 
