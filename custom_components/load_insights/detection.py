@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 from datetime import datetime, timedelta
@@ -483,11 +484,19 @@ class DetectionRunner:
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STAGE_DOMAINS:
                 continue
-            attrs = domain in ("climate", "fan")
-            states = await get_instance(self.hass).async_add_executor_job(
-                history.state_changes_during_period, self.hass, since, end, eid,
-                not attrs, False, None, True,
-            )
+            if domain in ("climate", "fan"):
+                # Read by an ATTRIBUTE - a thermostat's hvac_action, a fan's
+                # speed - which changes while the state does not: a thermostat
+                # stays "heat" all winter. state_changes_during_period returns
+                # state changes only, and so gave the floor mat's thermostat
+                # not one switch-on in production (2026-09-28).
+                states = await get_instance(self.hass).async_add_executor_job(functools.partial(
+                    history.get_significant_states, self.hass, since, end, [eid],
+                    include_start_time_state=True, significant_changes_only=False))
+            else:
+                states = await get_instance(self.hass).async_add_executor_job(
+                    history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
+                )
             rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
             if domain in NUMBER_DOMAINS:
                 values = []
