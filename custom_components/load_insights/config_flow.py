@@ -47,7 +47,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import SWITCH_PREFIX, same_device_phrase, suggest_levels
+from .insights.detect import SWITCH_PREFIX, same_device_phrase, stage_groups, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -180,6 +180,11 @@ def _helpers(hass, sig) -> list:
         if where.startswith(SWITCH_PREFIX) and k * 2 >= sig.count:
             eid = where[len(SWITCH_PREFIX):]
             out.append((eid, f"Starts and stops with {label(eid)[0]}: {k} of its {sig.count} runs"))
+    stage = sig.strongest_stage()
+    if stage is not None:
+        eid, value, share, lift = stage
+        out.append((eid, f"Runs while {label(eid)[0]} is {value}: {share:.0%} of its runs, "
+                         f"{lift:.0f} times what chance would give"))
     for key in ("d", "g"):
         found = sig.strongest_driver(key)
         if found is None:
@@ -609,9 +614,11 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         now_ts = dt_util.utcnow().timestamp()
         running = runner.detector.running_now(now_ts)
         # the other settings each load may be of the same device as
-        partners = {i: [g for g in group if g != i]
-                    for group in suggest_levels(runner.detector.signatures, runner.detector.recent)
-                    for i in group}
+        partners: dict = {}
+        for group in (suggest_levels(runner.detector.signatures, runner.detector.recent)
+                      + stage_groups(runner.detector.signatures)):
+            for i in group:
+                partners[i] = list(dict.fromkeys(partners.get(i, []) + [g for g in group if g != i]))
         by_id = {s.id: s for s in runner.detector.signatures}
         # What is WAITING, not what was cut off this menu. The two are not the
         # same: the list arrives already shortened to the length the user has

@@ -453,6 +453,24 @@ SWITCH_MEMORY_S = 4 * 3600.0
 # correlated to their frequency and runtime").
 DRIVER_MIN_RUNS = 30
 DRIVER_MIN_R2 = 0.25
+# A setting a device reports - a washer's cycle phase, a fan's speed - is
+# learned against each load: the value it had while the load ran, against
+# what that value's share of the time would give by chance (Anze,
+# 2026-09-28: stages of one device, "the washer's cycle/sub cycle sensors").
+# A load runs IN a value once it has this many runs (recency-weighted over
+# STAGE_TIME_TAU_S, so a washer used daily keeps about 14), this share of
+# them in it, and that share this many times what chance gives. Five of
+# eight runs landing in a phase that fills 6 % of the time is a chance of
+# about 4 in 100 000.
+STAGE_MIN_RUNS = 8
+STAGE_MIN_SHARE = 0.6
+STAGE_MIN_LIFT = 3.0
+# How long a value's share of the time is remembered over.
+STAGE_TIME_TAU_S = 14 * 86400.0
+# A load that runs in one value of a setting is taken as a real load of
+# that device: its runs being loose about time counts no more against it.
+# 0 is off.
+STAGE_EVIDENCE = 1
 # Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
 # 3EM - may decide a signature too, or only a meter that holds one device.
 # Off: one-device meters only was better at Home (79.1 / 80.7 % against
@@ -1797,6 +1815,9 @@ class Signature:
     # [weight, sum x, sum x2, sum y, sum y2, sum xy] with y a logarithm - see
     # DRIVER_MIN_RUNS
     drivers: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
+    # setting -> {"n": value -> runs seen in it, "e": value -> runs chance
+    # would put there}, both recency-weighted - see STAGE_MIN_RUNS
+    stages: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
 
     @property
     def location(self) -> str:
@@ -1942,6 +1963,12 @@ class Signature:
 
     def swallow(self, other: "Signature") -> None:
         """Take another signature's sightings into this one, by weight."""
+        for name, row in other.stages.items():
+            mine = self.stages.setdefault(name, {"n": {}, "e": {}, "t": dict(row.get("t") or {})})
+            for key in ("n", "e"):
+                for v, x in (row.get(key) or {}).items():
+                    mine[key][v] = mine[key].get(v, 0.0) + x
+            mine["t"] = {"at": max((mine.get("t") or {}).get("at", 0.0), (row.get("t") or {}).get("at", 0.0))}
         for name, row in other.drivers.items():
             mine = self.drivers.setdefault(name, {"d": [0.0] * 6, "g": [0.0] * 6})
             for key in ("d", "g"):
@@ -2055,6 +2082,42 @@ class Signature:
         ly = math.log(y)
         for i, v in enumerate((1.0, x, x * x, ly, ly * ly, x * ly)):
             acc[i] = acc[i] * keep + v
+
+    def note_stage(self, name: str, value: str, shares: Dict[str, float], ts: float) -> None:
+        """One run, at ``ts``, seen while the setting ``name`` read ``value``;
+        ``shares`` is each value's share of the time as it stands. Weighted by
+        TIME, over STAGE_TIME_TAU_S like the shares: by sighting, a load that
+        starts 285 times a day remembered eight hours - one wash - and read
+        as running in it (Home's 49 W load, 2026-09-28)."""
+        row = self.stages.setdefault(name, {"n": {}, "e": {}, "t": {"at": ts}})
+        keep = math.exp(-max(0.0, ts - row.get("t", {}).get("at", ts)) / STAGE_TIME_TAU_S)
+        row["t"] = {"at": max(ts, row.get("t", {}).get("at", ts))}
+        for key in ("n", "e"):
+            for v in row[key]:
+                row[key][v] *= keep
+        row["n"][value] = row["n"].get(value, 0.0) + 1.0
+        for v, share in shares.items():
+            row["e"][v] = row["e"].get(v, 0.0) + share
+
+    def stage_of(self, name: str) -> Optional[Tuple[str, float, float]]:
+        """(value, share of its runs, times chance) the load runs in, once
+        believed - see STAGE_MIN_RUNS - or None."""
+        row = self.stages.get(name)
+        runs = sum((row or {}).get("n", {}).values())
+        if not row or runs < STAGE_MIN_RUNS or self.count < STAGE_MIN_RUNS:
+            return None
+        value, n = max(row["n"].items(), key=lambda kv: kv[1])
+        share, lift = n / runs, n / max(row["e"].get(value, 0.0), 1e-9)
+        return (value, share, lift) if share >= STAGE_MIN_SHARE and lift >= STAGE_MIN_LIFT else None
+
+    def strongest_stage(self):
+        """(setting, value, share, times chance) of the one it is most tied to, or None."""
+        best = None
+        for name in self.stages:
+            got = self.stage_of(name)
+            if got and (best is None or got[2] > best[3]):
+                best = (name, *got)
+        return best
 
     def driver_effect(self, name: str, key: str = "d") -> Optional[Tuple[float, float, float]]:
         """(share change per unit of the number, r², weight) for run length
@@ -2240,6 +2303,9 @@ class Signature:
             # what the number explains is not the load being loose about time
             spread *= max(0.0, 1.0 - driver[2]) ** 0.5
         tight_d = 1.0 - min(1.0, (spread / max(self.duration_s, 1.0)) / 0.5)
+        stage = self.strongest_stage() if STAGE_EVIDENCE else None
+        if stage:
+            tight_d = max(tight_d, stage[2])
         return round(0.5 * seen + 0.3 * tight_w + 0.2 * tight_d, 2)
 
     @property
@@ -2394,7 +2460,8 @@ class Signature:
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1),
-                "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()}}
+                "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()},
+                "stages": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.stages.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
@@ -2410,7 +2477,8 @@ class Signature:
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
-                   drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()})
+                   drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()},
+                   stages={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("stages") or {}).items()})
 
 
 def _fmt_w(x: float) -> str:
@@ -2591,6 +2659,12 @@ class Detector:
     # number -> sorted [(ts, value)], each held until the next - see
     # DRIVER_MIN_RUNS; fed by the fleet, not persisted
     drivers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
+    # setting -> sorted [(ts, value)], fed by the fleet like drivers; and
+    # setting -> value -> seconds in it (recency-weighted), with how far that
+    # has been counted - these two persisted
+    stages: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict)
+    stage_time: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    stage_until: Dict[str, float] = field(default_factory=dict)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -2817,6 +2891,13 @@ class Detector:
                 i = bisect.bisect_right(rows, (at, math.inf)) - 1 if at is not None else -1
                 if i >= 0 and y > 0:
                     best.note_driver(name, key, rows[i][1], y)
+        for name, rows in self.stages.items():
+            # the setting halfway through the run: a washer's heater starts
+            # as its wash phase does, a moment either side of the change
+            i = bisect.bisect_right(rows, ((s.start + s.end) / 2.0, "\uffff")) - 1
+            total = sum((self.stage_time.get(name) or {}).values())
+            if i >= 0 and total > 0:
+                best.note_stage(name, rows[i][1], {v: t / total for v, t in self.stage_time[name].items()}, s.start)
         s.signature_id = best.id
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
@@ -3150,7 +3231,9 @@ class Detector:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
-                "energy_floor": {k: _trim(v, 1) for k, v in self.energy_floor.items()}}
+                "energy_floor": {k: _trim(v, 1) for k, v in self.energy_floor.items()},
+                "stage_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.stage_time.items()},
+                "stage_until": dict(self.stage_until)}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -3165,6 +3248,8 @@ class Detector:
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
         det.energy_floor = {k: float(v) for k, v in (d.get("energy_floor") or {}).items()}
+        det.stage_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("stage_time") or {}).items()}
+        det.stage_until = {n: float(t) for n, t in (d.get("stage_until") or {}).items()}
         return det
 
 
@@ -3215,7 +3300,8 @@ class Fleet:
                 sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
                 single: Optional[Dict[str, bool]] = None,
                 switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
-                drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None) -> None:
+                drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
+                stages: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
@@ -3231,12 +3317,15 @@ class Fleet:
             keep = min(oldest or now_ts or 0.0, now_ts or max(known, default=0.0)) - SWITCH_MEMORY_S
             for on in [t for t in known if t < keep]:
                 del known[on]
-        for name, rows in (drivers or {}).items():
-            held = dict(self.main.drivers.get(name) or [])
-            held.update((float(t), float(v)) for t, v in rows)
-            keep = min(oldest or now_ts or 0.0, now_ts or max(held, default=0.0)) - SWITCH_MEMORY_S
-            last = max((t for t in held if t < keep), default=None)   # still in force at the cut
-            self.main.drivers[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+        for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.stages, stages, str)):
+            for name, rows in (fed or {}).items():
+                held = dict(store.get(name) or [])
+                held.update((float(t), cast(v)) for t, v in rows)
+                keep = min(oldest or now_ts or 0.0, now_ts or max(held, default=0.0)) - SWITCH_MEMORY_S
+                last = max((t for t in held if t < keep), default=None)   # still in force at the cut
+                store[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+        for name in (stages or {}):
+            self._count_stage_time(name, now_ts)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         # only the main meter needs the array: a downstream meter sees the
@@ -3326,6 +3415,24 @@ class Fleet:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
             self._credit_switch(m, switch)
 
+    def _count_stage_time(self, name: str, now_ts: Optional[float]) -> None:
+        """Add the time since it was last counted to each value's share of
+        it, the older time fading over STAGE_TIME_TAU_S."""
+        det, rows = self.main, self.main.stages.get(name) or []
+        if not rows:
+            return
+        end = now_ts or rows[-1][0]
+        start = max(det.stage_until.get(name, rows[0][0]), rows[0][0])
+        if end <= start:
+            return
+        fade = math.exp(-(end - start) / STAGE_TIME_TAU_S)
+        spent = {v: t * fade for v, t in (det.stage_time.get(name) or {}).items()}
+        for (t, v), nxt in zip(rows, [r[0] for r in rows[1:]] + [end]):
+            a, b = max(t, start), min(nxt, end)
+            if b > a:
+                spent[v] = spent.get(v, 0.0) + (b - a)
+        det.stage_time[name], det.stage_until[name] = spent, end
+
     def rename_entities(self, renames: Dict[str, str]) -> None:
         """Follow renamed entities: what a switch was credited and when it was
         on, and what each load learned against a number, go with the entity."""
@@ -3336,11 +3443,13 @@ class Fleet:
                 for a, b in pairs:
                     if a in sig.locations:
                         sig.locations[b] = sig.locations.get(b, 0) + sig.locations.pop(a)
-                    if a in sig.drivers:
-                        sig.drivers[b] = sig.drivers.pop(a)
+                    for held in (sig.drivers, sig.stages):
+                        if a in held:
+                            held[b] = held.pop(a)
             for a, b in pairs:
-                if a in det.drivers:
-                    det.drivers[b] = det.drivers.pop(a)
+                for held in (det.drivers, det.stages, det.stage_time, det.stage_until):
+                    if a in held:
+                        held[b] = held.pop(a)
         for a, b in pairs:
             if a in self.switch_on:
                 self.switch_on[b] = self.switch_on.pop(a)
@@ -3940,6 +4049,19 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
     # member is named the matter is settled and repeating it is noise.
     return [sorted(x.id for x in g) for g in groups
             if len(g) > 1 and any(not x.name for x in g)]
+
+
+def stage_groups(signatures: Sequence[Signature]) -> List[List[int]]:
+    """Loads tied to values of the SAME setting - a washer's heater in its
+    wash phase, its drum in its spin - as one device's parts or settings.
+    Unlike suggest_levels this needs no likeness between them: a heater and
+    a drum motor share nothing but the machine, which the setting names."""
+    by_setting: Dict[str, List[int]] = {}
+    for sig in signatures:
+        got = sig.strongest_stage()
+        if got:
+            by_setting.setdefault(got[0], []).append(sig.id)
+    return [sorted(ids) for ids in by_setting.values() if len(ids) > 1]
 
 
 def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[str, Optional[str]]] = None) -> str:

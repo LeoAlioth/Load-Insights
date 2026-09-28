@@ -84,6 +84,28 @@ def expand(paths):
 ON_STATES = {"on", "heating", "cooling", "drying"}
 
 
+def read_states(paths, entity_id):
+    """An entity's TEXT states over time [(ts, state)] - a washer's cycle
+    phase, a fan's speed exported as its own series."""
+    rows = []
+    for path in expand(paths):
+        with open(path, newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if (row.get("entity_id") or "").strip() != entity_id:
+                    continue
+                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
+                try:
+                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=timezone.utc)
+                state = (row.get("state") or "").strip()
+                if state and state not in ("unknown", "unavailable"):
+                    rows.append((moment.timestamp(), state))
+    return sorted(set(rows))
+
+
 def read_switch(paths, entity_id):
     """An entity's on-periods [(on, off)] from the exports' TEXT states - on,
     or a thermostat's heating (its hvac_action exported as its own series)."""
@@ -273,6 +295,8 @@ def main() -> int:
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
     parser.add_argument("--switch", action="append", default=[],
                         help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
+    parser.add_argument("--stage", action="append", default=[],
+                        help="ENTITY: a setting a device reports - a washer's cycle phase")
     parser.add_argument("--driver", action="append", default=[],
                         help="ENTITY: a number a load's runs may follow - a room's temperature")
     parser.add_argument("--sub-phases", action="append", default=[],
@@ -385,14 +409,18 @@ def main() -> int:
         name, _, eid = pin.partition("=")
         switch_spans[name.strip()] = read_switch(args.csv, eid.strip())
     drivers = {eid.strip(): sorted(series.get(eid.strip()) or []) for eid in args.driver}
+    stages = {eid.strip(): read_states(args.csv, eid.strip()) for eid in args.stage}
+    for eid, rows in stages.items():
+        print(f"stage {eid}: {len(rows)} changes")
     for eid, rows in drivers.items():
         print(f"driver {eid}: {len(rows)} readings")
 
     def held(rows, a, b):
         """[a - SWITCH_MEMORY_S, b) as production reads it: with the value in
         force at the start of that window."""
-        i = bisect.bisect_left(rows, (a - D.SWITCH_MEMORY_S, -math.inf))
-        return rows[max(i - 1, 0):bisect.bisect_left(rows, (b, -math.inf))]
+        ts = [r[0] for r in rows]              # by time alone: a setting's values are words
+        i = bisect.bisect_left(ts, a - D.SWITCH_MEMORY_S)
+        return rows[max(i - 1, 0):bisect.bisect_left(ts, b)]
     fleet = D.Fleet()
     fleet.main.tz_offset_s = 0.0
     for p in phases:
@@ -428,7 +456,8 @@ def main() -> int:
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
-                      drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None)
+                      drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
+                      stages={n: held(rows, t, e) for n, rows in stages.items()} or None)
         t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.

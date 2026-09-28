@@ -98,6 +98,7 @@ SUBS = "lab"
 LAST_FLEET = None                      # the Fleet of the last _run, for attrib
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
+STAGES: list = []                      # STAGE=entity dials, fed as --stage
 PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
@@ -255,6 +256,9 @@ def _apply(dials) -> str:
         if k == "DRIVER":
             DRIVERS.append(v)             # a number a load's runs may follow
             continue
+        if k == "STAGE":
+            STAGES.append(v)              # a setting a device reports
+            continue
         if not hasattr(D, k):
             raise SystemExit(f"no such dial: {k}")
         setattr(D, k, type(getattr(D, k))(float(v)))
@@ -291,6 +295,8 @@ def _run(folder: str, site: str | None):
         argv += ["--switch", f"{eid.split(':')[0]}={eid}"]
     for eid in DRIVERS:
         argv += ["--driver", eid]
+    for eid in STAGES:
+        argv += ["--stage", eid]
     if site and SUBS == "prod":
         for n, e in PROD_SUBS[site].items():
             argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
@@ -573,6 +579,32 @@ def switch(folder: str, dials) -> None:
           + f"   credited to it off the mat's size: {others}")
 
 
+def stage(folder: str, dials) -> None:
+    """Home's loads against the settings fed as STAGE= dials: which the
+    detector ties to one value of a setting, how strongly, and what that did
+    to their evidence - the naming page's bar is DEFAULT_MIN_EVIDENCE."""
+    tag = _apply(dials)
+    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    bar = 0.7                                  # const.DEFAULT_MIN_EVIDENCE
+    print(f"  {tag}   signatures {len(det.signatures)}, over the naming bar {sum(s.evidence >= bar for s in det.signatures)}")
+    for name in STAGES:
+        share = det.stage_time.get(name) or {}
+        total = sum(share.values()) or 1.0
+        print(f"    {name}: time " + ", ".join(f"{v} {t / total:.1%}" for v, t in sorted(share.items(), key=lambda kv: -kv[1])[:8]))
+        tied = [(s, s.stage_of(name)) for s in det.signatures]
+        tied = [(s, g) for s, g in tied if g]
+        for s, (value, sh, lift) in sorted(tied, key=lambda x: -x[1][2])[:12]:
+            was = D.STAGE_EVIDENCE
+            D.STAGE_EVIDENCE = 0
+            plain = s.evidence
+            D.STAGE_EVIDENCE = was
+            print(f"      #{s.id:<5} {sum(s.power.values()):6.0f} W {s.phases:3s} {s.duration_s:6.0f} s x{s.count:<4} in {value!r}: "
+                  f"{sh:.0%} of its runs, {lift:5.1f}x chance   evidence {plain:.2f} -> {s.evidence:.2f}"
+                  f"{'  (now over the bar)' if plain < bar <= s.evidence else ''}")
+        if not tied:
+            print("      no load tied to it")
+
+
 def surge(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, subs = _run(folder, site)
@@ -683,6 +715,8 @@ def main() -> int:
         kiln(sys.argv[2], sys.argv[3:])
     elif cmd == "switch":
         switch(sys.argv[2], sys.argv[3:])
+    elif cmd == "stage":
+        stage(sys.argv[2], sys.argv[3:])
     elif cmd == "fridge":
         fridge(sys.argv[2], sys.argv[3:])
     elif cmd == "surge":

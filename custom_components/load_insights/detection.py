@@ -73,6 +73,9 @@ _LOGGER = logging.getLogger(__name__)
 # runs may follow
 SWITCH_DOMAINS = ("binary_sensor", "switch", "input_boolean", "fan", "light", "climate")
 NUMBER_DOMAINS = ("sensor", "number", "input_number")
+# ...and what reports a device's setting: a select, a fan's speed, and any
+# sensor whose states are words (a washer's cycle phase)
+STAGE_DOMAINS = ("select", "input_select", "fan")
 
 
 def load_uid(entry_id: str, kind: str, name: str) -> str:
@@ -470,18 +473,20 @@ class DetectionRunner:
         hvac_action says it is doing something (a thermostat's heating),
         anything else while its state is "on", and a period only open because
         the window starts there is not a switch-on. A number as its readings,
-        [(ts, value)], the one in force at the window's start included."""
+        [(ts, value)], and a setting as its values, [(ts, "Wash")] - a fan's
+        by its speed - each with the one in force at the window's start."""
         switches: Dict[str, list] = {}
         numbers: Dict[str, list] = {}
+        stages: Dict[str, list] = {}
         since = start - timedelta(seconds=SWITCH_MEMORY_S)
         for eid in self._input_entities():
             domain = eid.split(".", 1)[0]
-            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS:
+            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STAGE_DOMAINS:
                 continue
-            by_action = domain == "climate"
+            attrs = domain in ("climate", "fan")
             states = await get_instance(self.hass).async_add_executor_job(
                 history.state_changes_during_period, self.hass, since, end, eid,
-                not by_action, False, None, True,
+                not attrs, False, None, True,
             )
             rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
             if domain in NUMBER_DOMAINS:
@@ -493,10 +498,19 @@ class DetectionRunner:
                         pass
                 if values:
                     numbers[eid] = values
+                elif domain == "sensor" and rows:
+                    stages[eid] = [(st.last_updated.timestamp(), st.state) for st in rows]
+                continue
+            if domain in STAGE_DOMAINS:
+                stages[eid] = [(st.last_updated.timestamp(),
+                                st.state if domain != "fan" else
+                                (f"{st.attributes.get('percentage')} %" if st.state == "on" else "off"))
+                               for st in rows]
+            if domain not in SWITCH_DOMAINS:
                 continue
             spans, on = [], None
             for st in rows:
-                is_on = (st.attributes.get("hvac_action") not in (None, "idle", "off")) if by_action else st.state == "on"
+                is_on = (st.attributes.get("hvac_action") not in (None, "idle", "off")) if domain == "climate" else st.state == "on"
                 t = st.last_updated.timestamp()
                 if is_on and on is None:
                     on = t
@@ -506,7 +520,7 @@ class DetectionRunner:
             if on is not None:
                 spans.append((on, None))
             switches[eid] = [(a, b) for a, b in spans if a > since.timestamp() + 1.0]
-        return switches, numbers
+        return switches, numbers, stages
 
     def holds_one_device(self, name: str) -> bool:
         """The user's answer for this meter, or else the default the settings
@@ -822,10 +836,11 @@ class DetectionRunner:
             samples = without_window_start(samples, start.timestamp())
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             single = {n: self.holds_one_device(n) for n in self.submeters}
-            switches, numbers = await self._read_inputs(start, end)
+            switches, numbers, stages = await self._read_inputs(start, end)
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,
+                stages or None,
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())
