@@ -27,6 +27,27 @@ def kiln(period=300.0, on=80.0, watts=3000.0):
     return lambda s: watts if (s % period) < on else 0.0
 
 
+def _fridge(period=5400.0, on=1700.0, start_w=58.0, end_w=44.0):
+    """A compressor: +58 W at the start, sagging to +44 W by the end of a run."""
+    return lambda s: (start_w - (start_w - end_w) * (s % period) / on) if (s % period) < on else 0.0
+
+
+def test_a_load_that_sags_while_it_runs_still_closes_when_it_stops():
+    """Kozolec's fridge stops 14 W short of the step it started with, past the
+    ~10 W tolerance, and read as stepping down to 14 W and running on: its
+    runs came out 1.8 h long, three merged into one (2026-09-28)."""
+    saved = D.SAG_CLOSE
+    try:
+        for dial, want in ((1, True), (0, False)):
+            D.SAG_CLOSE = dial
+            det = D.Detector()
+            a = series(4 * 5400, _fridge(), base=60.0, noise=3.0)
+            closed = det.process({"a": a}, now_ts=T0 + 4 * 5400 + 60)
+            right = [x for x in closed if abs(x.duration_s - 1700) <= 60]
+            assert (len(right) >= 3) is want, (dial, [round(x.duration_s) for x in closed])
+    finally:
+        D.SAG_CLOSE = saved
+
 def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     det = D.Detector()
     hours = 2

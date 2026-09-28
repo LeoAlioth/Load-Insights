@@ -247,6 +247,13 @@ MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in 
 # every passing candidate as tied and takes the newest - which is what this
 # did for its whole life. Swept on both sites; see the comment in _pair.
 PAIR_TIE_BAND = 1.0
+# A load running on its own is followed as it SAGS, and its stop may close it
+# at the size it has sagged to as well as the size it started at. A fridge's
+# compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
+# the stop was 14 W short of the start, past Kozolec's ~10 W tolerance, so it
+# read as the fridge stepping down to 14 W and running on - and closed at some
+# later drop, a "run" of 1.8 h (2026-09-28). 0 is off.
+SAG_CLOSE = 1
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
 # ...or sooner: once it has been open this many times longer than any load of
 # its size on its phase has been seen to run. A start whose stop was taken by
@@ -1192,6 +1199,9 @@ class _Open:
     # 2026-09-18).
     lo: Optional[float] = None
     hi: Optional[float] = None
+    # what it draws NOW, followed while it runs alone - see SAG_CLOSE. Never
+    # persisted: after a restart the start's size stands in, as before.
+    now: Optional[float] = None
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
@@ -1374,6 +1384,8 @@ class PhaseState:
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
+            if SAG_CLOSE and len(self.open_edges) == 1 and self.baseline is not None:
+                self.open_edges[0].now = self.level - self.baseline
             if self.level is not None and abs(self.level) >= self.rel_floor:
                 self.rel_diffs.append(abs(w - self.level) / abs(self.level))
                 if len(self.rel_diffs) >= 240:
@@ -1634,6 +1646,11 @@ class PhaseState:
         for i, o in enumerate(self.open_edges):
             tol = self._tol(o.watts, watts)
             gap = abs(o.watts - watts)
+            if SAG_CLOSE and o.now is not None and o.now > 0:
+                # ...or at what it has sagged (or grown) to since it started
+                now_tol = self._tol(o.now, watts)
+                if abs(o.now - watts) <= now_tol and abs(o.now - watts) < gap:
+                    tol, gap = now_tol, abs(o.now - watts)
             if gap <= tol:
                 cands.append((i, gap, tol))
         if cands:
