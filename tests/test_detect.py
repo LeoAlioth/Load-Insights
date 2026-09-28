@@ -195,6 +195,11 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     fleet.single = {}
     fleet.main.signatures[0].locations["pump"] = 2
     assert fleet.meter_phases() == {}
+    # ...and a young library is not guessed to be one device at all: Kozolec's
+    # Inverter meter, the whole house, looked like one three sightings in
+    fleet.subs["pump"].signatures[0].count = 3
+    assert not fleet.guess_one_device("pump") and not fleet.holds_one_device("pump")
+    assert fleet._one_device("pump")            # identity keeps its benched rule
 
 def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     fleet = D.Fleet()
