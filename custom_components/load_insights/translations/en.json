@@ -104,11 +104,11 @@
                 }
             },
             "device_state": {
-                "title": "Device state sensor",
-                "description": "Pick a device from the Energy dashboard and the sensor that says what it is about to do - a boiler's tank temperature, a pump's tank level. Its recent value then sharpens that device's forecast for the next six hours. One device per visit; leave the sensor empty to clear it.",
+                "title": "Device state",
+                "description": "Pick a device from the Energy dashboard and what says what it is about to do. A number - a boiler's tank temperature, a pump's tank level, the room a fridge stands in - sharpens its forecast for the next six hours from its recent value. A state - a mode, a switch, a heating status - is fitted like an attached input, hour by hour, for this device alone. One device per visit; leave it empty to clear it.",
                 "data": {
                     "device": "Device",
-                    "state_entity": "State sensor"
+                    "state_entity": "State or sensor"
                 }
             },
             "detection": {

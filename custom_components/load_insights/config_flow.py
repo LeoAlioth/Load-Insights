@@ -753,10 +753,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             # An emptied selector clears the input; only set keys are kept.
-            # The per-device map lives on another page and is carried over.
-            keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {}),
-                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {})}
-            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
+            # Everything else is another page's and is carried over whole - it
+            # kept only the device map and detection, so saving this page
+            # erased the inverters and the naming revision (2026-09-28).
+            owned = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES, CONF_INPUT_ENTITIES)
+            keep = {k: v for k, v in self.config_entry.options.items() if k not in owned}
+            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v and k in owned}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):
             current[CONF_WEATHER_ENTITY] = _single_weather_entity(self.hass)
@@ -778,6 +780,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                     current[device] = sensor_id
                 else:
                     current.pop(device, None)
+            # a device no longer on the dashboard - renamed there, or removed -
+            # cannot be picked here to clear it, so it goes when this page saves
+            current = {k: v for k, v in current.items() if k in labels}
             options = {**dict(self.config_entry.options), CONF_DEVICE_STATE_SENSORS: current}
             return self.async_create_entry(data=options)
         if not labels:
@@ -789,6 +794,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                     options=[selector.SelectOptionDict(value=k, label=f"{v}  ({current.get(k) or '-'})") for k, v in labels.items()],
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )),
-                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor", "input_number", "number"])),
+                # a number nudges the next hours; a STATE - a mode, a switch, a
+                # status - is fitted like an attached input, on this device alone
+                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain=[
+                    "sensor", "input_number", "number",
+                    "input_select", "select", "binary_sensor", "input_boolean", "switch"])),
             }),
         )
