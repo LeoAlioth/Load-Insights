@@ -115,10 +115,12 @@
                 "title": "Detection settings",
                 "description": "How load detection behaves. What it watches is no longer asked here: given the grid connection and the inverters, what the house draws is worked out rather than chosen.\n\n{found}",
                 "data": {
-                    "interval_minutes": "How often to look"
+                    "interval_minutes": "How often to look",
+                    "single_device": "Meters that hold one device"
                 },
                 "data_description": {
-                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage."
+                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage.",
+                    "single_device": "Tick a meter whose readings are one appliance - a plug with only the pump on it, a boiler's own meter. Its readings are that device, so nothing inside it is offered for naming, and it only takes loads on the phases that device uses. Leave circuit meters unticked - a 3EM on a sub-panel, a house circuit: loads are detected inside those. Until this is saved, the meters whose loads are nearly all one are ticked."
                 }
             },
             "naming": {

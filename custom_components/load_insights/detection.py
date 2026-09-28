@@ -23,6 +23,7 @@ from .const import (
     ROLE_PREFIX,
     SOURCE_NONE,
     CONF_DETECTION,
+    CONF_SINGLE_DEVICE,
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
     DEFAULT_MIN_EVIDENCE,
@@ -61,7 +62,7 @@ from .insights.detect import (
     offer_for_naming,
 )
 from .insights.discovery import closest_by_name, match_meter_entities
-from .insights.model import SiteModel
+from .coordinator import energy_site
 
 _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
@@ -190,9 +191,11 @@ class DetectionRunner:
         whose hardware publishes no power at all cannot take part: hourly
         energy is far too coarse to line up with a session."""
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         registry = er.async_get(self.hass)
         by_stat = {d.energy: d for d in site.devices}
+        declared = self.config.get(CONF_SINGLE_DEVICE)
+        declared = None if declared is None else set(declared)
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
@@ -211,7 +214,9 @@ class DetectionRunner:
                 agnostic = True
             parent = by_stat.get(dev.included_in or "")
             out[dev.label] = {"fields": fields, "agnostic": agnostic,
-                              "parent": parent.label if parent else None}
+                              "parent": parent.label if parent else None, "energy": dev.energy,
+                              # None: not declared, the library's shape decides
+                              "single": None if declared is None else dev.energy in declared}
         return out
 
     def _device_rows(self, registry, device_id: str) -> list:
@@ -348,7 +353,7 @@ class DetectionRunner:
     async def _site_grid_power(self) -> list:
         try:
             manager = await async_get_manager(self.hass)
-            return list(SiteModel.from_prefs(manager.data).grid_power)
+            return list(energy_site(self.hass, manager.data).grid_power)
         except Exception:  # noqa: BLE001 - a missing dashboard is not an error
             return []
 
@@ -387,7 +392,7 @@ class DetectionRunner:
             if out:
                 return out
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         if not site.solar:
             return []
         registry = er.async_get(self.hass)
@@ -436,6 +441,10 @@ class DetectionRunner:
         named = len(self.detector.names())
         out = []
         for where, worth in self._worth().items():
+            if where != "main" and self.fleet._one_device(where):
+                # its own readings ARE that device: nothing in it to name
+                # (Anze, 2026-09-28: "we just use the measured data off it")
+                continue
             shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
                                      NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=is_heir)
             if shown:
@@ -688,9 +697,10 @@ class DetectionRunner:
             # without_window_start; the sums above needed it, the detector must not
             samples = without_window_start(samples, start.timestamp())
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
+            single = {n: m["single"] for n, m in self.submeters.items() if m.get("single") is not None}
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
-                dict(self.q_quantum), dict(self.sub_q_quantum),
+                dict(self.q_quantum), dict(self.sub_q_quantum), single,
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())

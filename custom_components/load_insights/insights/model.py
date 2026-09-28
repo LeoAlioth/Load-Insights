@@ -106,8 +106,12 @@ class SiteModel:
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def from_prefs(cls, prefs: Optional[dict]) -> "SiteModel":
-        """Build from ``EnergyManager.data`` (or None when nothing is set up)."""
+    def from_prefs(cls, prefs: Optional[dict], ignore: frozenset = frozenset()) -> "SiteModel":
+        """Build from ``EnergyManager.data`` (or None when nothing is set up).
+
+        ``ignore`` names devices to leave out: this integration's own
+        estimates, which a user may list on the dashboard to see them there,
+        but which must never come back in as meters of what they estimate."""
         if not prefs:
             return cls()
         grid_in, grid_out, grid_pw = [], [], []
@@ -162,7 +166,7 @@ class SiteModel:
                 included_in=d.get("included_in_stat") or None,
             )
             for d in prefs.get("device_consumption") or []
-            if d.get("stat_consumption")
+            if d.get("stat_consumption") and d["stat_consumption"] not in ignore
         )
         return cls(
             grid_import=tuple(grid_in), grid_export=tuple(grid_out), grid_power=tuple(grid_pw),

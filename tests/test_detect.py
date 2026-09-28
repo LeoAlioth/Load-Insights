@@ -166,6 +166,36 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
     assert sig.locations["boiler"] >= sig.count * 0.8, (sig.locations, sig.count)
 
 
+def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
+    """The Hidrofor plug on phase A was credited a 308 + 421 W load on A and B:
+    a total-only meter is matched by size and moment alone, and that load
+    started with a pump run of about its size (Anze, 2026-09-28)."""
+    fleet = D.Fleet()
+    fleet.subs["pump"] = D.Detector()
+    fleet.agnostic["pump"] = True
+    # the plug's own library is one load, so it holds one device by its shape...
+    fleet.subs["pump"].signatures.append(D.Signature(
+        id=1, phases="a", power={"a": 880.0}, duration_s=140.0, pf=None, count=50, first_seen=T0, last_seen=T0))
+    # ...and the house has placed the pump there, on A, often enough to know
+    fleet.main.signatures.append(D.Signature(
+        id=1, phases="a", power={"a": 880.0}, duration_s=140.0, pf=None, count=45, first_seen=T0, last_seen=T0,
+        locations={"pump": D.METER_PHASES_MIN + 20}))
+    assert fleet.meter_phases() == {"pump": "a"}
+    two = D.Session("ab", T0 + 1000, T0 + 1140, {"a": [(T0 + 1000, 300.0)], "b": [(T0 + 1000, 420.0)]})
+    other = D.Session("b", T0 + 3000, T0 + 3140, {"b": [(T0 + 3000, 720.0)]})
+    on_a = D.Session("a", T0 + 2000, T0 + 2140, {"a": [(T0 + 2000, 720.0)]})
+    fleet.pending_sub["pump"] = [D.Session("a", t, t + 140, {"a": [(t, 720.0)]}) for t in (T0 + 1000, T0 + 2000, T0 + 3000)]
+    pairs = fleet._session_pairs([two, on_a, other], 5.0)
+    assert [mi for _, mi, _, _ in pairs] == [1], pairs          # only the load on A
+    # declared as holding several devices, the plug takes anything that fits again
+    fleet.single = {"pump": False}
+    assert fleet.meter_phases() == {}
+    assert sorted(mi for _, mi, _, _ in fleet._session_pairs([two, on_a, other], 5.0)) == [0, 1, 2]
+    # a young meter says nothing: two sightings on A are not yet a rule
+    fleet.single = {}
+    fleet.main.signatures[0].locations["pump"] = 2
+    assert fleet.meter_phases() == {}
+
 def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     fleet = D.Fleet()
     hours = 2

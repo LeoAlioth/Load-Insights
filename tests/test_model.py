@@ -128,5 +128,20 @@ def test_the_dashboard_already_states_which_way_round_the_meter_is():
     assert site.grid_power[0].rate_entity == "sensor.p"
 
 
+def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():
+    # The kiln's detected-load energy listed under Hiša, to be seen there: read
+    # back as a device it would become a meter of itself (2026-09-28).
+    prefs = {"energy_sources": LEGACY_2025_9["energy_sources"], "device_consumption": [
+        {"stat_consumption": "sensor.hisa_energy", "name": "Hiša"},
+        {"stat_consumption": "sensor.pec_za_glino_energy", "name": "Peč za Glino", "included_in_stat": "sensor.hisa_energy"},
+    ]}
+    site = SiteModel.from_prefs(prefs, ignore=frozenset({"sensor.pec_za_glino_energy"}))
+    assert [d.energy for d in site.devices] == ["sensor.hisa_energy"]
+    assert [d.energy for d in site.remainder_devices()] == ["sensor.hisa_energy"]
+    assert "sensor.pec_za_glino_energy" not in site.all_statistic_ids()
+    # and without the list, as before
+    assert len(SiteModel.from_prefs(prefs).devices) == 2
+
+
 if __name__ == "__main__":
     run_main(globals())

@@ -409,6 +409,14 @@ SUB_POWER = 0
 # plug 99 %, its Hiša circuit 55 %). 0 is off.
 SUB_METER_IDENTITY = 1
 SUB_DEVICE_SHARE = 0.5
+# A meter that holds ONE device takes only loads on the phases that device has
+# shown: a phase set it has been credited this many sightings of. Below that
+# it is too young to say and takes anything. The Hidrofor plug on phase A was
+# credited a 308 + 421 W load on A and B, and a 124 W one on B, because a
+# meter that reports only a total is matched by size and moment alone
+# (Anze, 2026-09-28: "the plug is single phase, no multi phase load should be
+# attributed there"). A count, so a load two sightings strong never sets it.
+METER_PHASES_MIN = 20
 # Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
 # 3EM - may decide a signature too, or only a meter that holds one device.
 # Off: one-device meters only was better at Home (79.1 / 80.7 % against
@@ -3045,6 +3053,9 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
+    # meters the user declared as holding one device (True) or several (False);
+    # a meter not declared is judged by _one_device's library shape
+    single: Dict[str, bool] = field(default_factory=dict)
     # What each device meter can RESOLVE, measured from the rows above. The
     # energy answer is an integral of those rows, so their quantisation is
     # its error bar - and Home has a workshop boiler publishing in 46 W steps
@@ -3063,10 +3074,13 @@ class Fleet:
                 agnostic: Optional[Dict[str, bool]] = None,
                 pv: Optional[Dict[str, Dict[float, float]]] = None,
                 main_q_quantum: Optional[Dict[str, float]] = None,
-                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None) -> None:
+                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
+                single: Optional[Dict[str, bool]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
+        if single is not None:
+            self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         # only the main meter needs the array: a downstream meter sees the
         # house side of it and never the sun
         latest_seen = now_ts or 0.0
@@ -3147,10 +3161,36 @@ class Fleet:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
 
     def _one_device(self, name: str) -> bool:
-        """Does this meter hold ONE device, by its own library's shape?"""
+        """Does this meter hold ONE device - as declared, or else by its own
+        library's shape?"""
+        if name in self.single:
+            return self.single[name]
+        return self.guess_one_device(name)
+
+    def guess_one_device(self, name: str) -> bool:
+        """The library's shape alone: what the settings page offers before
+        anything is declared."""
         det = self.subs.get(name)
         counts = [s.count for s in det.signatures] if det else []
         return bool(counts) and max(counts) >= SUB_DEVICE_SHARE * sum(counts)
+
+    def meter_phases(self) -> Dict[str, str]:
+        """meter -> the phases its one device runs on, for every one-device
+        meter old enough to say: the phase sets it has been credited at least
+        METER_PHASES_MIN sightings of, together. Read off the locations the
+        house signatures already carry, so there is nothing new to keep."""
+        seen: Dict[str, Dict[str, int]] = {}
+        for sig in self.main.signatures:
+            for name, n in sig.locations.items():
+                if n and name in self.subs and self._one_device(name):
+                    row = seen.setdefault(name, {})
+                    row[sig.phases] = row.get(sig.phases, 0) + n
+        out = {}
+        for name, row in seen.items():
+            known = "".join(sorted({p for ph, n in row.items() if n >= METER_PHASES_MIN for p in ph}))
+            if known:
+                out[name] = known
+        return out
 
     def _meter_home(self, name: str) -> Optional[int]:
         """The house signature most of this meter's sessions went to."""
@@ -3202,6 +3242,7 @@ class Fleet:
         """(cost, main index, meter, None) for every house session whose energy
         a device meter's own readings account for."""
         pairs = []
+        phases = self.meter_phases()
         # A device meter too slow to produce a session of its own still knows
         # how much ENERGY it recorded while a main-meter session ran, and that
         # answer is right where its session power is not: sampling error
@@ -3213,6 +3254,8 @@ class Fleet:
             if want <= 0 or span <= 0:
                 continue
             for name, rows in self.sub_rows.items():
+                if name in phases and not set(m.phases) <= set(phases[name]):
+                    continue
                 got = energy_between(rows, m.start, m.end)
                 if got is None:
                     continue
@@ -3248,8 +3291,11 @@ class Fleet:
         """(cost, main index, meter, sub index) for every house session and
         sub-meter session that could be the same load."""
         pairs = []
+        phases = self.meter_phases()
         for mi, m in enumerate(mains):
             for name, subs in self.pending_sub.items():
+                if name in phases and not set(m.phases) <= set(phases[name]):
+                    continue        # not on the phases this meter's one device uses
                 det = self.subs.get(name)
                 sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
                 # one full reporting interval each, since a step can land

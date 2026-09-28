@@ -101,6 +101,10 @@ DETECTION_KINDS = ("power", "pf", "current", "voltage")
 # latency, not accuracy, since the same recorded edges are reconstructed
 # either way.
 CONF_DETECTION_INTERVAL = "interval_minutes"
+# Inside CONF_DETECTION: the Energy-dashboard devices (by statistic id) whose
+# meter holds ONE device. Absent until the detection page is saved; then every
+# meter not listed holds several.
+CONF_SINGLE_DEVICE = "single_device"
 DETECTION_INTERVAL_MINUTES = 1
 DETECTION_INTERVAL_CHOICES = (1, 2, 5, 10, 15, 30)
 DETECTION_BACKFILL_DAYS = 10

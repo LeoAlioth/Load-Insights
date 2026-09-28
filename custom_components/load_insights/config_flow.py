@@ -29,6 +29,7 @@ from .const import (
     LAYOUT_SERIES,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
+    CONF_SINGLE_DEVICE,
     CONF_DETECTION_INTERVAL,
     DETECTION_BACKFILL_DAYS,
     NAMING_MAX_STALE_S,
@@ -54,7 +55,7 @@ NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next v
 NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
-from .insights.model import SiteModel
+from .coordinator import energy_site
 
 
 def _grid_fields(defaults: dict) -> dict:
@@ -242,6 +243,17 @@ def _interval_field(defaults: dict) -> dict:
     return out
 
 
+def _single_device_field(meters: list, declared) -> dict:
+    """Which meters hold ONE device. Until the page is saved the box shows
+    what the library's shape suggests (the Hidrofor plug: 99 % of its
+    sightings are one load); saved, the answer is the user's."""
+    default = list(declared) if declared is not None else [stat for stat, _, guess in meters if guess]
+    return {vol.Optional(CONF_SINGLE_DEVICE, default=default): selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
+            multiple=True, mode=selector.SelectSelectorMode.LIST))}
+
+
 def _disabled_readings(hass, device_id: str) -> int:
     """How many of the device's electrical readings are disabled.
 
@@ -322,7 +334,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         if not site.has_sources:
             return self.async_abort(reason="no_energy_dashboard")
 
@@ -712,14 +724,31 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         by hand. Nothing removes it; it simply is not offered any more.
         """
         current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
+        meters = await self._device_meters()
         if user_input is not None:
-            cfg = {**current, **{k: v for k, v in user_input.items() if v}}
+            cfg = {**current, **{k: v for k, v in user_input.items() if v and k != CONF_SINGLE_DEVICE}}
+            if meters:
+                # kept even when empty: none ticked is an answer - every meter holds several
+                cfg[CONF_SINGLE_DEVICE] = list(user_input.get(CONF_SINGLE_DEVICE) or [])
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
+        fields = _interval_field(current)
+        if meters:
+            fields.update(_single_device_field(meters, current.get(CONF_SINGLE_DEVICE)))
         return self.async_show_form(
             step_id="detection",
-            data_schema=vol.Schema(_interval_field(current)),
+            data_schema=vol.Schema(fields),
             description_placeholders={"found": _load_line(self.hass, self.config_entry)},
         )
+
+    async def _device_meters(self) -> list:
+        """(statistic id, name, guessed to hold one device) for every meter
+        detection reads besides the house - the devices of the Energy
+        dashboard it could resolve a power reading for."""
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        if runner is None or not runner.enabled:
+            return []
+        return [(m["energy"], name, runner.fleet.guess_one_device(name))
+                for name, m in runner.submeters.items() if m.get("energy")]
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -738,7 +767,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         what it will do next. One device per visit; an emptied sensor clears
         that device's mapping."""
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         labels = {d.energy: d.label for d in site.devices}
         current = dict(self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS) or {})
         if user_input is not None:
