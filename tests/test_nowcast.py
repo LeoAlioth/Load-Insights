@@ -92,5 +92,61 @@ def test_too_little_state_history_means_no_fit():
     assert not P.forecast(samples, NOW, state_history=few, state_now=40.0).nowcast.engaged
 
 
+
+def _two_state_setup(weeks=10, seed=2, second_is_copy=False):
+    """Like setup(), with a second state: an independent driver of its own
+    (a room's temperature beside the floor's), or a near-copy of the first."""
+    rnd = random.Random(seed)
+    start = P.floor_hour(NOW) - timedelta(weeks=weeks)
+    hist = P.hour_buckets(start, weeks * 168)
+    a = {t.timestamp(): rnd.uniform(30.0, 60.0) for t in hist}
+    if second_is_copy:
+        b = {k: v + rnd.uniform(-0.5, 0.5) for k, v in a.items()}
+    else:
+        b = {t.timestamp(): rnd.uniform(15.0, 25.0) for t in hist}
+    ma, mb = sum(a.values()) / len(a), sum(b.values()) / len(b)
+    samples = []
+    for i, t in enumerate(hist):
+        v = boiler(t)
+        if i >= 1:
+            k = hist[i - 1].timestamp()
+            v += -0.01 * (a[k] - ma)
+            if not second_is_copy:
+                v += -0.02 * (b[k] - mb)
+        samples.append((t, max(0.0, v)))
+    return a, b, samples
+
+
+def test_two_states_that_each_drive_the_device_are_both_kept():
+    """A floor mat's thermostat reads the room and the floor (Anze, 2026-09-28):
+    both, where both carry something."""
+    a, b, samples = _two_state_setup()
+    fc = P.forecast(samples, NOW, state_history=[a, b], state_now=[30.0, 15.0])
+    nc = fc.nowcast
+    assert nc.engaged and sorted(nc.used) == [0, 1], nc.used
+    lead1 = dict(zip(nc.used, nc.matrix[1]))
+    assert math.isclose(lead1[0], -0.01, rel_tol=0.25), lead1
+    assert math.isclose(lead1[1], -0.02, rel_tol=0.25), lead1
+    # both cold: the next hour is lifted by both at once - about 0.15 + 0.10,
+    # more than either could give alone (0.15 at most)
+    assert fc.nowcast_deltas[1] > 0.18, fc.nowcast_deltas
+
+
+def test_a_second_reading_of_the_same_thing_is_not_added():
+    a, b, samples = _two_state_setup(second_is_copy=True)
+    nc = P.forecast(samples, NOW, state_history=[a, b], state_now=[30.0, 30.0]).nowcast
+    assert nc.engaged and len(nc.used) == 1, nc.used
+    lead1 = nc.matrix[1][0]
+    assert math.isclose(lead1, -0.01, rel_tol=0.25), lead1   # not +5 and -5
+
+
+def test_one_state_given_as_a_list_fits_as_it_did_alone():
+    hist, temps, samples = setup()
+    alone = P.forecast(samples, NOW, state_history=temps, state_now=30.0).nowcast
+    listed = P.forecast(samples, NOW, state_history=[temps], state_now=[30.0]).nowcast
+    assert listed.engaged and listed.used == (0,)
+    for h in range(N.LEADS):
+        assert math.isclose(listed.coefficients[h], alone.coefficients[h], rel_tol=0.01, abs_tol=1e-5), h
+
 if __name__ == "__main__":
     run_main(globals())
