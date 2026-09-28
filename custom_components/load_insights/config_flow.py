@@ -747,7 +747,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
         if runner is None or not runner.enabled:
             return []
-        return [(m["energy"], name, runner.fleet.guess_one_device(name))
+        return [(m["energy"], name, runner.guess_one_device(name))
                 for name, m in runner.submeters.items() if m.get("energy")]
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):

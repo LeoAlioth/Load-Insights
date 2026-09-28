@@ -422,6 +422,21 @@ class DetectionRunner:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
 
+    def holds_one_device(self, name: str) -> bool:
+        """The user's answer for this meter, or else the default the settings
+        page shows: a meter with others nested inside it on the Energy
+        dashboard holds several by definition (Home's Delavnica, Kozolec's
+        Inverter), anything else as its library suggests."""
+        meter = self.submeters.get(name) or {}
+        if meter.get("single") is not None:
+            return meter["single"]
+        return self.guess_one_device(name)
+
+    def guess_one_device(self, name: str) -> bool:
+        if any(m.get("parent") == name for m in self.submeters.values()):
+            return False
+        return self.fleet.guess_one_device(name)
+
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
         waiting)``, the loads under no meter first as ``"main"``, then the
@@ -441,7 +456,7 @@ class DetectionRunner:
         named = len(self.detector.names())
         out = []
         for where, worth in self._worth().items():
-            if where != "main" and self.fleet._one_device(where):
+            if where != "main" and self.holds_one_device(where):
                 # its own readings ARE that device: nothing in it to name
                 # (Anze, 2026-09-28: "we just use the measured data off it")
                 continue
@@ -697,7 +712,7 @@ class DetectionRunner:
             # without_window_start; the sums above needed it, the detector must not
             samples = without_window_start(samples, start.timestamp())
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
-            single = {n: m["single"] for n, m in self.submeters.items() if m.get("single") is not None}
+            single = {n: self.holds_one_device(n) for n in self.submeters}
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum), single,

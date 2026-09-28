@@ -3053,8 +3053,9 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
-    # meters the user declared as holding one device (True) or several (False);
-    # a meter not declared is judged by _one_device's library shape
+    # meters that hold one device (True) or several (False), as the runner
+    # works it out each pass - the user's answer, else a parent holds several,
+    # else guess_one_device; a meter missing here is guessed
     single: Dict[str, bool] = field(default_factory=dict)
     # What each device meter can RESOLVE, measured from the rows above. The
     # energy answer is an integral of those rows, so their quantisation is
@@ -3160,16 +3161,27 @@ class Fleet:
             if sig is not None:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
 
-    def _one_device(self, name: str) -> bool:
-        """Does this meter hold ONE device - as declared, or else by its own
-        library's shape?"""
+    def holds_one_device(self, name: str) -> bool:
+        """Does this meter hold ONE device, as the user answered - or, where
+        nobody has, as guess_one_device says? This is what hides a meter's
+        loads from naming and ties it to its device's phases. It is not what
+        _one_device is: that one decides identity, and stays as it was benched."""
         if name in self.single:
             return self.single[name]
         return self.guess_one_device(name)
 
     def guess_one_device(self, name: str) -> bool:
-        """The library's shape alone: what the settings page offers before
-        anything is declared."""
+        """The library's shape, once it has something to say: at least
+        METER_PHASES_MIN sightings, most of them one signature. A young meter -
+        one renamed on the Energy dashboard starts again - holds several until
+        it has shown otherwise, since hiding a meter's loads is the costly
+        mistake (Kozolec's Inverter, three sightings in, looked like one)."""
+        det = self.subs.get(name)
+        return self._one_device(name) and sum(s.count for s in det.signatures) >= METER_PHASES_MIN
+
+    def _one_device(self, name: str) -> bool:
+        """Does this meter's own library look like ONE device? For identity
+        (SUB_METER_IDENTITY), as benched."""
         det = self.subs.get(name)
         counts = [s.count for s in det.signatures] if det else []
         return bool(counts) and max(counts) >= SUB_DEVICE_SHARE * sum(counts)
@@ -3182,7 +3194,7 @@ class Fleet:
         seen: Dict[str, Dict[str, int]] = {}
         for sig in self.main.signatures:
             for name, n in sig.locations.items():
-                if n and name in self.subs and self._one_device(name):
+                if n and name in self.subs and self.holds_one_device(name):
                     row = seen.setdefault(name, {})
                     row[sig.phases] = row.get(sig.phases, 0) + n
         out = {}
