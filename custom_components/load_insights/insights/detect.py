@@ -2038,8 +2038,8 @@ class Signature:
         # its owner would recognise before any other number on the line
         # (Anze, 2026-09-18). So it appears only when the load keeps a clock.
         how_long = _fmt_s(self.duration_s)
-        if self.regular and self.interval_s:
-            how_long = f"{how_long} every {_fmt_s(self.interval_s)}"
+        if self.regular and self.per_day is not None:
+            how_long = f"{how_long}, {_fmt_per_day(self.per_day)}"
         bits = [f"{_fmt_w(self.watts)} ({phases})",
                 f"{_fmt_wh(self.weekly_wh)}/{_fmt_wh(self.per_run_wh)}",
                 how_long]
@@ -2075,8 +2075,8 @@ class Signature:
         if tag:
             head.append(tag)
         rest = []
-        if self.regular and self.interval_s:
-            rest.append(f"starts every {_fmt_s(self.interval_s)}")
+        if self.per_day is not None:
+            rest.append(_fmt_per_day(self.per_day))
         rest.append(f"{_fmt_wh(self.weekly_wh)} a week, {_fmt_wh(self.per_run_wh)} a run")
         # how often, in words a person can check against the appliance: a
         # load seen five times in five hours is not one seen five times a week
@@ -2103,6 +2103,21 @@ class Signature:
             # space holds it, and holds "Mon-Sun" to it.
             rest.append("Mon-Sun\u00a0" + bars.replace(" ", "\u00a0"))
         return ", ".join(head), " · ".join(rest)
+
+    @property
+    def per_day(self) -> Optional[float]:
+        """How many times a day it starts, over the days it has been seen.
+
+        Counted, not the spacing's running mean: one long gap, or one run the
+        detector merged, throws that out - Kozolec's fridge starts 13 times a
+        day and its spacing read 5.5 h. A person counts starts, too (Anze,
+        2026-09-28: "can we say how many cycles per day instead of the every
+        x hours?"). None until it has been seen across a day, since five
+        runs in two hours are not sixty a day."""
+        span = self.last_seen - self.first_seen
+        if self.count < 2 or span < 86400.0:
+            return None
+        return (self.count - 1) * 86400.0 / span
 
     @property
     def keeps_time(self) -> bool:
@@ -2218,7 +2233,7 @@ class Signature:
         starts every 3 min, seen 258 times - maybe a heating element (power
         factor 1.00, one level)'."""
         dur = _fmt_s(self.duration_s)
-        gap = f", starts every {_fmt_s(self.interval_s)}" if self.interval_s else ""
+        gap = f", {_fmt_per_day(self.per_day)}" if self.per_day is not None else ""
         lvl = f", {round(self.level_count)} levels" if self.level_count >= 1.5 else ""
         pf = (f", PF {self.pf:.2f}"
               if self.pf is not None and self.pf_mad <= PF_TRUST_MAD else "")
@@ -2318,6 +2333,18 @@ def _fmt_w(x: float) -> str:
 
 def _fmt_wh(x: float) -> str:
     return f"{x:.0f} Wh" if x < 1000 else f"{x / 1000:.1f} kWh"
+
+
+def _fmt_per_day(rate: float) -> str:
+    """Starts a day in words: "12 times a day", or per week once it is rarer."""
+    if rate >= 1.5:
+        return f"{rate:.0f} times a day"
+    if rate >= 0.75:
+        return "about once a day"
+    week = rate * 7.0
+    if week >= 1.5:
+        return f"{week:.0f} times a week"
+    return "about once a week" if week >= 0.75 else "less than once a week"
 
 
 def _fmt_s(x: Optional[float]) -> str:

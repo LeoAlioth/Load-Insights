@@ -19,3 +19,26 @@ reset_detection:
   target:
     entity:
       integration: load_insights
+
+name_load:
+  name: Name a load
+  description: >-
+    Give a detected load a name by its id - the one each load carries in the
+    diagnostics - or clear it with an empty name. For a load the naming page
+    does not offer yet: it only lists loads that have repeated tightly
+    enough, and a load whose runs vary a lot can wait a long time.
+  fields:
+    load_id:
+      name: Load
+      description: The detected load's id, as the diagnostics give it.
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+    name:
+      name: Name
+      description: What to call it. Loads given the same name are one device. Empty clears the name.
+      required: false
+      selector:
+        text:

@@ -993,16 +993,19 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     tz = _dt.timezone.utc
     clock = _sig(1, 1800.0, 70.0, 0.96, 60)
     clock.interval_s, clock.interval_mad = 840.0, 60.0      # every 14 min, tight
+    clock.first_seen = clock.last_seen - 59 * 840.0             # 60 starts over 13.8 h...
     clock.hour_wh = [500.0] * 24
     assert clock.regular
-    assert "every 14 min" in clock.row(tz), clock.row(tz)
+    assert "a day" not in clock.row(tz), "under a day seen, a rate a day would be made up"
+    clock.first_seen = clock.last_seen - 5 * 86400.0            # ...or over five days
+    assert "12 times a day" in clock.row(tz), clock.row(tz)
 
     # an irregular load keeps the row short - the spacing would be noise
     erratic = _sig(2, 1800.0, 70.0, 0.96, 60)
     erratic.interval_s, erratic.interval_mad = 840.0, 700.0
     erratic.hour_wh = [500.0] * 24
     assert not erratic.regular
-    assert "every" not in erratic.row(tz), erratic.row(tz)
+    assert "a day" not in erratic.row(tz), erratic.row(tz)
     # and a menu row stays narrow either way
     assert len(clock.row(tz)) < 72, clock.row(tz)
 
@@ -1015,16 +1018,17 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     tz = _dt.timezone.utc
     clock = _sig(1, 1800.0, 70.0, 0.96, 60)
     clock.interval_s, clock.interval_mad = 840.0, 60.0
+    clock.first_seen = clock.last_seen - 5 * 86400.0
     clock.hour_wh = [500.0] * 24
     clock.day_wh = [100.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0]
     head, rest = clock.menu_row(tz, clock.last_seen + 600.0)
     assert len(head) <= 45, head
-    assert "starts every 14 min" in rest, rest
+    assert "12 times a day" in rest, rest   # starts counted a day (Anze, 2026-09-28)
     assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
     assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
     assert " " not in rest.split("Mon-Sun")[1], "no day of the week may be a place to wrap"
     assert head.startswith("1.8 kW on phase A, runs 70 s"), head
-    assert "every" not in head, "how often goes underneath, said as how often"
+    assert "a day" not in head, "how often goes underneath, said as how often"
     assert "runs in" in rest, rest
 
 
