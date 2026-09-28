@@ -243,6 +243,13 @@ def _interval_field(defaults: dict) -> dict:
     return out
 
 
+def _as_list_text(value) -> str:
+    """A device's state entities as the page shows them - saved as one string
+    before several were allowed, a list since."""
+    items = [value] if isinstance(value, str) else list(value or [])
+    return ", ".join(items) or "-"
+
+
 def _single_device_field(meters: list, declared) -> dict:
     """Which meters hold ONE device. Until the page is saved the box shows
     what the library's shape suggests (the Hidrofor plug: 99 % of its
@@ -776,8 +783,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             device = user_input.get("device")
             sensor_id = user_input.get("state_entity")
             if device:
-                if sensor_id:
-                    current[device] = sensor_id
+                chosen = [sensor_id] if isinstance(sensor_id, str) else list(sensor_id or [])
+                if chosen:
+                    current[device] = chosen
                 else:
                     current.pop(device, None)
             # a device no longer on the dashboard - renamed there, or removed -
@@ -791,12 +799,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             step_id="device_state",
             data_schema=vol.Schema({
                 vol.Required("device"): selector.SelectSelector(selector.SelectSelectorConfig(
-                    options=[selector.SelectOptionDict(value=k, label=f"{v}  ({current.get(k) or '-'})") for k, v in labels.items()],
+                    options=[selector.SelectOptionDict(value=k, label=f"{v}  ({_as_list_text(current.get(k))})") for k, v in labels.items()],
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )),
                 # a number nudges the next hours; a STATE - a mode, a switch, a
                 # status - is fitted like an attached input, on this device alone
-                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain=[
+                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(multiple=True, domain=[
                     "sensor", "input_number", "number",
                     "input_select", "select", "binary_sensor", "input_boolean", "switch"])),
             }),

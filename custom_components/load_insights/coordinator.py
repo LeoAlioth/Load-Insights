@@ -229,42 +229,57 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # in hand for the remainder, so this is only the fits. A device with a
         # state sensor also gets its nowcast: the sensor's hourly means over
         # the same window, and its live value now.
-        state_map: Dict[str, str] = dict(opts.get(CONF_DEVICE_STATE_SENSORS) or {})
+        state_map: Dict[str, List[str]] = {
+            k: ([v] if isinstance(v, str) else list(v or []))
+            for k, v in (opts.get(CONF_DEVICE_STATE_SENSORS) or {}).items()}
+        state_used: Dict[str, str] = {}
         state_now: Dict[str, Optional[float]] = {}
         device_fc: Dict[str, Forecast] = {}
         for d in site.devices:
             rows = series.get(d.energy) or []
             if not rows:
                 continue
-            st_hist: Dict[float, float] = {}
-            st_now: Optional[float] = None
-            st_entity = state_map.get(d.energy)
-            dev_cals = cal_signals
-            if st_entity and st_entity.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
-                srows = await get_instance(self.hass).async_add_executor_job(
-                    rec_stats.statistics_during_period,
-                    self.hass, start, None, {st_entity}, "hour", None, {"mean"},
-                )
-                for r in srows.get(st_entity, []):
-                    if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                        st_hist[float(r["start"])] = float(r["mean"])
-                st = self.hass.states.get(st_entity)
-                try:
-                    st_now = float(st.state) if st is not None else None
-                except (TypeError, ValueError):
-                    st_now = None
-                state_now[d.energy] = st_now
-            if st_entity and not st_hist:
-                # a STATE rather than a number - a mode, a switch, a status - or a
-                # sensor with no hourly means: fitted like an attached input, but
-                # for this device alone (Anze, 2026-09-28)
+            # Several per device (Anze, 2026-09-28: a floor mat's thermostat
+            # reads both the room and the floor). A STATE - a mode, a switch, a
+            # status - or a number with no hourly means is fitted like an
+            # attached input, for this device alone; every one of them counts.
+            # The numbers each nudge the next hours, and they tell much the
+            # same story, so the one that explains the most is the one used.
+            dev_cals = list(cal_signals)
+            numbers: List[Tuple[str, Dict[float, float], Optional[float]]] = []
+            for st_entity in state_map.get(d.energy, []):
+                st_hist: Dict[float, float] = {}
+                if st_entity.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
+                    srows = await get_instance(self.hass).async_add_executor_job(
+                        rec_stats.statistics_during_period,
+                        self.hass, start, None, {st_entity}, "hour", None, {"mean"},
+                    )
+                    for r in srows.get(st_entity, []):
+                        if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
+                            st_hist[float(r["start"])] = float(r["mean"])
+                if st_hist:
+                    st = self.hass.states.get(st_entity)
+                    try:
+                        live = float(st.state) if st is not None else None
+                    except (TypeError, ValueError):
+                        live = None
+                    numbers.append((st_entity, st_hist, live))
+                    continue
                 signal, _ = await self._input_signal(st_entity, start, now, horizon_keys, tz_offset)
                 if signal is not None:
-                    dev_cals = [*cal_signals, signal]
-            device_fc[d.energy] = await self.hass.async_add_executor_job(
-                forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
-                dev_cals or None, st_hist or None, st_now,
-            )
+                    dev_cals.append(signal)
+            best = None
+            for st_entity, st_hist, live in (numbers or [(None, None, None)]):
+                fc = await self.hass.async_add_executor_job(
+                    forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
+                    dev_cals or None, st_hist or None, live,
+                )
+                gain = max(fc.nowcast.explained) if fc.nowcast.engaged and fc.nowcast.explained else -1.0
+                if best is None or gain > best[0]:
+                    best = (gain, fc, st_entity, live)
+            _, device_fc[d.energy], chosen, live = best
+            if chosen:
+                state_used[d.energy], state_now[d.energy] = chosen, live
             score(d.energy, device_fc[d.energy], rows)
         await self._save_ledgers()
 
@@ -303,7 +318,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             input_kinds=input_kinds,
             calendar_signals=tuple(cal_signals),
             calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
-            device_state_sensors=state_map,
+            device_state_sensors=state_used,
             device_state_now=state_now,
         )
         # things that are silently half-done get said out loud
