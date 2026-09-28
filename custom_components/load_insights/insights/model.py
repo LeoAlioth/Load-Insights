@@ -213,3 +213,44 @@ class SiteModel:
             "forecasts": len(self.solar_forecast_entries),
             "device_names": [d.label for d in self.devices],
         }
+
+
+# An input's link to a named load rather than to an Energy dashboard device:
+# a load is named before anyone could put it on the dashboard.
+LOAD_PREFIX = "load:"
+
+
+def migrate_inputs(options: dict) -> dict:
+    """The options as they were before 2026-09-28 - the site's inputs, and
+    each device's own under ``device_state_sensors`` - as ONE list of inputs
+    in ``input_entities``, each with what it is linked to in ``input_links``
+    (Anze, 2026-09-28: "a single storage with the tags only deciding to which
+    things it connects to"). Every input counts for the whole site; a link
+    adds a device, and that device's parents with it. Unchanged when there
+    is nothing to move."""
+    legacy = options.get("device_state_sensors")
+    if legacy is None:
+        return options
+    inputs = list(options.get("input_entities") or [])
+    links = {k: list(v) for k, v in (options.get("input_links") or {}).items()}
+    for device, eids in legacy.items():
+        for eid in ([eids] if isinstance(eids, str) else list(eids or [])):
+            if eid not in inputs:
+                inputs.append(eid)
+            if device not in links.setdefault(eid, []):
+                links[eid].append(device)
+    out = {k: v for k, v in options.items() if k != "device_state_sensors"}
+    out["input_entities"], out["input_links"] = inputs, links
+    return out
+
+
+def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
+    """The options with every link to the named load ``old`` following it to
+    ``new`` - or dropped, when the name was cleared."""
+    if not old or old == new:
+        return options
+    links = {}
+    for eid, targets in (options.get("input_links") or {}).items():
+        moved = [(LOAD_PREFIX + new if new else None) if t == LOAD_PREFIX + old else t for t in targets]
+        links[eid] = list(dict.fromkeys(t for t in moved if t))
+    return {**options, "input_links": links}

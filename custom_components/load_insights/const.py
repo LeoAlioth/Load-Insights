@@ -25,9 +25,12 @@ CONF_CALENDAR_ENTITIES = "calendar_entities"
 # irradiance, an occupancy sensor. Fitted like a calendar and kept only if it
 # explains something.
 CONF_INPUT_ENTITIES = "input_entities"
-# device statistic id -> the device's own state sensor (tank temperature,
-# tank level...), for the nowcast of its next hours
-CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
+# input -> what it is linked to: Energy dashboard devices, or LOAD_PREFIX + a
+# named load. Every input counts for the site; a link adds a device (and every
+# device it sits inside), whose next hours a number then nudges. Before
+# 2026-09-28 each device kept its own under "device_state_sensors" - see
+# insights.model.migrate_inputs.
+CONF_INPUT_LINKS = "input_links"
 
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the

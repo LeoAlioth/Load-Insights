@@ -80,7 +80,7 @@
                 "menu_options": {
                     "overview": "Overview",
                     "inputs": "Explanatory inputs",
-                    "device_state": "A device's own state sensor",
+                    "input_links": "Link an input to what it explains",
                     "detection": "Load detection",
                     "naming": "Name a detected load",
                     "grid": "Grid connection",
@@ -100,15 +100,7 @@
                     "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
                     "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
                     "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average.",
-                    "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands."
-                }
-            },
-            "device_state": {
-                "title": "Device state",
-                "description": "Pick a device from the Energy dashboard and what says what it is about to do. A number - a boiler's tank temperature, a pump's tank level, the room a fridge stands in - sharpens its forecast for the next six hours from its recent value. A state - a mode, a switch, a heating status - is fitted like an attached input, hour by hour, for this device alone. Pick as many as say something about it: every state counts, and of the numbers the one that explains the most is used. One device per visit; leave it empty to clear it.",
-                "data": {
-                    "device": "Device",
-                    "state_entity": "States or sensors"
+                    "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor, a thermostat. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands. Load detection reads them too: a switch, a thermostat's heating or anything else that goes on and off says when a load runs, and a number is learned against how long and how often the loads run."
                 }
             },
             "detection": {
@@ -273,9 +265,10 @@
             },
             "naming_name": {
                 "title": "Name this load",
-                "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything.",
+                "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything. Tick an input that helped find it to link it to the load - it keeps counting for the whole site as well; the link is made when you finish naming.",
                 "data": {
-                    "name": "Name"
+                    "name": "Name",
+                    "link_inputs": "Link to this load"
                 }
             },
             "inverters": {
@@ -307,12 +300,27 @@
                     "naming": "Refresh",
                     "init": "Back"
                 }
+            },
+            "input_links": {
+                "title": "Link an input",
+                "description": "Every input counts for the whole site. Link one to the devices it is about as well - the room a fridge stands in, a thermostat's floor temperature - and a number among them sharpens those devices' next six hours from its recent value, and every device they sit inside with them. Pick an input, then what it belongs to.",
+                "data": {
+                    "input": "Input"
+                }
+            },
+            "input_links_to": {
+                "title": "What {input} is about",
+                "description": "Tick the devices and detected loads {input} says something about. A device inside another counts for both. Untick all to leave it with the site only.",
+                "data": {
+                    "linked_to": "Linked to"
+                }
             }
         },
         "abort": {
             "no_devices": "The Energy dashboard lists no individual devices.",
             "no_detection": "Load detection is not set up: choose the main meter first.",
-            "nothing_to_name": "Nothing to name yet - no loads have been detected."
+            "nothing_to_name": "Nothing to name yet - no loads have been detected.",
+            "no_inputs": "No inputs yet - add them on the Explanatory inputs page first."
         }
     },
     "issues": {

@@ -80,7 +80,7 @@
                 "menu_options": {
                     "overview": "Pregled",
                     "inputs": "Pojasnjevalni vhodi",
-                    "device_state": "Lastni senzor stanja naprave",
+                    "input_links": "Poveži vhod s tem, kar pojasnjuje",
                     "detection": "Zaznavanje porabnikov",
                     "naming": "Poimenuj zaznan porabnik",
                     "grid": "Priključek na omrežje",
@@ -100,15 +100,7 @@
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
                     "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
-                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
-                }
-            },
-            "device_state": {
-                "title": "Stanje naprave",
-                "description": "Izberi napravo z nadzorne plošče Energija in to, kar pove, kaj bo naredila. Število - temperatura bojlerja, nivo rezervoarja pri črpalki, prostor, kjer stoji hladilnik - iz zadnje vrednosti izostri napoved za naslednjih šest ur. Stanje - način, stikalo, status ogrevanja - se upošteva kot priključen vhod, uro za uro, samo za to napravo. Izberi vse, ki o njej kaj povedo: vsako stanje šteje, od števil pa se uporabi tisto, ki največ pojasni. Ena naprava na obisk; pusti prazno, da jo počistiš.",
-                "data": {
-                    "device": "Naprava",
-                    "state_entity": "Stanja ali senzorji"
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti, termostat. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede. Bere jih tudi zaznavanje porabnikov: stikalo, ogrevanje termostata ali karkoli drugega, kar se vklaplja in izklaplja, pove, kdaj breme teče, število pa se primerja s tem, kako dolgo in kako pogosto bremena tečejo."
                 }
             },
             "detection": {
@@ -273,9 +265,10 @@
             },
             "naming_name": {
                 "title": "Poimenujte breme",
-                "description": "{row}\n\nVpišite ime, da dobi svoje entitete. Dvema bremenoma dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Če polje pustite prazno, se vrnete nazaj brez sprememb.",
+                "description": "{row}\n\nVpišite ime, da dobi svoje entitete. Dvema bremenoma dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Če polje pustite prazno, se vrnete nazaj brez sprememb. Označite vhod, ki je pomagal breme najti, da ga povežete z bremenom - še naprej šteje tudi za celotno lokacijo; povezava se naredi, ko zaključite poimenovanje.",
                 "data": {
-                    "name": "Ime"
+                    "name": "Ime",
+                    "link_inputs": "Poveži s tem bremenom"
                 }
             },
             "inverters": {
@@ -307,12 +300,27 @@
                     "naming": "Osveži",
                     "init": "Nazaj"
                 }
+            },
+            "input_links": {
+                "title": "Poveži vhod",
+                "description": "Vsak vhod šteje za celotno lokacijo. Povežite ga še z napravami, o katerih govori - prostor, kjer stoji hladilnik, temperatura tal pri termostatu - in število med njimi iz zadnje vrednosti izostri napoved naslednjih šest ur za te naprave in za vsako napravo, v kateri so. Izberite vhod, nato to, čemur pripada.",
+                "data": {
+                    "input": "Vhod"
+                }
+            },
+            "input_links_to": {
+                "title": "O čem govori {input}",
+                "description": "Označite naprave in zaznana bremena, o katerih {input} kaj pove. Naprava znotraj druge šteje za obe. Odznačite vse, da ostane samo pri lokaciji.",
+                "data": {
+                    "linked_to": "Povezano z"
+                }
             }
         },
         "abort": {
             "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
             "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
-            "nothing_to_name": "Zaenkrat ni kaj poimenovati - zaznan ni bil noben porabnik."
+            "nothing_to_name": "Zaenkrat ni kaj poimenovati - zaznan ni bil noben porabnik.",
+            "no_inputs": "Vhodov še ni - najprej jih dodajte na strani Pojasnjevalni vhodi."
         }
     },
     "issues": {

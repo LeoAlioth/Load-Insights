@@ -17,7 +17,7 @@ from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
 from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner
+from .detection import DetectionRunner, load_uid
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
                               most_specific, suggest_levels)
 from .insights.profile import Forecast
@@ -613,7 +613,7 @@ class NamedLoadPower(_DetectionBase):
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
         super().__init__(runner, entry, "named_load_power")
         self._name = name
-        self._attr_unique_id = f"{entry.entry_id}_load_power_{name.lower().replace(' ', '_')}"
+        self._attr_unique_id = load_uid(entry.entry_id, "power", name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
 
     @property
@@ -646,7 +646,7 @@ class NamedLoadEnergy(_DetectionBase):
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
         super().__init__(runner, entry, "named_load_energy")
         self._name = name
-        self._attr_unique_id = f"{entry.entry_id}_load_energy_{name.lower().replace(' ', '_')}"
+        self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
 
     @property

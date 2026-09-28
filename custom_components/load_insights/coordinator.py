@@ -25,8 +25,8 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
-    CONF_DEVICE_STATE_SENSORS,
     CONF_INPUT_ENTITIES,
+    CONF_INPUT_LINKS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
     DOMAIN,
@@ -45,7 +45,8 @@ from .insights.inputs import label_history, project, usable
 from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
-from .insights.model import SiteModel
+from .detection import named_load_energy
+from .insights.model import LOAD_PREFIX, SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
 from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
 from .insights.series import combine, coverage, subtract_all
@@ -229,9 +230,33 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # in hand for the remainder, so this is only the fits. A device with a
         # state sensor also gets its nowcast: the sensor's hourly means over
         # the same window, and its live value now.
-        state_map: Dict[str, List[str]] = {
-            k: ([v] if isinstance(v, str) else list(v or []))
-            for k, v in (opts.get(CONF_DEVICE_STATE_SENSORS) or {}).items()}
+        # A number linked to a device nudges its next hours, jointly with any
+        # other linked to it (fit_joint keeps each only if it adds) - and its
+        # parents' too, which the device is part of (Anze, 2026-09-28: are
+        # they "still taken into account by all of the parent meters?"). The
+        # site takes every input, linked or not, among its signals above;
+        # those are every device's as well.
+        links = opts.get(CONF_INPUT_LINKS) or {}
+        entry_id = self.config_entry.entry_id if self.config_entry else ""
+        parent = {d.energy: d.included_in for d in site.devices}
+
+        def within(target: str) -> List[str]:
+            """The device a link names, and every device it sits inside."""
+            cur = named_load_energy(self.hass, entry_id, target[len(LOAD_PREFIX):]) if target.startswith(LOAD_PREFIX) else target
+            out: List[str] = []
+            while cur and cur not in out:
+                out.append(cur)
+                cur = parent.get(cur)
+            return out
+
+        linked: Dict[str, List[str]] = {}
+        for eid in input_entities:
+            if eid.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
+                for target in links.get(eid) or []:
+                    for stat in within(target):
+                        if eid not in linked.setdefault(stat, []):
+                            linked[stat].append(eid)
+        means: Dict[str, Dict[float, float]] = {}
         state_used: Dict[str, str] = {}
         state_now: Dict[str, Optional[float]] = {}
         device_fc: Dict[str, Forecast] = {}
@@ -239,35 +264,23 @@ class InsightsCoordinator(DataUpdateCoordinator):
             rows = series.get(d.energy) or []
             if not rows:
                 continue
-            # Several per device (Anze, 2026-09-28: a floor mat's thermostat
-            # reads both the room and the floor). A STATE - a mode, a switch, a
-            # status - or a number with no hourly means is fitted like an
-            # attached input, for this device alone; every one of them counts.
-            # The numbers nudge the next hours together (fit_joint), each one
-            # kept only if it adds to what the others already explain.
-            dev_cals = list(cal_signals)
             numbers: List[Tuple[str, Dict[float, float], Optional[float]]] = []
-            for st_entity in state_map.get(d.energy, []):
-                st_hist: Dict[float, float] = {}
-                if st_entity.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
+            for st_entity in linked.get(d.energy, []):
+                if st_entity not in means:
                     srows = await get_instance(self.hass).async_add_executor_job(
                         rec_stats.statistics_during_period,
                         self.hass, start, None, {st_entity}, "hour", None, {"mean"},
                     )
-                    for r in srows.get(st_entity, []):
-                        if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                            st_hist[float(r["start"])] = float(r["mean"])
-                if st_hist:
-                    st = self.hass.states.get(st_entity)
-                    try:
-                        live = float(st.state) if st is not None else None
-                    except (TypeError, ValueError):
-                        live = None
-                    numbers.append((st_entity, st_hist, live))
-                    continue
-                signal, _ = await self._input_signal(st_entity, start, now, horizon_keys, tz_offset)
-                if signal is not None:
-                    dev_cals.append(signal)
+                    means[st_entity] = {float(r["start"]): float(r["mean"]) for r in srows.get(st_entity, [])
+                                        if r.get("mean") is not None and isinstance(r.get("start"), (int, float))}
+                if not means[st_entity]:
+                    continue              # no hourly means: a state, among the signals already
+                st = self.hass.states.get(st_entity)
+                try:
+                    live = float(st.state) if st is not None else None
+                except (TypeError, ValueError):
+                    live = None
+                numbers.append((st_entity, means[st_entity], live))
             if len(numbers) > 1:
                 hist, live = [h for _, h, _ in numbers], [v for _, _, v in numbers]
             elif numbers:
@@ -276,7 +289,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 hist, live = None, None
             fc = await self.hass.async_add_executor_job(
                 forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
-                dev_cals or None, hist or None, live,
+                cal_signals or None, hist or None, live,
             )
             device_fc[d.energy] = fc
             if numbers:
