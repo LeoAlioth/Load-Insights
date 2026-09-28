@@ -14,7 +14,6 @@ from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -109,17 +108,6 @@ class InsightsData:
     devices: Dict[str, Forecast] = None  # type: ignore[assignment]
 
 
-def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
-    """The Energy dashboard's site, less anything this integration publishes.
-
-    A detected load's energy sensor can be listed there - the kiln, under
-    the meter it sits in - and read back as a device it would become a meter
-    of itself: its own estimate, fed to detection as a sub-meter, with the
-    kiln then detected inside it (Anze, 2026-09-28)."""
-    own = frozenset(e.entity_id for e in er.async_get(hass).entities.values() if e.platform == DOMAIN)
-    return SiteModel.from_prefs(prefs, ignore=own)
-
-
 class InsightsCoordinator(DataUpdateCoordinator):
     """One refresh per quarter hour, aligned to the clock rather than to the
     previous refresh, so every run sees the statistics for a just-closed
@@ -157,7 +145,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> InsightsData:
         manager = await async_get_manager(self.hass)
-        site = energy_site(self.hass, manager.data)
+        site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
             raise UpdateFailed("the Energy dashboard has no grid source configured")
 
