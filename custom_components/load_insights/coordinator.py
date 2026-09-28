@@ -130,6 +130,14 @@ class InsightsCoordinator(DataUpdateCoordinator):
             self._ledgers = {k: Ledger.from_dict(v) for k, v in (raw.get("ledgers") or {}).items()}
         return self._ledgers
 
+    async def async_follow_renames(self, renames: Dict[str, str]) -> None:
+        """A device's forecast score follows its statistic when it is renamed."""
+        ledgers = await self._load_ledgers()
+        for old, new in renames.items():
+            if old in ledgers and new not in ledgers:
+                ledgers[new] = ledgers.pop(old)
+        await self._save_ledgers()
+
     async def _save_ledgers(self) -> None:
         if self._ledgers is not None:
             await self._store.async_save({"ledgers": {k: v.to_dict() for k, v in self._ledgers.items()}})

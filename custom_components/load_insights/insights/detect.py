@@ -3326,6 +3326,25 @@ class Fleet:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
             self._credit_switch(m, switch)
 
+    def rename_entities(self, renames: Dict[str, str]) -> None:
+        """Follow renamed entities: what a switch was credited and when it was
+        on, and what each load learned against a number, go with the entity."""
+        pairs = [(a, b) for old, new in renames.items()
+                 for a, b in ((old, new), (SWITCH_PREFIX + old, SWITCH_PREFIX + new))]
+        for det in [self.main, *self.subs.values()]:
+            for sig in det.signatures:
+                for a, b in pairs:
+                    if a in sig.locations:
+                        sig.locations[b] = sig.locations.get(b, 0) + sig.locations.pop(a)
+                    if a in sig.drivers:
+                        sig.drivers[b] = sig.drivers.pop(a)
+            for a, b in pairs:
+                if a in det.drivers:
+                    det.drivers[b] = det.drivers.pop(a)
+        for a, b in pairs:
+            if a in self.switch_on:
+                self.switch_on[b] = self.switch_on.pop(a)
+
     def _switch_for(self, m: Session, main_iv: float) -> Optional[str]:
         """The switch whose on-period this session is, if one fits: on within
         the moment tolerance, and off near the end once the off is known."""

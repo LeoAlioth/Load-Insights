@@ -163,5 +163,20 @@ def test_each_devices_own_inputs_become_links_on_one_list():
     assert relink(named, "Mat", None)["input_links"]["sensor.floor"] == ["sensor.boiler_energy"]
 
 
+
+def test_a_renamed_entity_is_followed_through_the_settings():
+    renames = {"sensor.boiler_energy": "sensor.bojler_energy", "climate.t": "climate.termostat"}
+    options = {"input_entities": ["climate.t", "sensor.room"],
+               "input_links": {"climate.t": ["sensor.boiler_energy", "load:Mat"]},
+               "detection": {"single_device": ["sensor.boiler_energy"], "interval_minutes": "5"},
+               "inverters": [{"power": "sensor.boiler_energy_x"}]}
+    out = model.follow_renames(options, renames)
+    assert out["input_entities"] == ["climate.termostat", "sensor.room"]
+    assert out["input_links"] == {"climate.termostat": ["sensor.bojler_energy", "load:Mat"]}
+    assert out["detection"] == {"single_device": ["sensor.bojler_energy"], "interval_minutes": "5"}
+    assert out["inverters"] == [{"power": "sensor.boiler_energy_x"}]     # only a whole id is one
+    assert model.follow_renames(options, {}) == options
+
+
 if __name__ == "__main__":
     run_main(globals())

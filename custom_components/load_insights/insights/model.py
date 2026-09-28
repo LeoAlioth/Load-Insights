@@ -254,3 +254,20 @@ def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
         moved = [(LOAD_PREFIX + new if new else None) if t == LOAD_PREFIX + old else t for t in targets]
         links[eid] = list(dict.fromkeys(t for t in moved if t))
     return {**options, "input_links": links}
+
+
+def follow_renames(value, renames: dict):
+    """``value`` - options, data, anything JSON-shaped - with every string
+    that IS a renamed entity id, key or value, swapped for its new id. Home
+    Assistant moves an entity's history on a rename but not the settings that
+    name it: after Anze's renames of 2026-09-28 every input, link and meter
+    here had to be picked again by hand."""
+    if isinstance(value, str):
+        return renames.get(value, value)
+    if isinstance(value, list):
+        return [follow_renames(v, renames) for v in value]
+    if isinstance(value, tuple):
+        return tuple(follow_renames(v, renames) for v in value)
+    if isinstance(value, dict):
+        return {follow_renames(k, renames): follow_renames(v, renames) for k, v in value.items()}
+    return value
