@@ -222,6 +222,35 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     assert not fleet.guess_one_device("pump") and not fleet.holds_one_device("pump")
     assert fleet._one_device("pump")            # identity keeps its benched rule
 
+def test_a_switch_is_a_meter_that_knows_only_when():
+    """Home's bathroom floor mat starts and stops with its thermostat's heating:
+    a session on such an on-period is credited to the thermostat, and a switch
+    is deeper than the circuit meter that saw it too (2026-09-28)."""
+    fleet = D.Fleet()
+    sig = D.Signature(id=1, phases="c", power={"c": 640.0}, duration_s=120.0, pf=None, count=1,
+                      first_seen=T0, last_seen=T0)
+    fleet.main.signatures.append(sig)
+    fleet.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0 + 1000: T0 + 1120, T0 + 5000: None}
+
+    def session(start, end, phase="c"):
+        s = D.Session(phase, start, end, {phase: [(start, 640.0)]})
+        s.signature_id = 1
+        return s
+
+    name = D.SWITCH_PREFIX + "climate.mat"
+    assert fleet._switch_for(session(T0 + 1004, T0 + 1118), 6.0) == name     # on and off agree
+    assert fleet._switch_for(session(T0 + 5003, T0 + 5130), 6.0) == name     # still on: the start decides
+    assert fleet._switch_for(session(T0 + 1060, T0 + 1180), 6.0) is None     # started a minute late
+    assert fleet._switch_for(session(T0 + 1002, T0 + 2400), 6.0) is None     # ran on long after the off
+    # once it has shown its phase, a load on another one is not its own
+    sig.locations[name] = D.METER_PHASES_MIN
+    assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "a"), 6.0) is None
+    assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "c"), 6.0) == name
+    # seen by the circuit AND switched by the thermostat: the thermostat's
+    parents = {"Hiša": None}
+    assert D.most_specific({"Hiša": 30, name: 28}, 30, parents) == name
+    assert D.most_specific({"Hiša": 30}, 30, parents) == "Hiša"
+
 def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     fleet = D.Fleet()
     hours = 2
@@ -2284,6 +2313,50 @@ def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
     assert sig.inrush_w > 1000, sig.inrush_w
     back = D.Signature.from_dict(sig.to_dict())
     assert round(back.inrush_w, 1) == round(sig.inrush_w, 1)
+
+
+
+def test_a_number_that_drives_a_load_is_learned_against_it():
+    """A fridge runs longer and starts sooner the warmer its room: the run
+    length and the gap are learned against the number at each start, and
+    once it is believed the spread it explains stops counting against the
+    load (Anze, 2026-09-28: "positively or negatively correlated to their
+    frequency and runtime")."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    rnd = random.Random(3)
+    t, rows, temps = T0, [], []
+    room = 20.0
+    for _ in range(60):
+        room = min(30.0, max(15.0, room + rnd.uniform(-2.5, 2.5)))   # a room drifts
+        temps.append((t - 60.0, room))
+        on = 600.0 * (1.04 ** (room - 20.0))            # +4 % a degree
+        off = 3000.0 * (0.97 ** (room - 20.0))          # and sooner again
+        for _ in range(int(on // DT)):
+            rows.append((t, 380.0 + rnd.uniform(-3, 3))); t += DT
+        for _ in range(int(off // DT)):
+            rows.append((t, 300.0 + rnd.uniform(-3, 3))); t += DT
+    plain = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    det.drivers = {"sensor.room": temps}
+    det.process({"a": rows}, now_ts=t)
+    plain.process({"a": rows}, now_ts=t)
+    sig = max(det.signatures, key=lambda x: x.count)
+    per_unit, r2, weight = sig.driver_effect("sensor.room")
+    assert 0.02 <= per_unit <= 0.06 and r2 > 0.8, (per_unit, r2)
+    gap_unit, gap_r2, _ = sig.driver_effect("sensor.room", "g")
+    assert gap_unit < 0 and gap_r2 > 0.3, (gap_unit, gap_r2)
+    assert sig.strongest_driver()[0] == "sensor.room"
+    # what the number explains is not the load being loose about time
+    same = max(plain.signatures, key=lambda x: x.count)
+    assert sig.evidence > same.evidence, (sig.evidence, same.evidence)
+    back = D.Signature.from_dict(json.loads(json.dumps(sig.to_dict())))
+    assert back.driver_effect("sensor.room")[1] > 0.8
+    # and a young load is not believed yet
+    young = D.Signature(id=99, phases="a", power={"a": 80.0}, duration_s=600.0, pf=None, count=5,
+                        first_seen=T0, last_seen=T0)
+    for i in range(10):
+        young.note_driver("sensor.room", "d", 15.0 + i, 600.0 * 1.04 ** i)
+    assert young.strongest_driver() is None
 
 
 if __name__ == "__main__":

@@ -96,6 +96,8 @@ PROD_SUBS = {
 }
 SUBS = "lab"
 LAST_FLEET = None                      # the Fleet of the last _run, for attrib
+SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
+DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
@@ -247,6 +249,12 @@ def _apply(dials) -> str:
         if k == "HOUSE":
             _house_as(v)
             continue
+        if k == "SWITCH":
+            SWITCHES.append(v)            # an entity whose on-periods say when a load runs
+            continue
+        if k == "DRIVER":
+            DRIVERS.append(v)             # a number a load's runs may follow
+            continue
         if not hasattr(D, k):
             raise SystemExit(f"no such dial: {k}")
         setattr(D, k, type(getattr(D, k))(float(v)))
@@ -279,6 +287,10 @@ def _run(folder: str, site: str | None):
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
     for pin in PINNED:
         argv += ["--role", pin]
+    for eid in SWITCHES:
+        argv += ["--switch", f"{eid.split(':')[0]}={eid}"]
+    for eid in DRIVERS:
+        argv += ["--driver", eid]
     if site and SUBS == "prod":
         for n, e in PROD_SUBS[site].items():
             argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
@@ -496,7 +508,7 @@ def fridge(folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
     truth = _fridge_runs(folder)
-    starts = sorted((f.start, f) for f in filed)
+    starts = sorted(((f.start, f) for f in filed), key=lambda p: p[0])
     keys = [k for k, _ in starts]
     hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
     for t0, t1, step, kind in truth:
@@ -518,6 +530,47 @@ def fridge(folder: str, dials) -> None:
           f"  length filed/true median {st.median(ratio) if ratio else 0:.2f}"
           f" (within 25 %: {sum(0.75 <= r <= 1.25 for r in ratio)}/{len(ratio)})")
     print(f"  {'':44s} signatures  A: {top(per_sig['A'])}   B: {top(per_sig['B'])}   ?: {top(per_sig['?'])}")
+    byid = {x.id: x for x in det.signatures}
+    for kind in ("A", "B"):
+        for sid, _ in per_sig[kind].most_common(2):
+            sig = byid.get(sid)
+            for n in (sig.drivers if sig else {}):
+                d, g = sig.driver_effect(n, "d"), sig.driver_effect(n, "g")
+                fmt = lambda e: f"{e[0] * 100:+5.1f} %/unit r2 {e[1]:.2f}" if e else "-"  # noqa: E731
+                print(f"  {'':44s} {kind} #{sid} x{sig.count} ev {sig.evidence:.2f}  {n}: length {fmt(d)}   gap {fmt(g)}")
+
+
+MAT = "climate.termostat_kopalnica:hvac_action"
+
+
+def switch(folder: str, dials) -> None:
+    """Home's bathroom floor mat against its thermostat's heating: of the
+    heating runs, how many the house filed a session for at the right moment
+    and phase, how many of those were credited to the thermostat, and which
+    signatures they went to - one, ideally. Also what else was credited to it.
+    Pass SWITCH=climate.termostat_kopalnica:hvac_action to feed the switch."""
+    tag = _apply(dials)
+    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    truth = [(a, b) for a, b in R.read_switch([folder], MAT) if b is not None and 20 <= b - a <= 3600]
+    starts = sorted(((f.start, f) for f in filed), key=lambda p: p[0])
+    keys = [k for k, _ in starts]
+    name = D.SWITCH_PREFIX + MAT.split(":")[0]
+    found, sigs, credited_sig = 0, collections.Counter(), collections.Counter()
+    for a, b in truth:
+        lo = bisect.bisect_left(keys, a - 15)
+        near = [f for k, f in starts[lo:lo + 20] if abs(k - a) <= 15 and f.phases == "c"
+                and 450 <= sum(max(v for _, v in lv) for lv in f.levels.values()) <= 850]
+        if not near:
+            continue
+        found += 1
+        sig = det.signature_of(min(near, key=lambda f: abs(f.start - a)))
+        sigs[sig.id if sig else None] += 1
+    others = sum(s.locations.get(name, 0) for s in det.signatures if not (s.phases == "c" and 450 <= s.power.get("c", 0) <= 850))
+    placed = [s for s in det.signatures if s.location == name]
+    top = ", ".join(f"#{i}:{k}" for i, k in sigs.most_common(4))
+    print(f"  {tag:44s} heating runs {len(truth)}  filed at the moment {found}  in signatures {top}")
+    print(f"  {'':44s} signatures placed at the thermostat: " + (", ".join(f"#{s.id} {sum(s.power.values()):.0f} W x{s.count} ({s.locations.get(name, 0)} credited)" for s in placed) or "none")
+          + f"   credited to it off the mat's size: {others}")
 
 
 def surge(site: str, folder: str, dials) -> None:
@@ -628,6 +681,8 @@ def main() -> int:
         score(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == "kiln":
         kiln(sys.argv[2], sys.argv[3:])
+    elif cmd == "switch":
+        switch(sys.argv[2], sys.argv[3:])
     elif cmd == "fridge":
         fridge(sys.argv[2], sys.argv[3:])
     elif cmd == "surge":

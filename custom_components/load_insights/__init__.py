@@ -18,6 +18,7 @@ from .const import (
 )
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
+from .insights.model import migrate_inputs, relink
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
@@ -56,13 +57,16 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         async def go(entry_id, _coordinator):
             nonlocal found
             runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
+            was = next((s.name for s in runner.detector.signatures if s.id == load_id), None) if runner else None
             if runner is None or not await runner.async_rename(load_id, name):
                 return
             found = True
-            # what the naming page's Done does: the entities follow the names
+            # what the naming page's Done does: the entities follow the names,
+            # and so do the inputs linked to the load
             entry = hass.config_entries.async_get_entry(entry_id)
             rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-            hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_SIGNATURE_REVISION: rev})
+            hass.config_entries.async_update_entry(
+                entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
         await _async_for_each_entry(hass, go)
         if not found:
             raise ServiceValidationError(f"No detected load has id {load_id}")
@@ -74,6 +78,10 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    moved = migrate_inputs(dict(entry.options))
+    if moved != dict(entry.options):
+        # before the update listener exists, so this does not reload
+        hass.config_entries.async_update_entry(entry, options=moved)
     coordinator = InsightsCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     detection = DetectionRunner(hass, entry)

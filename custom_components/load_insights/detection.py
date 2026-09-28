@@ -24,6 +24,7 @@ from .const import (
     SOURCE_NONE,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
+    CONF_INPUT_ENTITIES,
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
     DEFAULT_MIN_EVIDENCE,
@@ -38,6 +39,7 @@ from .const import (
     DOMAIN,
 )
 from .insights.detect import (
+    SWITCH_MEMORY_S,
     combine,
     COMBINE_SETTLE_S,
     PHASES,
@@ -65,6 +67,21 @@ from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
 
 _LOGGER = logging.getLogger(__name__)
+
+# the inputs detection reads: what says when a load runs, and what a load's
+# runs may follow
+SWITCH_DOMAINS = ("binary_sensor", "switch", "input_boolean", "fan", "light", "climate")
+NUMBER_DOMAINS = ("sensor", "number", "input_number")
+
+
+def load_uid(entry_id: str, kind: str, name: str) -> str:
+    """A named load's entity's unique id - ``kind`` "power" or "energy"."""
+    return f"{entry_id}_load_{kind}_{name.lower().replace(' ', '_')}"
+
+
+def named_load_energy(hass: HomeAssistant, entry_id: str, name: str) -> Optional[str]:
+    """The entity - and so the statistic - a named load's energy is under."""
+    return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry_id, "energy", name))
 STORAGE_VERSION = 1
 # The DETECTOR's generation, separate from the store's format version: when
 # the algorithm changes shape, what it learned before is not comparable with
@@ -437,6 +454,59 @@ class DetectionRunner:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
 
+    def _input_entities(self) -> List[str]:
+        """Every input the forecast is given, whatever it is linked to.
+        Detection reads the same list (Anze, 2026-09-28: add the thermostat
+        to the inputs first, and move it to the device once the load it
+        helped find is named): what switches says WHEN a load runs, a number
+        is learned against how long and how often."""
+        return list(self.entry.options.get(CONF_INPUT_ENTITIES) or [])
+
+    async def _read_inputs(self, start: datetime, end: datetime):
+        """The pass's inputs, with SWITCH_MEMORY_S before it so a run that
+        started a slice ago still has its start. A switch as its on-periods,
+        [(on, off or None while still on)]: a climate entity is on while its
+        hvac_action says it is doing something (a thermostat's heating),
+        anything else while its state is "on", and a period only open because
+        the window starts there is not a switch-on. A number as its readings,
+        [(ts, value)], the one in force at the window's start included."""
+        switches: Dict[str, list] = {}
+        numbers: Dict[str, list] = {}
+        since = start - timedelta(seconds=SWITCH_MEMORY_S)
+        for eid in self._input_entities():
+            domain = eid.split(".", 1)[0]
+            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS:
+                continue
+            by_action = domain == "climate"
+            states = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period, self.hass, since, end, eid,
+                not by_action, False, None, True,
+            )
+            rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
+            if domain in NUMBER_DOMAINS:
+                values = []
+                for st in rows:
+                    try:
+                        values.append((st.last_updated.timestamp(), float(st.state)))
+                    except ValueError:
+                        pass
+                if values:
+                    numbers[eid] = values
+                continue
+            spans, on = [], None
+            for st in rows:
+                is_on = (st.attributes.get("hvac_action") not in (None, "idle", "off")) if by_action else st.state == "on"
+                t = st.last_updated.timestamp()
+                if is_on and on is None:
+                    on = t
+                elif not is_on and on is not None:
+                    spans.append((on, t))
+                    on = None
+            if on is not None:
+                spans.append((on, None))
+            switches[eid] = [(a, b) for a, b in spans if a > since.timestamp() + 1.0]
+        return switches, numbers
+
     def holds_one_device(self, name: str) -> bool:
         """The user's answer for this meter, or else the default the settings
         page shows: a meter with others nested inside it on the Energy
@@ -728,9 +798,10 @@ class DetectionRunner:
             samples = without_window_start(samples, start.timestamp())
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             single = {n: self.holds_one_device(n) for n in self.submeters}
+            switches, numbers = await self._read_inputs(start, end)
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
-                dict(self.q_quantum), dict(self.sub_q_quantum), single,
+                dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,
             )
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())

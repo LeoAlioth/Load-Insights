@@ -81,6 +81,39 @@ def expand(paths):
     return out
 
 
+ON_STATES = {"on", "heating", "cooling", "drying"}
+
+
+def read_switch(paths, entity_id):
+    """An entity's on-periods [(on, off)] from the exports' TEXT states - on,
+    or a thermostat's heating (its hvac_action exported as its own series)."""
+    rows = []
+    for path in expand(paths):
+        with open(path, newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if (row.get("entity_id") or "").strip() != entity_id:
+                    continue
+                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
+                try:
+                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=timezone.utc)
+                rows.append((moment.timestamp(), (row.get("state") or "").strip().lower() in ON_STATES))
+    rows.sort()
+    spans, on = [], None
+    for t, is_on in rows:
+        if is_on and on is None:
+            on = t
+        elif not is_on and on is not None:
+            spans.append((on, t))
+            on = None
+    if on is not None:
+        spans.append((on, None))
+    return spans
+
+
 def read_csv(paths, keep_coarse=False):
     """entity_id -> [(epoch seconds, value)], numbers only, in time order.
 
@@ -238,6 +271,10 @@ def main() -> int:
     parser.add_argument("--sub", action="append", default=[],
                         metavar="Name=sensor.x", help="a device's own meter")
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
+    parser.add_argument("--switch", action="append", default=[],
+                        help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
+    parser.add_argument("--driver", action="append", default=[],
+                        help="ENTITY: a number a load's runs may follow - a room's temperature")
     parser.add_argument("--sub-phases", action="append", default=[],
                         metavar="Name=sensor.a,sensor.b,sensor.c", help="a three-phase meter, per phase")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
@@ -342,6 +379,20 @@ def main() -> int:
             subs[name.strip()] = rows
             agnostic[name.strip()] = False
 
+    # entities that say when a load is on, read as text: on-periods
+    switch_spans = {}
+    for pin in args.switch:
+        name, _, eid = pin.partition("=")
+        switch_spans[name.strip()] = read_switch(args.csv, eid.strip())
+    drivers = {eid.strip(): sorted(series.get(eid.strip()) or []) for eid in args.driver}
+    for eid, rows in drivers.items():
+        print(f"driver {eid}: {len(rows)} readings")
+
+    def held(rows, a, b):
+        """[a - SWITCH_MEMORY_S, b) as production reads it: with the value in
+        force at the start of that window."""
+        i = bisect.bisect_left(rows, (a - D.SWITCH_MEMORY_S, -math.inf))
+        return rows[max(i - 1, 0):bisect.bisect_left(rows, (b, -math.inf))]
     fleet = D.Fleet()
     fleet.main.tz_offset_s = 0.0
     for p in phases:
@@ -373,7 +424,11 @@ def main() -> int:
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
                       {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
                        for n, byp in subs.items()},
-                      q, None, e, agnostic, pv or None, q_quantum)
+                      q, None, e, agnostic, pv or None, q_quantum,
+                      switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
+                                    if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
+                                for n, spans in switch_spans.items()} or None,
+                      drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None)
         t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.

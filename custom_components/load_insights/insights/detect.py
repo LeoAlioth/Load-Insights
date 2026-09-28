@@ -424,6 +424,35 @@ SUB_DEVICE_SHARE = 0.5
 # (Anze, 2026-09-28: "the plug is single phase, no multi phase load should be
 # attributed there"). A count, so a load two sightings strong never sets it.
 METER_PHASES_MIN = 20
+# An entity that says WHEN a load is on - a thermostat's heating, a relay, a
+# switch - is a meter that knows no power. A house session starting (and, once
+# known, stopping) with one of its on-periods is credited to it: SWITCH_PREFIX
+# names it among the meters. Home's bathroom floor mat (Termostat Kopalnica)
+# starts and stops within seconds of the thermostat's heating on 11 of 12 runs,
+# and was named by hand from exactly that (Anze, 2026-09-28).
+SWITCH_PREFIX = "switch:"
+# A session filed while one of those vouches for it joins the house signature
+# most of that switch's sessions went to, when it fits - what a one-device
+# meter does (SUB_METER_IDENTITY). 0 is off, and off it ships: on the floor
+# mat it kept 1429 of 1701 heating runs together against 1500 without it,
+# purity 71.9 against 71.7 % (Home, 18-27 Sep) - the credit alone places it.
+SWITCH_IDENTITY = 0
+# A switch's stop and the session's may disagree by this share of the run as
+# well as by the moment tolerance: a sagging or merged run ends late.
+SWITCH_END_SHARE = 0.25
+# ...and how far back its on-periods - and a number's readings - are kept:
+# past the longest a session waits, counted from the oldest reading a pass brings.
+SWITCH_MEMORY_S = 4 * 3600.0
+# A number that may DRIVE a load - a fridge's room temperature, the weather -
+# is learned against each load: how its run length and the gap between its
+# starts follow the number's value when a run starts, a regression of their
+# logarithms, recency-weighted over ABSORB_WINDOW. It is believed once a load
+# has this many runs behind it and the number explains this share of the
+# spread; then the run length's spread that the number does NOT explain is
+# what counts as its tightness (Anze, 2026-09-28: "positively or negatively
+# correlated to their frequency and runtime").
+DRIVER_MIN_RUNS = 30
+DRIVER_MIN_R2 = 0.25
 # Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
 # 3EM - may decide a signature too, or only a meter that holds one device.
 # Off: one-device meters only was better at Home (79.1 / 80.7 % against
@@ -1764,6 +1793,10 @@ class Signature:
     interval_s: Optional[float] = None   # running mean START-to-start spacing ("every 5 min")
     last_start: Optional[float] = None
     locations: Dict[str, int] = field(default_factory=dict)   # submeter name -> sessions also seen there
+    # number -> {"d": run-length stats, "g": start-gap stats}, each
+    # [weight, sum x, sum x2, sum y, sum y2, sum xy] with y a logarithm - see
+    # DRIVER_MIN_RUNS
+    drivers: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
 
     @property
     def location(self) -> str:
@@ -1909,6 +1942,10 @@ class Signature:
 
     def swallow(self, other: "Signature") -> None:
         """Take another signature's sightings into this one, by weight."""
+        for name, row in other.drivers.items():
+            mine = self.drivers.setdefault(name, {"d": [0.0] * 6, "g": [0.0] * 6})
+            for key in ("d", "g"):
+                mine[key] = [x + y for x, y in zip(mine[key], row.get(key) or [0.0] * 6)]
         a, b = self.count, other.count
         n = a + b
         if n <= 0:
@@ -2009,6 +2046,37 @@ class Signature:
         self.last_seen = max(self.last_seen, s.end)
         self._spread(s, tz)
         self.count += 1
+
+    def note_driver(self, name: str, key: str, x: float, y: float) -> None:
+        """One run's length ("d") - or the gap before it ("g") - seen with
+        the number at ``x``."""
+        acc = self.drivers.setdefault(name, {"d": [0.0] * 6, "g": [0.0] * 6})[key]
+        keep = 1.0 - 1.0 / ABSORB_WINDOW
+        ly = math.log(y)
+        for i, v in enumerate((1.0, x, x * x, ly, ly * ly, x * ly)):
+            acc[i] = acc[i] * keep + v
+
+    def driver_effect(self, name: str, key: str = "d") -> Optional[Tuple[float, float, float]]:
+        """(share change per unit of the number, r², weight) for run length
+        ("d") or the gap between starts ("g"); None until anything is known."""
+        acc = (self.drivers.get(name) or {}).get(key)
+        if not acc or acc[0] <= 1.0:
+            return None
+        w, sx, sxx, sy, syy, sxy = acc
+        vx, vy, cxy = sxx / w - (sx / w) ** 2, syy / w - (sy / w) ** 2, sxy / w - (sx / w) * (sy / w)
+        if vx <= 1e-12 or vy <= 1e-12:
+            return None
+        return math.exp(cxy / vx) - 1.0, (cxy * cxy) / (vx * vy), w
+
+    def strongest_driver(self, key: str = "d"):
+        """(name, share per unit, r²) of the number explaining the most, once
+        believed - see DRIVER_MIN_RUNS - or None."""
+        best = None
+        for name in self.drivers:
+            eff = self.driver_effect(name, key)
+            if eff and eff[2] >= DRIVER_MIN_RUNS and eff[1] >= DRIVER_MIN_R2 and (best is None or eff[1] > best[2]):
+                best = (name, eff[0], eff[1])
+        return best
 
     @property
     def watts(self) -> float:
@@ -2166,7 +2234,12 @@ class Signature:
             return round(0.4 * seen, 2)                  # nothing has repeated enough to measure
         legs = max(len(self.phases), 1)
         tight_w = 1.0 - min(1.0, (self.power_mad / max(abs(self.watts) / legs, 1.0)) / 0.15)
-        tight_d = 1.0 - min(1.0, (self.duration_mad / max(self.duration_s, 1.0)) / 0.5)
+        spread = self.duration_mad
+        driver = self.strongest_driver("d")
+        if driver:
+            # what the number explains is not the load being loose about time
+            spread *= max(0.0, 1.0 - driver[2]) ** 0.5
+        tight_d = 1.0 - min(1.0, (spread / max(self.duration_s, 1.0)) / 0.5)
         return round(0.5 * seen + 0.3 * tight_w + 0.2 * tight_d, 2)
 
     @property
@@ -2320,7 +2393,8 @@ class Signature:
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
-                "interval_mad": _trim(self.interval_mad, 1)}
+                "interval_mad": _trim(self.interval_mad, 1),
+                "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
@@ -2335,7 +2409,8 @@ class Signature:
                    inrush_when_seen=d.get("inrush_when_seen", 0.0), duration_mad=d.get("duration_mad", 0.0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
-                   interval_mad=d.get("interval_mad"))
+                   interval_mad=d.get("interval_mad"),
+                   drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()})
 
 
 def _fmt_w(x: float) -> str:
@@ -2513,6 +2588,9 @@ class Detector:
     energy_floor: Dict[str, float] = field(default_factory=dict)
     next_id: int = 1
     tz_offset_s: float = 0.0
+    # number -> sorted [(ts, value)], each held until the next - see
+    # DRIVER_MIN_RUNS; fed by the fleet, not persisted
+    drivers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -2726,8 +2804,19 @@ class Detector:
             self.signatures.append(best)
             best.absorb(s, tz)
             best.count = 1
+            prev = None
         else:
+            prev = best.last_start
             best.absorb(s, tz)
+        for name, rows in self.drivers.items():
+            # the run by the number as it started; the gap before it by the
+            # number halfway through it - what the room was while it waited
+            for key, at, y in (("d", s.start, s.duration_s),
+                               ("g", (s.start + prev) / 2.0 if prev is not None else None,
+                                s.start - prev if prev is not None else 0.0)):
+                i = bisect.bisect_right(rows, (at, math.inf)) - 1 if at is not None else -1
+                if i >= 0 and y > 0:
+                    best.note_driver(name, key, rows[i][1], y)
         s.signature_id = best.id
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
@@ -3097,6 +3186,10 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
+    # switch -> {on moment: off moment, or None while on}, as the runner last
+    # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
+    # window with a lookback.
+    switch_on: Dict[str, Dict[float, Optional[float]]] = field(default_factory=dict)
     # meters that hold one device (True) or several (False), as the runner
     # works it out each pass - the user's answer, else a parent holds several,
     # else guess_one_device; a meter missing here is guessed
@@ -3120,10 +3213,30 @@ class Fleet:
                 pv: Optional[Dict[str, Dict[float, float]]] = None,
                 main_q_quantum: Optional[Dict[str, float]] = None,
                 sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
-                single: Optional[Dict[str, bool]] = None) -> None:
+                single: Optional[Dict[str, bool]] = None,
+                switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
+                drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
+        # kept from before the oldest reading this pass brings: a backfill
+        # slice is six hours long, and pruning off its END lost the switch
+        # for its first two (2026-09-28: 462 of 1232 floor-mat runs)
+        oldest = min((rows[0][0] for rows in (main_samples or {}).values() if rows), default=now_ts)
+        for name, spans in (switches or {}).items():
+            known = self.switch_on.setdefault(SWITCH_PREFIX + name, {})
+            for on, off in spans:
+                if off is not None or on not in known:
+                    known[on] = off
+            keep = min(oldest or now_ts or 0.0, now_ts or max(known, default=0.0)) - SWITCH_MEMORY_S
+            for on in [t for t in known if t < keep]:
+                del known[on]
+        for name, rows in (drivers or {}).items():
+            held = dict(self.main.drivers.get(name) or [])
+            held.update((float(t), float(v)) for t, v in rows)
+            keep = min(oldest or now_ts or 0.0, now_ts or max(held, default=0.0)) - SWITCH_MEMORY_S
+            last = max((t for t in held if t < keep), default=None)   # still in force at the cut
+            self.main.drivers[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         # only the main meter needs the array: a downstream meter sees the
@@ -3160,6 +3273,10 @@ class Fleet:
         if SUB_OVERRIDE:
             self._file_waiting(closed_main, closed_sub, latest)
             closed_main, closed_sub = [], {}
+        elif self.switch_on:
+            main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+            for m in closed_main:
+                self._credit_switch(m, self._switch_for(m, main_iv))
         self._locate(closed_main, closed_sub, latest)
 
     def _file_waiting(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]],
@@ -3196,20 +3313,53 @@ class Fleet:
                     by_energy[mi] = name
         for mi, m in enumerate(ready):
             name = by_energy.get(mi)
+            switch = self._switch_for(m, main_iv) if self.switch_on else None
             if name is None:
-                self.main._file(m)
+                prefer = self._meter_home(switch) if switch is not None and SWITCH_IDENTITY else None
+                self.main._file(m, prefer=prefer)
+                self._credit_switch(m, switch)
                 self.pending_main.append(m)          # placed later, as ever
                 continue
             self.main._file(m, prefer=self._meter_home(name))
             sig = self.main.signature_of(m)
             if sig is not None:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
+            self._credit_switch(m, switch)
+
+    def _switch_for(self, m: Session, main_iv: float) -> Optional[str]:
+        """The switch whose on-period this session is, if one fits: on within
+        the moment tolerance, and off near the end once the off is known."""
+        tol = max(MERGE_TOLERANCE_S, 2.0 * main_iv)
+        best, best_cost = None, None
+        phases = self.meter_phases()
+        for name, spans in self.switch_on.items():
+            if name in phases and not set(m.phases) <= set(phases[name]):
+                continue
+            for on, off in spans.items():
+                if abs(on - m.start) > tol:
+                    continue
+                cost = abs(on - m.start) / tol
+                if off is not None:
+                    end_tol = max(tol, SWITCH_END_SHARE * max(m.duration_s, 1.0))
+                    if abs(off - m.end) > end_tol:
+                        continue
+                    cost += abs(off - m.end) / end_tol
+                if best_cost is None or cost < best_cost:
+                    best, best_cost = name, cost
+        return best
+
+    def _credit_switch(self, m: Session, name: Optional[str]) -> None:
+        sig = self.main.signature_of(m)
+        if name is not None and sig is not None:
+            sig.locations[name] = sig.locations.get(name, 0) + 1
 
     def holds_one_device(self, name: str) -> bool:
         """Does this meter hold ONE device, as the user answered - or, where
         nobody has, as guess_one_device says? This is what hides a meter's
         loads from naming and ties it to its device's phases. It is not what
         _one_device is: that one decides identity, and stays as it was benched."""
+        if name.startswith(SWITCH_PREFIX):
+            return True                   # a switch switches one load
         if name in self.single:
             return self.single[name]
         return self.guess_one_device(name)
@@ -3238,7 +3388,7 @@ class Fleet:
         seen: Dict[str, Dict[str, int]] = {}
         for sig in self.main.signatures:
             for name, n in sig.locations.items():
-                if n and name in self.subs and self.holds_one_device(name):
+                if n and (name in self.subs or name in self.switch_on) and self.holds_one_device(name):
                     row = seen.setdefault(name, {})
                     row[sig.phases] = row.get(sig.phases, 0) + n
         out = {}
@@ -3287,12 +3437,17 @@ class Fleet:
         prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
         if not SUB_IDENTITY_CIRCUITS and not self._one_device(name):
             prefer = None
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        switch = self._switch_for(m, main_iv) if self.switch_on else None
+        if prefer is None and switch is not None and SWITCH_IDENTITY:
+            prefer = self._meter_home(switch)
         self.main._file(m, prefer=prefer)
         sig = self.main.signature_of(m)
         if sig is not None:
             sig.locations[name] = sig.locations.get(name, 0) + 1
             if sub_sig is not None:
                 self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
+        self._credit_switch(m, switch)
 
     def _energy_pairs(self, mains: List[Session]) -> list:
         """(cost, main index, meter, None) for every house session whose energy
@@ -3786,6 +3941,11 @@ def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[
         return out
 
     deepest = [n for n in seen if not any(n in ancestors(m) for m in seen if m != n)]
+    # a switch that saw it says exactly when it runs - one device, and deeper
+    # than any circuit it sits in (the floor mat is in Hiša AND on its thermostat)
+    switched = sorted(n for n in (deepest or seen) if n.startswith(SWITCH_PREFIX))
+    if switched:
+        return switched[0]
     return sorted(deepest or seen)[0]
 
 

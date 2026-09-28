@@ -143,5 +143,25 @@ def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():
     assert len(SiteModel.from_prefs(prefs).devices) == 2
 
 
+
+def test_each_devices_own_inputs_become_links_on_one_list():
+    """One list of inputs, each with what it is linked to (Anze, 2026-09-28:
+    "a single storage with the tags only deciding to which things it
+    connects to"); a link follows its load's name."""
+    migrate_inputs, relink = model.migrate_inputs, model.relink
+    old = {"input_entities": ["sensor.occupancy"], "interval": 5,
+           "device_state_sensors": {"sensor.talno_gretje_energy": ["sensor.floor", "sensor.room"],
+                                    "sensor.boiler_energy": "sensor.floor"}}
+    new = migrate_inputs(old)
+    assert "device_state_sensors" not in new and new["interval"] == 5
+    assert new["input_entities"] == ["sensor.occupancy", "sensor.floor", "sensor.room"]
+    assert new["input_links"] == {"sensor.floor": ["sensor.talno_gretje_energy", "sensor.boiler_energy"],
+                                  "sensor.room": ["sensor.talno_gretje_energy"]}
+    assert migrate_inputs(new) is new                  # nothing left to move
+    named = {**new, "input_links": {"sensor.floor": ["load:Mat", "sensor.boiler_energy"]}}
+    assert relink(named, "Mat", "Talno gretje")["input_links"]["sensor.floor"] == ["load:Talno gretje", "sensor.boiler_energy"]
+    assert relink(named, "Mat", None)["input_links"]["sensor.floor"] == ["sensor.boiler_energy"]
+
+
 if __name__ == "__main__":
     run_main(globals())
