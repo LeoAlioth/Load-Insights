@@ -62,7 +62,7 @@ from .insights.detect import (
     offer_for_naming,
 )
 from .insights.discovery import closest_by_name, match_meter_entities
-from .coordinator import energy_site
+from .insights.model import SiteModel
 
 _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
@@ -119,6 +119,21 @@ NAMING_MIN_WH = 50.0
 # what it can resolve. A pass covers one minute, so the evidence has to be
 # gathered across them or it is never gathered at all.
 AMP_STEP_MEMORY = 600
+
+
+def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
+    """The Energy dashboard's site AS DETECTION READS IT: less anything this
+    integration publishes.
+
+    A detected load's energy sensor can be listed there - the kiln, under
+    the meter it sits in - and the forecasts welcome it like any device. But
+    detection takes every listed device as a meter, and read back as one the
+    kiln's estimate would be fed in as a measurement, with the kiln then
+    detected inside it (Anze, 2026-09-28: "make sure that the generated
+    detected entities do not back feed to any detection as if they were
+    actual measurements")."""
+    own = frozenset(e.entity_id for e in er.async_get(hass).entities.values() if e.platform == DOMAIN)
+    return SiteModel.from_prefs(prefs, ignore=own)
 
 
 class DetectionRunner:

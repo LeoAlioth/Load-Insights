@@ -55,7 +55,7 @@ NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next v
 NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
-from .coordinator import energy_site
+from .insights.model import SiteModel
 
 
 def _grid_fields(defaults: dict) -> dict:
@@ -334,7 +334,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         manager = await async_get_manager(self.hass)
-        site = energy_site(self.hass, manager.data)
+        site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
             return self.async_abort(reason="no_energy_dashboard")
 
@@ -767,7 +767,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         what it will do next. One device per visit; an emptied sensor clears
         that device's mapping."""
         manager = await async_get_manager(self.hass)
-        site = energy_site(self.hass, manager.data)
+        site = SiteModel.from_prefs(manager.data)
         labels = {d.energy: d.label for d in site.devices}
         current = dict(self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS) or {})
         if user_input is not None:
