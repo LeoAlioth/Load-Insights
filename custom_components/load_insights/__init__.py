@@ -1,11 +1,14 @@
 """Load Insights - consumption forecasts from what the Energy dashboard knows."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.debounce import Debouncer
 
 from .const import (
     CONF_NAME,
@@ -18,7 +21,12 @@ from .const import (
 )
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
-from .insights.model import migrate_inputs, relink
+from .insights.model import follow_renames, migrate_inputs, relink
+
+_LOGGER = logging.getLogger(__name__)
+
+# how long renamed entities are gathered before they are followed
+RENAME_SETTLE_S = 5.0
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
@@ -71,6 +79,41 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         if not found:
             raise ServiceValidationError(f"No detected load has id {load_id}")
 
+    # Renamed entities: gathered for a few seconds - a rename tool changes
+    # dozens at once - then followed in one options change per entry, which
+    # reloads it once. Registered here rather than per entry so a rename that
+    # lands while an entry reloads is not missed.
+    pending: dict = {}
+
+    async def _follow() -> None:
+        renames = dict(pending)
+        pending.clear()
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            detection: DetectionRunner | None = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
+            if detection is not None:
+                await detection.async_follow_renames(renames)
+            coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+            if isinstance(coordinator, InsightsCoordinator):
+                await coordinator.async_follow_renames(renames)
+            data, options = follow_renames(dict(entry.data), renames), follow_renames(dict(entry.options), renames)
+            if data != dict(entry.data) or options != dict(entry.options):
+                _LOGGER.info("Following renamed entities in %s: %s", entry.title, renames)
+                hass.config_entries.async_update_entry(entry, data=data, options=options)
+
+    flush = Debouncer(hass, _LOGGER, cooldown=RENAME_SETTLE_S, immediate=False, function=_follow)
+
+    @callback
+    def _renamed(event) -> None:
+        old, new = event.data.get("old_entity_id"), event.data.get("entity_id")
+        if event.data.get("action") != "update" or not old or not new or old == new:
+            return
+        for k, v in list(pending.items()):   # renamed twice before the flush: a to b to c
+            if v == old:
+                pending[k] = new
+        pending[old] = new
+        hass.async_create_task(flush.async_call())
+
+    hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _renamed)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, _refresh)
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
     hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)

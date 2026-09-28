@@ -1,6 +1,7 @@
 """Runs the detector on the recorder's raw states, incrementally."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import datetime, timedelta
@@ -738,6 +739,29 @@ class DetectionRunner:
         if self._unsub:
             self._unsub()
             self._unsub = None
+        # A reload - every options change is one - used to drop whatever was
+        # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
+        # the pending delayed write then landed after the next runner's own.
+        if not self._running:
+            await self._persist(force=True)
+
+    async def async_follow_renames(self, renames: Dict[str, str]) -> None:
+        """Rename entities in what the detector learned - between passes,
+        never under one, and written at once: the options change that follows
+        reloads the entry, and the new runner reads the store."""
+        for _ in range(600):              # a backfill slice takes seconds, not minutes
+            if not self._running:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            _LOGGER.warning("Load detection busy; renames %s not applied to what it learned", renames)
+            return
+        self._running = True
+        try:
+            self.fleet.rename_entities(renames)
+            await self._persist(force=True)
+        finally:
+            self._running = False
 
     @callback
     def _tick(self, _now) -> None:

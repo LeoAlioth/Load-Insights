@@ -2359,5 +2359,22 @@ def test_a_number_that_drives_a_load_is_learned_against_it():
     assert young.strongest_driver() is None
 
 
+
+def test_what_a_switch_and_a_number_taught_follows_a_rename():
+    fleet = D.Fleet()
+    sig = D.Signature(id=1, phases="c", power={"c": 635.0}, duration_s=130.0, pf=None, count=10,
+                      first_seen=T0, last_seen=T0)
+    sig.locations = {D.SWITCH_PREFIX + "climate.t": 6, "Hiša": 10}
+    sig.note_driver("sensor.floor", "d", 20.0, 130.0)
+    fleet.main.signatures.append(sig)
+    fleet.switch_on[D.SWITCH_PREFIX + "climate.t"] = {T0: None}
+    fleet.main.drivers["sensor.floor"] = [(T0, 20.0)]
+    fleet.rename_entities({"climate.t": "climate.termostat", "sensor.floor": "sensor.tla"})
+    assert sig.locations == {D.SWITCH_PREFIX + "climate.termostat": 6, "Hiša": 10}
+    assert list(sig.drivers) == ["sensor.tla"]
+    assert list(fleet.switch_on) == [D.SWITCH_PREFIX + "climate.termostat"]
+    assert list(fleet.main.drivers) == ["sensor.tla"]
+
+
 if __name__ == "__main__":
     run_main(globals())
