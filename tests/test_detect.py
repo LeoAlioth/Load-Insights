@@ -2376,5 +2376,64 @@ def test_what_a_switch_and_a_number_taught_follows_a_rename():
     assert list(fleet.main.drivers) == ["sensor.tla"]
 
 
+
+def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
+    """A washer's heater runs while its cycle phase says Wash, a small share
+    of the day; a fridge runs whatever the washer is doing. Only the heater
+    is tied to the phase, and being tied is what vouches for it (Anze,
+    2026-09-28: "its cycle/sub cycle sensors could help with load detection")."""
+    fleet = D.Fleet()
+    fleet.main.tz_offset_s = 0.0
+    rnd = random.Random(5)
+    t, rows, phase = T0, [], []
+    for day in range(14):
+        day0 = T0 + day * 86400.0
+        phase += [(day0, "Off"), (day0 + 36000.0, "Wash"), (day0 + 37800.0, "Rinse"), (day0 + 40000.0, "Off")]
+    t = T0
+    while t < T0 + 14 * 86400.0:
+        tod = (t - T0) % 86400.0
+        w = 300.0 + rnd.uniform(-3, 3)
+        if 36300.0 <= tod < 37200.0:
+            w += 2000.0                                   # the heater, inside Wash
+        if (t - T0) % 5400.0 < 1500.0:
+            w += 80.0                                     # a fridge, all day
+        rows.append((t, w))
+        t += DT
+    step = 6 * 3600.0
+    a = T0
+    while a < t:
+        b = a + step
+        fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      stages={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                              or [max((p for p in phase if p[0] < a), default=phase[0])]})
+        a = b
+    heater = max(fleet.main.signatures, key=lambda x: sum(x.power.values()) * (x.count >= 10))
+    fridge = max((x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120), key=lambda x: x.count)
+    got = heater.stage_of("sensor.phase")
+    assert got is not None and got[0] == "Wash" and got[1] > 0.9 and got[2] > 10, (got, heater.stages)
+    assert fridge.stage_of("sensor.phase") is None, fridge.stages
+    share = fleet.main.stage_time["sensor.phase"]
+    assert 0.01 < share["Wash"] / sum(share.values()) < 0.03, share
+    back = D.Detector.from_dict(json.loads(json.dumps(fleet.main.to_dict())))
+    assert back.stage_time.keys() == fleet.main.stage_time.keys()
+    assert next(x for x in back.signatures if x.id == heater.id).stage_of("sensor.phase")[0] == "Wash"
+    fleet.rename_entities({"sensor.phase": "sensor.cyclephase"})
+    assert heater.stage_of("sensor.cyclephase")[0] == "Wash" and "sensor.cyclephase" in fleet.main.stage_time
+
+
+
+def test_loads_tied_to_one_setting_are_offered_as_one_device():
+    def tied(sid, setting, value):
+        sig = D.Signature(id=sid, phases="a", power={"a": 100.0 * sid}, duration_s=60.0 * sid, pf=None,
+                          count=20, first_seen=T0, last_seen=T0)
+        for k in range(12):
+            sig.note_stage(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
+        return sig
+    sigs = [tied(1, "sensor.phase", "Wash"), tied(2, "sensor.phase", "Spin"), tied(3, "fan.x", "33 %"),
+            D.Signature(id=4, phases="a", power={"a": 50.0}, duration_s=30.0, pf=None, count=20,
+                        first_seen=T0, last_seen=T0)]
+    assert D.stage_groups(sigs) == [[1, 2]]
+
+
 if __name__ == "__main__":
     run_main(globals())
