@@ -299,6 +299,7 @@ PAIR_MIN_SHARE = 0.3
 # 200w step should just stay unmatched") - except a load settling just after
 # its start. Exploration dials.
 PAIR_PAIRING = 1
+PAIR_HOME = 1                  # ...and a pair's runs prefer the device most of them went to
 STEP_DOWN_GUESS = 0
 SETTLE_SHARE = 0.3
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
@@ -307,6 +308,13 @@ SETTLE_SHARE = 0.3
 # washer's 2 kW -> 400 W -> off one run. Exploration dial.
 JOINT_STOPS = 1
 HELD_DROPS = 8
+# One device never runs twice at once: a rise of a cluster while an older run
+# that started with the same cluster is still open means that older run ended
+# unseen - it is closed after its pair's usual length, or at the new start if
+# that comes first. Left open, the next stop of its kind closed the newer run
+# and the old one ran on for hours (Home's mat: 114 h of overlapping runs).
+# Exploration dial.
+SAME_CLUSTER_ENDS = 1
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -1699,10 +1707,18 @@ class PhaseState:
             return []
         cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
+            ended = []
+            if SAME_CLUSTER_ENDS and cid is not None:
+                for o in [o for o in self.open_edges if o.cluster == cid]:
+                    self.open_edges.remove(o)
+                    usual = self.lib.usual_length(cid)
+                    at = min(since, o.since + usual) if usual else since
+                    self._remember_close(o, at)
+                    ended.append(self._close(o, at, o.now or o.watts, None))
             self.open_edges.append(_Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid))
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
-            return []
+            return ended
         self.stop_cluster = cid
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
         self.stop_cluster = None
@@ -3524,7 +3540,7 @@ class Detector:
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
         key = f"{s.pair[0]}>{s.pair[1]}" if s.pair and None not in s.pair else None
-        if prefer is None and PAIR_PAIRING and key in self.pair_home:
+        if prefer is None and PAIR_PAIRING and PAIR_HOME and key in self.pair_home:
             home = self.pair_home[key]
             prefer = max(home, key=home.get)          # the device IS its pairs
         if prefer is not None:
@@ -3680,6 +3696,16 @@ class Detector:
         acc[2] += lr * lr
         acc[3] += ld
         acc[4] += ld * ld
+
+    def usual_length(self, start: int) -> Optional[float]:
+        """Seconds a run that starts with this cluster usually lasts, over its
+        accepted pairs - None when it has none."""
+        if self._partners is None:
+            self.partners(-1)
+        lens = [(model[2], self.pairs.get(f"{start}>{stop}", [0.0])[0])
+                for stop, starts in self._partners.items() for a, model in starts.items() if a == start]
+        w = sum(n for _, n in lens)
+        return math.exp(sum(ld * n for ld, n in lens) / w) if w else None
 
     def partners(self, stop: int) -> Dict[int, tuple]:
         """rise cluster -> (stop/start ratio, its spread, mean log seconds, its
