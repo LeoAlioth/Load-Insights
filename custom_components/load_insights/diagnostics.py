@@ -101,6 +101,46 @@ def _power_specs(specs) -> list:
         for s in specs
     ]
 
+def _detection(runner) -> dict:
+    """Detection's side of the picture - independent of the forecast."""
+    det = runner.detector
+    parents = runner.parents
+    return {
+        "enabled": runner.enabled,
+        "config": _jsonable(runner.config),
+        "meters": _jsonable(runner.submeters),
+        "solar": _jsonable(runner.solar),     # what a cloud is checked against
+        # false where the reading does not include the array at all, so
+        # no step of it is ever put down to the sun
+        "solar_shows_in_meter": dict(runner.pv_visible),
+        "processed_until": _jsonable(runner.last_processed),
+        "caught_up": runner.caught_up,
+        "samples_read": runner.samples_read,
+        # per phase: whether the grid reading was added to the load one
+        "layout": dict(runner.layout),
+        "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
+                       # the loads believed to be running, and what each
+                       # is still drawing: an edge that never pairs off
+                       # is the thing to look at when a load goes missing
+                       "running": [{"since": _jsonable(o.since), "watts": round(o.watts),
+                                    "levels": len(o.levels)} for o in st.open_edges]}
+                   for p, st in det.phases.items()},
+        "signatures": [
+            {**_jsonable(sig.to_dict()),
+             "location": most_specific(sig.locations, sig.count, parents),
+             "where": describe_location(sig.locations, sig.count, parents, sig.phases),
+             "where_confidence": location_confidence(sig.locations, sig.count, parents),
+             "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict()}
+            for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
+        ],
+        "recent_sessions": det.recent[-60:],
+        "submeter_signatures": {
+            name: [_jsonable(s.to_dict()) for s in d.signatures]
+            for name, d in runner.fleet.subs.items()
+        },
+    }
+
+
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """The whole picture, for a bug report or a question about a number."""
     coordinator: InsightsCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
@@ -112,7 +152,12 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
                    "version": entry.version, "minor_version": getattr(entry, "minor_version", None)},
     }
     if data is None:
+        # Setup no longer waits for the first forecast (2026-09-29), so this
+        # is the first minute after every reload; detection has its own state
+        # and is dumped regardless.
         out["state"] = "no data yet - the first refresh has not completed"
+        if runner is not None:
+            out["detection"] = _detection(runner)
         return out
 
     site = data.site
@@ -162,40 +207,5 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     }
 
     if runner is not None:
-        det = runner.detector
-        parents = runner.parents
-        out["detection"] = {
-            "enabled": runner.enabled,
-            "config": _jsonable(runner.config),
-            "meters": _jsonable(runner.submeters),
-            "solar": _jsonable(runner.solar),     # what a cloud is checked against
-            # false where the reading does not include the array at all, so
-            # no step of it is ever put down to the sun
-            "solar_shows_in_meter": dict(runner.pv_visible),
-            "processed_until": _jsonable(runner.last_processed),
-            "caught_up": runner.caught_up,
-            "samples_read": runner.samples_read,
-            # per phase: whether the grid reading was added to the load one
-            "layout": dict(runner.layout),
-            "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
-                           # the loads believed to be running, and what each
-                           # is still drawing: an edge that never pairs off
-                           # is the thing to look at when a load goes missing
-                           "running": [{"since": _jsonable(o.since), "watts": round(o.watts),
-                                        "levels": len(o.levels)} for o in st.open_edges]}
-                       for p, st in det.phases.items()},
-            "signatures": [
-                {**_jsonable(sig.to_dict()),
-                 "location": most_specific(sig.locations, sig.count, parents),
-                 "where": describe_location(sig.locations, sig.count, parents, sig.phases),
-                 "where_confidence": location_confidence(sig.locations, sig.count, parents),
-                 "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict()}
-                for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
-            ],
-            "recent_sessions": det.recent[-60:],
-            "submeter_signatures": {
-                name: [_jsonable(s.to_dict()) for s in d.signatures]
-                for name, d in runner.fleet.subs.items()
-            },
-        }
+        out["detection"] = _detection(runner)
     return out
