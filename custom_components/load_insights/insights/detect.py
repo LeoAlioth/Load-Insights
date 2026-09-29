@@ -158,26 +158,8 @@ STEP_AT_HALFWAY = 1
 # also takes the kiln's full-size sessions 305 -> 337 and its spurious ladder
 # 130 -> 92, and on held-out days Home 76.7 -> 77.6 % purity, Kozolec's
 # hidrofor 65 -> 75. It does NOT fix the single-leg problem by itself -
-# see MATCHED_STOP_SAMPLES (2026-09-23). 0 keeps the running mean.
+# the pairing (2026-09-23). 0 keeps the running mean.
 INTERVAL_PERCENTILE = 0.5
-# A step DOWN the size of a load already running is a stop its own start
-# vouches for, and may be accepted on less than SUSTAIN demands of a new,
-# unexplained level. Home's kiln is on ~48 s and off only ~9 s - one or two
-# readings - so the strict guard swallowed its off-gaps, glued consecutive
-# pulses into one long session on whichever leg rejected the gap, and that leg
-# then could not merge with the other: 69 of 71 single-level long legs had
-# real off-gaps inside them (2026-09-23).
-#
-# OFF, deliberately. Swept as a global rule it works on the kiln - full-size
-# sessions 337 -> 364-381 against 441 real pulses, single-leg 154 -> 114 -
-# and costs every load that DIPS without stopping: Kozolec's Scala2 hidrofor,
-# which ramps, 140 -> 106, and at one reading Home's NASA station, which
-# wanders, 114 -> 65. A drop the size of an open edge means "stopped" for a
-# switched load and "dipped" for a ramping one. It needs corroboration - the
-# other leg of a multi-phase start stopping too - before it can be switched
-# on. See "Sessions filed on one leg" in AGENTS.md for the plan.
-MATCHED_STOP_SAMPLES = 0
-MATCHED_STOP_INTERVALS = 0.0
 # The same relaxation, but only for a leg whose partner on another phase - a
 # balanced edge that started with it - is stopping at the same moment. See
 # Detector._corroborate. One reading is enough: the other leg is the evidence.
@@ -300,7 +282,6 @@ PAIR_MIN_SHARE = 0.3
 # its start. Exploration dials.
 PAIR_PAIRING = 1
 PAIR_HOME = 1                  # ...and a pair's runs prefer the device most of them went to
-STEP_DOWN_GUESS = 0
 SETTLE_SHARE = 0.3
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
@@ -315,14 +296,6 @@ HELD_DROPS = 8
 # and the old one ran on for hours (Home's mat: 114 h of overlapping runs).
 # Exploration dial.
 SAME_CLUSTER_ENDS = 1
-# ...and an open run far past anything its pair has done - longer than the
-# pair's usual length times e^(PAIR_OVERDUE_SD sd) and PAIR_OVERDUE_MIN x its
-# median - ended unseen: it is closed at its usual length. The old age limit
-# (ORPHAN_MARGIN) judged by size alone and cut real long loads of a size others
-# run briefly; this judges each run by its own pair. Exploration dial.
-PAIR_OVERDUE = 2                # 0 off; 1 by the lengths' spread; 2 by twice the longest run the pair has closed
-PAIR_OVERDUE_SD = 3.0
-PAIR_OVERDUE_MIN = 4.0
 # B2 - DEVICES: edge clusters linked by how they come together - a pair's
 # rise and fall, the legs of one run on several phases (the kiln's A and C),
 # one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
@@ -334,9 +307,8 @@ PAIR_OVERDUE_MIN = 4.0
 # in grouping runs into devices or edges into runs (Anze, 2026-09-29: "much
 # less important than the plain electrical properties ... I don't think using
 # it for grouping is doing us any good"). NASA's computers never switch off and
-# Home's pump runs seconds or hours. 0 takes run length out of matching,
-# merging and pairing, and turns the overdue close off. Exploration dial.
-GROUP_BY_TIME = 0
+# Home's pump runs seconds or hours; nothing matches, merges or pairs on it,
+# and no run is closed for having run long.
 # A run that started with an input's change - the mat with its thermostat going
 # on - belongs to a device that follows that input: when the input next changes
 # back, the run's stop is due at that moment by the input's lag, and if no fall
@@ -434,11 +406,6 @@ INRUSH_SAMPLES = 2.0
 # "flat". Surge and bump are opposite observations and never share a
 # signature; a flat start - a surge the samples missed, often - may join either.
 START_SHAPE_SPLIT = 1
-# Duration decides between signatures that both fit, not only whether one
-# does: Kozolec's two fridges draw alike and one runs 23 minutes, the other
-# 33, and a run whose start said nothing went to whichever matched power a
-# watt better. 0 is off.
-MATCH_DURATION_SCORE = 0
 SHAPE_BUMP_RATIO = 1.15
 SHAPE_EARLY_S = 15.0
 SHAPE_SETTLED_S = 80.0
@@ -468,25 +435,6 @@ MATCH_POWER_REL = 0.10
 # spread, and admitting some of it lets its fragments meet (2026-09-23).
 ALIKE_MAD_SHARE = 0.10
 MATCH_DURATION_FACTOR = 3.0
-# Duration CAN be part of a load's fingerprint and is not necessarily one
-# (Anze, 2026-09-22). A kettle boils the same volume every time and always
-# takes about two minutes; a thermostat runs for twenty seconds or for
-# twenty minutes depending how cold the tank is. Measured against the
-# submeters at Kozolec, the boiler's runs spread by 0.12 of their median and
-# the pressure pump's by 0.48 - so whether duration identifies a load is
-# something the load itself says, and the library already records it as
-# duration_mad. A signature that has shown it keeps a clock is held to
-# MATCH_DURATION_FACTOR; one that has shown it does not gets only the loose
-# bound below, which exists to stop a minute-long load joining an
-# afternoon-long one rather than to tell two appliances apart.
-LOOSE_DURATION_FACTOR = 30.0
-# Before this many sightings a signature has not said anything about its own
-# duration yet, and judging it on one or two would freeze whatever the first
-# runs happened to be - which is the failure the whole change is about, since
-# a signature that enforces a duration it has not earned never absorbs the
-# runs that would have taught it otherwise.
-DURATION_IDENTITY_COUNT = 4
-DURATION_IDENTITY_SPREAD = 0.35
 # Two METERS may disagree about a run's length far more than two sightings of
 # one load may: a 66-second boiler cycle is 66 seconds on its own meter and
 # often minutes on a busy main one, where the down-step pairs with a
@@ -536,10 +484,6 @@ PHASE_MAP_MIN_VOTES = 30
 # a session partner is rarely there in time, and when it is, the house's own
 # choice agrees with it all but 65 times in 1338.
 SUB_OVERRIDE = 1
-# ...and takes the sub-meter's POWER as well, when that meter is the quieter
-# one and measured the run with at least as many readings. OFF: measured
-# slightly worse (Home's NASA station held out 26 -> 22).
-SUB_POWER = 0
 # A house session whose ENERGY a device meter accounts for - the meter too slow
 # or too coarse to have a session of its own for it - joins the house
 # signature most of that meter's sessions went to, when it fits there. Only
@@ -563,12 +507,6 @@ METER_PHASES_MIN = 20
 # starts and stops within seconds of the thermostat's heating on 11 of 12 runs,
 # and was named by hand from exactly that (Anze, 2026-09-28).
 SWITCH_PREFIX = "switch:"
-# A session filed while one of those vouches for it joins the house signature
-# most of that switch's sessions went to, when it fits - what a one-device
-# meter does (SUB_METER_IDENTITY). 0 is off, and off it ships: on the floor
-# mat it kept 1429 of 1701 heating runs together against 1500 without it,
-# purity 71.9 against 71.7 % (Home, 18-27 Sep) - the credit alone places it.
-SWITCH_IDENTITY = 0
 # A load placed at a switch is powered through it - Home's floor mat through
 # its thermostat's relay - so a run the switch was off for throughout cannot
 # be it, however well its size fits: that run goes to the next signature that
@@ -643,11 +581,6 @@ HOURLY_KEEP_S = 11 * 86400.0
 # that device: its runs being loose about time counts no more against it.
 # 0 is off.
 INPUT_EVIDENCE = 1
-# Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
-# 3EM - may decide a signature too, or only a meter that holds one device.
-# Off: one-device meters only was better at Home (79.1 / 80.7 % against
-# 78.5 / 80.5) and identical everywhere else.
-SUB_IDENTITY_CIRCUITS = 0
 # How far back to look for what the device was drawing ANYWAY. Capped,
 # because a session lasting hours would otherwise want hours of readings
 # before it - further back than the tail we keep - and the longest sessions
@@ -1570,9 +1503,9 @@ class PhaseState:
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
-        due = self._overdue(ts) if GROUP_BY_TIME and PAIR_OVERDUE and self.lib is not None and self.open_edges else []
+        due = []
         if INPUT_ENDS and self.lib is not None and self.open_edges:
-            due += self._input_ended(ts)
+            due = self._input_ended(ts)
         return due + self._process(ts, w, q, pv, held)
 
     def _input_ended(self, ts: float) -> List[Session]:
@@ -1585,25 +1518,6 @@ class PhaseState:
             at = self.lib.input_end(o.cluster, o.since, ts)
             if at is not None:
                 self.open_edges.remove(o)
-                self._remember_close(o, at)
-                out.append(self._close(o, at, o.now or o.watts, None))
-        return out
-
-    def _overdue(self, ts: float) -> List[Session]:
-        """Close open runs far past their pair's lengths - see PAIR_OVERDUE."""
-        out = []
-        for o in list(self.open_edges):
-            if o.cluster is None:
-                continue
-            spread = self.lib.length_spread(o.cluster)
-            if spread is None:
-                continue
-            usual, sd, longest = spread
-            limit = (2.0 * longest if PAIR_OVERDUE == 2 and longest else
-                     usual * math.exp(PAIR_OVERDUE_SD * sd))
-            if ts - o.since > max(limit, PAIR_OVERDUE_MIN * usual):
-                self.open_edges.remove(o)
-                at = o.since + usual
                 self._remember_close(o, at)
                 out.append(self._close(o, at, o.now or o.watts, None))
         return out
@@ -1741,10 +1655,6 @@ class PhaseState:
             # another leg of the same load is stopping at the same moment
             need = CORROBORATED_STOP_SAMPLES
             sustain = CORROBORATED_STOP_INTERVALS * self.interval if self.interval else 0.0
-        elif MATCHED_STOP_SAMPLES and self._matched_stop():
-            # a stop the open start already vouches for - see MATCHED_STOP_SAMPLES
-            need = MATCHED_STOP_SAMPLES
-            sustain = MATCHED_STOP_INTERVALS * self.interval if self.interval else 0.0
         if len(self.pending) < need or (ts - self.pending[0][0]) < sustain:
             return []
         # How long the phase has been away is timed from the FIRST reading that
@@ -1846,20 +1756,6 @@ class PhaseState:
         while k > 0 and abs(self.pending[k - 1][1] - w) <= tol:
             k -= 1
         return self.pending[k:] if k else self.pending
-
-    def _matched_edge(self):
-        """The open edge whose size what is pending has dropped by, if any."""
-        if self.level is None or not self.open_edges:
-            return None
-        drop = self.level - _median([x for _, x, _, _ in self._held()])
-        if drop <= self.noise_at(self.level):
-            return None
-        return next((o for o in reversed(self.open_edges)
-                     if abs(o.watts - drop) <= self._tol(o.watts, drop)), None)
-
-    def _matched_stop(self) -> bool:
-        """Is what is pending a DROP the size of a load already running?"""
-        return self._matched_edge() is not None
 
     def _corroborated_stop(self, ts: float) -> bool:
         """...and does another leg of the same load say it is stopping too?
@@ -2027,11 +1923,11 @@ class PhaseState:
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if o.watts - watts > self._tol(o.watts, watts) and (
-                    STEP_DOWN_GUESS or (at - o.since <= SHAPE_SETTLED_S and watts <= SETTLE_SHARE * o.watts)):
+                    at - o.since <= SHAPE_SETTLED_S and watts <= SETTLE_SHARE * o.watts):
                 o.watts -= watts
                 o.levels.append((at, o.watts))
                 return []
-        if JOINT_STOPS and not STEP_DOWN_GUESS:
+        if JOINT_STOPS:
             joint = self._joint_stop(at, watts, var)
             if joint:
                 return joint
@@ -2059,7 +1955,7 @@ class PhaseState:
                 o = self.open_edges.pop(i)
                 out.append(self._close(o, at, o.watts, None))
             return sorted(out, key=lambda x: x.start)
-        if JOINT_STOPS and not STEP_DOWN_GUESS and self.open_edges:
+        if JOINT_STOPS and self.open_edges:
             self.held_drops.append((at, watts, self.stop_cluster))
             del self.held_drops[:-HELD_DROPS]
         if not self.open_edges:
@@ -2111,14 +2007,13 @@ class PhaseState:
             model = partners.get(o.cluster)
             if model is None:
                 continue
-            ratio, ratio_sd, log_dur, log_dur_sd = model
+            ratio, ratio_sd = model[0], model[1]
             expect = o.watts * ratio
             tol = self._tol(expect, watts) + 2.0 * ratio_sd * o.watts
             gap = abs(watts - expect)
             if gap > tol:
                 continue
-            score = gap / tol + (0.5 * abs(math.log(max(at - o.since, 1.0)) - log_dur) / max(log_dur_sd, 0.3)
-                                 if GROUP_BY_TIME else 0.0)
+            score = gap / tol
             if best is None or score <= best[0]:
                 best = (score, i)
         if best is None:
@@ -2309,14 +2204,6 @@ class Signature:
             if abs(mine - theirs) > tol:
                 return None
             score *= 1.0 - abs(mine - theirs) / (2 * tol)
-        ratio = max(s.duration_s, 1.0) / max(self.duration_s, 1.0)
-        factor = self.duration_factor
-        if GROUP_BY_TIME and (ratio > factor or ratio < 1.0 / factor):
-            return None
-        if GROUP_BY_TIME and MATCH_DURATION_SCORE:
-            # between two that fit, the one it lasted about as long as - see
-            # MATCH_DURATION_SCORE
-            score *= 1.0 - 0.5 * abs(math.log(ratio)) / math.log(factor)
         if self.pf is not None and s.pf is not None and \
                 abs(self.pf - s.pf) > pf_tolerance(self.pf_mad, s.pf_mad):
             return None
@@ -2381,10 +2268,6 @@ class Signature:
         after = ((self.power_mad + abs(mine_w - mid_w) / legs) * a
                  + (other.power_mad + abs(theirs_w - mid_w) / legs) * b) / (a + b)
         if after > spread:
-            return False
-        ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
-        factor = min(self.duration_factor, other.duration_factor)
-        if GROUP_BY_TIME and (ratio > factor or ratio < 1.0 / factor):
             return False
         if self.pf is not None and other.pf is not None and \
                 abs(self.pf - other.pf) > pf_tolerance(self.pf_mad, other.pf_mad):
@@ -2764,25 +2647,6 @@ class Signature:
         if self.count < 2 or span < 86400.0:
             return None
         return (self.count - 1) * 86400.0 / span
-
-    @property
-    def keeps_time(self) -> bool:
-        """Has this load shown that its duration is part of what it is?"""
-        if self.count < DURATION_IDENTITY_COUNT:
-            return False
-        return self.duration_mad / max(self.duration_s, 1.0) <= DURATION_IDENTITY_SPREAD
-
-    @property
-    def duration_factor(self) -> float:
-        """How far a sighting's duration may stray and still be this load: 3x
-        for a load that keeps time, 30x for one that does not.
-
-        It looks like a cliff that ought to be continuous, and was swept as one
-        - exp(z * measured spread), held between the same bounds, z from 2 to 6
-        at both sites (2026-09-23). Tight values lose clearly (Home's workshop
-        boiler halves, Kozolec's hidrofor 142 -> 99) and loose ones converge
-        back to what the cliff already does. The cliff measures as right."""
-        return MATCH_DURATION_FACTOR if self.keeps_time else LOOSE_DURATION_FACTOR
 
     @property
     def evidence(self) -> float:
@@ -3408,7 +3272,6 @@ class Detector:
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
     _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
     _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
-    _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
@@ -3437,7 +3300,7 @@ class Detector:
         # as of the same moment rather than the end of the previous batch,
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
-        self._partners, self._learned, self._spreads = None, None, None
+        self._partners, self._learned = None, None
         self._devices, self._device_home, self._by_id, self._windows = None, None, None, None
         self._kinds = None
         for ph, st in self.phases.items():
@@ -3906,26 +3769,6 @@ class Detector:
                     due = ts[j] - lag
                     return due if now > due + half else None
         return None
-
-    def length_spread(self, start: int) -> Optional[Tuple[float, float, float]]:
-        """(usual seconds, spread of their log, the longest) of runs that
-        start with this cluster, over its accepted pairs - None when it has
-        none."""
-        if self._partners is None:
-            self.partners(-1)
-        if self._spreads is None:
-            rows: Dict[int, list] = {}
-            for stop, starts in self._partners.items():
-                for a, model in starts.items():
-                    acc = self.pairs.get(f"{a}>{stop}", [0.0])
-                    rows.setdefault(a, []).append((model[2], model[3], acc[0], acc[5] if len(acc) > 5 else 0.0))
-            self._spreads = {}
-            for a, rs in rows.items():
-                w = sum(n for _, _, n, _ in rs)
-                if w:
-                    self._spreads[a] = (math.exp(sum(ld * n for ld, _, n, _ in rs) / w),
-                                        sum(sd * n for _, sd, n, _ in rs) / w, max(m for *_, m in rs))
-        return self._spreads.get(start)
 
     def usual_length(self, start: int) -> Optional[float]:
         """Seconds a run that starts with this cluster usually lasts, over its
@@ -4484,8 +4327,7 @@ class Fleet:
             name = by_energy.get(mi)
             switch = self._switch_for(m, main_iv) if self.switch_on else None
             if name is None:
-                prefer = self._meter_home(switch) if switch is not None and SWITCH_IDENTITY else None
-                self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
+                self._file_main(m, avoid=self._switched_off(m, main_iv))
                 self._credit_switch(m, switch)
                 self.pending_main.append(m)          # placed later, as ever
                 continue
@@ -4730,21 +4572,12 @@ class Fleet:
         det = self.subs.get(name)
         mp = {} if self.agnostic.get(name, False) else self.phase_map(name)
         own = _relabel(s, mp)
-        if SUB_POWER and det is not None and own.samples >= m.samples > 0:
-            quiet = max((st.noise for st in det.phases.values() if st.baseline is not None), default=None)
-            loud = max((self.main.phases[p].noise for p in m.phases if p in self.main.phases), default=None)
-            got, had = sum(own.power_by_phase().values()), sum(m.power_by_phase().values())
-            if quiet is not None and loud is not None and quiet < loud and had > 0 and got > 0:
-                k = got / had
-                m.levels = {p: [(ts, w * k) for ts, w in lv] for p, lv in m.levels.items()}
         sub_sig = det.signature_of(s) if det is not None else None
         prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
-        if not SUB_IDENTITY_CIRCUITS and not self._one_device(name):
+        if not self._one_device(name):  # a circuit meter holds many loads: its sessions do not decide
             prefer = None
         main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
         switch = self._switch_for(m, main_iv) if self.switch_on else None
-        if prefer is None and switch is not None and SWITCH_IDENTITY:
-            prefer = self._meter_home(switch)
         self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
         sig = self.main.signature_of(m)
         if sig is not None:

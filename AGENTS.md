@@ -215,7 +215,6 @@ pulses the grid meter itself shows in them.
 | `SUSTAIN_AGREE_REL` | 0.15 | ...or within this share of the step they are making | ratio | 0–0.25 | swept 0 / 0.1 / 0.15 / 0.25 on the kiln: 0 lost pulses (345 full-size) because phase A's off readings wander 19 W under load; 0.1-0.25 all ~395. 0.15 is the pairing tolerance, and the best for Kozolec |
 | `SUSTAIN_AGREE_MAX_INTERVALS` | 12 | after this many intervals of readings that never agree, the old median decides - a wandering load | count | 3–∞ | swept 3 / 6 / 12 / 24 / ∞: flat from 12 up (Kozolec identical 12-∞), so it barely binds; kept as a safety net |
 | `STEP_AT_HALFWAY` | **1** | a step is dated at the first reading more than half-way to the new level, not the first that left the old one | switch | — | **shipped (gen 13).** Kiln single-leg 141 → 118, main signature x335 → x384; hidrofor held out 213 → 220; workshop boiler held out 29 → 38; Kozolec's Scala2 held out 67 → 53 (it ramps). The kiln's LENGTHS were already right (42.0 s against 42.0 s off the grid meter) || `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
-| `MATCHED_STOP_SAMPLES` / `_INTERVALS` | **0** (off) / 0.0 | a drop the size of an open edge may pass on fewer readings than a new level | count | 1–2 / 0–1 | **swept, not shipped.** Helps the kiln (single-leg 154 → 114) but costs ramping and wandering loads (Kozolec's Scala2 140 → 106). Awaiting cross-leg corroboration - see the single-leg plan |
 | `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
 | `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
 | `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
@@ -256,9 +255,6 @@ pulses the grid meter itself shows in them.
 | `MATCH_POWER_REL` | 0.10 | power tolerance for a session to match a signature | ratio | 0.05–0.25 | not tested |
 | `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' measured spread that may widen merge admission | ratio | 0–0.20 (above 0.20 the anti-walk guarantee breaks) | **swept.** On the template path it recovered Home's NASA station 22 → 35; on the production path with phantoms removed it does nothing at Home (0, 0.10 and 0.15 identical) - it was compensating for phantom fragmentation. Still positive at Kozolec on held-out days (hidrofor 58 → 65), where nothing is summed. Kept |
 | `MATCH_DURATION_FACTOR` | 3.0 | duration tolerance for a load that keeps time | ratio | 1.5–6 | not tested |
-| `LOOSE_DURATION_FACTOR` | 30.0 | duration tolerance for one that does not | ratio | 5–100 | the 3× → 30× switch looks like a cliff and was **swept as a continuous tolerance** (`exp(z × measured spread)`, z 2–6, at both sites): tight values lose clearly (Home's workshop boiler halves, Kozolec's hidrofor 142 → 99), loose ones converge back to the cliff. The cliff measures as right; the dial was removed |
-| `DURATION_IDENTITY_COUNT` | 4 | sightings before a signature's duration can identify it | count | 2–10 | not tested |
-| `DURATION_IDENTITY_SPREAD` | 0.35 | `duration_mad / duration` below which duration identifies the load | ratio | 0.1–0.6 | not tested |
 | `MATCH_PF_TOL` | 0.15 | power-factor tolerance, now widened by both sides' `pf_mad` | ratio | 0.05–0.3 | not swept; the `pf_mad` widening replaced a hard gate and took Kozolec 86 → 30 signatures |
 | `ABSORB_WINDOW` | 100 | caps the weight of history in a signature's running means | budget | 20–500 | not tested (Anze chose 100 over 50) |
 
@@ -284,7 +280,6 @@ pulses the grid meter itself shows in them.
 | `SUB_METER_IDENTITY` / `SUB_DEVICE_SHARE` | **1** / 0.5 | a session whose ENERGY a one-device meter accounts for joins the house signature most of that meter's sessions went to, when it fits; one device = its own library has ≥ this share in one signature | switch / ratio | 0.4–0.8 | almost all of the gain above; share not swept (hidrofor plug 99 %, Hiša 55 %) |
 | `SAG_CLOSE` | **1** | a load running alone is followed as it sags, and a stop may close it at that size as well as at its start's | switch | — | **benched, shipped (2026-09-28).** Kozolec's fridges (the new `fridge` bench, 252 runs off the house reading): caught 125 → 216, right length (±25 %) 71 → 153; Kozolec purity 98.2 → 98.3 %, wconc 92.4 → 92.6 %; Home purity 77.4 → 77.6 %, wconc 55.5 → 54.9 % (Hidrofor 717 → 712 of ~1200); kiln full-size 410 → 412, single-leg 112 → 104, top signature x397 → x387; pump clean 831 → 830 |
 | `METER_PHASES_MIN` | 20 | a one-device meter takes only house sessions on the phases it has been credited this many sightings of; fewer, and it takes anything | count | 10–50 | **benched, no change**: on the history to 22 Sep, on or off gave identical placements and scores at both sites (Home purity 77.4 %, wconc 55.5 %; one Blaževa Soba credit 56 → 55). The misplacements it stops - Hidrofor credited an A+B and a B load - came on 25 Sep, after that history; not swept |
-| `SWITCH_IDENTITY` | **0** | a session a switch vouches for joins the signature most of that switch's sessions went to | switch | — | **benched, off (2026-09-28).** Home 18-27 Sep with `climate.termostat_kopalnica` (hvac_action) as a switch, 2094 heating runs, 1701 filed at the moment: on, 1429 in the mat's signature, purity 71.9 %, wconc 31.1 %; off, 1500, purity 71.7 %, wconc 31.1 % - the same as with no switch at all. Off, the credit alone places the mat's signature (635 W, 1348 of 1896 credited) at the thermostat |
 | `SWITCH_END_SHARE` | 0.25 | a switch's stop may miss the session's by this share of the run | share | — | set from the mat's edges, not swept: start 3-9 s after the heating (5-95 %), stop within 25 % for 1243 of 1335 |
 | `SWITCH_MEMORY_S` | 4 h | how long a switch's on-periods and a number's readings are kept, counted from the oldest reading a pass brings | s | — | **a fix, benched**: counted from the pass's END, a six-hour backfill slice had lost its first two hours' switch-ons before filing them - 462 of 1232 fitting mat runs uncredited, and the mat's signature short of the half that places it (762 of 1738). Counted from its start: every one credited |
 | `DRIVER_MIN_RUNS` / `DRIVER_MIN_R2` | 30 / 0.25 | a number is believed about a load's run length (or gap) once the load has this many runs and the number explains this share of their spread; then only the unexplained spread counts against its tightness | count / r² | — | **benched, no change**: Kozolec 8-27 Sep with `sensor.apartma_t_h_temperature` and `sensor.weather_station_temperature` - the fridges' signatures (#1 x307, #3 x227, each holding runs of both fridges) learn r² 0.00-0.05, nowhere near believed; fridge bench and score identical (purity 98.3 %, wconc 92.6 %). Only the synthetic test shows it working (+4 %/°C, r² 1.00). Not swept |
@@ -293,14 +288,11 @@ pulses the grid meter itself shows in them.
 | `INPUT_EVIDENCE` | **1** | a load tied to a value of a setting counts as tight about time (evidence's duration term raised to its share) | switch | — | **benched, no change**: scores identical on or off; evidence of the two tied loads 0.72 → 0.77 and 0.50 → 0.65, none newly over the naming bar |
 | `START_SHAPE_SPLIT` | **1** | a run's start - "surge" (see `INRUSH_RATIO`), "bump" (`SHAPE_BUMP_RATIO` 1.15 of where it settled `SHAPE_SETTLED_S` 80 s in, measured `SHAPE_EARLY_S` 15 s in) or "flat" - and surge and bump never share a signature; a signature takes the shape most of its runs show (`SHAPE_MIN_RUNS` 1, `SHAPE_DOMINANCE` 1.5) | switch | — | **benched, shipped (2026-09-29).** Kozolec 8-28 Sep, fridge bench (261 runs off the house reading; A surges, B bumps): fridge purity - each signature's majority kind over its A/B runs - 56 → 73 %; the detector reads A as surge 69/73, B as bump 53/93 (flat 37). Kozolec purity 98.1 → 98.3 %, wconc 93.9 % both. Home 18-27 Sep: purity 63.7 → 63.8 %, wconc 29.7 → 29.8 %; kiln and pump identical. A first try asking for a clear majority first (3 runs, 4:1) never engaged: 51 A and 63 B in one signature |
 | `SHAPE_TOGETHER_RUNS` | 6 | two signatures that start oppositely merge after all if each has this many remembered runs over the same stretch and none overlapped - one device never runs twice at once | runs | — | **benched**: without it the split cost Home wconc 29.7 → 28.2 % and the office plug's concentration 19 → 12 % (it starts both ways); with it Home is back to 29.8 % and 19 %, while the fridges - which do run together - keep 73 % purity (81 % without it) |
-| `MATCH_DURATION_SCORE` | **0** | duration also scores between signatures that both fit | switch | — | **benched, off**: fridge purity 81 → 82 %, Kozolec signatures 39 → 45, purity 98.3 → 98.2 % - not worth the fragmentation |
 | `INPUT_SPLIT` (`INPUT_RARE_SHARE` 0.25, `INPUT_SPLIT_MIN_TIME_S` 1 d, `INPUT_SPLIT_LIFT` 3, `INPUT_MIN_EPISODES` 3, `INPUT_MIN_COVERAGE` 0.5) | **1** | a run made while a setting holds a rare value joins only signatures born in it; one born by chance goes back into an alike twin (pair lift < 3) or turns ordinary once it has run in under half of the value's episodes since its birth (at least 3) | switch | — | **benched, shipped (2026-09-29).** Home 18-27 Sep with the Sock Eater's phase, state and sub-phase: purity 63.8 → 65.4 %, wconc 29.8 → 30.5 % (office plug 19 → 16 %); kiln and pump benches identical (no washer there). Judged by runs alone, the kiln firing through one afternoon's washing split into Wash/Rinse/Spin/Dry signatures (a burst read as 7× chance) and the floor mat grew a Delayed Start one; by episodes they go back. Tied now: 119 W A+C in Rinse, 61 W C in Dry, 98 W B in End Of Cycle. The heater (~2 kW on A, 2-60 min, in wash AND dry) scatters into one- and two-run signatures and does not tie on 13 washes |
 | `HOLD_MIN_INTERVAL_S` / `HOLD_SUSTAIN_S` | 20 s / 30 s | on a meter this slow in a steady state (a Shelly heartbeating once a minute, a Zigbee plug reporting on change), a pending change counts as having held until the next reading, and holding 30 s is enough | s | — | **benched, shipped (2026-09-29).** Kozolec's IR panel meter alone: 13 runs of 164 min → 46 of 48 min (its readings: 52 runs, mean 40 min, off 2.4 min between); the house's ~500 W signature credited to the panel 8 → 27 of 63; the Boiler meter's library 132 runs of 36 min at 937 W (pulses merged) → 1467 of 3 min at 1906 W (its element: 1546 pulses of ~1 min at 1.9 kW). Kozolec purity 98.3 %, wconc 93.9 → 94.0 %; Home 63.8/29.8 → 63.9/29.6 % (production meters 64.1/29.1 → 64.1/29.2 %); kiln, pump, fridges identical. The Shelly needs no change: it reports each switch within 1-4 s |
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour, for backfilling a newly named load's statistics | s | — | not a detector dial; sized to the 10-day backfill |
 | `EDGE_LAG_REACH_S` / `EDGE_LAG_BIN_S` / `EDGE_LAG_MIN` / `EDGE_WINDOW_DEFAULT_S` | 60 s / 2 s / 50 / 10 s | how far either side of an edge an input's change is looked for, the lag histogram's bins, the changes seen before a lag is believed (`lag_window`: a peak 4x the even spread), and the window before that | s | — | not swept; Home's thermostat learned (-11, 0) s from 17k edges, the mat's edges at -5.8 +- 1.7 s |
 | `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction | count | — | not swept; Home used ~400 in all |
-| `SUB_IDENTITY_CIRCUITS` | 0 | whether a circuit meter (many loads, e.g. Hiša) may decide too | switch | — | off was better at Home (79.1 / 80.7 vs 78.5 / 80.5 %), identical elsewhere |
-| `SUB_POWER` | 0 (off) | take the quieter sub-meter's power for a matched session | switch | — | slightly worse (NASA held out 26 → 22) |
 
 ### Suggesting one device across settings
 
@@ -471,7 +463,7 @@ instant (+0.0 s) but one runs on - median 72 s past its partner, up to 10 min
 
 Tried: merge window 8-40 s and interval-based - no effect. Open-edge cap 4-40
 - no effect on single-leg. **Matched-stop rule** (a drop the size of an open
-edge needs less sustain; `MATCHED_STOP_SAMPLES`, off) - kiln full-size
+edge needs less sustain; removed 2026-09-30) - kiln full-size
 337 -> 364-381, single-leg 154 -> 114, but Kozolec's ramping Scala2 hidrofor
 140 -> 106 and, at one reading, Home's wandering NASA station 114 -> 65. It
 cannot tell a switched load stopping from a ramping one dipping.
@@ -737,6 +729,29 @@ Don't re-chase these; each cost real time.
 - **A varying load looks like an averaging meter** to a naive test. Require
   stable levels either side of a switch before calling a sample "blended", or
   a computer's power trace masquerades as instrument behaviour.
+- **Dials that were off, removed with their code (2026-09-30)** - each was
+  benched and lost or tied; kept only as these lines:
+  `MATCHED_STOP_SAMPLES` (a drop the size of an open edge on fewer readings:
+  kiln single-leg 154 -> 114 but Kozolec's ramping Scala2 140 -> 106);
+  `SWITCH_IDENTITY` (a switch's runs join its usual signature: 71.9 vs 71.7 %
+  purity - the credit alone places the mat); `MATCH_DURATION_SCORE` (duration
+  scores between two fits: fridge purity +1, Kozolec 39 -> 45 signatures);
+  `SUB_IDENTITY_CIRCUITS` (circuit meters deciding identity: worse at Home);
+  `SUB_POWER` (the quieter sub-meter's power: NASA 26 -> 22). And run length in
+  grouping at all - `keeps_time`, `duration_factor`, `LOOSE_DURATION_FACTOR`,
+  `DURATION_IDENTITY_*`, the pairs' overdue close (`PAIR_OVERDUE`) and the
+  newest-bigger-load step-down guess (`STEP_DOWN_GUESS`): Anze, 2026-09-29, run
+  length and frequency raise confidence, they do not group. Without them Home
+  76.0 / 56.2 % against 75.9 / 53.7 with, 147 signatures against 197.
+- **Device-level pairing rules on the edge library, removed 2026-09-30**:
+  learned part-way drops as immediate step-downs (never fired at Home once the
+  rise and drop had to be one learned device; 3 joint stops instead of a device
+  cost the kiln 8 full-size pulses), joint stops and multi-run closes limited
+  to one device's runs (kiln full-size 863 -> 851, single-leg 180 -> 199 for
+  +0.2 purity), and signatures kept apart by their starts' input keys (no
+  effect: 76.7 vs 76.8 %, mat 108.1 vs 107.4 h). A first "apart" rule - never
+  merge a signature with one the switch gate kept its runs out of - split the
+  mat three ways (#20 58.6 h of 89.9 h heating, the rest in #312 and #38).
 - **Repeated `consolidate` passes do nothing** - it reaches a fixed point after
   one pass. A library that shrank over time did so from merge damage that a
   rebuild undoes.
