@@ -337,6 +337,12 @@ PAIR_OVERDUE_MIN = 4.0
 # Home's pump runs seconds or hours. 0 takes run length out of matching,
 # merging and pairing, and turns the overdue close off. Exploration dial.
 GROUP_BY_TIME = 0
+# A run that started with an input's change - the mat with its thermostat going
+# on - belongs to a device that follows that input: when the input next changes
+# back, the run's stop is due at that moment by the input's lag, and if no fall
+# closed it by the end of the window its stop was hidden in another load's
+# step: it is closed there. Evidence, not a clock. Exploration dial.
+INPUT_ENDS = 1
 LINK_MIN = 5
 LINK_SHARE = 0.2
 DEVICE_HOME = 1
@@ -1564,7 +1570,23 @@ class PhaseState:
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
         due = self._overdue(ts) if GROUP_BY_TIME and PAIR_OVERDUE and self.lib is not None and self.open_edges else []
+        if INPUT_ENDS and self.lib is not None and self.open_edges:
+            due += self._input_ended(ts)
         return due + self._process(ts, w, q, pv, held)
+
+    def _input_ended(self, ts: float) -> List[Session]:
+        """Close runs whose input has switched back and whose stop never came -
+        see INPUT_ENDS."""
+        out = []
+        for o in list(self.open_edges):
+            if o.cluster is None:
+                continue
+            at = self.lib.input_end(o.cluster, o.since, ts)
+            if at is not None:
+                self.open_edges.remove(o)
+                self._remember_close(o, at)
+                out.append(self._close(o, at, o.now or o.watts, None))
+        return out
 
     def _overdue(self, ts: float) -> List[Session]:
         """Close open runs far past their pair's lengths - see PAIR_OVERDUE."""
@@ -3381,6 +3403,7 @@ class Detector:
     _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
     _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
     _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
+    _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
@@ -3407,7 +3430,7 @@ class Detector:
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
         self._partners, self._learned, self._spreads = None, None, None
-        self._devices, self._device_home = None, None
+        self._devices, self._device_home, self._by_id = None, None, None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3828,6 +3851,32 @@ class Detector:
         acc[2] += lr * lr
         acc[3] += ld
         acc[4] += ld * ld
+
+    def input_end(self, cluster: int, since: float, now: float) -> Optional[float]:
+        """When a run that started with this cluster must have stopped, on
+        the meter's clock, if its input has changed back and the window for
+        the stop has passed by ``now`` - else None. See INPUT_ENDS."""
+        c = self._by_id.get(cluster) if self._by_id is not None else None
+        if c is None:
+            self._by_id = {x.id: x for x in self.edges}
+            c = self._by_id.get(cluster)
+        if c is None or not c.keys or not any(c.keys.values()) or not self.signals:
+            return None
+        events, times, _ = self.signals
+        for name, kind in c.keys.items():
+            if not kind or name not in events:
+                continue
+            window = lag_window(self.lag_hist.get(name) or [])
+            if window is None:
+                continue
+            lag, half = 0.5 * (window[0] + window[1]), 0.5 * (window[1] - window[0])
+            ts, evs = times[name], events[name]
+            i = bisect.bisect_right(ts, since - lag + half)       # changes after the one that started it
+            for j in range(i, len(ts)):
+                if evs[j][1] != kind:                             # it changed back
+                    due = ts[j] - lag
+                    return due if now > due + half else None
+        return None
 
     def length_spread(self, start: int) -> Optional[Tuple[float, float, float]]:
         """(usual seconds, spread of their log, the longest) of runs that
