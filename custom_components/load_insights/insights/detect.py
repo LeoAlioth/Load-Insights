@@ -346,6 +346,18 @@ INPUT_ENDS = 1
 LINK_MIN = 5
 LINK_SHARE = 0.2
 DEVICE_HOME = 1
+# C at the DEVICE level. A drop a run's start has been seen to make part-way -
+# the 200 W of 600 -> 400 -> 0, learned from STEP_MIN_RUNS joint stops - is a
+# step down the moment it comes rather than a held drop; the first times it
+# stays unmatched until the rest completes it (Anze, 2026-09-29: "only after,
+# if we actually group the 600 W rising and the 200+400 W falling edges into a
+# single device, could it be taken into account immediately"). And joint stops
+# and falls closing several rises only combine runs and drops of one device
+# once their clusters belong to learned devices. Exploration dials.
+LEARNED_STEPS = 1
+STEP_MIN_RUNS = 3
+STEP_SAME_DEVICE = 1            # ...and only once the rise and the drop are clusters of one learned device
+DEVICE_COMBOS = 1
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -1514,6 +1526,7 @@ class PhaseState:
     quantum: float = 0.0
     step_diffs: List[float] = field(default_factory=list)
     gaps: List[float] = field(default_factory=list)       # recent sample gaps, see INTERVAL_PERCENTILE
+    _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False)   # the same, in order
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
     # limits any power factor derived here. Supplied by whoever read the
@@ -1632,8 +1645,13 @@ class PhaseState:
                     # the meter's CADENCE, not the gap between recorded
                     # changes - see INTERVAL_PERCENTILE
                     self.gaps.append(gap)
-                    del self.gaps[:-INTERVAL_GAPS]
-                    ordered = sorted(self.gaps)
+                    if len(self._gaps_sorted) != len(self.gaps) - 1:
+                        self._gaps_sorted = sorted(self.gaps[:-1])
+                    bisect.insort(self._gaps_sorted, gap)
+                    while len(self.gaps) > INTERVAL_GAPS:
+                        old = self.gaps.pop(0)
+                        del self._gaps_sorted[bisect.bisect_left(self._gaps_sorted, old)]
+                    ordered = self._gaps_sorted
                     self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
                 else:
                     self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
@@ -2018,6 +2036,23 @@ class PhaseState:
             o = self.open_edges.pop(i)
             self._remember_close(o, at)
             return [self._close(o, at, watts, var, direct=True)]
+        if LEARNED_STEPS and self.lib is not None and self.stop_cluster is not None:
+            steps = self.lib.learned_steps(self.stop_cluster)
+            devs = self.lib.devices() if STEP_SAME_DEVICE and steps else {}
+            for i in range(len(self.open_edges) - 1, -1, -1):
+                o = self.open_edges[i]
+                model = steps.get(o.cluster)
+                if model is None or o.watts - watts <= self._tol(o.watts, watts):
+                    continue
+                if STEP_SAME_DEVICE and (devs.get(o.cluster) is None or devs.get(o.cluster) != devs.get(self.stop_cluster)):
+                    continue
+                first = o.levels[0][1]
+                expect = first * model[0]
+                if abs(watts - expect) <= self._tol(expect, watts) + 2.0 * model[1] * first:
+                    o.watts -= watts
+                    o.levels.append((at, o.watts))
+                    self.lib.note_step(o.cluster, self.stop_cluster, first, watts)
+                    return []
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if o.watts - watts > self._tol(o.watts, watts) and (
@@ -2034,8 +2069,12 @@ class PhaseState:
         # largest first while the step still covers them, or nothing.
         order = sorted(range(len(self.open_edges)), key=lambda i: -self.open_edges[i].watts)
         taken, left = [], watts
+        one = self.lib.same_device if DEVICE_COMBOS and self.lib is not None else None
         for i in order:
             o = self.open_edges[i]
+            if one is not None and not (one(o.cluster, self.stop_cluster)
+                                        and all(one(o.cluster, self.open_edges[k].cluster) for k in taken)):
+                continue
             if o.watts <= left + self._tol(o.watts, left):
                 taken.append(i)
                 left -= o.watts
@@ -2071,7 +2110,10 @@ class PhaseState:
             need = size - watts
             if need <= self._tol(size, watts):
                 continue
-            held = [d for d in self.held_drops if d[0] > o.since]
+            one = self.lib.same_device if DEVICE_COMBOS and self.lib is not None else None
+            if one is not None and not one(o.cluster, self.stop_cluster):
+                continue
+            held = [d for d in self.held_drops if d[0] > o.since and (one is None or one(o.cluster, d[2]))]
             pick = next(([d] for d in held if abs(d[1] - need) <= self._tol(size, need)), None)
             if pick is None:
                 pick = next(([a, b] for k, a in enumerate(held) for b in held[k + 1:]
@@ -2081,6 +2123,7 @@ class PhaseState:
             for d in pick:
                 self.held_drops.remove(d)
                 if self.lib is not None:
+                    self.lib.note_step(o.cluster, d[2], o.levels[0][1], d[1])
                     self.lib.link(o.cluster, d[2])
                     self.lib.link(o.cluster, self.stop_cluster)
                     self.lib.link(d[2], self.stop_cluster)
@@ -3397,6 +3440,9 @@ class Detector:
     pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict)
     # "a|b" cluster ids (a < b) -> how often they came together - see LINK_MIN
     links: Dict[str, float] = field(default_factory=dict)
+    # "rise>fall" -> [runs, sum and sum of squares of log(drop/start)] for drops
+    # a run made part-way - see LEARNED_STEPS
+    steps: Dict[str, List[float]] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -3405,6 +3451,9 @@ class Detector:
     _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
+    _steps: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
+    _sizes: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
+    _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
@@ -3432,6 +3481,7 @@ class Detector:
         stream = []
         self._partners, self._learned, self._spreads = None, None, None
         self._devices, self._device_home, self._by_id, self._windows = None, None, None, None
+        self._steps, self._sizes, self._kinds = None, None, None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3462,6 +3512,7 @@ class Detector:
                 if len(group) > EDGE_LIBRARY:
                     gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
                     self.edges = [c for c in self.edges if c.id not in gone]
+                    self._kinds = None
         out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
@@ -3788,8 +3839,12 @@ class Detector:
                 values[name] = rows[i][1]
         noise = self.phases[ph].noise if ph in self.phases else MIN_NOISE_W
         keyed = {n: kinds.get(n, "") for n in self._learned}
-        scored = [(c.fits(size, pf, 0.0, noise), c) for c in self.edges
-                  if c.phase == ph and c.up == (watts > 0) and c.same_signals(keyed)]
+        if self._kinds is None:
+            self._kinds = {}
+            for c in self.edges:
+                self._kinds.setdefault((c.phase, c.up), []).append(c)
+        kind = self._kinds.setdefault((ph, watts > 0), [])
+        scored = [(c.fits(size, pf, 0.0, noise), c) for c in kind if c.same_signals(keyed)]
         scored = [(g, c) for g, c in scored if g is not None]
         if scored:
             cluster = min(scored, key=lambda x: x[0])[1]
@@ -3797,6 +3852,7 @@ class Detector:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keyed)
             self.next_edge_id += 1
             self.edges.append(cluster)
+            kind.append(cluster)
         cluster.absorb(since, size, pf, surge, kinds, lags, values)
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
         return cluster.id
@@ -3832,6 +3888,45 @@ class Detector:
                         root[max(ra, rb)] = min(ra, rb)
             self._devices = {c: find(c) for c in total}
         return self._devices
+
+    def same_device(self, a: Optional[int], b: Optional[int]) -> bool:
+        """False only when both clusters belong to learned devices of more
+        than one cluster, and not the same one - see DEVICE_COMBOS."""
+        devs = self.devices()
+        da, db = devs.get(a), devs.get(b)
+        if da is None or db is None or da == db:
+            return True
+        if self._sizes is None:
+            self._sizes = {}
+            for d in devs.values():
+                self._sizes[d] = self._sizes.get(d, 0) + 1
+        return self._sizes[da] < 2 or self._sizes[db] < 2
+
+    def note_step(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float) -> None:
+        if start is None or stop is None or start_w <= 0 or stop_w <= 0:
+            return
+        acc = self.steps.setdefault(f"{start}>{stop}", [0.0] * 3)
+        lr = math.log(stop_w / start_w)
+        acc[0] += 1.0
+        acc[1] += lr
+        acc[2] += lr * lr
+        if acc[0] == STEP_MIN_RUNS:
+            self._steps = None                  # learned now, not next pass
+
+    def learned_steps(self, stop: int) -> Dict[int, tuple]:
+        """rise cluster -> (drop/start ratio, its spread) for the part-way
+        drops this fall cluster has made STEP_MIN_RUNS times. Once a pass."""
+        if self._steps is None:
+            out: Dict[int, Dict[int, tuple]] = {}
+            for key, acc in self.steps.items():
+                if acc[0] < STEP_MIN_RUNS:
+                    continue
+                a, b = (int(x) for x in key.split(">"))
+                m = acc[1] / acc[0]
+                sd = math.sqrt(max(0.0, acc[2] / acc[0] - m * m))
+                out.setdefault(b, {})[a] = (math.exp(m), math.exp(m) * sd)
+            self._steps = out
+        return self._steps.get(stop, {})
 
     def device_of(self, s: "Session") -> Optional[int]:
         devs = self.devices()
@@ -4287,7 +4382,8 @@ class Detector:
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
-                "links": {k: _trim(v, 2) for k, v in self.links.items()}}
+                "links": {k: _trim(v, 2) for k, v in self.links.items()},
+                "steps": {k: [_trim(x, 4) for x in v] for k, v in self.steps.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -4310,6 +4406,7 @@ class Detector:
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
         det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         det.links = {k: float(v) for k, v in (d.get("links") or {}).items()}
+        det.steps = {k: [float(x) for x in v] for k, v in (d.get("steps") or {}).items()}
         return det
 
 
