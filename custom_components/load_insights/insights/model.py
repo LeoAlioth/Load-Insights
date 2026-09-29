@@ -289,13 +289,29 @@ def dashboard_renames(prefs: Optional[dict], renames: dict) -> tuple:
     return named, {k: v for k, v in moved.items() if v != lists[k]}
 
 
-def suggest_inputs(targets: dict, candidates: dict, inputs) -> list:
+def suggest_inputs(targets: dict, candidates: dict, inputs, own: Optional[dict] = None,
+                   target_devices: Optional[dict] = None) -> list:
     """(entity, target) for every candidate sharing an area with a target -
     a dashboard device or a named load - that is not an input yet. Both map
-    an id to its area; without one nothing matches (2026-09-29)."""
-    taken = set(inputs or ())
-    return [(eid, t) for eid, where in candidates.items() if where and eid not in taken
-            for t, there in targets.items() if there == where]
+    an id to its area; without one nothing matches (2026-09-29).
+
+    A candidate in ``own`` (entity -> device) is a metering device's own
+    reading - a boiler's tank, a battery's cells, a car's cabin - and goes
+    only to a target on that same device (``target_devices``, target ->
+    device): the boiler's tank temperature is the boiler's best input and
+    says nothing about the room it stands in."""
+    taken, own, target_devices = set(inputs or ()), own or {}, target_devices or {}
+    out = []
+    for eid, where in candidates.items():
+        if eid in taken:
+            continue
+        for t, there in targets.items():
+            if eid in own:
+                if target_devices.get(t) is not None and target_devices.get(t) == own[eid]:
+                    out.append((eid, t))
+            elif where and there == where:
+                out.append((eid, t))
+    return out
 
 
 def add_inputs(options: dict, picks) -> dict:

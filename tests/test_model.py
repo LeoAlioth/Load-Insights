@@ -215,5 +215,16 @@ def test_sensors_in_a_devices_area_are_suggested_as_its_inputs():
     assert model.add_inputs(options, []) is options
 
 
+
+def test_a_metering_devices_own_temperature_goes_to_that_device_only():
+    targets = {"sensor.boiler_energy": "workshop", "sensor.charger_energy": "workshop"}
+    candidates = {"sensor.boiler_tank": "workshop", "sensor.bms_cells": "workshop", "sensor.room_t": "workshop"}
+    own = {"sensor.boiler_tank": "dev-boiler", "sensor.bms_cells": "dev-bms"}
+    devices = {"sensor.boiler_energy": "dev-boiler", "sensor.charger_energy": "dev-charger"}
+    got = sorted(model.suggest_inputs(targets, candidates, [], own, devices))
+    assert got == [("sensor.boiler_tank", "sensor.boiler_energy"),
+                   ("sensor.room_t", "sensor.boiler_energy"), ("sensor.room_t", "sensor.charger_energy")], got
+
+
 if __name__ == "__main__":
     run_main(globals())
