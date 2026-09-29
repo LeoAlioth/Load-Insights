@@ -315,6 +315,14 @@ HELD_DROPS = 8
 # and the old one ran on for hours (Home's mat: 114 h of overlapping runs).
 # Exploration dial.
 SAME_CLUSTER_ENDS = 1
+# ...and an open run far past anything its pair has done - longer than the
+# pair's usual length times e^(PAIR_OVERDUE_SD sd) and PAIR_OVERDUE_MIN x its
+# median - ended unseen: it is closed at its usual length. The old age limit
+# (ORPHAN_MARGIN) judged by size alone and cut real long loads of a size others
+# run briefly; this judges each run by its own pair. Exploration dial.
+PAIR_OVERDUE = 1
+PAIR_OVERDUE_SD = 3.0
+PAIR_OVERDUE_MIN = 4.0
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -1535,6 +1543,28 @@ class PhaseState:
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
+        due = self._overdue(ts) if PAIR_OVERDUE and self.lib is not None and self.open_edges else []
+        return due + self._process(ts, w, q, pv, held)
+
+    def _overdue(self, ts: float) -> List[Session]:
+        """Close open runs far past their pair's lengths - see PAIR_OVERDUE."""
+        out = []
+        for o in list(self.open_edges):
+            if o.cluster is None:
+                continue
+            spread = self.lib.length_spread(o.cluster)
+            if spread is None:
+                continue
+            usual, sd = spread
+            if ts - o.since > max(usual * math.exp(PAIR_OVERDUE_SD * sd), PAIR_OVERDUE_MIN * usual):
+                self.open_edges.remove(o)
+                at = o.since + usual
+                self._remember_close(o, at)
+                out.append(self._close(o, at, o.now or o.watts, None))
+        return out
+
+    def _process(self, ts: float, w: float, q: Optional[float] = None,
+                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
         """One sample: seconds, watts, reactive VAr where the meter gives
         enough to work it out, and what the array was making at the time.
         Returns the sessions this sample closed - more than one when several
@@ -3315,6 +3345,7 @@ class Detector:
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
     _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
     _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
+    _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -3338,7 +3369,7 @@ class Detector:
         # as of the same moment rather than the end of the previous batch,
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
-        self._partners, self._learned = None, None
+        self._partners, self._learned, self._spreads = None, None, None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3696,6 +3727,23 @@ class Detector:
         acc[2] += lr * lr
         acc[3] += ld
         acc[4] += ld * ld
+
+    def length_spread(self, start: int) -> Optional[Tuple[float, float]]:
+        """(usual seconds, spread of their log) of runs that start with this
+        cluster, over its accepted pairs - None when it has none."""
+        if self._partners is None:
+            self.partners(-1)
+        if self._spreads is None:
+            rows: Dict[int, list] = {}
+            for stop, starts in self._partners.items():
+                for a, model in starts.items():
+                    rows.setdefault(a, []).append((model[2], model[3], self.pairs.get(f"{a}>{stop}", [0.0])[0]))
+            self._spreads = {}
+            for a, rs in rows.items():
+                w = sum(n for _, _, n in rs)
+                if w:
+                    self._spreads[a] = (math.exp(sum(ld * n for ld, _, n in rs) / w), sum(sd * n for _, sd, n in rs) / w)
+        return self._spreads.get(start)
 
     def usual_length(self, start: int) -> Optional[float]:
         """Seconds a run that starts with this cluster usually lasts, over its
