@@ -297,7 +297,7 @@ def main() -> int:
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
     parser.add_argument("--switch", action="append", default=[],
                         help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
-    parser.add_argument("--stage", action="append", default=[],
+    parser.add_argument("--input", action="append", default=[],
                         help="ENTITY: a setting a device reports - a washer's cycle phase")
     parser.add_argument("--driver", action="append", default=[],
                         help="ENTITY: a number a load's runs may follow - a room's temperature")
@@ -411,9 +411,9 @@ def main() -> int:
         name, _, eid = pin.partition("=")
         switch_spans[name.strip()] = read_switch(args.csv, eid.strip())
     drivers = {eid.strip(): sorted(series.get(eid.strip()) or []) for eid in args.driver}
-    stages = {eid.strip(): read_states(args.csv, eid.strip()) for eid in args.stage}
-    for eid, rows in stages.items():
-        print(f"stage {eid}: {len(rows)} changes")
+    inputs = {eid.strip(): read_states(args.csv, eid.strip()) for eid in args.input}
+    for eid, rows in inputs.items():
+        print(f"input {eid}: {len(rows)} changes")
     for eid, rows in drivers.items():
         print(f"driver {eid}: {len(rows)} readings")
 
@@ -459,7 +459,7 @@ def main() -> int:
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
                       drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
-                      stages={n: held(rows, t, e) for n, rows in stages.items()} or None)
+                      inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None)
         t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.

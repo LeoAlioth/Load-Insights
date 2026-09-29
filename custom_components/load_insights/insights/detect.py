@@ -477,6 +477,18 @@ SWITCH_PREFIX = "switch:"
 # mat it kept 1429 of 1701 heating runs together against 1500 without it,
 # purity 71.9 against 71.7 % (Home, 18-27 Sep) - the credit alone places it.
 SWITCH_IDENTITY = 0
+# A load placed at a switch is powered through it - Home's floor mat through
+# its thermostat's relay - so a run the switch was off for throughout cannot
+# be it, however well its size fits: that run goes to the next signature that
+# fits, or starts its own. Other 600 W runs on phase C were filed into the mat
+# and counted: 32 of its 91 hours over 18-27 Sep fell outside the thermostat's
+# heating (2026-09-29). A signature counts as switched once at least this
+# share of its runs started and stopped with the switch - whichever meter wins
+# its placement: the mat's credits split 1274 thermostat to 1253 Hiša. The mat
+# is credited 45 % of its runs, look-alikes 2-12 %; at 0.3 it went from 91.1 to
+# 87.9 h counted once against 89.9 h of heating, every other bench the same
+# (at 0.5 it never counted as switched). Only for a switch on record.
+SWITCH_GATE = 0.3
 # A switch's stop and the session's may disagree by this share of the run as
 # well as by the moment tolerance: a sagging or merged run ends late.
 SWITCH_END_SHARE = 0.25
@@ -496,39 +508,39 @@ DRIVER_MIN_R2 = 0.25
 # A setting a device reports - a washer's cycle phase, a fan's speed - is
 # learned against each load: the value it had while the load ran, against
 # what that value's share of the time would give by chance (Anze,
-# 2026-09-28: stages of one device, "the washer's cycle/sub cycle sensors").
+# 2026-09-28: inputs of one device, "the washer's cycle/sub cycle sensors").
 # A load runs IN a value once it has this many runs (recency-weighted over
-# STAGE_TIME_TAU_S, so a washer used daily keeps about 14), this share of
+# INPUT_TIME_TAU_S, so a washer used daily keeps about 14), this share of
 # them in it, and that share this many times what chance gives. Five of
 # eight runs landing in a phase that fills 6 % of the time is a chance of
 # about 4 in 100 000.
-STAGE_MIN_RUNS = 8
-STAGE_MIN_SHARE = 0.6
-STAGE_MIN_LIFT = 3.0
+INPUT_MIN_RUNS = 8
+INPUT_MIN_SHARE = 0.6
+INPUT_MIN_LIFT = 3.0
 # How long a value's share of the time is remembered over.
-STAGE_TIME_TAU_S = 14 * 86400.0
+INPUT_TIME_TAU_S = 14 * 86400.0
 # A setting's RARER values - a washer in its wash phase, not "Unavailable"
 # most of the day - keep their own signatures: a run while one is in force
 # joins only signatures born in it (or twins that took them back, below), and
 # a run outside joins none of them. The washer's heater, 1.8 kW on A, shared
 # its signature with every other 1.8 kW thing on A, so it could never be
 # seen to run in the wash phase (Anze, 2026-09-29). 0 is off.
-STAGE_SPLIT = 1
+INPUT_SPLIT = 1
 # A value this rare or rarer - its share of the time - is one runs are
 # filed in; and only once the shares have been counted for this long.
-STAGE_RARE_SHARE = 0.25
-STAGE_SPLIT_MIN_TIME_S = 86400.0
+INPUT_RARE_SHARE = 0.25
+INPUT_SPLIT_MIN_TIME_S = 86400.0
 # A born-in signature that is chance - a fridge running through a wash -
-# goes back into its twin once it has STAGE_MIN_RUNS runs, unless the two
+# goes back into its twin once it has INPUT_MIN_RUNS runs, unless the two
 # together would run in the value this many times chance.
-STAGE_SPLIT_LIFT = 3.0
+INPUT_SPLIT_LIFT = 3.0
 # ...and one that runs in too few of the value's EPISODES - the kiln firing
 # through one afternoon's washing, a burst of pulses in one spin phase - is
 # ordinary again once the value has come round this many times since it was
 # born, and it ran in fewer than this share of them. Its runs, clustered, had
 # read as 7 times chance; its episodes read 1 in 12 (2026-09-29).
-STAGE_MIN_EPISODES = 3
-STAGE_MIN_COVERAGE = 0.5
+INPUT_MIN_EPISODES = 3
+INPUT_MIN_COVERAGE = 0.5
 # Each signature's energy by the clock hour it was used in, for as long as
 # the backfill reaches: when a load is named, its meter's history is written
 # into Home Assistant's statistics from this, so the Energy dashboard shows
@@ -538,7 +550,7 @@ HOURLY_KEEP_S = 11 * 86400.0
 # A load that runs in one value of a setting is taken as a real load of
 # that device: its runs being loose about time counts no more against it.
 # 0 is off.
-STAGE_EVIDENCE = 1
+INPUT_EVIDENCE = 1
 # Whether a CIRCUIT meter's session - one holding many loads, like Home's Hiša
 # 3EM - may decide a signature too, or only a meter that holds one device.
 # Off: one-device meters only was better at Home (79.1 / 80.7 % against
@@ -1947,21 +1959,21 @@ class Signature:
     # DRIVER_MIN_RUNS
     drivers: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # setting -> {"n": value -> runs seen in it, "e": value -> runs chance
-    # would put there}, both recency-weighted - see STAGE_MIN_RUNS
-    stages: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    # would put there}, both recency-weighted - see INPUT_MIN_RUNS
+    inputs: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     # "surge" / "bump" / "flat" -> runs that started so (recency-weighted)
     shapes: Dict[str, float] = field(default_factory=dict)
-    # "setting=value" it was born in - see STAGE_SPLIT - and the ones it took
+    # "setting=value" it was born in - see INPUT_SPLIT - and the ones it took
     # back from a born-in twin that turned out to be chance
     born_in: Optional[str] = None
     takes_in: List[str] = field(default_factory=list)
     # the value's episode count when it was born, how many it has run in (the
     # last one's start), and whether it has been judged to belong - see
-    # STAGE_MIN_EPISODES
+    # INPUT_MIN_EPISODES
     born_ep: float = 0.0
     ep_seen: float = 0.0
     last_ep: Optional[float] = None
-    stage_judged: bool = False
+    born_judged: bool = False
     # hour start (epoch s) -> Wh used in it - see HOURLY_KEEP_S
     hourly: Dict[int, float] = field(default_factory=dict)
 
@@ -2067,13 +2079,13 @@ class Signature:
             return False                       # named apart on purpose
         if START_SHAPE_SPLIT and _opposite(self.shape, other.shape) and not self._one_device_with(other):
             return False                       # they start differently, and have run at once
-        if STAGE_SPLIT and self.born_in != other.born_in:
+        if INPUT_SPLIT and self.born_in != other.born_in:
             # apart until judged; a born-in one that is chance goes back
             born = self.born_in or other.born_in
             if self.born_in and other.born_in and not (other.born_in in self.takes_in or self.born_in in other.takes_in):
                 return False
-            lift = self.stage_lift(other, born)
-            if lift is None or lift >= STAGE_SPLIT_LIFT:
+            lift = self.input_lift(other, born)
+            if lift is None or lift >= INPUT_SPLIT_LIFT:
                 return False
         # NOT widened by power_mad, unlike matches() - and the difference is
         # the whole point. Against a SESSION the mad is what the signature
@@ -2132,14 +2144,14 @@ class Signature:
         if self.born_in and self.born_in == other.born_in:
             self.born_ep = min(self.born_ep, other.born_ep)
             self.ep_seen = max(self.ep_seen, other.ep_seen)
-            self.stage_judged = self.stage_judged or other.stage_judged
+            self.born_judged = self.born_judged or other.born_judged
         if self.born_in != other.born_in:
             # a twin takes back its chance-born half, and runs in that value from now on
             taken = [b for b in (self.born_in, other.born_in) if b]
             self.takes_in = sorted(set(self.takes_in) | set(other.takes_in) | set(taken))
             self.born_in = None
-        for name, row in other.stages.items():
-            mine = self.stages.setdefault(name, {"n": {}, "e": {}, "t": dict(row.get("t") or {})})
+        for name, row in other.inputs.items():
+            mine = self.inputs.setdefault(name, {"n": {}, "e": {}, "t": dict(row.get("t") or {})})
             for key in ("n", "e"):
                 for v, x in (row.get(key) or {}).items():
                     mine[key][v] = mine[key].get(v, 0.0) + x
@@ -2277,14 +2289,14 @@ class Signature:
             return "bump"
         return None
 
-    def note_stage(self, name: str, value: str, shares: Dict[str, float], ts: float) -> None:
+    def note_input(self, name: str, value: str, shares: Dict[str, float], ts: float) -> None:
         """One run, at ``ts``, seen while the setting ``name`` read ``value``;
         ``shares`` is each value's share of the time as it stands. Weighted by
-        TIME, over STAGE_TIME_TAU_S like the shares: by sighting, a load that
+        TIME, over INPUT_TIME_TAU_S like the shares: by sighting, a load that
         starts 285 times a day remembered eight hours - one wash - and read
         as running in it (Home's 49 W load, 2026-09-28)."""
-        row = self.stages.setdefault(name, {"n": {}, "e": {}, "t": {"at": ts}})
-        keep = math.exp(-max(0.0, ts - row.get("t", {}).get("at", ts)) / STAGE_TIME_TAU_S)
+        row = self.inputs.setdefault(name, {"n": {}, "e": {}, "t": {"at": ts}})
+        keep = math.exp(-max(0.0, ts - row.get("t", {}).get("at", ts)) / INPUT_TIME_TAU_S)
         row["t"] = {"at": max(ts, row.get("t", {}).get("at", ts))}
         for key in ("n", "e"):
             for v in row[key]:
@@ -2293,32 +2305,32 @@ class Signature:
         for v, share in shares.items():
             row["e"][v] = row["e"].get(v, 0.0) + share
 
-    def stage_of(self, name: str) -> Optional[Tuple[str, float, float]]:
+    def input_of(self, name: str) -> Optional[Tuple[str, float, float]]:
         """(value, share of its runs, times chance) the load runs in, once
-        believed - see STAGE_MIN_RUNS - or None."""
-        row = self.stages.get(name)
+        believed - see INPUT_MIN_RUNS - or None."""
+        row = self.inputs.get(name)
         runs = sum((row or {}).get("n", {}).values())
-        if not row or runs < STAGE_MIN_RUNS or self.count < STAGE_MIN_RUNS:
+        if not row or runs < INPUT_MIN_RUNS or self.count < INPUT_MIN_RUNS:
             return None
-        if self.born_in and not self.stage_judged:
+        if self.born_in and not self.born_judged:
             return None                   # every run of it is in the value by construction
         value, n = max(row["n"].items(), key=lambda kv: kv[1])
         share, lift = n / runs, n / max(row["e"].get(value, 0.0), 1e-9)
-        return (value, share, lift) if share >= STAGE_MIN_SHARE and lift >= STAGE_MIN_LIFT else None
+        return (value, share, lift) if share >= INPUT_MIN_SHARE and lift >= INPUT_MIN_LIFT else None
 
-    def stage_lift(self, other: "Signature", born: str) -> Optional[float]:
+    def input_lift(self, other: "Signature", born: str) -> Optional[float]:
         """How many times chance the two together run in ``born``, or None
-        before the born-in one has STAGE_MIN_RUNS runs."""
+        before the born-in one has INPUT_MIN_RUNS runs."""
         setting, _, value = born.partition("=")
         n = e = 0.0
         runs = 0.0
         for sig in (self, other):
-            row = sig.stages.get(setting) or {}
+            row = sig.inputs.get(setting) or {}
             n += (row.get("n") or {}).get(value, 0.0)
             e += (row.get("e") or {}).get(value, 0.0)
             if sig.born_in == born:
                 runs += sum((row.get("n") or {}).values())
-        if runs < STAGE_MIN_RUNS or e <= 0:
+        if runs < INPUT_MIN_RUNS or e <= 0:
             return None
         return n / e
 
@@ -2336,11 +2348,11 @@ class Signature:
         """May a run made in ``context`` (None: in no rare value) join it?"""
         return self.born_in == context or (context is not None and context in self.takes_in)
 
-    def strongest_stage(self):
+    def strongest_input(self):
         """(setting, value, share, times chance) of the one it is most tied to, or None."""
         best = None
-        for name in self.stages:
-            got = self.stage_of(name)
+        for name in self.inputs:
+            got = self.input_of(name)
             if got and (best is None or got[2] > best[3]):
                 best = (name, *got)
         return best
@@ -2529,9 +2541,9 @@ class Signature:
             # what the number explains is not the load being loose about time
             spread *= max(0.0, 1.0 - driver[2]) ** 0.5
         tight_d = 1.0 - min(1.0, (spread / max(self.duration_s, 1.0)) / 0.5)
-        stage = self.strongest_stage() if STAGE_EVIDENCE else None
-        if stage:
-            tight_d = max(tight_d, stage[2])
+        tied = self.strongest_input() if INPUT_EVIDENCE else None
+        if tied:
+            tight_d = max(tight_d, tied[2])
         return round(0.5 * seen + 0.3 * tight_w + 0.2 * tight_d, 2)
 
     @property
@@ -2697,11 +2709,11 @@ class Signature:
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1),
                 "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()},
-                "stages": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.stages.items()},
+                "inputs": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "shapes": {k: round(x, 2) for k, x in self.shapes.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
-                "stage_judged": self.stage_judged,
+                "born_judged": self.born_judged,
                 "hourly": {str(h): round(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05}}
 
     @classmethod
@@ -2719,11 +2731,11 @@ class Signature:
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
                    drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()},
-                   stages={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("stages") or {}).items()},
+                   inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or d.get("stages") or {}).items()},
                    shapes=dict(d.get("shapes") or {}), born_in=d.get("born_in"),
                    takes_in=list(d.get("takes_in") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
-                   stage_judged=d.get("stage_judged", False),
+                   born_judged=d.get("born_judged", d.get("stage_judged", False)),
                    hourly={int(h): float(wh) for h, wh in (d.get("hourly") or {}).items()})
 
 
@@ -2928,11 +2940,11 @@ class Detector:
     # setting -> sorted [(ts, value)], fed by the fleet like drivers; and
     # setting -> value -> seconds in it (recency-weighted), with how far that
     # has been counted - these two persisted
-    stages: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict)
-    stage_time: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    stage_until: Dict[str, float] = field(default_factory=dict)
-    # setting -> value -> how many times it has come round - see STAGE_MIN_EPISODES
-    stage_episodes: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    inputs: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict)
+    input_time: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    input_until: Dict[str, float] = field(default_factory=dict)
+    # setting -> value -> how many times it has come round - see INPUT_MIN_EPISODES
+    input_episodes: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -3121,23 +3133,23 @@ class Detector:
                        surge_w=sum(m.surge_w for m in g),
                        pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0))
 
-    def _stage_context(self, s: Session):
+    def _input_context(self, s: Session):
         """The rarest of the settings' rare values in force halfway through
         the run, as ("setting=value", when that episode of it began) - see
-        STAGE_SPLIT - or None."""
+        INPUT_SPLIT - or None."""
         best = None
-        for name, rows in self.stages.items():
-            spent = self.stage_time.get(name) or {}
+        for name, rows in self.inputs.items():
+            spent = self.input_time.get(name) or {}
             total = sum(spent.values())
             i = bisect.bisect_right(rows, ((s.start + s.end) / 2.0, "\uffff")) - 1
-            if i < 0 or total < STAGE_SPLIT_MIN_TIME_S:
+            if i < 0 or total < INPUT_SPLIT_MIN_TIME_S:
                 continue
             share = spent.get(rows[i][1], 0.0) / total
-            if share < STAGE_RARE_SHARE and (best is None or share < best[0]):
+            if share < INPUT_RARE_SHARE and (best is None or share < best[0]):
                 best = (share, f"{name}={rows[i][1]}", rows[i][0])
         return (best[1], best[2]) if best else None
 
-    def _file(self, s: Session, prefer: Optional[int] = None) -> None:
+    def _file(self, s: Session, prefer: Optional[int] = None, avoid: Sequence[int] = ()) -> None:
         """File a closed session into the library. ``prefer`` is a signature
         a sub-meter's own detection says this load belongs to; it wins over
         the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
@@ -3149,13 +3161,15 @@ class Detector:
             while prefer in self._moved and prefer not in seen:
                 seen.add(prefer)
                 prefer = self._moved[prefer]
-            want = next((x for x in self.signatures if x.id == prefer), None)
+            want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
             if want is not None and want.matches(s, noise) is not None:
                 best = want
-        found = self._stage_context(s) if STAGE_SPLIT else None
+        found = self._input_context(s) if INPUT_SPLIT else None
         context, episode = found if found else (None, None)
         for sig in ([] if best is not None else self.signatures):
-            if STAGE_SPLIT and not sig.files_in(context):
+            if INPUT_SPLIT and not sig.files_in(context):
+                continue
+            if sig.id in avoid:
                 continue
             sc = sig.matches(s, noise)
             if sc is not None and sc > best_score:
@@ -3166,7 +3180,7 @@ class Detector:
                              born_in=context)
             if context:
                 setting, _, value = context.partition("=")
-                best.born_ep = (self.stage_episodes.get(setting) or {}).get(value, 1.0) - 1.0
+                best.born_ep = (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0
             self.next_id += 1
             self.signatures.append(best)
             best.absorb(s, tz)
@@ -3184,13 +3198,13 @@ class Detector:
                 i = bisect.bisect_right(rows, (at, math.inf)) - 1 if at is not None else -1
                 if i >= 0 and y > 0:
                     best.note_driver(name, key, rows[i][1], y)
-        for name, rows in self.stages.items():
+        for name, rows in self.inputs.items():
             # the setting halfway through the run: a washer's heater starts
             # as its wash phase does, a moment either side of the change
             i = bisect.bisect_right(rows, ((s.start + s.end) / 2.0, "\uffff")) - 1
-            total = sum((self.stage_time.get(name) or {}).values())
+            total = sum((self.input_time.get(name) or {}).values())
             if i >= 0 and total > 0:
-                best.note_stage(name, rows[i][1], {v: t / total for v, t in self.stage_time[name].items()}, s.start)
+                best.note_input(name, rows[i][1], {v: t / total for v, t in self.input_time[name].items()}, s.start)
         if context and best.born_in == context and best.last_ep != episode:
             best.ep_seen += 1.0
             best.last_ep = episode
@@ -3217,19 +3231,19 @@ class Detector:
 
     def _judge_born(self) -> List["Signature"]:
         """A born-in signature that has seen its value come round
-        STAGE_MIN_EPISODES times belongs to it if it ran in enough of them,
+        INPUT_MIN_EPISODES times belongs to it if it ran in enough of them,
         and is ordinary again - running in that value now and then - if not.
         Returns the ones judged."""
         judged = []
         for sig in self.signatures:
-            if not sig.born_in or sig.stage_judged:
+            if not sig.born_in or sig.born_judged:
                 continue
             setting, _, value = sig.born_in.partition("=")
-            since = (self.stage_episodes.get(setting) or {}).get(value, 0.0) - sig.born_ep
-            if since < STAGE_MIN_EPISODES:
+            since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - sig.born_ep
+            if since < INPUT_MIN_EPISODES:
                 continue
-            if sig.ep_seen / since >= STAGE_MIN_COVERAGE:
-                sig.stage_judged = True
+            if sig.ep_seen / since >= INPUT_MIN_COVERAGE:
+                sig.born_judged = True
             else:
                 sig.takes_in = sorted(set(sig.takes_in) | {sig.born_in})
                 sig.born_in = None
@@ -3572,9 +3586,9 @@ class Detector:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
-                "stage_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.stage_time.items()},
-                "stage_until": dict(self.stage_until),
-                "stage_episodes": {n: dict(row) for n, row in self.stage_episodes.items()}}
+                "input_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.input_time.items()},
+                "input_until": dict(self.input_until),
+                "input_episodes": {n: dict(row) for n, row in self.input_episodes.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -3588,9 +3602,9 @@ class Detector:
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
-        det.stage_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("stage_time") or {}).items()}
-        det.stage_until = {n: float(t) for n, t in (d.get("stage_until") or {}).items()}
-        det.stage_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("stage_episodes") or {}).items()}
+        det.input_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("input_time") or d.get("stage_time") or {}).items()}
+        det.input_until = {n: float(t) for n, t in (d.get("input_until") or d.get("stage_until") or {}).items()}
+        det.input_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("input_episodes") or d.get("stage_episodes") or {}).items()}
         return det
 
 
@@ -3642,7 +3656,7 @@ class Fleet:
                 single: Optional[Dict[str, bool]] = None,
                 switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
                 drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
-                stages: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None) -> None:
+                inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None) -> None:
         latest = now_ts or 0.0
         if agnostic:
             self.agnostic.update(agnostic)
@@ -3658,15 +3672,15 @@ class Fleet:
             keep = min(oldest or now_ts or 0.0, now_ts or max(known, default=0.0)) - SWITCH_MEMORY_S
             for on in [t for t in known if t < keep]:
                 del known[on]
-        for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.stages, stages, str)):
+        for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.inputs, inputs, str)):
             for name, rows in (fed or {}).items():
                 held = dict(store.get(name) or [])
                 held.update((float(t), cast(v)) for t, v in rows)
                 keep = min(oldest or now_ts or 0.0, now_ts or max(held, default=0.0)) - SWITCH_MEMORY_S
                 last = max((t for t in held if t < keep), default=None)   # still in force at the cut
                 store[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
-        for name in (stages or {}):
-            self._count_stage_time(name, now_ts)
+        for name in (inputs or {}):
+            self._count_input_time(name, now_ts)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         # only the main meter needs the array: a downstream meter sees the
@@ -3746,36 +3760,36 @@ class Fleet:
             switch = self._switch_for(m, main_iv) if self.switch_on else None
             if name is None:
                 prefer = self._meter_home(switch) if switch is not None and SWITCH_IDENTITY else None
-                self.main._file(m, prefer=prefer)
+                self.main._file(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
                 self._credit_switch(m, switch)
                 self.pending_main.append(m)          # placed later, as ever
                 continue
-            self.main._file(m, prefer=self._meter_home(name))
+            self.main._file(m, prefer=self._meter_home(name), avoid=self._switched_off(m, main_iv))
             sig = self.main.signature_of(m)
             if sig is not None:
                 sig.locations[name] = sig.locations.get(name, 0) + 1
             self._credit_switch(m, switch)
 
-    def _count_stage_time(self, name: str, now_ts: Optional[float]) -> None:
+    def _count_input_time(self, name: str, now_ts: Optional[float]) -> None:
         """Add the time since it was last counted to each value's share of
-        it, the older time fading over STAGE_TIME_TAU_S."""
-        det, rows = self.main, self.main.stages.get(name) or []
+        it, the older time fading over INPUT_TIME_TAU_S."""
+        det, rows = self.main, self.main.inputs.get(name) or []
         if not rows:
             return
         end = now_ts or rows[-1][0]
-        start = max(det.stage_until.get(name, rows[0][0]), rows[0][0])
+        start = max(det.input_until.get(name, rows[0][0]), rows[0][0])
         if end <= start:
             return
-        fade = math.exp(-(end - start) / STAGE_TIME_TAU_S)
-        spent = {v: t * fade for v, t in (det.stage_time.get(name) or {}).items()}
-        episodes = det.stage_episodes.setdefault(name, {})
+        fade = math.exp(-(end - start) / INPUT_TIME_TAU_S)
+        spent = {v: t * fade for v, t in (det.input_time.get(name) or {}).items()}
+        episodes = det.input_episodes.setdefault(name, {})
         for (t, v), nxt in zip(rows, [r[0] for r in rows[1:]] + [end]):
             a, b = max(t, start), min(nxt, end)
             if b > a:
                 spent[v] = spent.get(v, 0.0) + (b - a)
             if start <= t < end:
                 episodes[v] = episodes.get(v, 0.0) + 1.0
-        det.stage_time[name], det.stage_until[name] = spent, end
+        det.input_time[name], det.input_until[name] = spent, end
 
     def rename_entities(self, renames: Dict[str, str]) -> None:
         """Follow renamed entities: what a switch was credited and when it was
@@ -3787,7 +3801,7 @@ class Fleet:
                 for a, b in pairs:
                     if a in sig.locations:
                         sig.locations[b] = sig.locations.get(b, 0) + sig.locations.pop(a)
-                    for held in (sig.drivers, sig.stages):
+                    for held in (sig.drivers, sig.inputs):
                         if a in held:
                             held[b] = held.pop(a)
                     # "setting=value" markers name the setting's entity
@@ -3795,7 +3809,7 @@ class Fleet:
                         sig.born_in = b + sig.born_in[len(a):]
                     sig.takes_in = [b + t[len(a):] if t.startswith(a + "=") else t for t in sig.takes_in]
             for a, b in pairs:
-                for held in (det.drivers, det.stages, det.stage_time, det.stage_until):
+                for held in (det.drivers, det.inputs, det.input_time, det.input_until):
                     if a in held:
                         held[b] = held.pop(a)
         for a, b in pairs:
@@ -3823,6 +3837,20 @@ class Fleet:
                 if best_cost is None or cost < best_cost:
                     best, best_cost = name, cost
         return best
+
+    def _switched_off(self, m: Session, main_iv: float) -> List[int]:
+        """Signatures placed at a switch that was off throughout ``m`` - see
+        SWITCH_GATE."""
+        if not self.switch_on:
+            return []
+        tol = max(MERGE_TOLERANCE_S, 2.0 * main_iv)
+        off = {name for name, spans in self.switch_on.items()
+               if spans and not any(on < m.end + tol and (until is None or until > m.start - tol)
+                                    for on, until in spans.items())}
+        if not off:
+            return []
+        return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
+                and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in off)]
 
     def _credit_switch(self, m: Session, name: Optional[str]) -> None:
         sig = self.main.signature_of(m)
@@ -3917,7 +3945,7 @@ class Fleet:
         switch = self._switch_for(m, main_iv) if self.switch_on else None
         if prefer is None and switch is not None and SWITCH_IDENTITY:
             prefer = self._meter_home(switch)
-        self.main._file(m, prefer=prefer)
+        self.main._file(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
         sig = self.main.signature_of(m)
         if sig is not None:
             sig.locations[name] = sig.locations.get(name, 0) + 1
@@ -4399,14 +4427,14 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
             if len(g) > 1 and any(not x.name for x in g)]
 
 
-def stage_groups(signatures: Sequence[Signature]) -> List[List[int]]:
+def input_groups(signatures: Sequence[Signature]) -> List[List[int]]:
     """Loads tied to values of the SAME setting - a washer's heater in its
     wash phase, its drum in its spin - as one device's parts or settings.
     Unlike suggest_levels this needs no likeness between them: a heater and
     a drum motor share nothing but the machine, which the setting names."""
     by_setting: Dict[str, List[int]] = {}
     for sig in signatures:
-        got = sig.strongest_stage()
+        got = sig.strongest_input()
         if got:
             by_setting.setdefault(got[0], []).append(sig.id)
     return [sorted(ids) for ids in by_setting.values() if len(ids) > 1]

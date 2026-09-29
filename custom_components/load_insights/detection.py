@@ -82,7 +82,7 @@ SWITCH_DOMAINS = ("binary_sensor", "switch", "input_boolean", "fan", "light", "c
 NUMBER_DOMAINS = ("sensor", "number", "input_number")
 # ...and what reports a device's setting: a select, a fan's speed, and any
 # sensor whose states are words (a washer's cycle phase)
-STAGE_DOMAINS = ("select", "input_select", "fan")
+STATE_DOMAINS = ("select", "input_select", "fan")
 
 
 def load_uid(entry_id: str, kind: str, name: str) -> str:
@@ -501,11 +501,11 @@ class DetectionRunner:
         by its speed - each with the one in force at the window's start."""
         switches: Dict[str, list] = {}
         numbers: Dict[str, list] = {}
-        stages: Dict[str, list] = {}
+        inputs: Dict[str, list] = {}
         since = start - timedelta(seconds=SWITCH_MEMORY_S)
         for eid in self._input_entities():
             domain = eid.split(".", 1)[0]
-            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STAGE_DOMAINS:
+            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
                 continue
             if domain in ("climate", "fan"):
                 # Read by an ATTRIBUTE - a thermostat's hvac_action, a fan's
@@ -531,10 +531,10 @@ class DetectionRunner:
                 if values:
                     numbers[eid] = values
                 elif domain == "sensor" and rows:
-                    stages[eid] = [(st.last_updated.timestamp(), st.state) for st in rows]
+                    inputs[eid] = [(st.last_updated.timestamp(), st.state) for st in rows]
                 continue
-            if domain in STAGE_DOMAINS:
-                stages[eid] = [(st.last_updated.timestamp(),
+            if domain in STATE_DOMAINS:
+                inputs[eid] = [(st.last_updated.timestamp(),
                                 st.state if domain != "fan" else
                                 (f"{st.attributes.get('percentage')} %" if st.state == "on" else "off"))
                                for st in rows]
@@ -552,7 +552,7 @@ class DetectionRunner:
             if on is not None:
                 spans.append((on, None))
             switches[eid] = [(a, b) for a, b in spans if a > since.timestamp() + 1.0]
-        return switches, numbers, stages
+        return switches, numbers, inputs
 
     def holds_one_device(self, name: str) -> bool:
         """The user's answer for this meter, or else the default the settings
@@ -977,12 +977,12 @@ class DetectionRunner:
             samples = without_window_start(samples, start.timestamp())
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             single = {n: self.holds_one_device(n) for n in self.submeters}
-            switches, numbers, stages = await self._read_inputs(start, end)
+            switches, numbers, inputs = await self._read_inputs(start, end)
             read = time.monotonic()
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,
-                stages or None,
+                inputs or None,
             )
             self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
                               "hours": round((end - start).total_seconds() / 3600.0, 2)}

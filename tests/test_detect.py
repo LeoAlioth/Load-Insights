@@ -2408,21 +2408,21 @@ def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
     while a < t:
         b = a + step
         fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
-                      stages={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                      inputs={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
                               or [max((p for p in phase if p[0] < a), default=phase[0])]})
         a = b
     heater = max(fleet.main.signatures, key=lambda x: sum(x.power.values()) * (x.count >= 10))
     fridge = max((x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120), key=lambda x: x.count)
-    got = heater.stage_of("sensor.phase")
-    assert got is not None and got[0] == "Wash" and got[1] > 0.9 and got[2] > 10, (got, heater.stages)
-    assert fridge.stage_of("sensor.phase") is None, fridge.stages
-    share = fleet.main.stage_time["sensor.phase"]
+    got = heater.input_of("sensor.phase")
+    assert got is not None and got[0] == "Wash" and got[1] > 0.9 and got[2] > 10, (got, heater.inputs)
+    assert fridge.input_of("sensor.phase") is None, fridge.inputs
+    share = fleet.main.input_time["sensor.phase"]
     assert 0.01 < share["Wash"] / sum(share.values()) < 0.03, share
     back = D.Detector.from_dict(json.loads(json.dumps(fleet.main.to_dict())))
-    assert back.stage_time.keys() == fleet.main.stage_time.keys()
-    assert next(x for x in back.signatures if x.id == heater.id).stage_of("sensor.phase")[0] == "Wash"
+    assert back.input_time.keys() == fleet.main.input_time.keys()
+    assert next(x for x in back.signatures if x.id == heater.id).input_of("sensor.phase")[0] == "Wash"
     fleet.rename_entities({"sensor.phase": "sensor.cyclephase"})
-    assert heater.stage_of("sensor.cyclephase")[0] == "Wash" and "sensor.cyclephase" in fleet.main.stage_time
+    assert heater.input_of("sensor.cyclephase")[0] == "Wash" and "sensor.cyclephase" in fleet.main.input_time
 
 
 
@@ -2431,12 +2431,12 @@ def test_loads_tied_to_one_setting_are_offered_as_one_device():
         sig = D.Signature(id=sid, phases="a", power={"a": 100.0 * sid}, duration_s=60.0 * sid, pf=None,
                           count=20, first_seen=T0, last_seen=T0)
         for k in range(12):
-            sig.note_stage(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
+            sig.note_input(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
         return sig
     sigs = [tied(1, "sensor.phase", "Wash"), tied(2, "sensor.phase", "Spin"), tied(3, "fan.x", "33 %"),
             D.Signature(id=4, phases="a", power={"a": 50.0}, duration_s=30.0, pf=None, count=20,
                         first_seen=T0, last_seen=T0)]
-    assert D.stage_groups(sigs) == [[1, 2]]
+    assert D.input_groups(sigs) == [[1, 2]]
 
 
 
@@ -2518,16 +2518,16 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
     while a < t:
         b = a + 6 * 3600.0
         fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
-                      stages={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                      inputs={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
                               or [max((p for p in phase if p[0] < a), default=phase[0])]})
         a = b
     big = [x for x in fleet.main.signatures if 1800 < sum(x.power.values()) < 2200 and x.count >= 5]
-    tied = [x for x in big if (x.stage_of("sensor.phase") or ("",))[0] == "Wash"]
-    assert len(tied) == 1 and tied[0].count <= 16, [(x.id, x.count, x.born_in, x.stage_of("sensor.phase")) for x in big]
+    tied = [x for x in big if (x.input_of("sensor.phase") or ("",))[0] == "Wash"]
+    assert len(tied) == 1 and tied[0].count <= 16, [(x.id, x.count, x.born_in, x.input_of("sensor.phase")) for x in big]
     kettle = [x for x in big if x is not tied[0]]
     assert kettle and max(k.count for k in kettle) >= 30, [(x.id, x.count, x.born_in) for x in big]
     fridge = [x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120 and x.count >= 5]
-    assert max(f.count for f in fridge) >= 200 and not any(f.stage_of("sensor.phase") for f in fridge), \
+    assert max(f.count for f in fridge) >= 200 and not any(f.input_of("sensor.phase") for f in fridge), \
         [(x.id, x.count, x.born_in, x.takes_in) for x in fridge]
 
 
@@ -2551,6 +2551,25 @@ def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     sig.name = "Mat"
     det.signatures.append(sig)
     assert list(det.hourly_by_name("Mat").values()) == [10.0]
+
+
+def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
+    """Home's floor mat draws through its thermostat's relay: a 600 W run on C
+    while the thermostat was not heating is another load (2026-09-29)."""
+    fleet = D.Fleet()
+    sw = D.SWITCH_PREFIX + "climate.thermostat"
+    fleet.switch_on = {sw: {T0: T0 + 300.0, T0 + 3600.0: None}}          # on for 5 min, and again from an hour on
+    mat = D.Signature(id=1, phases="c", power={"c": 635.0}, duration_s=200.0, pf=None, count=100,
+                      first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
+    fridge = D.Signature(id=2, phases="c", power={"c": 600.0}, duration_s=900.0, pf=None, count=100,
+                         first_seen=T0, last_seen=T0, locations={sw: 10})
+    fleet.main.signatures = [mat, fridge]
+    run = lambda a, b: D.Session(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]})
+    assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # off throughout: not the mat
+    assert fleet._switched_off(run(T0 + 100.0, T0 + 250.0), 2.0) == []     # while it was on
+    assert fleet._switched_off(run(T0 + 3000.0, T0 + 3700.0), 2.0) == []   # on for part of it
+    fleet.switch_on = {}
+    assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == []   # nothing on record: no say
 
 
 def test_a_signature_on_twice_at_once_counts_the_overlap_once():
