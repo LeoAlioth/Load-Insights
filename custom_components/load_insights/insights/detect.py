@@ -323,6 +323,15 @@ SAME_CLUSTER_ENDS = 1
 PAIR_OVERDUE = 1
 PAIR_OVERDUE_SD = 3.0
 PAIR_OVERDUE_MIN = 4.0
+# B2 - DEVICES: edge clusters linked by how they come together - a pair's
+# rise and fall, the legs of one run on several phases (the kiln's A and C),
+# one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
+# one rise closed by several falls (600 -> 400 -> 0). Two clusters are one
+# device once their link counts LINK_MIN and makes up LINK_SHARE of the links
+# of each; a run then goes to the signature most runs of its device went to.
+LINK_MIN = 5
+LINK_SHARE = 0.2
+DEVICE_HOME = 1
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -782,6 +791,8 @@ class Session:
     signature_id: Optional[int] = None
     # (start cluster, stop cluster) of the edges that opened and closed it
     pair: Optional[Tuple[Optional[int], Optional[int]]] = None
+    # ...and a run merged across phases, every leg's
+    legs: List[tuple] = field(default_factory=list)
 
     @property
     def ripple(self) -> Optional[float]:
@@ -883,7 +894,7 @@ class Session:
                 "pf_mad": self.pf_mad, "surge_w": self.surge_w,
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()},
-                "pair": list(self.pair) if self.pair else None}
+                "pair": list(self.pair) if self.pair else None, "legs": [list(x) for x in self.legs]}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -893,7 +904,8 @@ class Session:
                    # session that waited across a restart came back unsampled
                    samples=d.get("samples", 0), low=d.get("low"), high=d.get("high"),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()},
-                   pair=tuple(d["pair"]) if d.get("pair") else None)
+                   pair=tuple(d["pair"]) if d.get("pair") else None,
+                   legs=[tuple(x) for x in d.get("legs") or []])
 
 
 # ------------------------------------------------------------------ per-phase tracker
@@ -1509,7 +1521,7 @@ class PhaseState:
     lib: Optional[object] = field(default=None, repr=False, compare=False)
     name: str = field(default="", repr=False, compare=False)
     stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
-    held_drops: List[Tuple[float, float]] = field(default_factory=list, repr=False, compare=False)
+    held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # Set by the Detector for a pass: how long a load of a given size on this
     # phase has been seen to run, or None. See ORPHAN_MARGIN.
     longest: Optional[object] = field(default=None, repr=False, compare=False)
@@ -1651,7 +1663,7 @@ class PhaseState:
             if SAG_CLOSE and len(self.open_edges) == 1 and self.baseline is not None:
                 # a drop held since it started is not it sagging - see JOINT_STOPS
                 o = self.open_edges[0]
-                o.now = self.level - self.baseline + sum(w for t, w in self.held_drops if t > o.since)
+                o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
             if self.level is not None and abs(self.level) >= self.rel_floor:
                 self.rel_diffs.append(abs(w - self.level) / abs(self.level))
                 if len(self.rel_diffs) >= 240:
@@ -1999,12 +2011,18 @@ class PhaseState:
                     break
         if len(taken) >= 2 and abs(left) <= self._tol(watts, watts):
             out = []
+            if self.lib is not None:
+                cs = [self.open_edges[i].cluster for i in taken]
+                for k, a in enumerate(cs):
+                    self.lib.link(a, self.stop_cluster)
+                    for b in cs[k + 1:]:
+                        self.lib.link(a, b)
             for i in sorted(taken, reverse=True):
                 o = self.open_edges.pop(i)
                 out.append(self._close(o, at, o.watts, None))
             return sorted(out, key=lambda x: x.start)
         if JOINT_STOPS and not STEP_DOWN_GUESS and self.open_edges:
-            self.held_drops.append((at, watts))
+            self.held_drops.append((at, watts, self.stop_cluster))
             del self.held_drops[:-HELD_DROPS]
         if not self.open_edges:
             # nothing was running: the floor itself moved
@@ -2030,8 +2048,12 @@ class PhaseState:
                 continue
             for d in pick:
                 self.held_drops.remove(d)
+                if self.lib is not None:
+                    self.lib.link(o.cluster, d[2])
+                    self.lib.link(o.cluster, self.stop_cluster)
+                    self.lib.link(d[2], self.stop_cluster)
             level = size
-            for t, w in sorted(pick):
+            for t, w, _ in sorted(pick):
                 level -= w
                 o.levels.append((t, level))
             self.open_edges.pop(i)
@@ -3340,12 +3362,16 @@ class Detector:
     # pair -> {signature id: runs filed there}
     pairs: Dict[str, List[float]] = field(default_factory=dict)
     pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict)
+    # "a|b" cluster ids (a < b) -> how often they came together - see LINK_MIN
+    links: Dict[str, float] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
     _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
     _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
     _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
+    _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
+    _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -3370,6 +3396,7 @@ class Detector:
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
         self._partners, self._learned, self._spreads = None, None, None
+        self._devices, self._device_home = None, None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3508,6 +3535,11 @@ class Detector:
             if latest - max(m.end for m in g) < HELD_TAIL_S and len(g) < 3:
                 self.held.extend(g)
                 continue
+            for k, a in enumerate(g):                   # legs of one run are one device
+                for b in g[k + 1:]:
+                    if a.pair and b.pair:
+                        self.link(a.pair[0], b.pair[0])
+                        self.link(a.pair[1], b.pair[1])
             done.append(self._combine(g))
         out = []
         for s in done:
@@ -3545,7 +3577,8 @@ class Detector:
         return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
                        levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None,
                        surge_w=sum(m.surge_w for m in g),
-                       pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0))
+                       pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0),
+                       legs=[m.pair for m in g if m.pair])
 
     def _input_context(self, s: Session):
         """The rarest of the settings' rare values in force halfway through
@@ -3571,6 +3604,19 @@ class Detector:
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
         key = f"{s.pair[0]}>{s.pair[1]}" if s.pair and None not in s.pair else None
+        device = self.device_of(s) if DEVICE_HOME else None
+        if prefer is None and device is not None:
+            if self._device_home is None:
+                devs, self._device_home = self.devices(), {}
+                for k, home in self.pair_home.items():
+                    d = devs.get(int(k.split(">")[0]))
+                    if d is not None:
+                        pooled = self._device_home.setdefault(d, {})
+                        for sid, n in home.items():
+                            pooled[sid] = pooled.get(sid, 0.0) + n
+            home = self._device_home.get(device)
+            if home:
+                prefer = max(home, key=home.get)      # the device IS its clusters
         if prefer is None and PAIR_PAIRING and PAIR_HOME and key in self.pair_home:
             home = self.pair_home[key]
             prefer = max(home, key=home.get)          # the device IS its pairs
@@ -3629,9 +3675,10 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
-        if key is not None:
-            home = self.pair_home.setdefault(key, {})
-            home[best.id] = home.get(best.id, 0.0) + 1.0
+        for pair in ([s.pair] if s.pair else []) + list(s.legs):
+            if pair and None not in pair:
+                home = self.pair_home.setdefault(f"{pair[0]}>{pair[1]}", {})
+                home[best.id] = home.get(best.id, 0.0) + 1.0
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
@@ -3717,9 +3764,49 @@ class Detector:
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
         return cluster.id
 
+    def link(self, a: Optional[int], b: Optional[int], w: float = 1.0) -> None:
+        if a is None or b is None or a == b:
+            return
+        key = f"{min(a, b)}|{max(a, b)}"
+        self.links[key] = self.links.get(key, 0.0) + w
+
+    def devices(self) -> Dict[int, int]:
+        """cluster id -> device id (its smallest cluster id) - see LINK_MIN.
+        Worked out once a pass."""
+        if self._devices is None:
+            total: Dict[int, float] = {}
+            rows = []
+            for key, n in self.links.items():
+                a, b = (int(x) for x in key.split("|"))
+                rows.append((a, b, n))
+                total[a] = total.get(a, 0.0) + n
+                total[b] = total.get(b, 0.0) + n
+            root: Dict[int, int] = {}
+
+            def find(x):
+                while root.get(x, x) != x:
+                    root[x] = root.get(root[x], root[x])
+                    x = root[x]
+                return x
+            for a, b, n in rows:
+                if n >= LINK_MIN and n >= LINK_SHARE * total[a] and n >= LINK_SHARE * total[b]:
+                    ra, rb = find(a), find(b)
+                    if ra != rb:
+                        root[max(ra, rb)] = min(ra, rb)
+            self._devices = {c: find(c) for c in total}
+        return self._devices
+
+    def device_of(self, s: "Session") -> Optional[int]:
+        devs = self.devices()
+        for pair in ([s.pair] if s.pair else []) + list(s.legs):
+            if pair and pair[0] is not None and pair[0] in devs:
+                return devs[pair[0]]
+        return None
+
     def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
         if start is None or stop is None or start_w <= 0 or stop_w <= 0:
             return
+        self.link(start, stop)
         acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 5)
         lr, ld = math.log(stop_w / start_w), math.log(max(secs, 1.0))
         acc[0] += 1.0
@@ -4122,7 +4209,8 @@ class Detector:
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
-                "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()}}
+                "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
+                "links": {k: _trim(v, 2) for k, v in self.links.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -4144,6 +4232,7 @@ class Detector:
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
         det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
+        det.links = {k: float(v) for k, v in (d.get("links") or {}).items()}
         return det
 
 
