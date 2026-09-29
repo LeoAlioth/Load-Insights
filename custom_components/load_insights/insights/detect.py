@@ -121,7 +121,7 @@ SUSTAIN_INTERVALS = 1.5
 #            208 -> 213, and the pump's runs filed cleanly 236 -> 247
 #   the kiln full-size 399 -> 397, single-leg 158 -> 141, main signature x321 -> x335
 #   Kozolec  boiler 499 / 337 -> 500 / 339; its Scala2 (which ramps) 140 / 75 -> 121 / 67
-SUSTAIN_AGREE = 1
+# ^ SUSTAIN_AGREE: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...but a load that WANDERS never agrees with itself for long, and would hold
 # the level still while it wandered. After this many sample intervals of
 # readings away from the level, the old rule decides.
@@ -145,7 +145,7 @@ SUSTAIN_AGREE_REL = 0.15
 # Kozolec's boiler unchanged and its Scala2 held out 67 -> 53. The kiln's
 # session LENGTHS were already right - 42.0 s against 42.0 s timed off the
 # grid meter itself - so this is about which readings count, not about length.
-STEP_AT_HALFWAY = 1
+# ^ STEP_AT_HALFWAY: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # How a reading's sample interval is estimated. Home Assistant records only a
 # CHANGE, so a running mean of the gaps measures how often the value changes,
 # not how often the meter reports: Home's grid meter reports every 6 s on all
@@ -183,7 +183,7 @@ CORROBORATE_BALANCE = 0.7
 # whichever open edge of that size is newest. Home's Kompresor leg (~840 W)
 # and hidrofor (~870 W) share phase A inside one pairing tolerance, and the
 # compressor's corroborated stop was closing the pump's session.
-CORROBORATED_CLOSES_ITS_EDGE = 1
+# ^ CORROBORATED_CLOSES_ITS_EDGE: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A leg that drops by its partner's size while its own start was BIGGER - some
 # other load switched on in the same poll and was measured into the step - is
 # that leg stopping, not a step down of one load still running. Split it: the
@@ -195,7 +195,7 @@ CORROBORATED_CLOSES_ITS_EDGE = 1
 #   Home     purity 77.6 -> 78.6 %, held out 79.7 -> 80.6 %; hidrofor 493 -> 500
 #   the kiln main signature x385 -> x397, single-leg 116 -> 112, ladder 18 -> 23
 #   Kozolec  identical, as a single-phase site must be
-CORROBORATED_SPLIT = 1
+# ^ CORROBORATED_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 INTERVAL_GAPS = 60
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
@@ -279,8 +279,8 @@ PAIR_MIN_SHARE = 0.3
 # with no pair model falls back on sizes. And the old guess that a drop fitting
 # nothing is the newest bigger load stepping down goes (Anze, 2026-09-29: "the
 # 200w step should just stay unmatched") - except a load settling just after
-# its start. Exploration dials.
-PAIR_PAIRING = 1
+# its start.
+# ^ PAIR_PAIRING: always on, as the 2026-09-30 ablation found (AGENTS.md)
 SETTLE_SHARE = 0.3
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
@@ -294,8 +294,7 @@ HELD_DROPS = 8
 # unseen - it is closed after its pair's usual length, or at the new start if
 # that comes first. Left open, the next stop of its kind closed the newer run
 # and the old one ran on for hours (Home's mat: 114 h of overlapping runs).
-# Exploration dial.
-SAME_CLUSTER_ENDS = 1
+# ^ SAME_CLUSTER_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # B2 - DEVICES: edge clusters linked by how they come together - a pair's
 # rise and fall, the legs of one run on several phases (the kiln's A and C),
 # one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
@@ -313,11 +312,11 @@ SAME_CLUSTER_ENDS = 1
 # on - belongs to a device that follows that input: when the input next changes
 # back, the run's stop is due at that moment by the input's lag, and if no fall
 # closed it by the end of the window its stop was hidden in another load's
-# step: it is closed there. Evidence, not a clock. Exploration dial.
-INPUT_ENDS = 1
+# step: it is closed there. Evidence, not a clock.
+# ^ INPUT_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
 LINK_MIN = 5
 LINK_SHARE = 0.2
-DEVICE_HOME = 1
+# ^ DEVICE_HOME: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -444,14 +443,14 @@ PHASE_MAP_MIN_VOTES = 30
 # small price of filing later. Almost all of it comes from SUB_METER_IDENTITY:
 # a session partner is rarely there in time, and when it is, the house's own
 # choice agrees with it all but 65 times in 1338.
-SUB_OVERRIDE = 1
+# ^ SUB_OVERRIDE: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A house session whose ENERGY a device meter accounts for - the meter too slow
 # or too coarse to have a session of its own for it - joins the house
 # signature most of that meter's sessions went to, when it fits there. Only
 # for a meter that holds one device: one whose own library puts at least
 # SUB_DEVICE_SHARE of its sightings in a single signature (Home's hidrofor
 # plug 99 %, its Hiša circuit 55 %). 0 is off.
-SUB_METER_IDENTITY = 1
+# ^ SUB_METER_IDENTITY: always on, as the 2026-09-30 ablation found (AGENTS.md)
 SUB_DEVICE_SHARE = 0.5
 # A meter that holds ONE device takes only loads on the phases that device has
 # shown: a phase set it has been credited this many sightings of. Below that
@@ -516,7 +515,7 @@ INPUT_TIME_TAU_S = 14 * 86400.0
 # a run outside joins none of them. The washer's heater, 1.8 kW on A, shared
 # its signature with every other 1.8 kW thing on A, so it could never be
 # seen to run in the wash phase (Anze, 2026-09-29). 0 is off.
-INPUT_SPLIT = 1
+# ^ INPUT_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A value this rare or rarer - its share of the time - is one runs are
 # filed in; and only once the shares have been counted for this long.
 INPUT_RARE_SHARE = 0.25
@@ -1438,9 +1437,7 @@ class PhaseState:
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
-        due = []
-        if INPUT_ENDS and self.lib is not None and self.open_edges:
-            due = self._input_ended(ts)
+        due = self._input_ended(ts) if self.lib is not None and self.open_edges else []
         return due + self._process(ts, w, q, pv, held)
 
     def _input_ended(self, ts: float) -> List[Session]:
@@ -1604,9 +1601,8 @@ class PhaseState:
         new_q = _median(known_q) if known_q else None
         new_pv = _median(known_pv) if known_pv else None
         since = self.pending[0][0]
-        if STEP_AT_HALFWAY:
-            half = 0.5 * abs(new_level - self.level)
-            since = next((p[0] for p in self.pending if abs(p[1] - self.level) >= half), since)
+        half = 0.5 * abs(new_level - self.level)
+        since = next((p[0] for p in self.pending if abs(p[1] - self.level) >= half), since)
         self.pending = []
         step = new_level - self.level
         # the level it stepped FROM, measured over the samples just before
@@ -1626,7 +1622,7 @@ class PhaseState:
         cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
             ended = []
-            if SAME_CLUSTER_ENDS and cid is not None:
+            if cid is not None:
                 for o in [o for o in self.open_edges if o.cluster == cid]:
                     self.open_edges.remove(o)
                     usual = self.lib.usual_length(cid)
@@ -1671,7 +1667,7 @@ class PhaseState:
         """The pending readings that agree with the newest one - the plateau,
         if one is forming. Those before it are the transition. See
         SUSTAIN_AGREE."""
-        if not SUSTAIN_AGREE or len(self.pending) < 2:
+        if len(self.pending) < 2:
             return self.pending
         w = self.pending[-1][1]
         # Either inside the noise, or close enough that the step measured from
@@ -1702,12 +1698,11 @@ class PhaseState:
             if abs(o.watts - drop) <= self._tol(o.watts, drop) and self.corroborate(o.since, o.watts, ts):
                 self.close_hint = o
                 return True
-        if CORROBORATED_SPLIT:
-            # a start bigger than the drop, whose partner legs match the DROP
-            for o in reversed(self.open_edges):
-                if o.watts - drop > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts, True):
-                    self.close_hint = o
-                    return True
+        # a start bigger than the drop, whose partner legs match the DROP
+        for o in reversed(self.open_edges):
+            if o.watts - drop > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts, True):
+                self.close_hint = o
+                return True
         return False
 
     def _unseen_stop(self, at: float, level: float) -> List[Session]:
@@ -1810,18 +1805,18 @@ class PhaseState:
         # pulse of 48, where recency gives 42.1 s. So the durations are
         # measurably wrong and the fix is not this one - probably a cost
         # combining size gap AND age rather than either alone.
-        if PAIR_PAIRING and self.lib is not None and self.stop_cluster is not None:
+        if self.lib is not None and self.stop_cluster is not None:
             got = self._pair_by_model(at, watts, var)
             if got is not None:
                 return got
         hint, self.close_hint = self.close_hint, None
-        if hint is not None and CORROBORATED_CLOSES_ITS_EDGE:
+        if hint is not None:
             for i, o in enumerate(self.open_edges):
                 if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
                     self.open_edges.pop(i)
                     self._remember_close(o, at)
                     return [self._close(o, at, watts, var, direct=True)]
-                if o is hint and CORROBORATED_SPLIT and o.watts - watts > self._tol(o.watts, watts):
+                if o is hint and o.watts - watts > self._tol(o.watts, watts):
                     # the vouched-for leg stopped; the rest is the load that
                     # started with it, and it is still running
                     part = _Open(since=o.since, watts=watts, var=None, levels=[(o.since, watts)],
@@ -2144,7 +2139,7 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
-        if INPUT_SPLIT and self.born_in != other.born_in:
+        if self.born_in != other.born_in:
             # apart until judged; a born-in one that is chance goes back
             born = self.born_in or other.born_in
             if self.born_in and other.born_in and not (other.born_in in self.takes_in or self.born_in in other.takes_in):
@@ -3380,7 +3375,7 @@ class Detector:
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
-        device = self.device_of(s) if DEVICE_HOME else None
+        device = self.device_of(s)
         if prefer is None and device is not None:
             if self._device_home is None:
                 devs, self._device_home = self.devices(), {}
@@ -3398,15 +3393,15 @@ class Detector:
             while prefer in self._moved and prefer not in seen:
                 seen.add(prefer)
                 prefer = self._moved[prefer]
-        found = self._input_context(s) if INPUT_SPLIT else None
+        found = self._input_context(s)
         context, episode = found if found else (None, None)
         if prefer is not None:
             want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
             if (want is not None and want.matches(s, noise) is not None
-                    and (not INPUT_SPLIT or want.files_in(context))):
+                    and want.files_in(context)):
                 best = want
         for sig in ([] if best is not None else self.signatures):
-            if INPUT_SPLIT and not sig.files_in(context):
+            if not sig.files_in(context):
                 continue
             if sig.id in avoid:
                 continue
@@ -4140,22 +4135,15 @@ class Fleet:
                 self.sub_quantum[name] = q
         events, numbers = self._signal_events()
         self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
-        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum,
-                                        file=not SUB_OVERRIDE)
+        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
             closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
                                            None, (sub_q_quantum or {}).get(name))
-        if SUB_OVERRIDE:
-            self._file_waiting(closed_main, closed_sub, latest)
-            closed_main, closed_sub = [], {}
-        elif self.switch_on:
-            main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
-            for m in closed_main:
-                self._credit_switch(m, self._switch_for(m, main_iv))
-        self._locate(closed_main, closed_sub, latest)
+        self._file_waiting(closed_main, closed_sub, latest)
+        self._locate([], {}, latest)
 
     def _file_waiting(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]],
                       latest: float) -> None:
@@ -4185,10 +4173,9 @@ class Fleet:
             (ready if self._heard_from_all(m, main_iv, latest) else waiting).append(m)
         self.unfiled = waiting
         by_energy = {}
-        if SUB_METER_IDENTITY:
-            for cost, mi, name, _ in sorted(self._energy_pairs(ready), key=lambda x: (x[0], x[1])):
-                if mi not in by_energy and self._one_device(name):
-                    by_energy[mi] = name
+        for cost, mi, name, _ in sorted(self._energy_pairs(ready), key=lambda x: (x[0], x[1])):
+            if mi not in by_energy and self._one_device(name):
+                by_energy[mi] = name
         for mi, m in enumerate(ready):
             name = by_energy.get(mi)
             switch = self._switch_for(m, main_iv) if self.switch_on else None
