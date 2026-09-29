@@ -406,12 +406,12 @@
     },
     "services": {
         "backfill_statistics": {
-            "name": "Dopolni zgodovino energije bremena",
-            "description": "V statistiko energijskega senzorja poimenovanega bremena zapiše ure, ki jih je videlo zaznavanje - kolikor daleč nazaj jih ima, okoli deset dni - pred prvo uro, ki jo je zabeležil Home Assistant, da nadzorna plošča Energija pokaže tudi njegovo preteklost. Breme, poimenovano zdaj, se dopolni samo, približno uro kasneje; to je za bremena, poimenovana prej. Kar se je zaznavanje naučilo, preden je hranilo ure, jih nima, zato za starejše breme najprej zaženite Reset load detection, ki ohrani imena. Nič že zabeleženega se ne prepiše, zato ponoven zagon ne spremeni ničesar.",
+            "name": "Prepiši zgodovino energije bremena",
+            "description": "Čez statistiko energijskega senzorja poimenovanega bremena - urno in petminutno - zapiše ure, ki jih je videlo zaznavanje, kolikor daleč nazaj jih ima, okoli deset dni, da nadzorna plošča Energija pokaže njegovo preteklost in nič od tega, kar sta iz nje naredila ponastavitev zaznavanja ali prva pojavitev senzorja: Home Assistant odčitek, ki se pojavi z več dnevi v sebi ali pade, šteje kot energijo tiste ure. Breme, poimenovano zdaj, se dopolni samo, približno uro kasneje. Ure pred desetimi dnevi ostanejo, kot so bile zabeležene, ponoven zagon pa zapiše isto.",
             "fields": {
                 "name": {
                     "name": "Ime",
-                    "description": "Poimenovano breme, ki naj se dopolni. Prazno dopolni vsa poimenovana bremena."
+                    "description": "Poimenovano breme, ki naj se prepiše. Prazno prepiše vsa poimenovana bremena."
                 }
             }
         }

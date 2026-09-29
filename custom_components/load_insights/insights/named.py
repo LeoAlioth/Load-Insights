@@ -33,30 +33,79 @@ def chosen_name(typed: Optional[str], picked: Optional[str]) -> Optional[str]:
     return picked or (typed or "").strip() or None
 
 
-def plan_backfill(hourly_wh: Dict[int, float], first_start: Optional[float],
-                  now_hour: float) -> Tuple[List[dict], float]:
-    """The hours a named load's energy meter is owed, from what detection saw.
+def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dict],
+                 fives: List[dict]) -> Tuple[List[dict], List[dict], float]:
+    """The statistics a named load's energy meter should hold for the hours
+    detection watched, from what detection saw in them.
 
-    Home Assistant's statistics for a meter start at its first recorded hour,
-    though detection saw the load for days before it was named. ``hourly_wh``
-    is hour start (epoch s) -> Wh; ``first_start`` the start of the meter's
-    first long-term statistics row, or None when it has none. Rows cover the
-    complete hours strictly before that row (or before ``now_hour``), each
-    with ``start`` (epoch s), and ``state`` and ``sum`` in kWh counted from 0
-    before the first of them, the way Home Assistant reads a meter's first
-    row. Returns the rows and their total, which is what every existing row's
-    sum must be raised by for the hours after them to read as they did.
+    ``hourly_wh`` is hour start (epoch s) -> Wh; ``covered_from`` the first
+    whole hour detection read; ``hours`` and ``fives`` the meter's long- and
+    short-term rows as recorded - ``start`` (epoch s), ``state`` and ``sum``
+    in kWh, oldest first, ``hours`` from the meter's first. The window runs to
+    the last hour Home Assistant compiled.
 
-    Nothing that is already recorded is written, so a second run finds no
-    hour before the first row - the first of its own - and plans nothing."""
-    stop = now_hour if first_start is None else min(first_start, now_hour)
+    Recorded hours were wrong whenever the reading was not a clean meter: it
+    appeared with days already in it, and a detection reset dropped it, which
+    Home Assistant reads as a new meter and counts again (the kiln's 19 kWh on
+    22.09). So every hour in the window gets detection's figure, carried on
+    from the sum recorded before the window, and every five-minute row its
+    hour's share pro rata - detection keeps hours, not five minutes - which
+    is also what keeps the two tables agreeing: an hour's sum is compiled
+    from its last five-minute row. Recorded states stay, since the next
+    compile reads the live reading against the last one; an hour before the
+    meter's first row gets its sum as its state, as a new meter's first row
+    reads.
+
+    Returns the hour rows and five-minute rows to write, and ``shift``: what
+    every row after the window must be raised by for the live hours to carry
+    on from it. Nothing when nothing is recorded yet - the next compile would
+    restart the sum from 0 below what was written. Running it twice writes
+    the same rows."""
+    if not hours:
+        return [], [], 0.0
+    end = int(hours[-1]["start"]) + 3600
     by_hour: Dict[int, float] = {}
     for hour, wh in hourly_wh.items():
         start = int(hour // 3600 * 3600)          # a half-hour time zone's hours onto UTC's
-        if start < stop:
-            by_hour[start] = by_hour.get(start, 0.0) + wh
-    rows, total = [], 0.0
-    for start in sorted(by_hour):
-        total += by_hour[start] / 1000.0
-        rows.append({"start": start, "state": total, "sum": total})
-    return rows, total
+        if covered_from <= start < end:
+            by_hour[start] = by_hour.get(start, 0.0) + wh / 1000.0
+    recorded = {int(r["start"]): r for r in hours}
+    before = [r for r in hours if r["start"] < covered_from]
+    total = before[-1]["sum"] if before else 0.0
+    first = next((h for h in range(covered_from, end, 3600) if h in recorded or h in by_hour), None)
+    if first is None:
+        return [], [], 0.0
+    hour_rows, at_end = [], {}
+    for h in range(first, end, 3600):
+        total += by_hour.get(h, 0.0)
+        rec = recorded.get(h)
+        hour_rows.append({"start": h, "state": rec["state"] if rec else total, "sum": total})
+        at_end[h] = total
+    five_rows = []
+    for r in fives:
+        h = int(r["start"] // 3600 * 3600)
+        if h in at_end:
+            used = by_hour.get(h, 0.0)
+            share = min(1.0, (r["start"] + 300 - h) / 3600.0)
+            five_rows.append({"start": r["start"], "state": r["state"], "sum": at_end[h] - used + used * share})
+    return hour_rows, five_rows, total - hours[-1]["sum"]
+
+
+def carry_reading(reported: Optional[float], seen: Optional[float], now: float,
+                  counting: bool) -> Tuple[float, float]:
+    """What a named load's energy meter reads, given what it last reported,
+    detection's total when it did (``seen``), detection's total ``now`` (all
+    kWh), and whether what detection gained since is new energy.
+
+    The meter only ever counts up by what detection GAINS. Its total restarts
+    from ten days at a reset and climbs again as history is re-read, and
+    rounds a hair down on a restart; Home Assistant books a drop of under 10 %
+    as a negative hour and a bigger one as a new meter, counting it all again
+    (the kiln: 19 kWh on 22.09, a day it never fired). A re-read is not
+    ``counting``: those hours are old, and plan_rewrite writes them.
+    Returns (reading, the total to count on from)."""
+    if reported is None:
+        return now, now                    # a new meter: its first reading is where it starts
+    if seen is None or not counting:
+        return reported, now
+    return reported + max(0.0, now - seen), now

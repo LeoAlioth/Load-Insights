@@ -83,10 +83,10 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
             raise ServiceValidationError(f"No detected load has id {load_id}")
 
     async def _backfill_statistics(call) -> None:
-        """Write the hours detection saw of a named load into its energy
-        meter's statistics, before the first hour Home Assistant recorded -
-        for loads named before naming did it by itself (2026-09-29). Every
-        named load when no name is given; running it again writes nothing."""
+        """Write the hours detection saw of a named load over its energy
+        meter's statistics - for loads named before naming did it by itself,
+        and after a reset (2026-09-29). Every named load when no name is
+        given; running it again writes the same."""
         wanted = (call.data.get("name") or "").strip().casefold()
         found = False
 
