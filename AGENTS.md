@@ -689,6 +689,12 @@ Don't re-chase these; each cost real time.
   sessions close properly (`_unseen_stop`). Home purity +0.2, wconc -0.4,
   Kozolec even. Its energy side did ship: `_spread` counts overlapping time
   once.
+  Re-tested on top of `_unseen_stop`, at filing AND at merging (`alike`
+  refusing two signatures whose runs overlap), 2026-09-29: Home purity 73.7 ->
+  74.5 but wconc 48.6 -> 45.1 (the hidrofor over 59 signatures, not 35),
+  Kozolec's fridge purity 86 -> 77 %, the mat 91.1 -> 94.0 h. Mis-paired runs
+  of one device overlap each other too, so the guard splits real devices. It
+  needs sessions that are right in the first place, not as a fix for wrong ones.
 - **Imbalance alone does not mean two loads glued together.** A machine with a
   3-phase motor and single-phase parts is legitimately unbalanced. Rank the
   evidence: co-occurrence reliability first, size second, imbalance last. Real
