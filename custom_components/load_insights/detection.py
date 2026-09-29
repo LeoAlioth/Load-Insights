@@ -861,7 +861,16 @@ class DetectionRunner:
         else in minutes. Each is carried across as a description and handed
         back to the first rebuilt signature that looks like it; where the
         site really has changed - the reason to do this by hand - nothing
-        matches and the name does not return."""
+        matches and the name does not return.
+
+        Between passes, never under one: a pass running when this lands
+        finishes by recording that it has processed up to now, and the ten
+        days are never re-read (Home, 2026-09-29: one signature, from the
+        minute of the reset)."""
+        for _ in range(600):              # a backfill slice takes seconds, not minutes
+            if not self._running:
+                break
+            await asyncio.sleep(0.5)
         orphans = self.fleet.main.name_descriptors() if self.fleet else []
         self.fleet = Fleet()
         self.fleet.main.carry_names(orphans)
