@@ -93,6 +93,7 @@ KOZOLEC = {
             "sensor.pond_evse_power",
             "sensor.pastir_staja_power",
             "sensor.bug_lamp_power",
+            "sensor.bathroom_ir_panel_switch_0_power",       # Bathroom IR Panel
         ],
     },
 }

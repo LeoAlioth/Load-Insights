@@ -80,6 +80,16 @@ NOISE_REL_FLOOR_FACTOR = 1.5
 # 3 kW load (Anze, 2026-09-18).
 GLITCH_FLOOR_W = 200.0
 NOISE_MAD_FACTOR = 4.0
+# A meter this slow in a steady state - a Shelly plug heartbeating once a
+# minute, a Zigbee plug reporting on change - says a value HELD by staying
+# quiet: it reports a change within seconds and nothing until the next one.
+# Read as a slow sampler, its thermostat-cycled load merged into hours: the
+# IR panel at Kozolec, off 2.4 minutes between runs, was 13 runs of 164 min
+# against 52 of 15 (2026-09-29). So on such a meter a pending change counts
+# as having held until the next reading arrives, and holding HOLD_SUSTAIN_S
+# is enough. 0 is off.
+HOLD_MIN_INTERVAL_S = 20.0
+HOLD_SUSTAIN_S = 30.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -519,6 +529,12 @@ STAGE_SPLIT_LIFT = 3.0
 # read as 7 times chance; its episodes read 1 in 12 (2026-09-29).
 STAGE_MIN_EPISODES = 3
 STAGE_MIN_COVERAGE = 0.5
+# Each signature's energy by the clock hour it was used in, for as long as
+# the backfill reaches: when a load is named, its meter's history is written
+# into Home Assistant's statistics from this, so the Energy dashboard shows
+# the ten days it was already seen rather than starting at the naming
+# (Anze, 2026-09-29).
+HOURLY_KEEP_S = 11 * 86400.0
 # A load that runs in one value of a setting is taken as a real load of
 # that device: its runs being loose about time counts no more against it.
 # 0 is off.
@@ -1431,14 +1447,24 @@ class PhaseState:
         self.last_w = w
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
-                pv: Optional[float] = None) -> List[Session]:
+                pv: Optional[float] = None, held: bool = False) -> List[Session]:
         """One sample: seconds, watts, reactive VAr where the meter gives
         enough to work it out, and what the array was making at the time.
         Returns the sessions this sample closed - more than one when several
-        loads stopped together."""
+        loads stopped together. ``held`` marks a stand-in for a slow meter's
+        silence - see HOLD_MIN_INTERVAL_S - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
-        if self.last_ts is not None:
+        if (not held and HOLD_MIN_INTERVAL_S and (self.interval or 0.0) >= HOLD_MIN_INTERVAL_S
+                and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
+                and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
+            # the change it last reported held right up to this reading
+            last = self.pending[-1]
+            before = self.process(ts - 0.5, last[1], last[2], last[3], held=True)
+            return before + self.process(ts, w, q, pv)
+        if held:
+            pass                          # not a reading: no cadence, no quantum
+        elif self.last_ts is not None:
             gap = ts - self.last_ts
             if 0.0 < gap < 120.0:        # a restart gap is not a sampling rate
                 if INTERVAL_PERCENTILE:
@@ -1450,10 +1476,12 @@ class PhaseState:
                     self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
                 else:
                     self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
-        self.last_ts = ts
+        if not held:
+            self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
-        self._learn_quantum(w)
+        if not held:
+            self._learn_quantum(w)
         if self.baseline is None:
             self.seed.append(w)
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
@@ -1537,6 +1565,8 @@ class PhaseState:
         # absolute figure is only a fallback while the interval is unknown.
         sustain = (SUSTAIN_INTERVALS * self.interval if self.interval
                    else SUSTAIN_SECONDS)
+        if HOLD_MIN_INTERVAL_S and self.interval and self.interval >= HOLD_MIN_INTERVAL_S:
+            sustain = min(sustain, HOLD_SUSTAIN_S)
         need = SUSTAIN_SAMPLES
         if CORROBORATED_STOP_SAMPLES and self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
@@ -1903,6 +1933,8 @@ class Signature:
     ep_seen: float = 0.0
     last_ep: Optional[float] = None
     stage_judged: bool = False
+    # hour start (epoch s) -> Wh used in it - see HOURLY_KEEP_S
+    hourly: Dict[int, float] = field(default_factory=dict)
 
     @property
     def location(self) -> str:
@@ -2066,6 +2098,8 @@ class Signature:
         """Take another signature's sightings into this one, by weight."""
         for k, x in other.shapes.items():
             self.shapes[k] = self.shapes.get(k, 0.0) + x
+        for hour, wh in other.hourly.items():
+            self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
         if self.born_in and self.born_in == other.born_in:
             self.born_ep = min(self.born_ep, other.born_ep)
             self.ep_seen = max(self.ep_seen, other.ep_seen)
@@ -2545,7 +2579,12 @@ class Signature:
             wh = watts * step / 3600.0
             self.hour_wh[moment.hour] += wh
             self.day_wh[moment.weekday()] += wh
+            hour = int(t - into)
+            self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
             t += step
+        cut = s.end - HOURLY_KEEP_S
+        for hour in [h for h in self.hourly if h < cut]:
+            del self.hourly[hour]
 
     def describe(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """Words for the naming page: '6.1 kW on phases A and C, runs ~80 s,
@@ -2628,7 +2667,8 @@ class Signature:
                 "shapes": {k: round(x, 2) for k, x in self.shapes.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
-                "stage_judged": self.stage_judged}
+                "stage_judged": self.stage_judged,
+                "hourly": {str(h): round(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
@@ -2649,7 +2689,8 @@ class Signature:
                    shapes=dict(d.get("shapes") or {}), born_in=d.get("born_in"),
                    takes_in=list(d.get("takes_in") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
-                   stage_judged=d.get("stage_judged", False))
+                   stage_judged=d.get("stage_judged", False),
+                   hourly={int(h): float(wh) for h, wh in (d.get("hourly") or {}).items()})
 
 
 def _opposite(a: Optional[str], b: Optional[str]) -> bool:
@@ -3335,6 +3376,16 @@ class Detector:
             if a.get("name"):
                 out[a["name"]] = out.get(a["name"], 0.0) + float(a["watts"])
         return out
+
+    def hourly_by_name(self, name: str) -> Dict[int, float]:
+        """hour start (epoch s) -> Wh the load NAMED so used in it, as far back
+        as HOURLY_KEEP_S - what backfills its meter's statistics."""
+        out: Dict[int, float] = {}
+        for sig in self.signatures:
+            if sig.name == name:
+                for hour, wh in sig.hourly.items():
+                    out[hour] = out.get(hour, 0.0) + wh
+        return dict(sorted(out.items()))
 
     def energy_by_name(self) -> Dict[str, float]:
         """Watt-hours each NAME has used over everything ever seen of it.

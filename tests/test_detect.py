@@ -2527,5 +2527,50 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
         [(x.id, x.count, x.born_in, x.takes_in) for x in fridge]
 
 
+
+def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
+    """Naming a load writes its past into the statistics, so each signature
+    keeps its energy per clock hour for HOURLY_KEEP_S (2026-09-29)."""
+    sig = D.Signature(id=1, phases="a", power={"a": 600.0}, duration_s=1800.0, pf=None, count=0,
+                      first_seen=T0, last_seen=T0)
+    hour0 = int(T0 // 3600 * 3600)
+    s = D.Session(phases="a", start=hour0 + 3000.0, end=hour0 + 4800.0, levels={"a": [(hour0 + 3000.0, 600.0)]})
+    sig._spread(s, timezone.utc)
+    assert {h: round(w) for h, w in sig.hourly.items()} == {hour0: 100, hour0 + 3600: 200}, sig.hourly
+    back = D.Signature.from_dict(json.loads(json.dumps(sig.to_dict())))
+    assert back.hourly == {hour0: 100.0, hour0 + 3600: 200.0}
+    late = D.Session(phases="a", start=hour0 + D.HOURLY_KEEP_S + 7200.0, end=hour0 + D.HOURLY_KEEP_S + 7260.0,
+                     levels={"a": [(hour0 + D.HOURLY_KEEP_S + 7200.0, 600.0)]})
+    sig._spread(late, timezone.utc)
+    assert hour0 not in sig.hourly and len(sig.hourly) == 1          # the old hours aged out
+    det = D.Detector()
+    sig.name = "Mat"
+    det.signatures.append(sig)
+    assert list(det.hourly_by_name("Mat").values()) == [10.0]
+
+
+
+def test_a_slow_meters_silence_is_a_held_value():
+    """A Shelly plug reports a change within seconds and otherwise once a
+    minute. The IR panel it meters is cycled by a thermostat, 15 minutes on
+    and 2.4 off: read as a sampler every 60 s, the offs never lasted two
+    readings and the runs merged into hours (Kozolec, 2026-09-29)."""
+    rows, t = [], T0
+    for k in range(20):
+        on_at = t
+        while t < on_at + 900.0:                     # on: the change at once, then a heartbeat a minute
+            rows.append((t, 520.0 if t == on_at else 521.0)); t += 60.0
+        off_at = on_at + 900.0
+        rows.append((off_at, 0.0))                   # the switch-off, reported as it happens
+        rows.append((off_at + 60.0, 0.0))            # one heartbeat, still off
+        t = off_at + 144.0                           # and back on before the next
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    det.process({"a": sorted(rows)}, now_ts=t)
+    assert det.signatures, "no run found at all"
+    sig = max(det.signatures, key=lambda x: x.count)
+    assert sig.count >= 18 and sig.duration_s < 1200, (sig.count, sig.duration_s)
+
+
 if __name__ == "__main__":
     run_main(globals())
