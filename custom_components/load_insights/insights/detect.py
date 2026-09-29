@@ -329,6 +329,14 @@ PAIR_OVERDUE_MIN = 4.0
 # one rise closed by several falls (600 -> 400 -> 0). Two clusters are one
 # device once their link counts LINK_MIN and makes up LINK_SHARE of the links
 # of each; a run then goes to the signature most runs of its device went to.
+# Run length and how often a load runs are what a load DOES, not what it is:
+# they raise or lower the confidence in a device and its guess, and play no part
+# in grouping runs into devices or edges into runs (Anze, 2026-09-29: "much
+# less important than the plain electrical properties ... I don't think using
+# it for grouping is doing us any good"). NASA's computers never switch off and
+# Home's pump runs seconds or hours. 0 takes run length out of matching,
+# merging and pairing, and turns the overdue close off. Exploration dial.
+GROUP_BY_TIME = 0
 LINK_MIN = 5
 LINK_SHARE = 0.2
 DEVICE_HOME = 1
@@ -1555,7 +1563,7 @@ class PhaseState:
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
-        due = self._overdue(ts) if PAIR_OVERDUE and self.lib is not None and self.open_edges else []
+        due = self._overdue(ts) if GROUP_BY_TIME and PAIR_OVERDUE and self.lib is not None and self.open_edges else []
         return due + self._process(ts, w, q, pv, held)
 
     def _overdue(self, ts: float) -> List[Session]:
@@ -2081,7 +2089,8 @@ class PhaseState:
             gap = abs(watts - expect)
             if gap > tol:
                 continue
-            score = gap / tol + 0.5 * abs(math.log(max(at - o.since, 1.0)) - log_dur) / max(log_dur_sd, 0.3)
+            score = gap / tol + (0.5 * abs(math.log(max(at - o.since, 1.0)) - log_dur) / max(log_dur_sd, 0.3)
+                                 if GROUP_BY_TIME else 0.0)
             if best is None or score <= best[0]:
                 best = (score, i)
         if best is None:
@@ -2274,9 +2283,9 @@ class Signature:
             score *= 1.0 - abs(mine - theirs) / (2 * tol)
         ratio = max(s.duration_s, 1.0) / max(self.duration_s, 1.0)
         factor = self.duration_factor
-        if ratio > factor or ratio < 1.0 / factor:
+        if GROUP_BY_TIME and (ratio > factor or ratio < 1.0 / factor):
             return None
-        if MATCH_DURATION_SCORE:
+        if GROUP_BY_TIME and MATCH_DURATION_SCORE:
             # between two that fit, the one it lasted about as long as - see
             # MATCH_DURATION_SCORE
             score *= 1.0 - 0.5 * abs(math.log(ratio)) / math.log(factor)
@@ -2347,7 +2356,7 @@ class Signature:
             return False
         ratio = max(other.duration_s, 1.0) / max(self.duration_s, 1.0)
         factor = min(self.duration_factor, other.duration_factor)
-        if ratio > factor or ratio < 1.0 / factor:
+        if GROUP_BY_TIME and (ratio > factor or ratio < 1.0 / factor):
             return False
         if self.pf is not None and other.pf is not None and \
                 abs(self.pf - other.pf) > pf_tolerance(self.pf_mad, other.pf_mad):
