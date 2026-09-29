@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
@@ -636,7 +636,7 @@ class NamedLoadPower(_DetectionBase):
         return None if value is None else round(value)
 
 
-class NamedLoadEnergy(_DetectionBase):
+class NamedLoadEnergy(_DetectionBase, RestoreSensor):
     """What a named load has used, all told.
 
     Naming a load already gave it a device and a power reading; without an
@@ -644,11 +644,14 @@ class NamedLoadEnergy(_DetectionBase):
     dashboard, which is where anyone would go to ask what the thing costs
     (Anze, 2026-09-18).
 
-    The figure is sound as a meter rather than merely plausible: a
-    signature's hour_wh only ever accumulates, a merge sums both sides, and
-    a named signature is never evicted - so it cannot go backwards except
-    when detection is reset, which is a real meter reset and is exactly what
-    TOTAL_INCREASING means.
+    A signature's hour_wh only accumulates, a merge sums both sides and a
+    reset leaves the old total as a floor, yet the reading still dipped: by
+    a rounding hair after a restart, and by 1.3 kWh at the kiln (22.09). Home
+    Assistant books a dip under 10 % as a negative hour on the Energy
+    dashboard, and a bigger one as a meter reset that counts it all again.
+    So the reading never goes below the last one it reported, restored
+    across restarts; after a dip it waits for the library to catch up, the
+    same choice the reset floor makes, and never counts anything twice.
     """
 
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -661,12 +664,19 @@ class NamedLoadEnergy(_DetectionBase):
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
+        self._high = 0.0
 
     @property
     def native_value(self) -> Optional[float]:
-        return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0
+        self._high = max(self._high, self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0)
+        return self._high
 
     async def async_added_to_hass(self) -> None:
+        last = await self.async_get_last_sensor_data()
+        try:
+            self._high = float(last.native_value)
+        except (AttributeError, TypeError, ValueError):
+            pass
         await super().async_added_to_hass()
         self._runner.entry.async_create_background_task(
             self.hass, self._backfill_when_new(), f"{DOMAIN} backfill {self.entity_id}")
