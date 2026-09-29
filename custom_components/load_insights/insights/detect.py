@@ -284,6 +284,29 @@ EDGE_WINDOW_SPREADS = 3.0
 EDGE_WINDOW_MIN_S = 3.0
 EDGE_LIBRARY = 150             # clusters kept per phase and direction
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
+# B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
+# cluster each, learned from every run that closes: how often, the stop's size
+# against the start's (a fridge sags, ~0.75; a heat-pump water heater climbs),
+# and how long the runs last. A pair is accepted once it has closed
+# PAIR_MIN_RUNS runs and makes up PAIR_MIN_SHARE of the closes of both of its
+# clusters.
+PAIR_MIN_RUNS = 8
+PAIR_MIN_SHARE = 0.3
+# C - pairing by them: a fall first closes an open run its cluster's accepted
+# pair starts with, at the learned size, whatever plain sizes say; only a fall
+# with no pair model falls back on sizes. And the old guess that a drop fitting
+# nothing is the newest bigger load stepping down goes (Anze, 2026-09-29: "the
+# 200w step should just stay unmatched") - except a load settling just after
+# its start. Exploration dials.
+PAIR_PAIRING = 1
+STEP_DOWN_GUESS = 0
+SETTLE_SHARE = 0.3
+# ...and a drop that fits nothing is HELD; held drops completing a run with a
+# later drop close it together, with both steps (-200 W then -400 W against a
+# +600 W start). Until devices with levels are learned this is what keeps a
+# washer's 2 kW -> 400 W -> off one run. Exploration dial.
+JOINT_STOPS = 1
+HELD_DROPS = 8
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -741,6 +764,8 @@ class Session:
     # (Anze, 2026-09-18: 173 signatures at Kozolec, every one of them "main",
     # on a site where the boiler and the car charger have their own meters).
     signature_id: Optional[int] = None
+    # (start cluster, stop cluster) of the edges that opened and closed it
+    pair: Optional[Tuple[Optional[int], Optional[int]]] = None
 
     @property
     def ripple(self) -> Optional[float]:
@@ -841,7 +866,8 @@ class Session:
         return {"phases": self.phases, "start": self.start, "end": self.end, "pf": self.pf,
                 "pf_mad": self.pf_mad, "surge_w": self.surge_w,
                 "samples": self.samples, "low": self.low, "high": self.high,
-                "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()}}
+                "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()},
+                "pair": list(self.pair) if self.pair else None}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -850,7 +876,8 @@ class Session:
                    # written by to_dict all along and never read back, so a
                    # session that waited across a restart came back unsampled
                    samples=d.get("samples", 0), low=d.get("low"), high=d.get("high"),
-                   levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()})
+                   levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()},
+                   pair=tuple(d["pair"]) if d.get("pair") else None)
 
 
 # ------------------------------------------------------------------ per-phase tracker
@@ -1377,10 +1404,12 @@ class _Open:
     # what it draws NOW, followed while it runs alone - see SAG_CLOSE. Never
     # persisted: after a restart the start's size stands in, as before.
     now: Optional[float] = None
+    # the edge cluster it started with - see PAIR_MIN_RUNS
+    cluster: Optional[int] = None
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
-                self.surge]
+                self.surge, self.cluster]
 
     @classmethod
     def of(cls, raw) -> "_Open":
@@ -1389,7 +1418,8 @@ class _Open:
         return cls(since=since, watts=watts, var=var, levels=levels,
                    lo=raw[4] if len(raw) > 4 else None,
                    hi=raw[5] if len(raw) > 5 else None,
-                   surge=raw[6] if len(raw) > 6 else 0.0)
+                   surge=raw[6] if len(raw) > 6 else 0.0,
+                   cluster=raw[7] if len(raw) > 7 else None)
 
 
 @dataclass
@@ -1458,6 +1488,12 @@ class PhaseState:
     # the steps this pass committed: (since, watts, VAr, surge) - the
     # detector files them as edges. Never persisted.
     steps: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    # the detector whose edge library and pair models this phase asks, its
+    # name, and the cluster of the fall being paired. Set each pass.
+    lib: Optional[object] = field(default=None, repr=False, compare=False)
+    name: str = field(default="", repr=False, compare=False)
+    stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
+    held_drops: List[Tuple[float, float]] = field(default_factory=list, repr=False, compare=False)
     # Set by the Detector for a pass: how long a load of a given size on this
     # phase has been seen to run, or None. See ORPHAN_MARGIN.
     longest: Optional[object] = field(default=None, repr=False, compare=False)
@@ -1575,7 +1611,9 @@ class PhaseState:
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
             if SAG_CLOSE and len(self.open_edges) == 1 and self.baseline is not None:
-                self.open_edges[0].now = self.level - self.baseline
+                # a drop held since it started is not it sagging - see JOINT_STOPS
+                o = self.open_edges[0]
+                o.now = self.level - self.baseline + sum(w for t, w in self.held_drops if t > o.since)
             if self.level is not None and abs(self.level) >= self.rel_floor:
                 self.rel_diffs.append(abs(w - self.level) / abs(self.level))
                 if len(self.rel_diffs) >= 240:
@@ -1659,13 +1697,15 @@ class PhaseState:
             self.pv_level = new_pv
         if _is_the_sun(step, pv_step):
             return []
-        self.steps.append((since, step, step_q, surge))
+        cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
-            self.open_edges.append(_Open(since, step, step_q, [(since, step)], surge=surge))
+            self.open_edges.append(_Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid))
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
             return []
+        self.stop_cluster = cid
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
+        self.stop_cluster = None
         closed += self._unseen_stop(since, new_level)
         if self.open_edges and new_level <= self.baseline + self.noise:
             # back at the idle floor, so whatever was still open has stopped
@@ -1850,13 +1890,17 @@ class PhaseState:
         # pulse of 48, where recency gives 42.1 s. So the durations are
         # measurably wrong and the fix is not this one - probably a cost
         # combining size gap AND age rather than either alone.
+        if PAIR_PAIRING and self.lib is not None and self.stop_cluster is not None:
+            got = self._pair_by_model(at, watts, var)
+            if got is not None:
+                return got
         hint, self.close_hint = self.close_hint, None
         if hint is not None and CORROBORATED_CLOSES_ITS_EDGE:
             for i, o in enumerate(self.open_edges):
                 if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
                     self.open_edges.pop(i)
                     self._remember_close(o, at)
-                    return [self._close(o, at, watts, var)]
+                    return [self._close(o, at, watts, var, direct=True)]
                 if o is hint and CORROBORATED_SPLIT and o.watts - watts > self._tol(o.watts, watts):
                     # the vouched-for leg stopped; the rest is the load that
                     # started with it, and it is still running
@@ -1883,13 +1927,18 @@ class PhaseState:
             i = max(i for i, g, _ in cands if g <= best_gap + band)   # newest of the tied
             o = self.open_edges.pop(i)
             self._remember_close(o, at)
-            return [self._close(o, at, watts, var)]
+            return [self._close(o, at, watts, var, direct=True)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
-            if o.watts - watts > self._tol(o.watts, watts):
+            if o.watts - watts > self._tol(o.watts, watts) and (
+                    STEP_DOWN_GUESS or (at - o.since <= SHAPE_SETTLED_S and watts <= SETTLE_SHARE * o.watts)):
                 o.watts -= watts
                 o.levels.append((at, o.watts))
                 return []
+        if JOINT_STOPS and not STEP_DOWN_GUESS:
+            joint = self._joint_stop(at, watts, var)
+            if joint:
+                return joint
         # several loads going together - the oven and its fan, a programme
         # ending - leave one step too big for any of them alone. Take them
         # largest first while the step still covers them, or nothing.
@@ -1908,10 +1957,68 @@ class PhaseState:
                 o = self.open_edges.pop(i)
                 out.append(self._close(o, at, o.watts, None))
             return sorted(out, key=lambda x: x.start)
+        if JOINT_STOPS and not STEP_DOWN_GUESS and self.open_edges:
+            self.held_drops.append((at, watts))
+            del self.held_drops[:-HELD_DROPS]
         if not self.open_edges:
             # nothing was running: the floor itself moved
             self.baseline = max(new_level, 0.0) if self.floor_zero else new_level
         return []
+
+    def _joint_stop(self, at: float, watts: float, var: Optional[float]) -> Optional[List[Session]]:
+        """Close the running load this drop completes together with drops held
+        since it started - one or two of them - newest load first. See
+        JOINT_STOPS."""
+        for i in range(len(self.open_edges) - 1, -1, -1):
+            o = self.open_edges[i]
+            size = o.now or o.watts
+            need = size - watts
+            if need <= self._tol(size, watts):
+                continue
+            held = [d for d in self.held_drops if d[0] > o.since]
+            pick = next(([d] for d in held if abs(d[1] - need) <= self._tol(size, need)), None)
+            if pick is None:
+                pick = next(([a, b] for k, a in enumerate(held) for b in held[k + 1:]
+                             if abs(a[1] + b[1] - need) <= self._tol(size, need)), None)
+            if pick is None:
+                continue
+            for d in pick:
+                self.held_drops.remove(d)
+            level = size
+            for t, w in sorted(pick):
+                level -= w
+                o.levels.append((t, level))
+            self.open_edges.pop(i)
+            self._remember_close(o, at)
+            return [self._close(o, at, watts, var)]
+        return None
+
+    def _pair_by_model(self, at: float, watts: float, var: Optional[float]) -> Optional[List[Session]]:
+        """Close the open run this fall's cluster is the learned end of - see
+        PAIR_PAIRING. Best by how near the learned stop size and run length it
+        comes; None when no open run is its pair's start."""
+        partners = self.lib.partners(self.stop_cluster)
+        if not partners:
+            return None
+        best = None
+        for i, o in enumerate(self.open_edges):
+            model = partners.get(o.cluster)
+            if model is None:
+                continue
+            ratio, ratio_sd, log_dur, log_dur_sd = model
+            expect = o.watts * ratio
+            tol = self._tol(expect, watts) + 2.0 * ratio_sd * o.watts
+            gap = abs(watts - expect)
+            if gap > tol:
+                continue
+            score = gap / tol + 0.5 * abs(math.log(max(at - o.since, 1.0)) - log_dur) / max(log_dur_sd, 0.3)
+            if best is None or score <= best[0]:
+                best = (score, i)
+        if best is None:
+            return None
+        o = self.open_edges.pop(best[1])
+        self._remember_close(o, at)
+        return [self._close(o, at, watts, var, direct=True)]
 
     def _span(self, since: float, until: float) -> int:
         """How many meter samples a run of that length was measured over, from
@@ -1920,7 +2027,12 @@ class PhaseState:
             return 0
         return max(1, int(round((until - since) / self.interval)) + 1)
 
-    def _close(self, o: _Open, at: float, watts: float, var: Optional[float]) -> Session:
+    def _close(self, o: _Open, at: float, watts: float, var: Optional[float], direct: bool = False) -> Session:
+        """``direct``: closed by the fall being paired, whose cluster is then
+        this run's stop - which teaches the pair (see PAIR_MIN_RUNS)."""
+        pair = (o.cluster, self.stop_cluster if direct else None)
+        if direct and self.lib is not None:
+            self.lib.note_pair(o.cluster, self.stop_cluster, o.watts, watts, at - o.since)
         levels = list(o.levels)
         if len(levels) == 1:
             # one level throughout: both steps measure the same load, so
@@ -1941,7 +2053,7 @@ class PhaseState:
                        surge_w=o.surge,
                        pf=_pf_from(levels[0][1], q),
                        pf_mad=_pf_spread(levels[0][1], q, self.q_quantum),
-                       samples=self._span(o.since, at), low=o.lo, high=o.hi)
+                       samples=self._span(o.since, at), low=o.lo, high=o.hi, pair=pair)
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -3176,8 +3288,17 @@ class Detector:
     # the steps this pass took, (phase, since, watts, VAr, surge), for the
     # fleet to file as edges; and phase -> [(since, cluster id, watts)] of the
     # recent ones, so a run filed later still finds its edges. Never persisted.
-    new_edges: List[tuple] = field(default_factory=list, repr=False, compare=False)
     edge_at: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
+    # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
+    # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
+    # pair -> {signature id: runs filed there}
+    pairs: Dict[str, List[float]] = field(default_factory=dict)
+    pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict)
+    # what the fleet read of the inputs for this pass: (changes, their times,
+    # numbers); and what is worked out once a pass from the library
+    signals: Optional[tuple] = field(default=None, repr=False, compare=False)
+    _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
+    _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -3201,6 +3322,9 @@ class Detector:
         # as of the same moment rather than the end of the previous batch,
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
+        self._partners, self._learned = None, None
+        for ph, st in self.phases.items():
+            st.lib, st.name = self, ph
         for ph, rows in samples.items():
             if ph not in self.phases:
                 continue
@@ -3219,9 +3343,16 @@ class Detector:
                 s.phases = ph
                 s.levels = {ph: s.levels.pop("")}
                 closed.append(s)
-        for ph, st in self.phases.items():
-            self.new_edges.extend((ph,) + e for e in st.steps)
-            st.steps = []
+        oldest = min((rows[0][0] for rows in samples.values() if rows), default=None)
+        cut = (oldest or 0.0) - SWITCH_MEMORY_S
+        for ph in self.edge_at:
+            self.edge_at[ph] = [e for e in self.edge_at[ph] if e[0] >= cut]
+        for ph in {c.phase for c in self.edges}:
+            for up in (True, False):
+                group = [c for c in self.edges if c.phase == ph and c.up == up]
+                if len(group) > EDGE_LIBRARY:
+                    gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
+                    self.edges = [c for c in self.edges if c.id not in gone]
         out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
@@ -3392,16 +3523,22 @@ class Detector:
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
+        key = f"{s.pair[0]}>{s.pair[1]}" if s.pair and None not in s.pair else None
+        if prefer is None and PAIR_PAIRING and key in self.pair_home:
+            home = self.pair_home[key]
+            prefer = max(home, key=home.get)          # the device IS its pairs
         if prefer is not None:
             seen = set()
             while prefer in self._moved and prefer not in seen:
                 seen.add(prefer)
                 prefer = self._moved[prefer]
-            want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
-            if want is not None and want.matches(s, noise) is not None:
-                best = want
         found = self._input_context(s) if INPUT_SPLIT else None
         context, episode = found if found else (None, None)
+        if prefer is not None:
+            want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
+            if (want is not None and want.matches(s, noise) is not None
+                    and (not INPUT_SPLIT or want.files_in(context))):
+                best = want
         for sig in ([] if best is not None else self.signatures):
             if INPUT_SPLIT and not sig.files_in(context):
                 continue
@@ -3445,6 +3582,9 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
+        if key is not None:
+            home = self.pair_home.setdefault(key, {})
+            home[best.id] = home.get(best.id, 0.0) + 1.0
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
@@ -3485,6 +3625,86 @@ class Detector:
                 sig.born_in = None
             judged.append(sig)
         return judged
+
+    def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> int:
+        """File a step the meter just took as an edge - see EDGE_LAG_REACH_S -
+        and say which cluster it is."""
+        size = abs(watts)
+        pf = size / math.hypot(size, var) if var is not None and size > 0 else None
+        events, times, numbers = self.signals or ({}, {}, {})
+        if self._learned is None:
+            self._learned = [n for n in events if lag_window(self.lag_hist.get(n) or [])]
+        bins = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
+        kinds, lags, values = {}, {}, {}
+        for name, evs in events.items():
+            ts = times[name]
+            i = bisect.bisect_left(ts, since - EDGE_LAG_REACH_S)
+            near = [j for j in range(i, min(i + 8, len(ts))) if abs(ts[j] - since) <= EDGE_LAG_REACH_S]
+            kinds[name] = ""
+            if not near:
+                continue
+            j = min(near, key=lambda k: abs(ts[k] - since))
+            lag = ts[j] - since
+            hist = self.lag_hist.setdefault(name, [0.0] * bins)
+            hist[min(bins - 1, int((lag + EDGE_LAG_REACH_S) / EDGE_LAG_BIN_S))] += 1.0
+            lo, hi = lag_window(hist) or (-EDGE_WINDOW_DEFAULT_S, EDGE_WINDOW_DEFAULT_S)
+            if lo <= lag <= hi:
+                kinds[name] = evs[j][1]
+                lags[name] = (evs[j][1], lag)
+        for name, rows in numbers.items():
+            i = bisect.bisect_right(rows, (since, math.inf)) - 1
+            if i >= 0:
+                values[name] = rows[i][1]
+        noise = self.phases[ph].noise if ph in self.phases else MIN_NOISE_W
+        keyed = {n: kinds.get(n, "") for n in self._learned}
+        scored = [(c.fits(size, pf, 0.0, noise), c) for c in self.edges
+                  if c.phase == ph and c.up == (watts > 0) and c.same_signals(keyed)]
+        scored = [(g, c) for g, c in scored if g is not None]
+        if scored:
+            cluster = min(scored, key=lambda x: x[0])[1]
+        else:
+            cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keyed)
+            self.next_edge_id += 1
+            self.edges.append(cluster)
+        cluster.absorb(since, size, pf, surge, kinds, lags, values)
+        self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
+        return cluster.id
+
+    def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
+        if start is None or stop is None or start_w <= 0 or stop_w <= 0:
+            return
+        acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 5)
+        lr, ld = math.log(stop_w / start_w), math.log(max(secs, 1.0))
+        acc[0] += 1.0
+        acc[1] += lr
+        acc[2] += lr * lr
+        acc[3] += ld
+        acc[4] += ld * ld
+
+    def partners(self, stop: int) -> Dict[int, tuple]:
+        """rise cluster -> (stop/start ratio, its spread, mean log seconds, its
+        spread) for the accepted pairs this fall cluster ends - see
+        PAIR_MIN_RUNS. Worked out once a pass."""
+        if self._partners is None:
+            by_start: Dict[int, float] = {}
+            by_stop: Dict[int, float] = {}
+            parsed = []
+            for key, acc in self.pairs.items():
+                a, b = (int(x) for x in key.split(">"))
+                parsed.append((a, b, acc))
+                by_start[a] = by_start.get(a, 0.0) + acc[0]
+                by_stop[b] = by_stop.get(b, 0.0) + acc[0]
+            out: Dict[int, Dict[int, tuple]] = {}
+            for a, b, acc in parsed:
+                n = acc[0]
+                if n < PAIR_MIN_RUNS or n < PAIR_MIN_SHARE * by_start[a] or n < PAIR_MIN_SHARE * by_stop[b]:
+                    continue
+                m_lr, m_ld = acc[1] / n, acc[3] / n
+                sd_lr = math.sqrt(max(0.0, acc[2] / n - m_lr * m_lr))
+                sd_ld = math.sqrt(max(0.0, acc[4] / n - m_ld * m_ld))
+                out.setdefault(b, {})[a] = (math.exp(m_lr), math.exp(m_lr) * sd_lr, m_ld, sd_ld)
+            self._partners = out
+        return self._partners.get(stop, {})
 
     def consolidate(self, noise_w: float = MIN_NOISE_W, changed: Optional[List["Signature"]] = None) -> int:
         """Merge signatures that have BECOME alike, and say how many went.
@@ -3826,7 +4046,9 @@ class Detector:
                 "input_until": dict(self.input_until),
                 "input_episodes": {n: dict(row) for n, row in self.input_episodes.items()},
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
-                "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()}}
+                "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
+                "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
+                "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -3846,6 +4068,8 @@ class Detector:
         det.edges = [EdgeCluster.from_dict(x) for x in d.get("edges") or []]
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
+        det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
+        det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         return det
 
 
@@ -3947,16 +4171,16 @@ class Fleet:
             q = measure_quantum([v for _, v in self.sub_rows[name]])
             if q:
                 self.sub_quantum[name] = q
+        events, numbers = self._signal_events()
+        self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
         closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum,
                                         file=not SUB_OVERRIDE)
-        self._learn_edges(oldest)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
             closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
                                            None, (sub_q_quantum or {}).get(name))
-            det.new_edges = []                # a sub-meter's own steps: the house's edges are the library
         if SUB_OVERRIDE:
             self._file_waiting(closed_main, closed_sub, latest)
             closed_main, closed_sub = [], {}
@@ -4108,63 +4332,6 @@ class Fleet:
                 prev = v
             events[name] = evs
         return events, self.main.drivers
-
-    def _learn_edges(self, oldest: Optional[float]) -> None:
-        """File the steps the house took this pass as edges - see
-        EDGE_LAG_REACH_S. Learning only: nothing here changes what is detected."""
-        det = self.main
-        if not det.new_edges:
-            return
-        events, numbers = self._signal_events()
-        times = {n: [t for t, _ in evs] for n, evs in events.items()}
-        learned = [n for n in events if lag_window(det.lag_hist.get(n) or [])]
-        bins = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
-        for ph, since, watts, var, surge in sorted(det.new_edges, key=lambda e: e[1]):
-            size = abs(watts)
-            pf = size / math.hypot(size, var) if var is not None and size > 0 else None
-            kinds, lags, values = {}, {}, {}
-            for name, evs in events.items():
-                ts = times[name]
-                i = bisect.bisect_left(ts, since - EDGE_LAG_REACH_S)
-                near = [j for j in range(i, min(i + 8, len(ts))) if abs(ts[j] - since) <= EDGE_LAG_REACH_S]
-                kinds[name] = ""
-                if not near:
-                    continue
-                j = min(near, key=lambda k: abs(ts[k] - since))
-                lag = ts[j] - since
-                hist = det.lag_hist.setdefault(name, [0.0] * bins)
-                hist[min(bins - 1, int((lag + EDGE_LAG_REACH_S) / EDGE_LAG_BIN_S))] += 1.0
-                lo, hi = lag_window(hist) or (-EDGE_WINDOW_DEFAULT_S, EDGE_WINDOW_DEFAULT_S)
-                if lo <= lag <= hi:
-                    kinds[name] = evs[j][1]
-                    lags[name] = (evs[j][1], lag)
-            for name, rows in numbers.items():
-                i = bisect.bisect_right(rows, (since, math.inf)) - 1
-                if i >= 0:
-                    values[name] = rows[i][1]
-            noise = det.phases[ph].noise if ph in det.phases else MIN_NOISE_W
-            keyed = {n: kinds.get(n, "") for n in learned}
-            scored = [(c.fits(size, pf, 0.0, noise), c) for c in det.edges
-                      if c.phase == ph and c.up == (watts > 0) and c.same_signals(keyed)]
-            scored = [(g, c) for g, c in scored if g is not None]
-            if scored:
-                cluster = min(scored, key=lambda x: x[0])[1]
-            else:
-                cluster = EdgeCluster(id=det.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keyed)
-                det.next_edge_id += 1
-                det.edges.append(cluster)
-            cluster.absorb(since, size, pf, surge, kinds, lags, values)
-            det.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
-        det.new_edges = []
-        cut = (oldest or 0.0) - SWITCH_MEMORY_S
-        for ph in det.edge_at:
-            det.edge_at[ph] = [e for e in det.edge_at[ph] if e[0] >= cut]
-        for ph in {c.phase for c in det.edges}:
-            for up in (True, False):
-                group = [c for c in det.edges if c.phase == ph and c.up == up]
-                if len(group) > EDGE_LIBRARY:
-                    gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
-                    det.edges = [c for c in det.edges if c.id not in gone]
 
     def _edges_of(self, m: Session) -> List[Tuple[str, tuple]]:
         """The edges a house session started, stepped and stopped with, as
