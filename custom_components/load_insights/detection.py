@@ -5,6 +5,7 @@ import asyncio
 import functools
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -217,6 +218,9 @@ class DetectionRunner:
         # stored: what the library gains is old, not new energy
         self.refiling = False
         self.last_run: Optional[datetime] = None
+        # seconds the last pass spent reading the recorder and detecting, and
+        # the hours it covered: where a backfill's time goes
+        self.last_pass: Dict[str, float] = {}
         self.sessions_today = 0
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         self._unsub = None
@@ -922,6 +926,7 @@ class DetectionRunner:
             return
         self._running = True
         try:
+            began = time.monotonic()
             now = dt_util.utcnow()
             start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
             end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
@@ -973,11 +978,14 @@ class DetectionRunner:
             sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
             single = {n: self.holds_one_device(n) for n in self.submeters}
             switches, numbers, stages = await self._read_inputs(start, end)
+            read = time.monotonic()
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,
                 stages or None,
             )
+            self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
+                              "hours": round((end - start).total_seconds() / 3600.0, 2)}
             self.samples_read += sum(len(rows) for rows in samples.values())
             self._update_average_power(end.timestamp())
             self.last_processed = end

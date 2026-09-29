@@ -670,6 +670,14 @@ Don't re-chase these; each cost real time.
   least partly the inoperative `SUSTAIN_SECONDS` guard plus edge mis-pairing.
 - **`_pair` must stay most-recent-first.** Best-size-fit was tried and is worse
   at both sites.
+- **`_unseen_stop` waiting for the shortfall to hold across N settled levels**
+  (Anze: "a couple impossible readings before we decide", 2026-09-29), checked
+  at rises as well as drops. The closes that fall within 30 s of a >1 kW solar
+  swing did not fall (23-30 % of sunny closes at N 1-3, against 13 % of sunny
+  moments): the shortfall there persists, so it is not a one-reading blip. The
+  mat was erratic - 100.6 / 146.2 / 85.4 h against the shipped 91.1 (thermostat
+  89.9) - and Home purity 71.0 / 73.2 / 73.4 against 73.7. The shipped check
+  closes at the first settled level after a drop.
 - **Filing a run only into a signature it does not overlap, as first built**
   ("one device never runs twice at once", 2026-09-29) made Home's floor mat
   worse against its thermostat (89.9 h heating, 18-27.09): 114.0 -> 127.9 h

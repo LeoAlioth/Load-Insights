@@ -1117,6 +1117,7 @@ def names_in_store(raw: dict) -> List[dict]:
                         "power": dict(power) if isinstance(power, dict) else {},
                         "duration_s": sig.get("duration_s") or 0.0,
                         "pf": sig.get("pf")})
+        out += [dict(o) for o in main.get("orphan_names") or [] if isinstance(o, dict) and o.get("name")]
     except (AttributeError, TypeError, ValueError):
         return []
     return out
@@ -3463,9 +3464,12 @@ class Detector:
         it is the only thing worth carrying across a library that is about to
         be thrown away. The rest - the counts, the hours, the locations - is
         re-learned from history in a few minutes; a name is not."""
+        # ...and the names still waiting from the last reset: one reset on
+        # top of another dropped every name whose load had not run in between
+        # (Home, 2026-09-29: the floor mat, the kiln and the washer)
         return [{"name": sig.name, "phases": sig.phases, "power": dict(sig.power),
                  "duration_s": sig.duration_s, "pf": sig.pf}
-                for sig in self.signatures if sig.name]
+                for sig in self.signatures if sig.name] + [dict(o) for o in self.orphan_names]
 
     def carry_names(self, descriptors: List[dict]) -> None:
         """Take names into a fresh library."""

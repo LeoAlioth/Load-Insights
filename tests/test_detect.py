@@ -1736,6 +1736,28 @@ def test_a_rebuilt_library_gets_its_names_back():
     assert round(fresh.energy_by_name()["Kompresor"]) == round(det.energy_by_name()["Kompresor"])
 
 
+def test_a_reset_on_a_reset_keeps_the_names_still_waiting():
+    """Home, 2026-09-29: a second reset fifteen minutes after the first
+    dropped the mat, the kiln and the washer - none had run in between, so
+    their names were still waiting, not on a signature."""
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    samples, t = _session(T0, 2000.0, 600.0)
+    det.process(samples, now_ts=t)
+    det.rename(det.signatures[0].id, "Kompresor")
+    first = D.Detector()
+    first.carry_names(det.name_descriptors() + [{"name": "Kiln", "phases": "ac", "power": {"a": 2985.0, "c": 2937.0},
+                                                 "duration_s": 23.0, "pf": 0.96}])
+    samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
+    first.process(samples, now_ts=t2)                   # the compressor runs; the kiln does not
+    assert [s.name for s in first.signatures] == ["Kompresor"]
+    second = D.Detector()
+    second.carry_names(first.name_descriptors())
+    assert sorted(o["name"] for o in second.orphan_names) == ["Kiln", "Kompresor"]
+    stored = D.names_in_store({"generation": 1, "fleet": {"main": first.to_dict()}})
+    assert sorted(o["name"] for o in stored) == ["Kiln", "Kompresor"]
+
+
 def test_the_names_survive_a_restart_mid_rebuild():
     det = D.Detector()
     det.carry_names([{"name": "Kiln", "phases": "ac", "power": {"a": 2985.0, "c": 2937.0},
