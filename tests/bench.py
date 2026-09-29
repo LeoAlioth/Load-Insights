@@ -6,6 +6,8 @@ site and ten at once on a laptop.
     python3 tests/bench.py kiln   FOLDER [DIAL=VALUE ...]
     python3 tests/bench.py surge  SITE FOLDER [DIAL=VALUE ...]
     python3 tests/bench.py pump   FOLDER [DIAL=VALUE ...]
+    python3 tests/bench.py mat    FOLDER [DIAL=VALUE ...]   Home's floor mat against its thermostat
+    python3 tests/bench.py home   FOLDER [DIAL=VALUE ...]   score, mat, kiln and pump off two replays
     python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER [DIAL=VALUE ...]
 
 SITE is a key of cluster_lab.SITES (home, kozolec); FOLDER a directory of the
@@ -252,13 +254,16 @@ def _apply(dials) -> str:
             _house_as(v)
             continue
         if k == "SWITCH":
-            SWITCHES.append(v)            # an entity whose on-periods say when a load runs
+            if v not in SWITCHES:
+                SWITCHES.append(v)        # an entity whose on-periods say when a load runs
             continue
         if k == "DRIVER":
-            DRIVERS.append(v)             # a number a load's runs may follow
+            if v not in DRIVERS:
+                DRIVERS.append(v)         # a number a load's runs may follow
             continue
         if k == "INPUT":
-            STAGES.append(v)              # a setting a device reports
+            if v not in STAGES:
+                STAGES.append(v)          # a setting a device reports
             continue
         if not hasattr(D, k):
             raise SystemExit(f"no such dial: {k}")
@@ -266,9 +271,19 @@ def _apply(dials) -> str:
     return " ".join(dials) or "defaults"
 
 
+_RUNS: dict = {}
+
+
 def _run(folder: str, site: str | None):
     """Replay a folder; return the main detector, every session it filed, and
-    each sub-meter's full series."""
+    each sub-meter's full series. Once per folder and site in a process, so
+    `home` scores the kiln, the pump and the mat off one replay."""
+    if (folder, site) not in _RUNS:
+        _RUNS[(folder, site)] = _replay(folder, site)
+    return _RUNS[(folder, site)]
+
+
+def _replay(folder: str, site: str | None):
     filed, seen, full = [], {}, {}
     of, op = D.Detector._file, D.Fleet.process
 
@@ -711,6 +726,60 @@ def lengths(kfolder: str, pfolder: str, dials) -> None:
               f" real median {med([t1 - t0 for t0, t1 in real]):5.1f} s")
 
 
+MAT_THERMOSTAT = "climate.termostat_kopalnica:hvac_action"
+
+
+def mat(folder: str, dials) -> None:
+    """Home's floor mat against its thermostat's heating (no sub-meter): the
+    signature holding the most runs that start 5.5 s after the thermostat goes
+    on, its hours counted once, and how many of them the thermostat was NOT
+    heating for - the over-report Anze would rather not have (2026-09-30:
+    "capturing 80 % of actual energy ... is much preferred over assigning 20 %
+    over"). Local days from the first to the last of heating on record."""
+    tag = _apply(dials + [f"SWITCH={MAT_THERMOSTAT}"] if f"SWITCH={MAT_THERMOSTAT}" not in dials else dials)
+    det, filed, _ = _run(folder, "home")                 # with Home's device meters, as `score` runs
+    heat = [(a, b) for a, b in R.read_switch([folder], MAT_THERMOSTAT) if b is not None]
+    starts = sorted(a + 5.5 for a, _ in heat)
+
+    def aligned(t):
+        i = bisect.bisect_left(starts, t - 15)
+        return i < len(starts) and abs(starts[i] - t) <= 15
+    by = collections.Counter(det.signature_of(s).id for s in filed if det.signature_of(s) and aligned(s.start))
+    if not by or not heat:
+        print(f"  {tag:44s} mat: nothing starts with the thermostat")
+        return
+    sid = by.most_common(1)[0][0]
+    day = lambda t: (t + det.tz_offset_s) // 86400 * 86400 - det.tz_offset_s  # noqa: E731
+    lo, hi = day(heat[0][0]), day(heat[-1][1]) + 86400
+
+    def union(iv):
+        out = []
+        for a, b in sorted((max(a, lo), min(b, hi)) for a, b in iv if b > lo and a < hi):
+            if out and a <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return out
+    runs = union((s.start, s.end) for s in filed if det.signature_of(s) and det.signature_of(s).id == sid)
+    warm = union(heat)
+    counted = sum(b - a for a, b in runs) / 3600
+    heating = sum(b - a for a, b in warm) / 3600
+    inside = sum(max(0.0, min(b, d) - max(a, c)) for a, b in runs for c, d in warm) / 3600
+    print(f"  {tag:44s} mat #{sid}: heating {heating:5.1f} h, counted once {counted:5.1f} h, OVER {counted - inside:5.1f} h"
+          f" (precision {inside / max(counted, 1e-9):4.0%}), caught {inside / max(heating, 1e-9):4.0%};"
+          f" next by aligned starts " + ", ".join(f"#{i} x{n}" for i, n in by.most_common(3)[1:]))
+
+
+def home(folder: str, dials) -> None:
+    """Everything Home is benched on, its thermostat fed, off two replays: the
+    score and the mat with the device meters, the kiln and the pump without."""
+    dials = dials + [f"SWITCH={MAT_THERMOSTAT}"]
+    score("home", folder, dials)
+    mat(folder, dials)
+    kiln(folder, dials)
+    pump(folder, dials)
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
@@ -732,6 +801,10 @@ def main() -> int:
         attrib(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == "pump":
         pump(sys.argv[2], sys.argv[3:])
+    elif cmd == "mat":
+        mat(sys.argv[2], sys.argv[3:])
+    elif cmd == "home":
+        home(sys.argv[2], sys.argv[3:])
     elif cmd == "lengths":
         lengths(sys.argv[2], sys.argv[3], sys.argv[4:])
     else:
