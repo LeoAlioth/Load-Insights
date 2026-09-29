@@ -766,6 +766,7 @@ class DetectionRunner:
     def _snapshot(self) -> dict:
         return {"fleet": self.fleet.to_dict(),
                 "last_processed": self.last_processed.isoformat() if self.last_processed else None,
+                "refiling": self.refiling,
                 "generation": DETECTOR_GENERATION}
 
     @property
@@ -846,7 +847,7 @@ class DetectionRunner:
         self.submeters = await self._resolve_submeters()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
-        self.refiling = self.last_processed is None
+        self.refiling = bool(raw.get("refiling")) or self.last_processed is None
         if not self.enabled:
             return
         self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
