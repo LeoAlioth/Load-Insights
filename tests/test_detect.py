@@ -2553,6 +2553,64 @@ def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     assert list(det.hourly_by_name("Mat").values()) == [10.0]
 
 
+def test_an_inputs_lag_is_where_its_changes_pile_up_against_the_edges():
+    bins = int(2 * D.EDGE_LAG_REACH_S / D.EDGE_LAG_BIN_S)
+    even = [2.0] * bins                                     # chance: spread evenly
+    assert D.lag_window(even) is None
+    piled = list(even)
+    at = int((-5.0 + D.EDGE_LAG_REACH_S) / D.EDGE_LAG_BIN_S)
+    piled[at] += 60.0                                       # a thermostat telling 5 s before the meter
+    piled[at - 1] += 20.0
+    lo, hi = D.lag_window(piled)
+    assert lo < -5.0 < hi and hi - lo < 20.0, (lo, hi)
+    assert D.lag_window([0.0] * bins) is None                # nothing seen yet
+
+
+def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
+    """Home's floor mat: +635 W on C about 5 s after its thermostat turns on,
+    -635 W about 5 s after it turns off; a look-alike of the same size runs
+    with the thermostat idle. Their edges must not share clusters, and the
+    mat's story must say which input moves with it (2026-09-29)."""
+    fleet = D.Fleet()
+    fleet.main.tz_offset_s = 0.0
+    rows, spans, t = [], [], T0
+    base = 200.0
+    def hold(w, secs):
+        nonlocal t
+        for _ in range(int(secs / 5)):
+            rows.append((t, w))
+            t += 5.0
+    hold(base, 600)
+    for k in range(60):
+        spans.append((t - 5.0, t + 295.0))            # the thermostat tells 5 s early
+        hold(base + 635.0, 300)                       # the mat
+        hold(base, 600)
+        if k % 2:
+            hold(base + 630.0, 200)                   # the look-alike, thermostat idle
+            hold(base, 600)
+    temps = [(ts, 19.0 + (ts - T0) % 900 / 450) for ts, _ in rows[::10]]
+    step = 6 * 3600.0
+    a = T0
+    while a < t:
+        b = a + step
+        fleet.process({"c": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      switches={"climate.mat": [(on, off if off < b else None) for on, off in spans if on < b and off > a - D.SWITCH_MEMORY_S]},
+                      drivers={"sensor.room": [r for r in temps if a - D.SWITCH_MEMORY_S <= r[0] < b]})
+        a = b
+    det = fleet.main
+    assert D.lag_window(det.lag_hist["climate.mat"]), det.lag_hist
+    keyed = [c for c in det.edges if c.keys.get("climate.mat")]
+    assert keyed and all(abs(c.watts - 635.0) < 60.0 for c in keyed), [(c.watts, c.keys) for c in keyed]
+    mat = max((x for x in det.signatures if x.phases == "c"), key=lambda x: x.count)
+    story = D.edge_story(det.edges, mat)
+    starts, stops = story["start"]["signals"]["climate.mat"], story["stop"]["signals"]["climate.mat"]
+    assert starts["kind"] == "off→on" and stops["kind"] == "on→off", story
+    assert -8.0 < starts["lag_s"] < -2.0, starts
+    assert "sensor.room" in story["start"]["values"], story["start"]
+    back = D.EdgeCluster.from_dict(keyed[0].to_dict())
+    assert back.keys == keyed[0].keys and back.watts == keyed[0].watts
+
+
 def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
     """Home's floor mat draws through its thermostat's relay: a 600 W run on C
     while the thermostat was not heating is another load (2026-09-29)."""
@@ -2570,6 +2628,7 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
     assert fleet._switched_off(run(T0 + 3000.0, T0 + 3700.0), 2.0) == []   # on for part of it
     fleet.switch_on = {}
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == []   # nothing on record: no say
+
 
 
 def test_a_signature_on_twice_at_once_counts_the_overlap_once():

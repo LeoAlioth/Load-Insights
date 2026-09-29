@@ -47,7 +47,8 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import SWITCH_PREFIX, most_specific, same_device_phrase, input_groups, suggest_levels
+from .insights.detect import (EDGE_HELPED_SHARE, SWITCH_PREFIX, edge_story, most_specific, same_device_phrase,
+                              input_groups, suggest_levels)
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -172,7 +173,7 @@ def _group_title(where: str, hass=None) -> str:
     return where
 
 
-def _helpers(hass, sig) -> list:
+def _helpers(hass, sig, edges=()) -> list:
     """(input, what it says about this load) for each input that helped find
     it - so an input added for the whole site can be linked to the load it
     turned out to explain once it is named (Anze, 2026-09-28)."""
@@ -181,10 +182,20 @@ def _helpers(hass, sig) -> list:
         return (st.attributes.get("friendly_name") if st is not None else None) or eid, st
 
     out = []
-    for where, k in sig.locations.items():
-        if where.startswith(SWITCH_PREFIX) and k * 2 >= sig.count:
-            eid = where[len(SWITCH_PREFIX):]
-            out.append((eid, f"Starts and stops with {label(eid)[0]}: {k} of its {sig.count} runs"))
+    story = edge_story(edges, sig)
+    said = {}
+    for role, verb in (("start", "Starts"), ("stop", "Stops")):
+        for eid, seen in ((story.get(role) or {}).get("signals") or {}).items():
+            if seen["share"] < EDGE_HELPED_SHARE:
+                continue
+            was, _, now = seen["kind"].partition("→")
+            what = {"off→on": "turning on", "on→off": "turning off"}.get(seen["kind"], f"going from {was} to {now}")
+            when = ("" if seen["lag_s"] is None else
+                    f", {abs(seen['lag_s']):.0f} s {'before' if seen['lag_s'] < 0 else 'after'} the meter sees it")
+            said.setdefault(eid, []).append(f"{verb} with {label(eid)[0]} {what}{when}: {seen['share']:.0%} of its "
+                                            f"{role}s")
+    for eid, lines in said.items():
+        out.append((eid, "; ".join(lines)))
     tied = sig.strongest_input()
     if tied is not None:
         eid, value, share, lift = tied
@@ -726,7 +737,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if sig is None:
             return await self.async_step_naming_list()
         detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
-        helped = _helpers(self.hass, sig)
+        helped = _helpers(self.hass, sig, runner.detector.edges)
         if helped:
             detail += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
         if sig.name:
@@ -761,7 +772,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is None or sig is None:
             return await self.async_step_naming_list()
         inputs = set(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
-        helped = [(eid, text) for eid, text in _helpers(self.hass, sig) if eid in inputs]
+        helped = [(eid, text) for eid, text in _helpers(self.hass, sig, runner.detector.edges) if eid in inputs]
         if user_input is not None:
             name = chosen_name(user_input.get("name"), user_input.get("same_as_meter"))
             if not name:
