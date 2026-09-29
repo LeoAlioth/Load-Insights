@@ -1695,66 +1695,36 @@ def test_names_are_read_out_of_a_library_the_detector_has_disowned():
     assert odd[0]["power"] == {} and odd[0]["phases"] == ""
 
 
-def test_a_named_loads_meter_does_not_step_down_when_the_library_is_rebuilt():
-    """A rebuilt library covers ten days where the old one had accumulated
-    since it was installed, so the name comes back attached to far less
-    energy than its meter had already published. Home Assistant reads a drop
-    on a TOTAL_INCREASING sensor as a meter reset - true, but it need not
-    happen: the old reading is a FLOOR, not something to add, because the two
-    periods overlap and adding them would count those ten days twice."""
+def test_a_rebuilt_library_gets_its_names_back():
+    """A reset carries the NAMES across and nothing else: the ten days it
+    rebuilds are the load's energy from then on, and the published meter
+    counts only what it gains (named.carry_reading), so it neither steps
+    down nor counts the ten days twice."""
     det = D.Detector()
     det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
-    sig = det.signatures[0]
-    assert det.rename(sig.id, "Kompresor")
-    sig.carried_wh = 18978.0 - sum(sig.hour_wh)          # as if it had run for months
-    before = det.energy_by_name()["Kompresor"]
-    assert round(before) == 18978
-
+    assert det.rename(det.signatures[0].id, "Kompresor")
     carried = det.name_descriptors()
-    assert round(carried[0]["energy_wh"]) == 18978
-
     fresh = D.Detector()
     fresh.tz_offset_s = 0.0
     fresh.carry_names(carried)
-    # the meter holds its reading even before the name finds a load again
-    assert round(fresh.energy_by_name().get("Kompresor", 0.0)) == 18978
-
+    assert fresh.energy_by_name() == {}
     samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
     fresh.process(samples, now_ts=t2)
     assert [s.name for s in fresh.signatures] == ["Kompresor"]
-    after = fresh.energy_by_name()["Kompresor"]
-    assert after >= before, (before, after)
-    # and it is the floor, NOT a sum - the rebuilt days are not counted twice
-    assert round(after) == 18978, after
+    assert round(fresh.energy_by_name()["Kompresor"]) == round(det.energy_by_name()["Kompresor"])
 
 
-def test_the_floor_stops_mattering_once_the_meter_passes_it():
-    """It is a floor, not a constant: a rebuilt library that outgrows the old
-    reading publishes its own figure."""
-    det = D.Detector()
-    det.tz_offset_s = 0.0
-    det.carry_names([{"name": "Kettle", "phases": "a", "power": {"a": 2000.0},
-                      "duration_s": 600.0, "pf": None, "energy_wh": 5.0}])
-    samples, t = _session(T0, 2000.0, 600.0)
-    det.process(samples, now_ts=t)
-    assert [s.name for s in det.signatures] == ["Kettle"]
-    own = sum(s.energy_wh for s in det.signatures if s.name == "Kettle")
-    assert own > 5.0, own
-    assert det.energy_by_name()["Kettle"] == own
-
-
-def test_the_meter_reading_survives_a_restart_mid_rebuild():
+def test_the_names_survive_a_restart_mid_rebuild():
     det = D.Detector()
     det.carry_names([{"name": "Kiln", "phases": "ac", "power": {"a": 2985.0, "c": 2937.0},
-                      "duration_s": 23.0, "pf": 0.96, "energy_wh": 10436.2}])
+                      "duration_s": 23.0, "pf": 0.96}])
     back = D.Detector.from_dict(det.to_dict())
-    assert round(back.energy_floor["Kiln"], 1) == 10436.2
     assert [o["name"] for o in back.orphan_names] == ["Kiln"]
 
 
-def test_a_generation_bump_keeps_names_and_their_meter_readings():
+def test_a_generation_bump_keeps_names():
     """The path nobody has ever walked: DETECTOR_GENERATION moves, the whole
     stored library is discarded, and every installation in the world does this
     at once on the next update. It is simulated here against a store in the
@@ -1774,17 +1744,14 @@ def test_a_generation_bump_keeps_names_and_their_meter_readings():
     # the bump: the store is read by a detector that has disowned its shape
     orphans = D.names_in_store(stored)
     assert [o["name"] for o in orphans] == ["Kiln"]
-    assert round(orphans[0]["energy_wh"], 1) == 10436.2, orphans[0]["energy_wh"]
 
     fresh = D.Detector()                        # what `raw = {}` leaves behind
     fresh.tz_offset_s = 0.0
     fresh.carry_names(orphans)
-    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
 
     samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
     fresh.process(samples, now_ts=t2)
     assert [x.name for x in fresh.signatures] == ["Kiln"]
-    assert round(fresh.energy_by_name()["Kiln"], 1) == 10436.2
     assert fresh.orphan_names == []
 
 
@@ -1804,12 +1771,7 @@ def test_the_only_paths_that_discard_the_library_both_carry_names():
     by_bump = D.names_in_store({"generation": 4, "fleet": {"main": det.to_dict()}})
     for got in (by_reset, by_bump):
         assert [g["name"] for g in got] == ["Kiln"]
-        assert round(got[0]["energy_wh"]) == round(det.energy_by_name()["Kiln"])
         assert got[0]["phases"] == "a" and got[0]["power"]
-    # and both produce the same floor
-    a, b = D.Detector(), D.Detector()
-    a.carry_names(by_reset); b.carry_names(by_bump)
-    assert round(a.energy_floor["Kiln"]) == round(b.energy_floor["Kiln"])
 
 
 def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
@@ -2547,6 +2509,20 @@ def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     sig.name = "Mat"
     det.signatures.append(sig)
     assert list(det.hourly_by_name("Mat").values()) == [10.0]
+
+
+def test_a_signature_on_twice_at_once_counts_the_overlap_once():
+    """One device never runs twice at once: Home's 635 W mat was credited
+    1.96 kWh in one hour when other runs of its size overlapped its own."""
+    sig = D.Signature(id=1, phases="c", power={"c": 600.0}, duration_s=1800.0, pf=None, count=0,
+                      first_seen=T0, last_seen=T0)
+    hour0 = int(T0 // 3600 * 3600)
+    for a, b in ((hour0, hour0 + 1800.0), (hour0 + 900.0, hour0 + 2700.0)):
+        sig.runs.append((a, b))                                     # as add() does, before spreading
+        sig._spread(D.Session(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]}), timezone.utc)
+    assert round(sig.hourly[hour0]) == 450, sig.hourly              # 45 minutes on, not 60
+    assert D._uncovered(0, 10, [(2, 3), (1, 4), (6, 12)]) == [(0, 1), (4, 6)]
+    assert D._uncovered(0, 10, []) == [(0, 10)] and D._uncovered(0, 10, [(-5, 20)]) == []
 
 
 

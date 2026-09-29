@@ -1116,10 +1116,7 @@ def names_in_store(raw: dict) -> List[dict]:
                         "phases": sig.get("phases") or "",
                         "power": dict(power) if isinstance(power, dict) else {},
                         "duration_s": sig.get("duration_s") or 0.0,
-                        "pf": sig.get("pf"),
-                        # the meter reading comes across too, or it steps down
-                        "energy_wh": (sum(sig.get("hour_wh") or [])
-                                      + (sig.get("carried_wh") or 0.0))})
+                        "pf": sig.get("pf")})
     except (AttributeError, TypeError, ValueError):
         return []
     return out
@@ -2567,21 +2564,26 @@ class Signature:
         """Put a session's energy into every hour and day it occupied.
 
         A run from 23:50 to 03:00 belongs to four hours and two days, not to
-        the one it began in."""
+        the one it began in. And only the part of it this signature was not
+        already on for: one device never runs twice at once, and a second
+        run over the first is another device of its size. Counting both put
+        1.96 kWh in one hour into Home's 635 W floor mat, more than the whole
+        of Hiša used in it (2026-09-29)."""
         watts = sum(s.power_by_phase().values())
         if watts <= 0 or s.end <= s.start:
             return
-        t = s.start
-        while t < s.end:
-            moment = datetime.fromtimestamp(t, tz)
-            into = moment.minute * 60 + moment.second + moment.microsecond / 1e6
-            step = min(s.end - t, max(3600.0 - into, 1.0))
-            wh = watts * step / 3600.0
-            self.hour_wh[moment.hour] += wh
-            self.day_wh[moment.weekday()] += wh
-            hour = int(t - into)
-            self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
-            t += step
+        for start, end in _uncovered(s.start, s.end, self.runs[:-1]):
+            t = start
+            while t < end:
+                moment = datetime.fromtimestamp(t, tz)
+                into = moment.minute * 60 + moment.second + moment.microsecond / 1e6
+                step = min(end - t, max(3600.0 - into, 1.0))
+                wh = watts * step / 3600.0
+                self.hour_wh[moment.hour] += wh
+                self.day_wh[moment.weekday()] += wh
+                hour = int(t - into)
+                self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
+                t += step
         cut = s.end - HOURLY_KEEP_S
         for hour in [h for h in self.hourly if h < cut]:
             del self.hourly[hour]
@@ -2696,6 +2698,22 @@ class Signature:
 def _opposite(a: Optional[str], b: Optional[str]) -> bool:
     """One surges and the other bumps - see START_SHAPE_SPLIT."""
     return {a, b} == {"surge", "bump"}
+
+
+def _uncovered(start: float, end: float, taken: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """The stretches of start..end that none of ``taken`` covers."""
+    out, t = [], start
+    for a, b in sorted(taken):
+        if b <= t:
+            continue
+        if a >= end:
+            break
+        if a > t:
+            out.append((t, a))
+        t = max(t, b)
+    if t < end:
+        out.append((t, end))
+    return out
 
 
 def _fmt_w(x: float) -> str:
@@ -2867,10 +2885,6 @@ class Detector:
     # recognised again, and are handed back to the first signature that looks
     # like them (see _reclaim).
     orphan_names: List[dict] = field(default_factory=list)
-    # name -> watt-hours its meter had already reached. A rebuilt library
-    # covers ten days where the old one had accumulated since it was
-    # installed, so without this the meter steps DOWN when a name comes back.
-    energy_floor: Dict[str, float] = field(default_factory=dict)
     next_id: int = 1
     tz_offset_s: float = 0.0
     # number -> sorted [(ts, value)], each held until the next - see
@@ -3390,24 +3404,13 @@ class Detector:
     def energy_by_name(self) -> Dict[str, float]:
         """Watt-hours each NAME has used over everything ever seen of it.
 
-        Signatures sharing a name are one device, so their energy adds. Only
-        ever grows: hour_wh accumulates and a merge sums both sides, so this
-        is safe to publish as a total-increasing meter."""
+        Signatures sharing a name are one device, so their energy adds. It
+        starts again from the ten days a reset rebuilds; the published meter
+        counts only what it gains - see named.carry_reading."""
         out: Dict[str, float] = {}
         for sig in self.signatures:
             if sig.name:
                 out[sig.name] = out.get(sig.name, 0.0) + sig.energy_wh
-        # A library rebuilt from ten days does not know what the meter read
-        # before it, so the old reading is a FLOOR rather than something to
-        # add: the two periods overlap, and adding them would count those ten
-        # days twice. Once the rebuilt library has accumulated past the old
-        # total the floor stops mattering of its own accord. It is kept per
-        # NAME rather than on the signature so that per_run_wh and the hour
-        # and weekday charts still describe the load, not its lifetime
-        # (Anze, 2026-09-22: "is there a way we could also fix this?").
-        for name, floor in self.energy_floor.items():
-            if floor > out.get(name, 0.0):
-                out[name] = floor
         return out
 
     def running_now(self, now_ts: float) -> set:
@@ -3429,17 +3432,13 @@ class Detector:
         it is the only thing worth carrying across a library that is about to
         be thrown away. The rest - the counts, the hours, the locations - is
         re-learned from history in a few minutes; a name is not."""
-        totals = self.energy_by_name()
         return [{"name": sig.name, "phases": sig.phases, "power": dict(sig.power),
-                 "duration_s": sig.duration_s, "pf": sig.pf,
-                 "energy_wh": totals.get(sig.name, 0.0)}
+                 "duration_s": sig.duration_s, "pf": sig.pf}
                 for sig in self.signatures if sig.name]
 
     def carry_names(self, descriptors: List[dict]) -> None:
-        """Take names, and the meter readings they had, into a fresh library."""
+        """Take names into a fresh library."""
         self.orphan_names = [dict(d) for d in descriptors if d.get("name")]
-        self.energy_floor = {d["name"]: float(d.get("energy_wh") or 0.0)
-                             for d in self.orphan_names}
 
     def _reclaim(self, sig: "Signature", noise_w: float) -> None:
         """Give a rebuilt signature back the name a reset took from it.
@@ -3505,7 +3504,6 @@ class Detector:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
-                "energy_floor": {k: _trim(v, 1) for k, v in self.energy_floor.items()},
                 "stage_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.stage_time.items()},
                 "stage_until": dict(self.stage_until),
                 "stage_episodes": {n: dict(row) for n, row in self.stage_episodes.items()}}
@@ -3522,7 +3520,6 @@ class Detector:
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
-        det.energy_floor = {k: float(v) for k, v in (d.get("energy_floor") or {}).items()}
         det.stage_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("stage_time") or {}).items()}
         det.stage_until = {n: float(t) for n, t in (d.get("stage_until") or {}).items()}
         det.stage_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("stage_episodes") or {}).items()}

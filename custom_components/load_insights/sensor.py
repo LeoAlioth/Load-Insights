@@ -10,7 +10,7 @@ from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GEN
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -24,6 +24,7 @@ from .detection import DetectionRunner, device_uid, load_uid
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
                               most_specific, suggest_levels)
 from .insights.model import SiteModel
+from .insights.named import carry_reading
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -644,14 +645,9 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
     dashboard, which is where anyone would go to ask what the thing costs
     (Anze, 2026-09-18).
 
-    A signature's hour_wh only accumulates, a merge sums both sides and a
-    reset leaves the old total as a floor, yet the reading still dipped: by
-    a rounding hair after a restart, and by 1.3 kWh at the kiln (22.09). Home
-    Assistant books a dip under 10 % as a negative hour on the Energy
-    dashboard, and a bigger one as a meter reset that counts it all again.
-    So the reading never goes below the last one it reported, restored
-    across restarts; after a dip it waits for the library to catch up, the
-    same choice the reset floor makes, and never counts anything twice.
+    It counts up by what detection gains and nothing else - never down, and
+    not while detection re-reads history after a reset - across restarts
+    too; see named.carry_reading. The history is the statistics rewrite's.
     """
 
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -664,20 +660,32 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
-        self._high = 0.0
+        self._reading: Optional[float] = None
+        self._seen: Optional[float] = None
 
     @property
     def native_value(self) -> Optional[float]:
-        self._high = max(self._high, self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0)
-        return self._high
+        return self._reading
+
+    def _total(self) -> float:
+        return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0
+
+    @callback
+    def _detected(self) -> None:
+        self._reading, self._seen = carry_reading(self._reading, self._seen, self._total(),
+                                                  not self._runner.refiling)
+        self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
         last = await self.async_get_last_sensor_data()
         try:
-            self._high = float(last.native_value)
+            self._reading = float(last.native_value)
         except (AttributeError, TypeError, ValueError):
             pass
-        await super().async_added_to_hass()
+        # the library as stored, so what the first pass adds - the time Home
+        # Assistant was down - counts
+        self._reading, self._seen = carry_reading(self._reading, None, self._total(), False)
+        self._runner.add_listener(self._detected)
         self._runner.entry.async_create_background_task(
             self.hass, self._backfill_when_new(), f"{DOMAIN} backfill {self.entity_id}")
 

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
+from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
@@ -70,7 +71,7 @@ from .insights.detect import (
 )
 from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
-from .insights.named import metered_device, one_device_meters, plan_backfill
+from .insights.named import metered_device, one_device_meters, plan_rewrite
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -212,6 +213,9 @@ class DetectionRunner:
         self._saved_at: Optional[float] = None
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
+        # re-reading history from scratch - after a reset, or with nothing
+        # stored: what the library gains is old, not new energy
+        self.refiling = False
         self.last_run: Optional[datetime] = None
         self.sessions_today = 0
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
@@ -576,17 +580,18 @@ class DetectionRunner:
         return float(rows[0]["start"]) if rows else None
 
     async def async_backfill_statistics(self, name: str) -> Optional[Tuple[int, float]]:
-        """Write what detection saw of a named load, hour by hour, into its
-        energy meter's long-term statistics before the first hour Home
-        Assistant recorded - so the Energy dashboard shows the days it was
-        seen before it was named - and raise every recorded hour's sum by
-        what was written, so the hours after read as they did.
+        """Write what detection saw of a named load, hour by hour, over its
+        energy meter's statistics - long-term and five-minute alike - for the
+        hours detection watched, about ten days: the days before it was named
+        show on the Energy dashboard, and a reset or the reading's first
+        appearance no longer shows as a day's worth in one hour (Anze,
+        2026-09-29: "rewrite the long term and short term statistics for
+        detected entities for the time it has the data for"). See
+        plan_rewrite.
 
-        Returns (hours, kWh) written - (0, 0.0) when there is nothing to do -
-        or None while the meter has no hour of its own yet: until it has, the
-        next hour Home Assistant compiles would restart the sum from 0 below
-        what was written. Nothing recorded is written over, so running it
-        again writes nothing (2026-09-29)."""
+        Returns (hours written, kWh they differ from what was recorded) -
+        (0, 0.0) when there is nothing to do - or None while the meter has no
+        hour of its own yet. Running it again writes the same."""
         meter = self.metered_device(name)
         if meter:
             _LOGGER.info("Not backfilling %s: it is the metered device %s, whose own readings are its history",
@@ -597,8 +602,7 @@ class DetectionRunner:
         if entity_id is None:
             return 0, 0.0
         async with self._backfill_lock:
-            first = await self.async_first_statistic(entity_id)
-            if first is None:
+            if await self.async_first_statistic(entity_id) is None:
                 return None
             for _ in range(600):              # the library, between passes: a pass changes it
                 if not self._running:
@@ -606,32 +610,48 @@ class DetectionRunner:
                 await asyncio.sleep(0.5)
             else:
                 return None
-            hourly = self.detector.hourly_by_name(name)
-            rows, total = plan_backfill(hourly, first, dt_util.utcnow().timestamp() // 3600 * 3600)
-            if not rows:
-                _LOGGER.info("Nothing to backfill for %s (%s): no hour detection saw before %s",
-                             name, entity_id, dt_util.utc_from_timestamp(first).isoformat())
+            seen = min((h for sig in self.detector.signatures for h in sig.hourly), default=None)
+            if seen is None:
                 return 0, 0.0
-            meta = await get_instance(self.hass).async_add_executor_job(
+            covered = int(seen // 3600 * 3600) + 3600     # the first hour read is a part of one
+            recorder = get_instance(self.hass)
+            meta = await recorder.async_add_executor_job(
                 functools.partial(rec_stats.get_metadata, self.hass, statistic_ids={entity_id}))
             unit = meta[entity_id][1]["unit_of_measurement"] if entity_id in meta else None
             if unit != UnitOfEnergy.KILO_WATT_HOUR:
                 _LOGGER.warning("Not backfilling %s: %s keeps its statistics in %s, not kWh", name, entity_id, unit)
                 return 0, 0.0
-            recorder = get_instance(self.hass)
+
+            def recorded(period, since):
+                return recorder.async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, dt_util.utc_from_timestamp(since), None,
+                    {entity_id}, period, None, {"state", "sum"})
+            hours = (await recorded("hour", 0)).get(entity_id) or []
+            fives = (await recorded("5minute", covered)).get(entity_id) or []
+            hour_rows, five_rows, shift = plan_rewrite(self.detector.hourly_by_name(name), covered, hours, fives)
+            if not hour_rows:
+                return 0, 0.0
             # exactly what the sensor's own statistics carry, so importing
             # changes nothing about them but the rows
-            rec_stats.async_import_statistics(self.hass, {
-                "has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
-                "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit,
-            }, [{"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
-                for r in rows])
-            recorder.async_adjust_statistics(entity_id, dt_util.utc_from_timestamp(first), total, unit)
+            metadata = {"has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
+                        "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit}
+            for table, rows in ((Statistics, hour_rows), (StatisticsShortTerm, five_rows)):
+                recorder.async_import_statistics(metadata, [
+                    {"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
+                    for r in rows], table)
+            # the hour being recorded, and any compiled since the rows were read
+            recorder.async_adjust_statistics(
+                entity_id, dt_util.utc_from_timestamp(hour_rows[-1]["start"] + 3600), shift, unit)
             await recorder.async_block_till_done()   # written before another run reads
-        _LOGGER.info("Backfilled %s (%s): %d hours, %.2f kWh, %s to %s", name, entity_id, len(rows), total,
-                     dt_util.utc_from_timestamp(rows[0]["start"]).isoformat(),
-                     dt_util.utc_from_timestamp(rows[-1]["start"]).isoformat())
-        return len(rows), total
+        _LOGGER.info("Rewrote %s (%s): %d hours and %d five-minute rows from %s, %.2f kWh %s than recorded",
+                     name, entity_id, len(hour_rows), len(five_rows),
+                     dt_util.utc_from_timestamp(hour_rows[0]["start"]).isoformat(), abs(shift),
+                     "more" if shift >= 0 else "less")
+        return len(hour_rows), shift
+
+    async def _rewrite_named(self) -> None:
+        for name in sorted(self.detector.names()):
+            await self.async_backfill_statistics(name)
 
     def guess_one_device(self, name: str) -> bool:
         if any(m.get("parent") == name for m in self.submeters.values()):
@@ -826,6 +846,7 @@ class DetectionRunner:
         self.submeters = await self._resolve_submeters()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
+        self.refiling = self.last_processed is None
         if not self.enabled:
             return
         self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
@@ -846,6 +867,7 @@ class DetectionRunner:
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         self.last_processed = None
         self.caught_up = False
+        self.refiling = True
         self.samples_read = 0
         self._saved_at = None
         await self._persist(force=True)          # a reset must survive a crash
@@ -954,6 +976,11 @@ class DetectionRunner:
             await self._persist()
             for cb in self._listeners:
                 cb()
+            if self.caught_up and self.refiling:
+                self.refiling = False
+                # the ten days re-read are the named loads' history now
+                self.entry.async_create_background_task(
+                    self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
             if not self.caught_up:
                 # keep slicing without waiting for the next tick
                 async_call_later(self.hass, 2, self._tick)
