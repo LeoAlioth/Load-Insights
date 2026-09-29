@@ -116,6 +116,7 @@ def _detection(runner) -> dict:
         "processed_until": _jsonable(runner.last_processed),
         "caught_up": runner.caught_up,
         "samples_read": runner.samples_read,
+        "last_pass": dict(runner.last_pass),
         # per phase: whether the grid reading was added to the load one
         "layout": dict(runner.layout),
         "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
