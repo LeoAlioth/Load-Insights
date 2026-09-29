@@ -962,8 +962,16 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                   if not e.disabled_by and not e.entity_category
                   and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())]
         candidates = {e.entity_id: _area_id(self.hass, e.entity_id) for e in chosen}
-        own = {e.entity_id: e.device_id for e in chosen if e.device_id in metering}
-        target_devices = {t: (registry.async_get(t).device_id if registry.async_get(t) else None)
+        # a device by its name, so the two halves of one appliance meet: Home's
+        # boiler is a plug metering it and a controller reading its tank, both
+        # called Workshop Boiler (2026-09-29)
+        devices = dr.async_get(self.hass)
+
+        def appliance(device_id):
+            device = devices.async_get(device_id) if device_id else None
+            return ((device.name_by_user or device.name or device_id).strip().lower()) if device else None
+        own = {e.entity_id: appliance(e.device_id) for e in chosen if e.device_id in metering}
+        target_devices = {t: appliance(registry.async_get(t).device_id if registry.async_get(t) else None)
                           for t in places if not t.startswith(LOAD_PREFIX)}
         found = suggest_inputs(places, candidates, options.get(CONF_INPUT_ENTITIES), own, target_devices)
         if not found:
