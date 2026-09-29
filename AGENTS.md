@@ -297,6 +297,8 @@ pulses the grid meter itself shows in them.
 | `INPUT_SPLIT` (`INPUT_RARE_SHARE` 0.25, `INPUT_SPLIT_MIN_TIME_S` 1 d, `INPUT_SPLIT_LIFT` 3, `INPUT_MIN_EPISODES` 3, `INPUT_MIN_COVERAGE` 0.5) | **1** | a run made while a setting holds a rare value joins only signatures born in it; one born by chance goes back into an alike twin (pair lift < 3) or turns ordinary once it has run in under half of the value's episodes since its birth (at least 3) | switch | — | **benched, shipped (2026-09-29).** Home 18-27 Sep with the Sock Eater's phase, state and sub-phase: purity 63.8 → 65.4 %, wconc 29.8 → 30.5 % (office plug 19 → 16 %); kiln and pump benches identical (no washer there). Judged by runs alone, the kiln firing through one afternoon's washing split into Wash/Rinse/Spin/Dry signatures (a burst read as 7× chance) and the floor mat grew a Delayed Start one; by episodes they go back. Tied now: 119 W A+C in Rinse, 61 W C in Dry, 98 W B in End Of Cycle. The heater (~2 kW on A, 2-60 min, in wash AND dry) scatters into one- and two-run signatures and does not tie on 13 washes |
 | `HOLD_MIN_INTERVAL_S` / `HOLD_SUSTAIN_S` | 20 s / 30 s | on a meter this slow in a steady state (a Shelly heartbeating once a minute, a Zigbee plug reporting on change), a pending change counts as having held until the next reading, and holding 30 s is enough | s | — | **benched, shipped (2026-09-29).** Kozolec's IR panel meter alone: 13 runs of 164 min → 46 of 48 min (its readings: 52 runs, mean 40 min, off 2.4 min between); the house's ~500 W signature credited to the panel 8 → 27 of 63; the Boiler meter's library 132 runs of 36 min at 937 W (pulses merged) → 1467 of 3 min at 1906 W (its element: 1546 pulses of ~1 min at 1.9 kW). Kozolec purity 98.3 %, wconc 93.9 → 94.0 %; Home 63.8/29.8 → 63.9/29.6 % (production meters 64.1/29.1 → 64.1/29.2 %); kiln, pump, fridges identical. The Shelly needs no change: it reports each switch within 1-4 s |
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour, for backfilling a newly named load's statistics | s | — | not a detector dial; sized to the 10-day backfill |
+| `EDGE_LAG_REACH_S` / `EDGE_LAG_BIN_S` / `EDGE_LAG_MIN` / `EDGE_WINDOW_DEFAULT_S` | 60 s / 2 s / 50 / 10 s | how far either side of an edge an input's change is looked for, the lag histogram's bins, the changes seen before a lag is believed (`lag_window`: a peak 4x the even spread), and the window before that | s | — | not swept; Home's thermostat learned (-11, 0) s from 17k edges, the mat's edges at -5.8 +- 1.7 s |
+| `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction | count | — | not swept; Home used ~400 in all |
 | `SUB_IDENTITY_CIRCUITS` | 0 | whether a circuit meter (many loads, e.g. Hiša) may decide too | switch | — | off was better at Home (79.1 / 80.7 vs 78.5 / 80.5 %), identical elsewhere |
 | `SUB_POWER` | 0 (off) | take the quieter sub-meter's power for a matched session | switch | — | slightly worse (NASA held out 26 → 22) |
 
@@ -670,6 +672,36 @@ Don't re-chase these; each cost real time.
   least partly the inoperative `SUSTAIN_SECONDS` guard plus edge mis-pairing.
 - **`_pair` must stay most-recent-first.** Best-size-fit was tried and is worse
   at both sites.
+- **Pairing on the edge library, tried 2026-09-29 and parked** (patch kept locally
+  in `data/patches/2026-09-29-edge-pairing-experiments.patch`). All on Home 18-27
+  Sep with the thermostat, `HOUSE=prod` - measure the mat that way; the replay's
+  default house reading gives other hours (the 30 % gate's 91.1 -> 87.9 h was on
+  it). Shipped baseline: purity 73.7, wconc 48.6, mat 106.4-110.5 h counted once
+  against 89.9 h of heating.
+  - *A device MOVES WITH an input* (it changed at >= 0.2 of its starts or stops):
+    its runs need that change at an edge. Neutral alone (mat 106.6 h): most of
+    the excess is real mat runs missing their stop, not look-alikes.
+  - *Expected edges* from the input's changes, steering pairing (a drop as big or
+    bigger closes the device's run at its size; a rise opens it and a second
+    run for the rest; an unseen stop closes it once the window passes): purity
+    74.0-74.7, wconc 50.1-51.8 - but the mat swung 98.7-140 h between near-
+    identical variants. Tried with it and worse: a smaller drop read as the
+    device stopping while something started (made up ~535 W runs); protecting
+    the device's run while its input is on (mat 119 h, runs overlapping 45 h);
+    keeping movers and non-movers from merging (mat 133 h); a run check (>= 30/
+    50/70 % of the run inside the on-periods: 98.7 / 110.5 / 109.1 h - noise).
+  - *Held drops* in place of the stepped-down guess (a drop fitting no run is
+    held; held drops completing a run close it together): purity 72.3-74.2 but
+    the mat 140.5 h (joint) or 80 h of overlapping runs (held only), the pump
+    1118 -> 1088 clean, the fridges 230 -> 211 caught. The stepped-down guess is
+    what erodes runs (the mat's +614 W lost -191 W to a stranger and stayed open
+    15.8 h) AND what follows real drift (fridge, pump); removing it needs each
+    pair's learned stop-to-start size first.
+  Why they swing: a few runs the meter never closed - hours long - decide the
+  mat, and they land wherever size-matching and merge chains put them (the 15.8 h
+  run went into a 437 W signature, merged into 465 W, then into 443 W). The fix
+  is pairing on learned edge pairs and devices with levels (stages B and C),
+  not more rules on this one.
 - **`_unseen_stop` waiting for the shortfall to hold across N settled levels**
   (Anze: "a couple impossible readings before we decide", 2026-09-29), checked
   at rises as well as drops. The closes that fall within 30 s of a >1 kW solar
