@@ -271,3 +271,43 @@ def follow_renames(value, renames: dict):
     if isinstance(value, dict):
         return {follow_renames(k, renames): follow_renames(v, renames) for k, v in value.items()}
     return value
+
+
+# The Energy dashboard's lists that name statistics - what
+# EnergyManager.async_update takes.
+ENERGY_PREF_KEYS = ("energy_sources", "device_consumption", "device_consumption_water")
+
+
+def dashboard_renames(prefs: Optional[dict], renames: dict) -> tuple:
+    """(the renames the Energy dashboard still names, each of its lists as
+    following them leaves it - only the lists that change). Home Assistant
+    moves a statistic on a rename but not the dashboard entry naming it, so
+    the dashboard goes blank for that device (2026-09-29)."""
+    lists = {k: (prefs or {})[k] for k in ENERGY_PREF_KEYS if k in (prefs or {})}
+    named = {o: n for o, n in renames.items() if follow_renames(lists, {o: n}) != lists}
+    moved = {k: follow_renames(v, named) for k, v in lists.items()}
+    return named, {k: v for k, v in moved.items() if v != lists[k]}
+
+
+def suggest_inputs(targets: dict, candidates: dict, inputs) -> list:
+    """(entity, target) for every candidate sharing an area with a target -
+    a dashboard device or a named load - that is not an input yet. Both map
+    an id to its area; without one nothing matches (2026-09-29)."""
+    taken = set(inputs or ())
+    return [(eid, t) for eid, where in candidates.items() if where and eid not in taken
+            for t, there in targets.items() if there == where]
+
+
+def add_inputs(options: dict, picks) -> dict:
+    """The options with each picked (entity, target): the entity an input,
+    linked to the target. Everything else exactly as it was."""
+    if not picks:
+        return options
+    inputs = list(options.get("input_entities") or [])
+    links = {k: list(v) for k, v in (options.get("input_links") or {}).items()}
+    for eid, target in picks:
+        if eid not in inputs:
+            inputs.append(eid)
+        if target not in links.setdefault(eid, []):
+            links[eid].append(target)
+    return {**options, "input_entities": inputs, "input_links": links}

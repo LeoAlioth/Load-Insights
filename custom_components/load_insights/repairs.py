@@ -12,12 +12,16 @@ Each is raised only while it is true and withdrawn the moment it is fixed.
 
 from __future__ import annotations
 
+from homeassistant.components.energy.data import async_get_manager
+from homeassistant.components.repairs import ConfirmRepairFlow
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 
 from .const import DOMAIN
+from .detection import device_uid
 from .insights.detect import implausible_baseline
+from .insights.model import dashboard_renames
 
 HALF_TEMPERATURE = "temperature_pair_incomplete"
 NO_PV_FORECAST = "no_pv_forecast"
@@ -26,6 +30,7 @@ BATTERY_NOT_MODELLED = "battery_not_modelled"
 NO_POWER_FACTOR = "no_power_factor"
 FOUND_NOTHING = "detection_found_nothing"
 NEGATIVE_HOUSE = "house_reading_negative"
+DASHBOARD_RENAMED = "energy_dashboard_renamed"
 
 
 @callback
@@ -115,3 +120,63 @@ def _set(hass: HomeAssistant, entry: ConfigEntry, key: str, active: bool, placeh
         translation_key=key,
         translation_placeholders=placeholders or None,
     )
+
+
+async def async_dashboard_renamed(hass: HomeAssistant, renames: dict) -> None:
+    """Raise, or bring up to date, the one issue for renamed statistics the
+    Energy dashboard still names. A waiting issue's renames are carried
+    through the new batch, so a to b and then b to c asks for a to c; one
+    the user has since fixed by hand is withdrawn."""
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, DASHBOARD_RENAMED)
+    was = dict(issue.data or {}) if issue is not None and issue.active else {}
+    merged = {**{o: renames.get(n, n) for o, n in was.items()}, **renames}
+    named, _ = dashboard_renames((await async_get_manager(hass)).data, merged)
+    if not named:
+        ir.async_delete_issue(hass, DOMAIN, DASHBOARD_RENAMED)
+        return
+    ir.async_create_issue(
+        hass, DOMAIN, DASHBOARD_RENAMED,
+        is_fixable=True,
+        # the renames are known only from the event, so they must survive a restart
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=DASHBOARD_RENAMED,
+        translation_placeholders={"renames": "\n".join(f"- {o} → {n}" for o, n in named.items())},
+        data=named,
+    )
+
+
+class _FollowOnTheDashboard(ConfirmRepairFlow):
+    """Nothing on the dashboard changes until the user confirms."""
+
+    async def async_step_confirm(self, user_input: dict[str, str] | None = None):
+        if user_input is not None:
+            await _async_follow_on_the_dashboard(self.hass, dict(self.data or {}))
+        return await super().async_step_confirm(user_input)
+
+
+async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data) -> ConfirmRepairFlow:
+    return _FollowOnTheDashboard()
+
+
+async def _async_follow_on_the_dashboard(hass: HomeAssistant, renames: dict) -> None:
+    """The dashboard's lists rewritten through the renames; each renamed
+    device's forecast sensor moved onto its new statistic id - the entity and
+    the device it hangs off, so its history and whatever the user set on
+    either carry on - and every entry reloaded to read the new dashboard."""
+    manager = await async_get_manager(hass)
+    _, update = dashboard_renames(manager.data, renames)
+    if update:
+        await manager.async_update(update)
+    entities, devices = er.async_get(hass), dr.async_get(hass)
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        for old, new in renames.items():
+            eid = entities.async_get_entity_id("sensor", DOMAIN, device_uid(entry.entry_id, old))
+            if eid and not entities.async_get_entity_id("sensor", DOMAIN, device_uid(entry.entry_id, new)):
+                entities.async_update_entity(eid, new_unique_id=device_uid(entry.entry_id, new))
+            # sensor._child_device's identifier for the device's forecast
+            old_id, new_id = (DOMAIN, f"{entry.entry_id}_device_{old}"), (DOMAIN, f"{entry.entry_id}_device_{new}")
+            device = devices.async_get_device(identifiers={old_id})
+            if device is not None and devices.async_get_device(identifiers={new_id}) is None:
+                devices.async_update_device(device.id, new_identifiers={new_id})
+        hass.config_entries.async_schedule_reload(entry.entry_id)

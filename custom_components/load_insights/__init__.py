@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+from homeassistant.components.energy.data import async_get_manager
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -21,7 +22,8 @@ from .const import (
 )
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
-from .insights.model import follow_renames, migrate_inputs, relink
+from .insights.model import SiteModel, follow_renames, migrate_inputs, relink
+from .repairs import async_dashboard_renamed
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +101,10 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
             if data != dict(entry.data) or options != dict(entry.options):
                 _LOGGER.info("Following renamed entities in %s: %s", entry.title, renames)
                 hass.config_entries.async_update_entry(entry, data=data, options=options)
+        # The Energy dashboard names them too, and Home Assistant leaves it
+        # on the old ids. It is the user's dashboard, so it is asked in
+        # Repairs rather than changed here (2026-09-29).
+        await async_dashboard_renamed(hass, renames)
 
     flush = Debouncer(hass, _LOGGER, cooldown=RENAME_SETTLE_S, immediate=False, function=_follow)
 
@@ -126,7 +132,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # before the update listener exists, so this does not reload
         hass.config_entries.async_update_entry(entry, options=moved)
     coordinator = InsightsCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
     detection = DetectionRunner(hass, entry)
     await detection.async_start()
     # The site device exists before any entity, so the per-device and
@@ -140,7 +145,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manufacturer="Load Insights",
         model="Site",
         # wherever the grid meter lives, rather than floating unassigned
-        suggested_area=_area_of_the_meter(hass, coordinator),
+        suggested_area=_area_of_the_meter(hass, SiteModel.from_prefs((await async_get_manager(hass)).data)),
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     hass.data[DOMAIN][f"{entry.entry_id}_detection"] = detection
@@ -148,22 +153,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_changed))
     _prune_empty_devices(hass, entry)
+    # The first forecast reads weeks of statistics and fits every device, and
+    # Home Assistant's start waited on it every time ("Waiting for
+    # integrations to complete setup: load_insights"). The entities exist
+    # already and show unavailable until it lands; a background task, so the
+    # start does not wait on it either. A failure is logged and the next
+    # quarter hour tries again, where setup used to be retried (2026-09-29).
+    entry.async_create_background_task(hass, coordinator.async_refresh(), f"{DOMAIN} first forecast")
     return True
 
 
 @callback
-def _area_of_the_meter(hass: HomeAssistant, coordinator: InsightsCoordinator) -> str | None:
+def _area_of_the_meter(hass: HomeAssistant, site: SiteModel) -> str | None:
     """The area the grid import meter sits in, if it has one - the closest
-    thing this integration has to a physical location."""
+    thing this integration has to a physical location. From the dashboard
+    rather than the first refresh, which setup no longer waits for."""
     from homeassistant.helpers import area_registry as ar
 
-    data = coordinator.data
-    if data is None or not data.site.grid_import:
-        return None
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
     areas = ar.async_get(hass)
-    for stat_id in data.site.grid_import:
+    for stat_id in site.grid_import:
         reg = entities.async_get(stat_id)
         if reg is None:
             continue

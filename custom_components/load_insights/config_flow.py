@@ -47,7 +47,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import SWITCH_PREFIX, same_device_phrase, stage_groups, suggest_levels
+from .insights.detect import SWITCH_PREFIX, most_specific, same_device_phrase, stage_groups, suggest_levels
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,7 +56,11 @@ NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carr
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import named_load_energy
-from .insights.model import LOAD_PREFIX, SiteModel, relink
+from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
+
+# What a room says about the devices in it: whether someone is there, and its
+# air. Offered on the suggested-inputs page, by device class.
+SUGGESTED_CLASSES = {"binary_sensor": ("occupancy", "presence", "motion"), "sensor": ("temperature", "humidity")}
 
 
 def _grid_fields(defaults: dict) -> dict:
@@ -200,20 +204,27 @@ def _helpers(hass, sig) -> list:
     return out
 
 
+def _meter_entity(runner, where: str) -> Optional[str]:
+    """An entity behind a meter's readings - for a switch, the switch."""
+    if where.startswith(SWITCH_PREFIX):
+        return where[len(SWITCH_PREFIX):]
+    fields = (runner.submeters.get(where) or {}).get("fields") or {}
+    return next(iter(fields.values()), None)
+
+
+def _area_id(hass, entity_id: Optional[str]) -> Optional[str]:
+    """An entity's own area where it has one, else its device's."""
+    entity = er.async_get(hass).async_get(entity_id) if entity_id else None
+    if entity is None or entity.area_id or not entity.device_id:
+        return entity.area_id if entity is not None else None
+    device = dr.async_get(hass).async_get(entity.device_id)
+    return device.area_id if device else None
+
+
 def _meter_place(hass, runner, where: str) -> str:
     """The area and floor of the device behind a meter's readings - the
     entity's own area where it has one, else its device's."""
-    if where.startswith(SWITCH_PREFIX):
-        entity = er.async_get(hass).async_get(where[len(SWITCH_PREFIX):])
-    else:
-        fields = (runner.submeters.get(where) or {}).get("fields") or {}
-        entity = er.async_get(hass).async_get(next(iter(fields.values()), "")) if fields else None
-    if entity is None:
-        return ""
-    area_id = entity.area_id
-    if not area_id and entity.device_id:
-        device = dr.async_get(hass).async_get(entity.device_id)
-        area_id = device.area_id if device else None
+    area_id = _area_id(hass, _meter_entity(runner, where))
     area = ar.async_get(hass).async_get_area(area_id) if area_id else None
     if area is None:
         return ""
@@ -419,7 +430,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "input_links", "detection", "grid",
+            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "detection", "grid",
                           "inverters", "naming"],
         )
 
@@ -916,4 +927,47 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                     options=[selector.SelectOptionDict(value=k, label=v) for k, v in targets.items()],
                     multiple=True, mode=selector.SelectSelectorMode.LIST))}),
             description_placeholders={"input": self._input_label(eid)},
+        )
+
+    async def async_step_suggested_inputs(self, user_input: dict[str, Any] | None = None):
+        """Sensors in the same area as a dashboard device or a named load that
+        are not inputs yet, each offered linked to it - unticked, since a
+        room's temperature need not say anything about its fridge
+        (2026-09-29). A named load's area is its meter's; under none, it has
+        none."""
+        options = dict(self.config_entry.options)
+        if user_input is not None:
+            picks = [v.split(" ", 1) for v in user_input.get("suggested") or []]
+            return self.async_create_entry(data=add_inputs(options, picks))
+        targets = await self._link_targets()
+        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        meter = {}
+        for sig in runner.named() if runner is not None else ():      # biggest first
+            meter.setdefault(sig.name, most_specific(sig.locations, sig.count, runner.parents))
+        places = {}
+        for t in targets:
+            if not t.startswith(LOAD_PREFIX):
+                places[t] = _area_id(self.hass, t)
+            elif meter.get(t[len(LOAD_PREFIX):], "main") != "main":
+                places[t] = _area_id(self.hass, _meter_entity(runner, meter[t[len(LOAD_PREFIX):]]))
+        # not a diagnostic one: a Shelly's own temperature is its relay's, not the room's
+        candidates = {e.entity_id: _area_id(self.hass, e.entity_id) for e in er.async_get(self.hass).entities.values()
+                      if not e.disabled_by and not e.entity_category
+                      and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())}
+        found = suggest_inputs(places, candidates, options.get(CONF_INPUT_ENTITIES))
+        if not found:
+            return self.async_abort(reason="no_suggestions")
+        areas = ar.async_get(self.hass)
+
+        def row(eid, t):
+            what = t[len(LOAD_PREFIX):] if t.startswith(LOAD_PREFIX) else targets[t]
+            area = areas.async_get_area(places[t])
+            return f"{self._input_label(eid)} → {what} ({area.name if area else places[t]})"
+        rows = sorted((row(e, t), f"{e} {t}") for e, t in found)
+        return self.async_show_form(
+            step_id="suggested_inputs",
+            data_schema=vol.Schema({vol.Optional("suggested", default=[]): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=v, label=label) for label, v in rows],
+                    multiple=True, mode=selector.SelectSelectorMode.LIST))}),
         )

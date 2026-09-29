@@ -84,6 +84,11 @@ def load_uid(entry_id: str, kind: str, name: str) -> str:
     return f"{entry_id}_load_{kind}_{name.lower().replace(' ', '_')}"
 
 
+def device_uid(entry_id: str, energy: str) -> str:
+    """A dashboard device's forecast sensor's unique id, from its statistic id."""
+    return f"{entry_id}_device_{energy.replace('.', '_')}"
+
+
 def named_load_energy(hass: HomeAssistant, entry_id: str, name: str) -> Optional[str]:
     """The entity - and so the statistic - a named load's energy is under."""
     return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry_id, "energy", name))

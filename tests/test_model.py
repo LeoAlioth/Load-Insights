@@ -178,5 +178,42 @@ def test_a_renamed_entity_is_followed_through_the_settings():
     assert model.follow_renames(options, {}) == options
 
 
+def test_the_dashboard_is_told_what_its_renamed_statistics_became():
+    renames = {"sensor.evse_energy": "sensor.elvi_energy", "sensor.grid_import_w": "sensor.m1_import_w",
+               "sensor.water": "sensor.voda", "sensor.not_on_it": "sensor.x"}
+    prefs = {**NEW_2026_6, "device_consumption_water": [{"stat_consumption": "sensor.water"}],
+             "device_consumption": NEW_2026_6["device_consumption"] + [
+                 {"stat_consumption": "sensor.pec", "included_in_stat": "sensor.evse_energy"}]}
+    named, update = model.dashboard_renames(prefs, renames)
+    assert named == {k: v for k, v in renames.items() if k != "sensor.not_on_it"}
+    assert set(update) == {"energy_sources", "device_consumption", "device_consumption_water"}
+    assert update["energy_sources"][0]["power_config"]["stat_rate_from"] == "sensor.m1_import_w"
+    assert update["energy_sources"][1:] == NEW_2026_6["energy_sources"][1:]
+    assert [(d["stat_consumption"], d.get("included_in_stat")) for d in update["device_consumption"]] == \
+        [("sensor.elvi_energy", None), ("sensor.pec", "sensor.elvi_energy")]
+    # only the lists that change, and nothing at all without a dashboard
+    assert set(model.dashboard_renames(prefs, {"sensor.water": "sensor.voda"})[1]) == {"device_consumption_water"}
+    assert model.dashboard_renames(prefs, {"sensor.not_on_it": "sensor.x"}) == ({}, {})
+    assert model.dashboard_renames(None, renames) == ({}, {})
+
+
+def test_sensors_in_a_devices_area_are_suggested_as_its_inputs():
+    targets = {"sensor.fan_energy": "bathroom", "load:Kiln": "workshop", "sensor.evse_energy": None}
+    candidates = {"binary_sensor.bathroom_presence": "bathroom", "sensor.bathroom_humidity": "bathroom",
+                  "sensor.workshop_t": "workshop", "sensor.garage_t": "garage", "binary_sensor.nowhere": None}
+    got = model.suggest_inputs(targets, candidates, ["sensor.bathroom_humidity"])
+    assert got == [("binary_sensor.bathroom_presence", "sensor.fan_energy"), ("sensor.workshop_t", "load:Kiln")]
+    options = {"interval": 5, "input_entities": ["sensor.bathroom_humidity"],
+               "input_links": {"sensor.bathroom_humidity": ["sensor.fan_energy"]}}
+    out = model.add_inputs(options, got + [("sensor.bathroom_humidity", "load:Kiln")])
+    assert out["interval"] == 5
+    assert out["input_entities"] == ["sensor.bathroom_humidity", "binary_sensor.bathroom_presence", "sensor.workshop_t"]
+    assert out["input_links"] == {"sensor.bathroom_humidity": ["sensor.fan_energy", "load:Kiln"],
+                                  "binary_sensor.bathroom_presence": ["sensor.fan_energy"],
+                                  "sensor.workshop_t": ["load:Kiln"]}
+    assert options["input_links"] == {"sensor.bathroom_humidity": ["sensor.fan_energy"]}   # not mutated
+    assert model.add_inputs(options, []) is options
+
+
 if __name__ == "__main__":
     run_main(globals())
