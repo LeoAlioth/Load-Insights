@@ -281,13 +281,13 @@ PAIR_MIN_SHARE = 0.3
 # 200w step should just stay unmatched") - except a load settling just after
 # its start. Exploration dials.
 PAIR_PAIRING = 1
-PAIR_HOME = 1                  # ...and a pair's runs prefer the device most of them went to
 SETTLE_SHARE = 0.3
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
-# +600 W start). Until devices with levels are learned this is what keeps a
-# washer's 2 kW -> 400 W -> off one run. Exploration dial.
-JOINT_STOPS = 1
+# +600 W start). A washer's 2 kW -> 400 W -> off is then one run at both levels:
+# without it the run is one 1.2 kW level for its whole length, 29 % over its
+# energy (Home purity 77.3 / wconc 57.5 % without against 76.1 / 55.4 with, but
+# the bench has no stepped load in it; 2026-09-30).
 HELD_DROPS = 8
 # One device never runs twice at once: a rise of a cluster while an older run
 # that started with the same cluster is still open means that older run ended
@@ -329,21 +329,6 @@ DEVICE_HOME = 1
 # 102.0 h counted once against 89.9 h of heating; kiln, pump and Kozolec
 # within a few runs (2026-09-29).
 MAX_OPEN_S = 24 * 3600.0       # a start whose stop never came is given up on after this
-# ...or sooner: once it has been open this many times longer than any load of
-# its size on its phase has been seen to run. A start whose stop was taken by
-# another edge otherwise stays open for the whole day above, and meanwhile
-# closes against stops that belong to real loads - Home had 194 sessions over
-# three hours in ten days. A size the library has never seen keeps the flat
-# day, so a new load that runs long can still be learned. 0 is off.
-#
-# OFF, for its side effects (swept 3 and 8, 2026-09-23). At 3 the sessions
-# over three hours halve (157 -> 84) and the kiln gains a little (409/115 vs
-# 407/118), but a real long-running load of a size that other loads run
-# briefly loses its starts: Home's dryer went 34 -> 21 sessions, 20 -> 29 pump
-# runs were missed outright, Kozolec's boiler 500 -> 496. At 8 the dryer still
-# lost 9 and the kiln got worse. Kept for a better test of "this start has
-# outlived its load" than size alone.
-ORPHAN_MARGIN = 0.0
 MAX_OPEN_EDGES = 12            # loads believed to be running at once on one phase
 MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in start and end are one
 # Readings of a summed house value closer together than this are one update
@@ -398,31 +383,7 @@ INRUSH_RATIO = 2.5
 # naming page says it VARIES. Below this the band is a steady load's jitter.
 WANDER_SHARE = 0.2
 INRUSH_SAMPLES = 2.0
-# How a run STARTS tells apart two devices that run alike (Kozolec's two
-# fridges, 2026-09-29: one surges past 250 W for one reading, the other starts
-# some 12 W high and settles within a minute; both then draw ~58 W). A run is
-# a "surge" (see INRUSH_RATIO), a "bump" - running at SHAPE_BUMP_RATIO or more
-# of where it has settled SHAPE_SETTLED_S in, measured SHAPE_EARLY_S in - or
-# "flat". Surge and bump are opposite observations and never share a
-# signature; a flat start - a surge the samples missed, often - may join either.
-START_SHAPE_SPLIT = 1
-SHAPE_BUMP_RATIO = 1.15
-SHAPE_EARLY_S = 15.0
-SHAPE_SETTLED_S = 80.0
-# A signature takes a shape from its first run that shows one, and keeps the
-# one most of its runs show. Asking for a clear majority first (3 runs, 4 to
-# 1) let the fridges' first signatures fill with both kinds before either
-# could dominate, and the split never engaged: 51 surge runs and 63 bump runs
-# in one signature (2026-09-29). Kept apart from the start, it stays clean.
-SHAPE_MIN_RUNS = 1.0
-SHAPE_DOMINANCE = 1.5
-# ...but one DEVICE never runs twice at once, and two fridges often do. Two
-# signatures that start oppositely are merged after all once each has this
-# many runs remembered, over the same stretch of time, and none of them ever
-# overlapped: Home's office plug starts one way and the other, and splitting
-# it by its starts cost it a third of its concentration (19 to 12 %,
-# 2026-09-29).
-SHAPE_TOGETHER_RUNS = 6
+SHAPE_SETTLED_S = 80.0           # how soon after its start a load has settled - see SETTLE_SHARE
 
 MATCH_POWER_REL = 0.10
 # How much of two signatures' OWN measured wander may widen the band that
@@ -803,26 +764,6 @@ class Session:
         # than the sustain window never became a level and is only in
         # surge_w; one longer than it became its own level and is found above.
         return max(peak, self.surge_w)
-
-    @property
-    def start_shape(self) -> Optional[str]:
-        """"surge", "bump" or "flat" - see START_SHAPE_SPLIT - or None for a
-        run too short to have settled."""
-        if self.inrush_w > 0:
-            return "surge"
-        if self.duration_s < SHAPE_SETTLED_S:
-            return None
-
-        def at(t):
-            total = 0.0
-            for lv in self.levels.values():
-                now = [w for since, w in lv if since <= t]
-                total += now[-1] if now else (lv[0][1] if lv else 0.0)
-            return total
-        settled = at(self.start + SHAPE_SETTLED_S)
-        if settled > 0 and at(self.start + SHAPE_EARLY_S) >= SHAPE_BUMP_RATIO * settled:
-            return "bump"
-        return "flat"
 
     @property
     def energy_wh(self) -> float:
@@ -1365,9 +1306,6 @@ class _Open:
     var: Optional[float]                          # the reactive step it started with
     levels: List[Tuple[float, float]] = field(default_factory=list)
     surge: float = 0.0                            # see PhaseState._declare_surge
-    # how long this may stay open before it is given up on - see ORPHAN_MARGIN.
-    # Worked out once, when first needed; never persisted.
-    limit: Optional[float] = None
     # Lowest and highest the phase read while this was the ONLY load running.
     # A resistive element holds its level; anything behind a variable-speed
     # drive glides between them without ever taking a step big enough to be
@@ -1470,9 +1408,6 @@ class PhaseState:
     name: str = field(default="", repr=False, compare=False)
     stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
-    # Set by the Detector for a pass: how long a load of a given size on this
-    # phase has been seen to run, or None. See ORPHAN_MARGIN.
-    longest: Optional[object] = field(default=None, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
     noise_rel: float = 0.0
@@ -1588,17 +1523,10 @@ class PhaseState:
                 self.seed = []
             return []
 
-        if self.open_edges:
-            if ORPHAN_MARGIN and self.longest:
-                for e in self.open_edges:
-                    if e.limit is None:
-                        seen = self.longest(e.watts)
-                        e.limit = min(MAX_OPEN_S, ORPHAN_MARGIN * seen) if seen else MAX_OPEN_S
-            if any(ts - e.since > (e.limit or MAX_OPEN_S) for e in self.open_edges):
-                # a start whose stop was never seen: give up rather than pair
-                # it with an unrelated load hours later
-                self.open_edges = [e for e in self.open_edges
-                                   if ts - e.since <= (e.limit or MAX_OPEN_S)]
+        if self.open_edges and any(ts - e.since > MAX_OPEN_S for e in self.open_edges):
+            # a start whose stop was never seen: give up rather than pair it
+            # with an unrelated load hours later
+            self.open_edges = [e for e in self.open_edges if ts - e.since <= MAX_OPEN_S]
 
         if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
@@ -1613,7 +1541,7 @@ class PhaseState:
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
             if SAG_CLOSE and len(self.open_edges) == 1 and self.baseline is not None:
-                # a drop held since it started is not it sagging - see JOINT_STOPS
+                # a drop held since it started is not it sagging - see HELD_DROPS
                 o = self.open_edges[0]
                 o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
             if self.level is not None and abs(self.level) >= self.rel_floor:
@@ -1927,10 +1855,9 @@ class PhaseState:
                 o.watts -= watts
                 o.levels.append((at, o.watts))
                 return []
-        if JOINT_STOPS:
-            joint = self._joint_stop(at, watts, var)
-            if joint:
-                return joint
+        joint = self._joint_stop(at, watts, var)
+        if joint:
+            return joint
         # several loads going together - the oven and its fan, a programme
         # ending - leave one step too big for any of them alone. Take them
         # largest first while the step still covers them, or nothing.
@@ -1955,7 +1882,7 @@ class PhaseState:
                 o = self.open_edges.pop(i)
                 out.append(self._close(o, at, o.watts, None))
             return sorted(out, key=lambda x: x.start)
-        if JOINT_STOPS and self.open_edges:
+        if self.open_edges:
             self.held_drops.append((at, watts, self.stop_cluster))
             del self.held_drops[:-HELD_DROPS]
         if not self.open_edges:
@@ -1966,7 +1893,7 @@ class PhaseState:
     def _joint_stop(self, at: float, watts: float, var: Optional[float]) -> Optional[List[Session]]:
         """Close the running load this drop completes together with drops held
         since it started - one or two of them - newest load first. See
-        JOINT_STOPS."""
+        HELD_DROPS."""
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             size = o.now or o.watts
@@ -2110,7 +2037,6 @@ class Signature:
     # would put there}, both recency-weighted - see INPUT_MIN_RUNS
     inputs: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     # "surge" / "bump" / "flat" -> runs that started so (recency-weighted)
-    shapes: Dict[str, float] = field(default_factory=dict)
     # "setting=value" it was born in - see INPUT_SPLIT - and the ones it took
     # back from a born-in twin that turned out to be chance
     born_in: Optional[str] = None
@@ -2207,8 +2133,6 @@ class Signature:
         if self.pf is not None and s.pf is not None and \
                 abs(self.pf - s.pf) > pf_tolerance(self.pf_mad, s.pf_mad):
             return None
-        if START_SHAPE_SPLIT and _opposite(self.shape, s.start_shape):
-            return None
         return score
 
     def alike(self, other: "Signature", noise_w: float) -> bool:
@@ -2220,8 +2144,6 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
-        if START_SHAPE_SPLIT and _opposite(self.shape, other.shape) and not self._one_device_with(other):
-            return False                       # they start differently, and have run at once
         if INPUT_SPLIT and self.born_in != other.born_in:
             # apart until judged; a born-in one that is chance goes back
             born = self.born_in or other.born_in
@@ -2276,8 +2198,6 @@ class Signature:
 
     def swallow(self, other: "Signature") -> None:
         """Take another signature's sightings into this one, by weight."""
-        for k, x in other.shapes.items():
-            self.shapes[k] = self.shapes.get(k, 0.0) + x
         for hour, wh in other.hourly.items():
             self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
         for role, used in other.edges.items():
@@ -2401,7 +2321,6 @@ class Signature:
                 self.interval_s = gap if self.interval_s is None else 0.7 * self.interval_s + 0.3 * gap
         self.last_start = s.start
         self.last_seen = max(self.last_seen, s.end)
-        self.note_shape(s.start_shape)
         self._spread(s, tz)
         self.count += 1
 
@@ -2413,24 +2332,6 @@ class Signature:
         ly = math.log(y)
         for i, v in enumerate((1.0, x, x * x, ly, ly * ly, x * ly)):
             acc[i] = acc[i] * keep + v
-
-    def note_shape(self, shape: Optional[str]) -> None:
-        if shape is None:
-            return
-        keep = 1.0 - 1.0 / ABSORB_WINDOW
-        for k in self.shapes:
-            self.shapes[k] *= keep
-        self.shapes[shape] = self.shapes.get(shape, 0.0) + 1.0
-
-    @property
-    def shape(self) -> Optional[str]:
-        """"surge" or "bump" once its runs clearly start so - see SHAPE_MIN_RUNS."""
-        surge, bump = self.shapes.get("surge", 0.0), self.shapes.get("bump", 0.0)
-        if surge >= SHAPE_MIN_RUNS and surge >= SHAPE_DOMINANCE * bump:
-            return "surge"
-        if bump >= SHAPE_MIN_RUNS and bump >= SHAPE_DOMINANCE * surge:
-            return "bump"
-        return None
 
     def note_input(self, name: str, value: str, shares: Dict[str, float], ts: float) -> None:
         """One run, at ``ts``, seen while the setting ``name`` read ``value``;
@@ -2476,16 +2377,6 @@ class Signature:
         if runs < INPUT_MIN_RUNS or e <= 0:
             return None
         return n / e
-
-    def _one_device_with(self, other: "Signature") -> bool:
-        """Never seen running at the same time, over enough runs of each
-        from the same stretch of time - see SHAPE_TOGETHER_RUNS."""
-        if len(self.runs) < SHAPE_TOGETHER_RUNS or len(other.runs) < SHAPE_TOGETHER_RUNS:
-            return False
-        if max(e for _, e in self.runs) < min(s for s, _ in other.runs) or \
-                max(e for _, e in other.runs) < min(s for s, _ in self.runs):
-            return False                  # different stretches: nothing to say
-        return not any(a < d and c < b for a, b in self.runs for c, d in other.runs)
 
     def files_in(self, context: Optional[str]) -> bool:
         """May a run made in ``context`` (None: in no rare value) join it?"""
@@ -2834,7 +2725,6 @@ class Signature:
                 "interval_mad": _trim(self.interval_mad, 1),
                 "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()},
                 "inputs": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
-                "shapes": {k: round(x, 2) for k, x in self.shapes.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
@@ -2857,7 +2747,7 @@ class Signature:
                    interval_mad=d.get("interval_mad"),
                    drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()},
                    inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or d.get("stages") or {}).items()},
-                   shapes=dict(d.get("shapes") or {}), born_in=d.get("born_in"),
+                   born_in=d.get("born_in"),
                    takes_in=list(d.get("takes_in") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
                    born_judged=d.get("born_judged", d.get("stage_judged", False)),
@@ -3312,7 +3202,6 @@ class Detector:
             if q_quantum and q_quantum.get(ph):
                 st.q_quantum = q_quantum[ph]
             st.corroborate = self._corroborate(ph, samples)
-            st.longest = self._longest(ph)
             stream.extend((ts, i, ph, w) for i, (ts, w) in enumerate(rows))
         stream.sort()
         for ts, _, ph, w in stream:
@@ -3403,25 +3292,6 @@ class Detector:
             return False
         return check
 
-    def _longest(self, ph: str):
-        """How long a load of a given size on this phase has been seen to run:
-        the longest of its recent runs, or its typical run plus the usual
-        margin for noise, whichever is more - over every signature with a leg
-        that size, since two loads of one size are not told apart here. None
-        when the library knows no such load. See ORPHAN_MARGIN."""
-        def seen(watts: float) -> Optional[float]:
-            st = self.phases[ph]
-            best = None
-            for sig in self.signatures:
-                w = sig.power.get(ph)
-                if not w or sig.count < YOUNG_COUNT or abs(w - watts) > st._tol(w, watts):
-                    continue
-                d = max([e - s for s, e in sig.runs]
-                        + [sig.duration_s + NOISE_MAD_FACTOR * sig.duration_mad])
-                best = d if best is None else max(best, d)
-            return best
-        return seen
-
     def _merge_and_file(self, closed: List[Session], latest: float, file: bool = True) -> List[Session]:
         pool = self.held + closed
         pool.sort(key=lambda s: s.start)
@@ -3510,7 +3380,6 @@ class Detector:
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
-        key = f"{s.pair[0]}>{s.pair[1]}" if s.pair and None not in s.pair else None
         device = self.device_of(s) if DEVICE_HOME else None
         if prefer is None and device is not None:
             if self._device_home is None:
@@ -3524,9 +3393,6 @@ class Detector:
             home = self._device_home.get(device)
             if home:
                 prefer = max(home, key=home.get)      # the device IS its clusters
-        if prefer is None and PAIR_PAIRING and PAIR_HOME and key in self.pair_home:
-            home = self.pair_home[key]
-            prefer = max(home, key=home.get)          # the device IS its pairs
         if prefer is not None:
             seen = set()
             while prefer in self._moved and prefer not in seen:
