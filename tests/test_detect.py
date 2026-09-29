@@ -2435,5 +2435,97 @@ def test_loads_tied_to_one_setting_are_offered_as_one_device():
     assert D.stage_groups(sigs) == [[1, 2]]
 
 
+
+def _two_starts(overlap: bool, seed: int = 7):
+    """Two 80 W loads, one surging for a reading as it starts and one starting
+    15 W high: two fridges on their own clocks, which overlap now and then -
+    or, with ``overlap`` False, ONE device that starts either way in turn."""
+    rnd = random.Random(seed)
+    starts = []
+    if overlap:
+        starts += [(T0 + 600 + k * 7200.0, "A") for k in range(30)]
+        starts += [(T0 + 1500 + k * 6420.0, "B") for k in range(33)]
+    else:
+        starts += [(T0 + 600 + k * 3600.0, "AB"[k % 2]) for k in range(60)]
+    end = max(t for t, _ in starts) + 3000.0
+    rows, t = [], T0
+    while t < end:
+        w = 20.0 + rnd.uniform(-1, 1)
+        for t0, kind in starts:
+            if t0 <= t < t0 + 1500.0:
+                w += 80.0
+                if kind == "A" and t0 <= t < t0 + DT:
+                    w += 740.0                                    # the surge, one reading
+                if kind == "B" and t0 <= t < t0 + 25.0:
+                    w += 15.0                                     # the bump
+        rows.append((t, w))
+        t += DT
+    det = D.Detector()
+    det.tz_offset_s = 0.0
+    det.process({"a": rows}, now_ts=end)
+    by_kind = {"A": set(), "B": set()}
+    for t0, kind in starts:
+        for r in det.recent:
+            if abs(r["start"] - t0) <= 2 * DT:
+                by_kind[kind].add(det._moved.get(r["signature"], r["signature"]))
+    return det, by_kind
+
+
+def test_two_loads_that_start_differently_are_kept_apart():
+    """Kozolec's two fridges draw alike; one surges for one reading as it
+    starts, the other starts some 12 W high and settles (2026-09-29)."""
+    det, by_kind = _two_starts(overlap=True)
+    main = lambda k: max(by_kind[k], key=lambda i: sum(1 for r in det.recent if det._moved.get(r["signature"], r["signature"]) == i))  # noqa: E731
+    assert by_kind["A"] and by_kind["B"] and main("A") != main("B"), by_kind
+
+
+def test_one_device_that_starts_either_way_stays_one():
+    """Home's office plug starts one way and the other; it never runs twice
+    at once, which two fridges do - so it stays one signature (2026-09-29)."""
+    det, by_kind = _two_starts(overlap=False)
+    assert len(by_kind["A"] | by_kind["B"]) == 1, by_kind
+
+
+def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
+    """The washer's 2 kW heater and a 2 kW kettle on the same phase: filed
+    by the phase they ran in, the heater ends up tied to Wash and the kettle
+    apart from it, while a fridge that runs right through every wash is not
+    split in two (Anze, 2026-09-29)."""
+    fleet = D.Fleet()
+    fleet.main.tz_offset_s = 0.0
+    rnd = random.Random(11)
+    phase = []
+    for day in range(14):
+        day0 = T0 + day * 86400.0
+        phase += [(day0, "Off"), (day0 + 36000.0, "Wash"), (day0 + 37800.0, "Rinse"), (day0 + 40000.0, "Off")]
+    rows, t = [], T0
+    while t < T0 + 14 * 86400.0:
+        tod = (t - T0) % 86400.0
+        w = 300.0 + rnd.uniform(-3, 3)
+        if 36300.0 <= tod < 37200.0:
+            w += 2000.0                                   # the heater, in Wash
+        if tod in (7200.0, 54000.0, 72000.0) or 7200.0 < tod < 8100.0 or 54000.0 < tod < 54900.0 or 72000.0 < tod < 72900.0:
+            w += 2000.0                                   # a kettle-sized thing, three times a day, never in Wash
+        if (t - T0) % 5400.0 < 1500.0:
+            w += 80.0                                     # a fridge, all day
+        rows.append((t, w))
+        t += DT
+    a = T0
+    while a < t:
+        b = a + 6 * 3600.0
+        fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      stages={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                              or [max((p for p in phase if p[0] < a), default=phase[0])]})
+        a = b
+    big = [x for x in fleet.main.signatures if 1800 < sum(x.power.values()) < 2200 and x.count >= 5]
+    tied = [x for x in big if (x.stage_of("sensor.phase") or ("",))[0] == "Wash"]
+    assert len(tied) == 1 and tied[0].count <= 16, [(x.id, x.count, x.born_in, x.stage_of("sensor.phase")) for x in big]
+    kettle = [x for x in big if x is not tied[0]]
+    assert kettle and max(k.count for k in kettle) >= 30, [(x.id, x.count, x.born_in) for x in big]
+    fridge = [x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120 and x.count >= 5]
+    assert max(f.count for f in fridge) >= 200 and not any(f.stage_of("sensor.phase") for f in fridge), \
+        [(x.id, x.count, x.born_in, x.takes_in) for x in fridge]
+
+
 if __name__ == "__main__":
     run_main(globals())

@@ -70,25 +70,25 @@ MIN_SESSIONS = 60                      # devices below this are too few to read
 # default feeds only cluster_lab's device meters, as the bench always has.
 PROD_SUBS = {
     "home": {
-        "Hiša": [f"sensor.shellypro3em_34987a459ae0_phase_{p}_active_power" for p in "abc"],
-        "Mansarda": [f"sensor.attic_phase_{p}_active_power" for p in "abc"],
-        "Blaževa Soba": "sensor.shellypmminig3_84fce63c6654_power",
-        "Vtičnice - pisarna": "sensor.nasa_station_power",
+        "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
+        "Mansarda": [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"],
+        "Blaževa Soba": "sensor.blaz_pc_power",
+        "Vtičnice - pisarna": "sensor.attic_office_power",
         "Polnilnica": "sensor.evbox_elvi_power_active_import",
         "Server UPS": "sensor.server_ups_power",
         "Susilna": "sensor.shellypmminig3_susilna_power",
-        "Workshop charger": "sensor.shellypmminig3_ecda3bc6b054_power",
+        "Workshop charger": "sensor.workshop_charger_power",
         "Hidrofor": "sensor.hidrofor_power",
         "Attic AC": "sensor.attic_ac_power",
         "Workshop boiler": "sensor.workshop_boiler_power",
     },
     "kozolec": {
-        "Boiler": "sensor.shellypro4pm_kozolec_switch_1_power",
-        "Car charger": "sensor.shellypro4pm_kozolec_switch_0_power",
-        "Washing machine": "sensor.shellypro4pm_kozolec_switch_3_power",
-        "Well pump": "sensor.kotlovnica_well_pump_power",
+        "Boiler": "sensor.boiler_power",
+        "Car charger": "sensor.power_strip_power",
+        "Washing machine": "sensor.washing_machine_power",
+        "Well pump": "sensor.well_pump_power",
         "Water pump": "sensor.kozolec_hidrofor_power",
-        "Pond": "sensor.shelly_pond_switch_0_power",
+        "Pond": "sensor.pond_filter_power",
         "Pond EVSE": "sensor.pond_evse_power",
         "Pastir": "sensor.pastir_staja_power",
         "Bug lamp": "sensor.bug_lamp_power",
@@ -121,8 +121,8 @@ HOUSE_IDS = {p: f"sensor.se17k_home_power_phase_{p}" for p in "abc"}
 # Which HOUSE phase a channel carries is MEASURED - see _phase_map - because
 # the labels lie: the attic 3EM's phase b carries what the house shows on C.
 CIRCUITS = {
-    "Hiša": [f"sensor.shellypro3em_34987a459ae0_phase_{p}_active_power" for p in "abc"],
-    "Mansarda": [f"sensor.attic_phase_{p}_active_power" for p in "abc"],
+    "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
+    "Mansarda": [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"],
     "Hidrofor": ["sensor.hidrofor_power"],
     "Susilna": ["sensor.shellypmminig3_susilna_power"],
 }
@@ -536,6 +536,12 @@ def fridge(folder: str, dials) -> None:
           f"  length filed/true median {st.median(ratio) if ratio else 0:.2f}"
           f" (within 25 %: {sum(0.75 <= r <= 1.25 for r in ratio)}/{len(ratio)})")
     print(f"  {'':44s} signatures  A: {top(per_sig['A'])}   B: {top(per_sig['B'])}   ?: {top(per_sig['?'])}")
+    # how cleanly the two fridges are apart: each signature's majority kind
+    # among its A and B runs, over all of them
+    sids = set(per_sig["A"]) | set(per_sig["B"])
+    both = sum(per_sig["A"][i] + per_sig["B"][i] for i in sids)
+    kept = sum(max(per_sig["A"][i], per_sig["B"][i]) for i in sids)
+    print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a signature of their own kind)")
     byid = {x.id: x for x in det.signatures}
     for kind in ("A", "B"):
         for sid, _ in per_sig[kind].most_common(2):
