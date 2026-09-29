@@ -92,6 +92,7 @@ PROD_SUBS = {
         "Pond EVSE": "sensor.pond_evse_power",
         "Pastir": "sensor.pastir_staja_power",
         "Bug lamp": "sensor.bug_lamp_power",
+        "Bathroom IR Panel": "sensor.bathroom_ir_panel_switch_0_power",   # a Shelly heartbeating once a minute
     },
 }
 SUBS = "lab"
