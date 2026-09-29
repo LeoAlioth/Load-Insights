@@ -340,10 +340,8 @@ def regroup(det, rel=0.25, respect_time=False):
                 if keep.name and other.name and keep.name != other.name:
                     continue
                 if respect_time:
-                    # a load that has shown it keeps a clock keeps it here too
-                    f = min(keep.duration_factor, other.duration_factor)
                     ratio = max(other.duration_s, 1.0) / max(keep.duration_s, 1.0)
-                    if ratio > f or ratio < 1.0 / f:
+                    if ratio > D.MATCH_DURATION_FACTOR or ratio < 1.0 / D.MATCH_DURATION_FACTOR:
                         continue
                 moved[other.id] = keep.id
     return moved

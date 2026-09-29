@@ -1,6 +1,5 @@
 """Sessions, transitions, multi-phase merging, signatures, resumability."""
 import json
-import math
 import random
 import sys
 from pathlib import Path
@@ -1975,38 +1974,6 @@ def test_a_load_that_overlaps_another_is_never_the_same_device():
     together = [{"signature": 1, "start": 0.0, "end": 100.0},
                 {"signature": 2, "start": 50.0, "end": 150.0}]
     assert D.suggest_levels([a, b], together) == []
-
-
-def test_duration_identifies_some_loads_and_not_others():
-    """Anze, 2026-09-22: "duration can be a part of the fingerprint, but it is
-    not necessarily one." A kettle boils the same volume every time and takes
-    about two minutes; a thermostat runs for twenty seconds or twenty minutes
-    depending how cold the tank is. Measured against Kozolec's submeters, the
-    boiler's runs spread by 0.12 of their median and the pressure pump's by
-    0.48. So the load says which it is, and the library already writes it
-    down."""
-    kettle = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=120.0,
-                         pf=0.99, count=20, first_seen=0.0, last_seen=1.0)
-    kettle.duration_mad = 8.0                      # 0.07 of its length
-    assert kettle.keeps_time
-    assert kettle.duration_factor == D.MATCH_DURATION_FACTOR
-
-    thermostat = D.Signature(id=2, phases="a", power={"a": 1800.0}, duration_s=67.0,
-                             pf=0.99, count=489, first_seen=0.0, last_seen=1.0)
-    thermostat.duration_mad = 40.0                 # 0.6 of its length
-    assert not thermostat.keeps_time
-    assert thermostat.duration_factor == D.LOOSE_DURATION_FACTOR
-
-
-def test_a_young_signature_does_not_enforce_a_duration_it_has_not_earned():
-    """The bootstrapping trap: judged on one or two sightings, a signature
-    freezes whatever its first runs happened to be and then never absorbs the
-    ones that would have taught it otherwise."""
-    young = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=120.0,
-                        pf=0.99, count=2, first_seen=0.0, last_seen=1.0)
-    young.duration_mad = 0.0                       # perfectly consistent, so far
-    assert not young.keeps_time, "two sightings say nothing about keeping time"
-    assert young.duration_factor == D.LOOSE_DURATION_FACTOR
 
 
 def test_a_thermostat_absorbs_its_own_short_and_long_runs():
