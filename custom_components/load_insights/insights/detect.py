@@ -320,7 +320,7 @@ SAME_CLUSTER_ENDS = 1
 # median - ended unseen: it is closed at its usual length. The old age limit
 # (ORPHAN_MARGIN) judged by size alone and cut real long loads of a size others
 # run briefly; this judges each run by its own pair. Exploration dial.
-PAIR_OVERDUE = 1
+PAIR_OVERDUE = 2                # 0 off; 1 by the lengths' spread; 2 by twice the longest run the pair has closed
 PAIR_OVERDUE_SD = 3.0
 PAIR_OVERDUE_MIN = 4.0
 # B2 - DEVICES: edge clusters linked by how they come together - a pair's
@@ -1567,8 +1567,10 @@ class PhaseState:
             spread = self.lib.length_spread(o.cluster)
             if spread is None:
                 continue
-            usual, sd = spread
-            if ts - o.since > max(usual * math.exp(PAIR_OVERDUE_SD * sd), PAIR_OVERDUE_MIN * usual):
+            usual, sd, longest = spread
+            limit = (2.0 * longest if PAIR_OVERDUE == 2 and longest else
+                     usual * math.exp(PAIR_OVERDUE_SD * sd))
+            if ts - o.since > max(limit, PAIR_OVERDUE_MIN * usual):
                 self.open_edges.remove(o)
                 at = o.since + usual
                 self._remember_close(o, at)
@@ -3807,29 +3809,35 @@ class Detector:
         if start is None or stop is None or start_w <= 0 or stop_w <= 0:
             return
         self.link(start, stop)
-        acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 5)
+        acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 6)
+        if len(acc) < 6:
+            acc.append(0.0)
         lr, ld = math.log(stop_w / start_w), math.log(max(secs, 1.0))
+        acc[5] = max(acc[5], secs)
         acc[0] += 1.0
         acc[1] += lr
         acc[2] += lr * lr
         acc[3] += ld
         acc[4] += ld * ld
 
-    def length_spread(self, start: int) -> Optional[Tuple[float, float]]:
-        """(usual seconds, spread of their log) of runs that start with this
-        cluster, over its accepted pairs - None when it has none."""
+    def length_spread(self, start: int) -> Optional[Tuple[float, float, float]]:
+        """(usual seconds, spread of their log, the longest) of runs that
+        start with this cluster, over its accepted pairs - None when it has
+        none."""
         if self._partners is None:
             self.partners(-1)
         if self._spreads is None:
             rows: Dict[int, list] = {}
             for stop, starts in self._partners.items():
                 for a, model in starts.items():
-                    rows.setdefault(a, []).append((model[2], model[3], self.pairs.get(f"{a}>{stop}", [0.0])[0]))
+                    acc = self.pairs.get(f"{a}>{stop}", [0.0])
+                    rows.setdefault(a, []).append((model[2], model[3], acc[0], acc[5] if len(acc) > 5 else 0.0))
             self._spreads = {}
             for a, rs in rows.items():
-                w = sum(n for _, _, n in rs)
+                w = sum(n for _, _, n, _ in rs)
                 if w:
-                    self._spreads[a] = (math.exp(sum(ld * n for ld, _, n in rs) / w), sum(sd * n for _, sd, n in rs) / w)
+                    self._spreads[a] = (math.exp(sum(ld * n for ld, _, n, _ in rs) / w),
+                                        sum(sd * n for _, sd, n, _ in rs) / w, max(m for *_, m in rs))
         return self._spreads.get(start)
 
     def usual_length(self, start: int) -> Optional[float]:
