@@ -12,14 +12,24 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .detection import DetectionRunner
-from .sensor import _child_device
+from .sensor import _child_device, _forget
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     runner: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if runner is None:
         return
-    add([NamedLoadRunning(runner, entry, name) for name in sorted(runner.detector.names())])
+    entities = []
+    for name in sorted(runner.detector.names()):
+        if runner.metered_device(name):          # that device: see the sensor platform
+            _forget(hass, "binary_sensor", _running_uid(entry.entry_id, name))
+        else:
+            entities.append(NamedLoadRunning(runner, entry, name))
+    add(entities)
+
+
+def _running_uid(entry_id: str, name: str) -> str:
+    return f"{entry_id}_load_{name.lower().replace(' ', '_')}"
 
 
 class NamedLoadRunning(BinarySensorEntity):
@@ -34,7 +44,7 @@ class NamedLoadRunning(BinarySensorEntity):
         self._runner = runner
         self._name = name
         self._attr_translation_key = "named_load_running"
-        self._attr_unique_id = f"{entry.entry_id}_load_{name.lower().replace(' ', '_')}"
+        self._attr_unique_id = _running_uid(entry.entry_id, name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
 
     async def async_added_to_hass(self) -> None:

@@ -42,3 +42,22 @@ name_load:
       required: false
       selector:
         text:
+
+backfill_statistics:
+  name: Backfill a load's energy history
+  description: >-
+    Write the hours detection saw of a named load - as far back as it has
+    them, about ten days - into its energy sensor's statistics, before the
+    first hour Home Assistant recorded, so the Energy dashboard shows its
+    past as well. A load named now is filled by itself about an hour later;
+    this is for loads named before that. What detection learned before it
+    kept hours has none, so for an older load run Reset load detection
+    first, which keeps the names. Nothing already recorded is written over,
+    so running it again changes nothing.
+  fields:
+    name:
+      name: Name
+      description: The named load to fill. Empty fills every named load.
+      required: false
+      selector:
+        text:

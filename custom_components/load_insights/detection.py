@@ -5,12 +5,15 @@ import asyncio
 import functools
 import logging
 import math
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import statistics as rec_stats
+from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -67,6 +70,7 @@ from .insights.detect import (
 )
 from .insights.discovery import closest_by_name, match_meter_entities
 from .insights.model import SiteModel
+from .insights.named import metered_device, one_device_meters, plan_backfill
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,7 +94,12 @@ def device_uid(entry_id: str, energy: str) -> str:
 
 
 def named_load_energy(hass: HomeAssistant, entry_id: str, name: str) -> Optional[str]:
-    """The entity - and so the statistic - a named load's energy is under."""
+    """The entity - and so the statistic - a named load's energy is under: a
+    load that IS a metered device is under that device's own meter."""
+    runner = hass.data.get(DOMAIN, {}).get(f"{entry_id}_detection")
+    meter = runner.metered_device(name) if runner is not None else None
+    if meter:
+        return runner.submeters[meter]["energy"]
     return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry_id, "energy", name))
 STORAGE_VERSION = 1
 # The DETECTOR's generation, separate from the store's format version: when
@@ -209,6 +218,7 @@ class DetectionRunner:
         self._unsub = None
         self._listeners: List = []
         self._running = False
+        self._backfill_lock = asyncio.Lock()
 
     @property
     def config(self) -> dict:
@@ -546,6 +556,83 @@ class DetectionRunner:
             return meter["single"]
         return self.guess_one_device(name)
 
+    def metered_device(self, name: str) -> Optional[str]:
+        """The meter a named load IS - named after one that holds a single
+        device - or None. See insights.named."""
+        return metered_device(name, self.device_meters())
+
+    def device_meters(self) -> List[str]:
+        """The meters detection reads that hold one device, by name."""
+        return one_device_meters({m: self.holds_one_device(m) for m in self.submeters})
+
+    async def async_first_statistic(self, statistic_id: str) -> Optional[float]:
+        """When a statistic's first long-term row starts (epoch s), or None
+        while it has none. Every row is read to find it: a named load's meter
+        is weeks old, not years."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.statistics_during_period, self.hass, datetime.fromtimestamp(0, timezone.utc), None,
+            {statistic_id}, "hour", None, {"sum"})
+        rows = rows.get(statistic_id)
+        return float(rows[0]["start"]) if rows else None
+
+    async def async_backfill_statistics(self, name: str) -> Optional[Tuple[int, float]]:
+        """Write what detection saw of a named load, hour by hour, into its
+        energy meter's long-term statistics before the first hour Home
+        Assistant recorded - so the Energy dashboard shows the days it was
+        seen before it was named - and raise every recorded hour's sum by
+        what was written, so the hours after read as they did.
+
+        Returns (hours, kWh) written - (0, 0.0) when there is nothing to do -
+        or None while the meter has no hour of its own yet: until it has, the
+        next hour Home Assistant compiles would restart the sum from 0 below
+        what was written. Nothing recorded is written over, so running it
+        again writes nothing (2026-09-29)."""
+        meter = self.metered_device(name)
+        if meter:
+            _LOGGER.info("Not backfilling %s: it is the metered device %s, whose own readings are its history",
+                         name, meter)
+            return 0, 0.0
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
+        if entity_id is None:
+            return 0, 0.0
+        async with self._backfill_lock:
+            first = await self.async_first_statistic(entity_id)
+            if first is None:
+                return None
+            for _ in range(600):              # the library, between passes: a pass changes it
+                if not self._running:
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                return None
+            hourly = self.detector.hourly_by_name(name)
+            rows, total = plan_backfill(hourly, first, dt_util.utcnow().timestamp() // 3600 * 3600)
+            if not rows:
+                _LOGGER.info("Nothing to backfill for %s (%s): no hour detection saw before %s",
+                             name, entity_id, dt_util.utc_from_timestamp(first).isoformat())
+                return 0, 0.0
+            meta = await get_instance(self.hass).async_add_executor_job(
+                functools.partial(rec_stats.get_metadata, self.hass, statistic_ids={entity_id}))
+            unit = meta[entity_id][1]["unit_of_measurement"] if entity_id in meta else None
+            if unit != UnitOfEnergy.KILO_WATT_HOUR:
+                _LOGGER.warning("Not backfilling %s: %s keeps its statistics in %s, not kWh", name, entity_id, unit)
+                return 0, 0.0
+            recorder = get_instance(self.hass)
+            # exactly what the sensor's own statistics carry, so importing
+            # changes nothing about them but the rows
+            rec_stats.async_import_statistics(self.hass, {
+                "has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
+                "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit,
+            }, [{"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
+                for r in rows])
+            recorder.async_adjust_statistics(entity_id, dt_util.utc_from_timestamp(first), total, unit)
+            await recorder.async_block_till_done()   # written before another run reads
+        _LOGGER.info("Backfilled %s (%s): %d hours, %.2f kWh, %s to %s", name, entity_id, len(rows), total,
+                     dt_util.utc_from_timestamp(rows[0]["start"]).isoformat(),
+                     dt_util.utc_from_timestamp(rows[-1]["start"]).isoformat())
+        return len(rows), total
+
     def guess_one_device(self, name: str) -> bool:
         if any(m.get("parent") == name for m in self.submeters.values()):
             return False
@@ -734,6 +821,9 @@ class DetectionRunner:
         if orphans:
             self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+        # before the platforms, which leave out the loads that ARE a metered
+        # device; every pass resolves them again
+        self.submeters = await self._resolve_submeters()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         if not self.enabled:

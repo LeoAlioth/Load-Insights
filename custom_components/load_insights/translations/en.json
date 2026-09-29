@@ -269,7 +269,11 @@
                 "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything. Tick an input that helped find it to link it to the load - it keeps counting for the whole site as well; the link is made when you finish naming.",
                 "data": {
                     "name": "Name",
-                    "link_inputs": "Link to this load"
+                    "link_inputs": "Link to this load",
+                    "same_as_meter": "Same device as"
+                },
+                "data_description": {
+                    "same_as_meter": "A device with a meter of its own: pick that meter and the load is named exactly as it is, and is that device - its meter's readings and forecast stand for it, so it gets no detected sensors of its own. Picked, it wins over the name typed above."
                 }
             },
             "inverters": {
@@ -397,6 +401,18 @@
                 "10": "Every 10 minutes",
                 "15": "Every 15 minutes",
                 "30": "Every 30 minutes"
+            }
+        }
+    },
+    "services": {
+        "backfill_statistics": {
+            "name": "Backfill a load's energy history",
+            "description": "Write the hours detection saw of a named load - as far back as it has them, about ten days - into its energy sensor's statistics, before the first hour Home Assistant recorded, so the Energy dashboard shows its past as well. A load named now is filled by itself about an hour later; this is for loads named before that. What detection learned before it kept hours has none, so for an older load run Reset load detection first, which keeps the names. Nothing already recorded is written over, so running it again changes nothing.",
+            "fields": {
+                "name": {
+                    "name": "Name",
+                    "description": "The named load to fill. Empty fills every named load."
+                }
             }
         }
     }

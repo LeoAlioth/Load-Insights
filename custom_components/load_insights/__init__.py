@@ -16,6 +16,7 @@ from .const import (
     CONF_SIGNATURE_REVISION,
     DEFAULT_NAME,
     DOMAIN,
+    SERVICE_BACKFILL_STATISTICS,
     SERVICE_NAME_LOAD,
     SERVICE_REFRESH,
     SERVICE_RESET_DETECTION,
@@ -81,6 +82,28 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         if not found:
             raise ServiceValidationError(f"No detected load has id {load_id}")
 
+    async def _backfill_statistics(call) -> None:
+        """Write the hours detection saw of a named load into its energy
+        meter's statistics, before the first hour Home Assistant recorded -
+        for loads named before naming did it by itself (2026-09-29). Every
+        named load when no name is given; running it again writes nothing."""
+        wanted = (call.data.get("name") or "").strip().casefold()
+        found = False
+
+        async def go(entry_id, _coordinator):
+            nonlocal found
+            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
+            for name in sorted(runner.detector.names()) if runner is not None else ():
+                if wanted and name.casefold() != wanted:
+                    continue
+                found = True
+                if await runner.async_backfill_statistics(name) is None:
+                    _LOGGER.info("Not backfilling %s yet: its energy meter has no hour of its own; "
+                                 "it is filled once it has", name)
+        await _async_for_each_entry(hass, go)
+        if wanted and not found:
+            raise ServiceValidationError(f"No load is named {call.data.get('name')}")
+
     # Renamed entities: gathered for a few seconds - a rename tool changes
     # dozens at once - then followed in one options change per entry, which
     # reloads it once. Registered here rather than per entry so a rename that
@@ -123,6 +146,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, _refresh)
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
     hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)
+    hass.services.async_register(DOMAIN, SERVICE_BACKFILL_STATISTICS, _backfill_statistics)
     return True
 
 
