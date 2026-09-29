@@ -950,11 +950,22 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 places[t] = _area_id(self.hass, t)
             elif meter.get(t[len(LOAD_PREFIX):], "main") != "main":
                 places[t] = _area_id(self.hass, _meter_entity(runner, meter[t[len(LOAD_PREFIX):]]))
-        # not a diagnostic one: a Shelly's own temperature is its relay's, not the room's
-        candidates = {e.entity_id: _area_id(self.hass, e.entity_id) for e in er.async_get(self.hass).entities.values()
-                      if not e.disabled_by and not e.entity_category
-                      and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())}
-        found = suggest_inputs(places, candidates, options.get(CONF_INPUT_ENTITIES))
+        # not a diagnostic one: a Shelly's own temperature is its relay's, not
+        # the room's. And one from a device that meters power is that device's
+        # own - a battery's cells, an inverter's heat sink, a car's cabin, a
+        # boiler's tank: offered to that device only. A battery's cells were
+        # offered as Kozolec's PV room temperature (2026-09-29).
+        registry = er.async_get(self.hass)
+        metering = {e.device_id for e in registry.entities.values() if e.device_id
+                    and (e.device_class or e.original_device_class) in ("power", "energy")}
+        chosen = [e for e in registry.entities.values()
+                  if not e.disabled_by and not e.entity_category
+                  and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())]
+        candidates = {e.entity_id: _area_id(self.hass, e.entity_id) for e in chosen}
+        own = {e.entity_id: e.device_id for e in chosen if e.device_id in metering}
+        target_devices = {t: (registry.async_get(t).device_id if registry.async_get(t) else None)
+                          for t in places if not t.startswith(LOAD_PREFIX)}
+        found = suggest_inputs(places, candidates, options.get(CONF_INPUT_ENTITIES), own, target_devices)
         if not found:
             return self.async_abort(reason="no_suggestions")
         areas = ar.async_get(self.hass)
