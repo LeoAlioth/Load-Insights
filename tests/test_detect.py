@@ -48,6 +48,26 @@ def test_a_load_that_sags_while_it_runs_still_closes_when_it_stops():
     finally:
         D.SAG_CLOSE = saved
 
+def test_a_load_the_reading_cannot_be_carrying_is_closed():
+    """Home's floor mat stopped in the same reading as the hob's 2 kW pulse,
+    and stayed open nine hours. The phase reading less than the loads
+    believed running add up to is what gives it away."""
+    def phase(floor_zero):
+        st = D.PhaseState(floor_zero=floor_zero)
+        st.baseline, st.level, st.noise = 300.0, 1300.0, 20.0
+        st.open_edges = [D._Open(T0, 600.0, None, [(T0, 600.0)]),          # the mat
+                         D._Open(T0 + 60, 400.0, None, [(T0 + 60, 400.0)])]
+        return st
+    st = phase(True)
+    closed = st._unseen_stop(T0 + 300, 450.0)                            # 1000 believed on, 450 read
+    assert [round(x.duration_s) for x in closed] == [300], closed        # the one that fits 550: the mat
+    assert [o.watts for o in st.open_edges] == [400.0]
+    assert st._unseen_stop(T0 + 310, 450.0) == []                        # 400 fits in 450: nothing more
+    assert phase(True)._unseen_stop(T0 + 300, 950.0) == []               # it all fits
+    assert phase(True)._unseen_stop(T0 + 300, 100.0) == []               # 900 short: no one load fits it
+    assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
+
+
 def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     det = D.Detector()
     hours = 2
