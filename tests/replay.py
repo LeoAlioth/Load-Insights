@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import load  # noqa: E402
+from export_urls import RENAMED  # noqa: E402  - ids renamed since some history was fetched
 
 D = load("insights.detect")
 DISCOVERY = load("insights.discovery")
@@ -147,6 +148,7 @@ def read_csv(paths, keep_coarse=False):
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 eid = (row.get("entity_id") or "").strip()
+                eid = RENAMED.get(eid, eid)       # history from before a rename
                 raw = (row.get("state") or "").strip()
                 when = (row.get("last_changed") or row.get("last_updated") or "").strip()
                 if not eid or not when:
