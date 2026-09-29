@@ -2912,6 +2912,9 @@ class Detector:
     # ids that consolidation has retired, so a session filed before a merge
     # still resolves to the signature that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
+    # signature id -> the widest noise it has been asked against every other
+    # at since it last changed - see consolidate. Emptied every pass.
+    _asked_at: Dict[int, float] = field(default_factory=dict, repr=False, compare=False)
     # Names whose signature is gone - after a reset, or after an upgrade that
     # could not read the old library. They hold enough of a description to be
     # recognised again, and are handed back to the first signature that looks
@@ -2946,6 +2949,7 @@ class Detector:
         derived from it. Returns the sessions this batch closed."""
         closed: List[Session] = []
         latest = now_ts or 0.0
+        self._asked_at = {}
         # ALL phases in time order, not one phase after another. Each phase's
         # state is its own, so the order changes nothing by itself - but it
         # means that when one leg of a load is judged, the other legs' state is
@@ -3194,7 +3198,7 @@ class Detector:
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
-        self.consolidate(noise)
+        self.consolidate(noise, changed=[best])
         if self.orphan_names:
             # after consolidate, so a name lands on the signature that survived
             # the merge rather than on one about to be swallowed
@@ -3211,10 +3215,12 @@ class Detector:
                     default=0.0)
         return PF_MIN_QUANTA * worst
 
-    def _judge_born(self) -> None:
+    def _judge_born(self) -> List["Signature"]:
         """A born-in signature that has seen its value come round
         STAGE_MIN_EPISODES times belongs to it if it ran in enough of them,
-        and is ordinary again - running in that value now and then - if not."""
+        and is ordinary again - running in that value now and then - if not.
+        Returns the ones judged."""
+        judged = []
         for sig in self.signatures:
             if not sig.born_in or sig.stage_judged:
                 continue
@@ -3227,8 +3233,10 @@ class Detector:
             else:
                 sig.takes_in = sorted(set(sig.takes_in) | {sig.born_in})
                 sig.born_in = None
+            judged.append(sig)
+        return judged
 
-    def consolidate(self, noise_w: float = MIN_NOISE_W) -> int:
+    def consolidate(self, noise_w: float = MIN_NOISE_W, changed: Optional[List["Signature"]] = None) -> int:
         """Merge signatures that have BECOME alike, and say how many went.
 
         Power and duration are running MEANS, so two signatures that are now
@@ -3238,16 +3246,37 @@ class Detector:
         mean duration was different at the moment the second arrived. Filing
         only ever looks at the signatures as they stand, and nothing came
         back to them afterwards; this does, by the same rule.
+
+        ``changed``: the signatures that can have become alike to another
+        since the last call - the one a run was just filed into. Asking every
+        pair after every run was three quarters of a backfill: 382 million
+        calls to alike over Home's ten days. A pair that was not alike stays
+        so until one side changes - except that ``noise_w`` is the noise of
+        the phase the run was on, every pair is judged by it, and a wider one
+        admits more. So a pair is asked again only when one side has changed
+        since it was last asked against every other at this noise or wider;
+        that merges exactly what asking them all did, which the benches were
+        set with. Every pass starts by asking all (names and noise move
+        between passes); None asks all now.
         """
-        self._judge_born()
+        judged = self._judge_born()
+        if changed is None:
+            self._asked_at = {}
+        for x in list(changed or ()) + judged:
+            self._asked_at.pop(x.id, None)
+        hot = {x.id for x in self.signatures if self._asked_at.get(x.id, -math.inf) < noise_w}
         gone = 0
         again = True
         while again:
             again = False
             self.signatures.sort(key=lambda x: -x.count)
+            later = [j for j, x in enumerate(self.signatures) if x.id in hot]
             for i, keep in enumerate(self.signatures):
-                doomed = [j for j in range(i + 1, len(self.signatures))
-                          if keep.alike(self.signatures[j], noise_w)]
+                if keep.id in hot:
+                    ask = range(i + 1, len(self.signatures))
+                else:
+                    ask = [j for j in later if j > i]
+                doomed = [j for j in ask if keep.alike(self.signatures[j], noise_w)]
                 if not doomed:
                     continue
                 moved = {}
@@ -3265,6 +3294,7 @@ class Detector:
                     moved[other.id] = keep.id
                     keep.swallow(other)
                     gone += 1
+                    hot.add(keep.id)                 # it moved: its pairs are open again
                 if not moved:
                     continue
                 for r in self.recent:            # the sessions still point at them
@@ -3276,6 +3306,9 @@ class Detector:
                 self._moved.update(moved)
                 again = True
                 break
+        for x in self.signatures:
+            if x.id in hot:
+                self._asked_at[x.id] = noise_w       # asked against every other, at this noise
         return gone
 
     def _link_successors(self, now: float) -> None:
