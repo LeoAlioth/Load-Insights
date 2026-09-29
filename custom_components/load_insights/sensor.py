@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
+from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED, get_instance
+from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
@@ -682,6 +683,15 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
             self._reading = float(last.native_value)
         except (AttributeError, TypeError, ValueError):
             pass
+        # Never below the reading Home Assistant last compiled: the next
+        # compile counts from it, and one restored lower - or not at all, as
+        # the first start after 0.4.1-dev.20260929.1455, whose sensor kept
+        # nothing to restore - books the difference as a drop.
+        compiled = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.get_last_short_term_statistics, self.hass, 1, self.entity_id, False, {"state"})
+        compiled = ((compiled.get(self.entity_id) or [{}])[0]).get("state")
+        if compiled is not None and (self._reading is None or compiled > self._reading):
+            self._reading = float(compiled)
         # the library as stored, so what the first pass adds - the time Home
         # Assistant was down - counts
         self._reading, self._seen = carry_reading(self._reading, None, self._total(), False)
