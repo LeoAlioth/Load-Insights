@@ -2612,42 +2612,6 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
     assert back.keys == keyed[0].keys and back.watts == keyed[0].watts
 
 
-def test_a_drop_a_device_has_made_part_way_is_a_step_down_once_learned():
-    """600 W on, -200 W two minutes in, -400 W a minute later: the first runs
-    hold the 200 W until the 400 W completes them; once the three edges are
-    one learned device the 200 W is that run's step down the moment it comes
-    (Anze, 2026-09-29)."""
-    det = D.Detector()
-    rows, t, base = [], T0, 150.0
-    def hold(w, secs):
-        nonlocal t
-        for _ in range(int(secs / 5)):
-            rows.append((t, w))
-            t += 5.0
-    hold(base, 600)
-    for _ in range(12):
-        hold(base + 600.0, 120)
-        hold(base + 400.0, 60)
-        hold(base, 900)
-    hold(base + 600.0, 120)                           # and once more, stopping between the drops
-    hold(base + 400.0, 60)
-    closed = []
-    step = 1800.0                                     # devices are worked out once a pass
-    a = T0
-    while a < t:
-        b = a + step
-        closed += det.process({"a": [r for r in rows if a <= r[0] < b]}, now_ts=b)
-        a = b
-    runs = [s for s in closed if abs(s.duration_s - 180.0) <= 15.0]
-    assert len(runs) == 12, [(round(s.duration_s), s.levels) for s in closed]
-    assert all([round(w, -2) for _, w in s.levels["a"]] == [600.0, 400.0] for s in runs), [s.levels for s in runs]
-    (key, acc), = det.steps.items()
-    assert acc[0] == 13 and abs(math.exp(acc[1] / acc[0]) - 1 / 3) < 0.05, det.steps
-    st = det.phases["a"]
-    (o,), = [st.open_edges]
-    assert not st.held_drops and round(o.watts, -2) == 400.0, (o, st.held_drops)
-
-
 def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
     """Home's floor mat draws through its thermostat's relay: a 600 W run on C
     while the thermostat was not heating is another load (2026-09-29)."""
@@ -2663,6 +2627,8 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # off throughout: not the mat
     assert fleet._switched_off(run(T0 + 100.0, T0 + 250.0), 2.0) == []     # while it was on
     assert fleet._switched_off(run(T0 + 3000.0, T0 + 3700.0), 2.0) == []   # on for part of it
+    fleet.switch_on = {sw: {}}
+    assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # fed, and off for all it remembers
     fleet.switch_on = {}
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == []   # nothing on record: no say
 

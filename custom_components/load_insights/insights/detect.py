@@ -346,18 +346,6 @@ INPUT_ENDS = 1
 LINK_MIN = 5
 LINK_SHARE = 0.2
 DEVICE_HOME = 1
-# C at the DEVICE level. A drop a run's start has been seen to make part-way -
-# the 200 W of 600 -> 400 -> 0, learned from STEP_MIN_RUNS joint stops - is a
-# step down the moment it comes rather than a held drop; the first times it
-# stays unmatched until the rest completes it (Anze, 2026-09-29: "only after,
-# if we actually group the 600 W rising and the 200+400 W falling edges into a
-# single device, could it be taken into account immediately"). And joint stops
-# and falls closing several rises only combine runs and drops of one device
-# once their clusters belong to learned devices. Exploration dials.
-LEARNED_STEPS = 1
-STEP_MIN_RUNS = 3
-STEP_SAME_DEVICE = 1            # ...and only once the rise and the drop are clusters of one learned device
-DEVICE_COMBOS = 1
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
 # bigger closes the mat's run at the mat's size and pairs what is left; a step
@@ -2036,23 +2024,6 @@ class PhaseState:
             o = self.open_edges.pop(i)
             self._remember_close(o, at)
             return [self._close(o, at, watts, var, direct=True)]
-        if LEARNED_STEPS and self.lib is not None and self.stop_cluster is not None:
-            steps = self.lib.learned_steps(self.stop_cluster)
-            devs = self.lib.devices() if STEP_SAME_DEVICE and steps else {}
-            for i in range(len(self.open_edges) - 1, -1, -1):
-                o = self.open_edges[i]
-                model = steps.get(o.cluster)
-                if model is None or o.watts - watts <= self._tol(o.watts, watts):
-                    continue
-                if STEP_SAME_DEVICE and (devs.get(o.cluster) is None or devs.get(o.cluster) != devs.get(self.stop_cluster)):
-                    continue
-                first = o.levels[0][1]
-                expect = first * model[0]
-                if abs(watts - expect) <= self._tol(expect, watts) + 2.0 * model[1] * first:
-                    o.watts -= watts
-                    o.levels.append((at, o.watts))
-                    self.lib.note_step(o.cluster, self.stop_cluster, first, watts)
-                    return []
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if o.watts - watts > self._tol(o.watts, watts) and (
@@ -2069,12 +2040,8 @@ class PhaseState:
         # largest first while the step still covers them, or nothing.
         order = sorted(range(len(self.open_edges)), key=lambda i: -self.open_edges[i].watts)
         taken, left = [], watts
-        one = self.lib.same_device if DEVICE_COMBOS and self.lib is not None else None
         for i in order:
             o = self.open_edges[i]
-            if one is not None and not (one(o.cluster, self.stop_cluster)
-                                        and all(one(o.cluster, self.open_edges[k].cluster) for k in taken)):
-                continue
             if o.watts <= left + self._tol(o.watts, left):
                 taken.append(i)
                 left -= o.watts
@@ -2110,10 +2077,7 @@ class PhaseState:
             need = size - watts
             if need <= self._tol(size, watts):
                 continue
-            one = self.lib.same_device if DEVICE_COMBOS and self.lib is not None else None
-            if one is not None and not one(o.cluster, self.stop_cluster):
-                continue
-            held = [d for d in self.held_drops if d[0] > o.since and (one is None or one(o.cluster, d[2]))]
+            held = [d for d in self.held_drops if d[0] > o.since]
             pick = next(([d] for d in held if abs(d[1] - need) <= self._tol(size, need)), None)
             if pick is None:
                 pick = next(([a, b] for k, a in enumerate(held) for b in held[k + 1:]
@@ -2123,7 +2087,6 @@ class PhaseState:
             for d in pick:
                 self.held_drops.remove(d)
                 if self.lib is not None:
-                    self.lib.note_step(o.cluster, d[2], o.levels[0][1], d[1])
                     self.lib.link(o.cluster, d[2])
                     self.lib.link(o.cluster, self.stop_cluster)
                     self.lib.link(d[2], self.stop_cluster)
@@ -3440,9 +3403,6 @@ class Detector:
     pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict)
     # "a|b" cluster ids (a < b) -> how often they came together - see LINK_MIN
     links: Dict[str, float] = field(default_factory=dict)
-    # "rise>fall" -> [runs, sum and sum of squares of log(drop/start)] for drops
-    # a run made part-way - see LEARNED_STEPS
-    steps: Dict[str, List[float]] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -3451,8 +3411,6 @@ class Detector:
     _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
-    _steps: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
-    _sizes: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
@@ -3481,7 +3439,7 @@ class Detector:
         stream = []
         self._partners, self._learned, self._spreads = None, None, None
         self._devices, self._device_home, self._by_id, self._windows = None, None, None, None
-        self._steps, self._sizes, self._kinds = None, None, None
+        self._kinds = None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3889,45 +3847,6 @@ class Detector:
             self._devices = {c: find(c) for c in total}
         return self._devices
 
-    def same_device(self, a: Optional[int], b: Optional[int]) -> bool:
-        """False only when both clusters belong to learned devices of more
-        than one cluster, and not the same one - see DEVICE_COMBOS."""
-        devs = self.devices()
-        da, db = devs.get(a), devs.get(b)
-        if da is None or db is None or da == db:
-            return True
-        if self._sizes is None:
-            self._sizes = {}
-            for d in devs.values():
-                self._sizes[d] = self._sizes.get(d, 0) + 1
-        return self._sizes[da] < 2 or self._sizes[db] < 2
-
-    def note_step(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float) -> None:
-        if start is None or stop is None or start_w <= 0 or stop_w <= 0:
-            return
-        acc = self.steps.setdefault(f"{start}>{stop}", [0.0] * 3)
-        lr = math.log(stop_w / start_w)
-        acc[0] += 1.0
-        acc[1] += lr
-        acc[2] += lr * lr
-        if acc[0] == STEP_MIN_RUNS:
-            self._steps = None                  # learned now, not next pass
-
-    def learned_steps(self, stop: int) -> Dict[int, tuple]:
-        """rise cluster -> (drop/start ratio, its spread) for the part-way
-        drops this fall cluster has made STEP_MIN_RUNS times. Once a pass."""
-        if self._steps is None:
-            out: Dict[int, Dict[int, tuple]] = {}
-            for key, acc in self.steps.items():
-                if acc[0] < STEP_MIN_RUNS:
-                    continue
-                a, b = (int(x) for x in key.split(">"))
-                m = acc[1] / acc[0]
-                sd = math.sqrt(max(0.0, acc[2] / acc[0] - m * m))
-                out.setdefault(b, {})[a] = (math.exp(m), math.exp(m) * sd)
-            self._steps = out
-        return self._steps.get(stop, {})
-
     def device_of(self, s: "Session") -> Optional[int]:
         devs = self.devices()
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
@@ -3958,14 +3877,18 @@ class Detector:
             self._windows[name] = lag_window(self.lag_hist.get(name) or [])
         return self._windows[name]
 
+    def cluster(self, cid: int) -> Optional["EdgeCluster"]:
+        c = self._by_id.get(cid) if self._by_id is not None else None
+        if c is None:
+            self._by_id = {x.id: x for x in self.edges}      # one born this pass
+            c = self._by_id.get(cid)
+        return c
+
     def input_end(self, cluster: int, since: float, now: float) -> Optional[float]:
         """When a run that started with this cluster must have stopped, on
         the meter's clock, if its input has changed back and the window for
         the stop has passed by ``now`` - else None. See INPUT_ENDS."""
-        c = self._by_id.get(cluster) if self._by_id is not None else None
-        if c is None:
-            self._by_id = {x.id: x for x in self.edges}
-            c = self._by_id.get(cluster)
+        c = self.cluster(cluster)
         if c is None or not c.keys or not any(c.keys.values()) or not self.signals:
             return None
         events, times, _ = self.signals
@@ -4382,8 +4305,7 @@ class Detector:
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
-                "links": {k: _trim(v, 2) for k, v in self.links.items()},
-                "steps": {k: [_trim(x, 4) for x in v] for k, v in self.steps.items()}}
+                "links": {k: _trim(v, 2) for k, v in self.links.items()}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -4406,7 +4328,6 @@ class Detector:
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
         det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         det.links = {k: float(v) for k, v in (d.get("links") or {}).items()}
-        det.steps = {k: [float(x) for x in v] for k, v in (d.get("steps") or {}).items()}
         return det
 
 
@@ -4472,8 +4393,8 @@ class Fleet:
                 if off is not None or on not in known:
                     known[on] = off
             keep = min(oldest or now_ts or 0.0, now_ts or max(known, default=0.0)) - SWITCH_MEMORY_S
-            for on in [t for t in known if t < keep]:
-                del known[on]
+            for on in [t for t, off in known.items() if off is not None and off < keep]:
+                del known[on]                  # a span still on is never forgotten
         for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.inputs, inputs, str)):
             for name, rows in (fed or {}).items():
                 held = dict(store.get(name) or [])
@@ -4722,9 +4643,10 @@ class Fleet:
         if not self.switch_on:
             return []
         tol = max(MERGE_TOLERANCE_S, 2.0 * main_iv)
+        # a switch it is fed and holds no span of: off for all of its memory
         off = {name for name, spans in self.switch_on.items()
-               if spans and not any(on < m.end + tol and (until is None or until > m.start - tol)
-                                    for on, until in spans.items())}
+               if not any(on < m.end + tol and (until is None or until > m.start - tol)
+                          for on, until in spans.items())}
         if not off:
             return []
         return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
