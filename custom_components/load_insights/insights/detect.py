@@ -1423,7 +1423,7 @@ def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     return None if s <= 0 else max(0.0, min(1.0, abs(watts) / s))
 
 
-@dataclass
+@dataclass(eq=False)                 # one run is one object: removing it from a list must not compare every field
 class _Open:
     """A load believed to be running: the step that started it, what is still
     running of it, and every level it has held."""
@@ -3404,6 +3404,7 @@ class Detector:
     _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
     _spreads: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False)
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
+    _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
@@ -3430,7 +3431,7 @@ class Detector:
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
         self._partners, self._learned, self._spreads = None, None, None
-        self._devices, self._device_home, self._by_id = None, None, None
+        self._devices, self._device_home, self._by_id, self._windows = None, None, None, None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         for ph, rows in samples.items():
@@ -3761,7 +3762,7 @@ class Detector:
         pf = size / math.hypot(size, var) if var is not None and size > 0 else None
         events, times, numbers = self.signals or ({}, {}, {})
         if self._learned is None:
-            self._learned = [n for n in events if lag_window(self.lag_hist.get(n) or [])]
+            self._learned = [n for n in events if self.window(n)]
         bins = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
         kinds, lags, values = {}, {}, {}
         for name, evs in events.items():
@@ -3775,7 +3776,9 @@ class Detector:
             lag = ts[j] - since
             hist = self.lag_hist.setdefault(name, [0.0] * bins)
             hist[min(bins - 1, int((lag + EDGE_LAG_REACH_S) / EDGE_LAG_BIN_S))] += 1.0
-            lo, hi = lag_window(hist) or (-EDGE_WINDOW_DEFAULT_S, EDGE_WINDOW_DEFAULT_S)
+            if self._windows is not None:
+                self._windows.pop(name, None)          # the histogram just changed
+            lo, hi = self.window(name) or (-EDGE_WINDOW_DEFAULT_S, EDGE_WINDOW_DEFAULT_S)
             if lo <= lag <= hi:
                 kinds[name] = evs[j][1]
                 lags[name] = (evs[j][1], lag)
@@ -3852,6 +3855,14 @@ class Detector:
         acc[3] += ld
         acc[4] += ld * ld
 
+    def window(self, name: str) -> Optional[Tuple[float, float]]:
+        """This input's learned lag window (see lag_window), kept until its histogram changes."""
+        if self._windows is None:
+            self._windows = {}
+        if name not in self._windows:
+            self._windows[name] = lag_window(self.lag_hist.get(name) or [])
+        return self._windows[name]
+
     def input_end(self, cluster: int, since: float, now: float) -> Optional[float]:
         """When a run that started with this cluster must have stopped, on
         the meter's clock, if its input has changed back and the window for
@@ -3866,7 +3877,7 @@ class Detector:
         for name, kind in c.keys.items():
             if not kind or name not in events:
                 continue
-            window = lag_window(self.lag_hist.get(name) or [])
+            window = self.window(name)
             if window is None:
                 continue
             lag, half = 0.5 * (window[0] + window[1]), 0.5 * (window[1] - window[0])
@@ -4777,20 +4788,26 @@ class Fleet:
         sub-meter session that could be the same load."""
         pairs = []
         phases = self.meter_phases()
+        meters = []
+        for name, subs in self.pending_sub.items():
+            det = self.subs.get(name)
+            sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+            # one full reporting interval each, since a step can land
+            # anywhere inside one, and never less than the merge tolerance
+            tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+            agnostic = self.agnostic.get(name, False)
+            # a three-phase meter's sessions under the HOUSE's phase names
+            mp = {} if agnostic else self.phase_map(name)
+            # by start, since only a session starting within tol can pair
+            order = sorted(range(len(subs)), key=lambda i: subs[i].start)
+            meters.append((name, subs, tol, agnostic, mp, order, [subs[i].start for i in order]))
         for mi, m in enumerate(mains):
-            for name, subs in self.pending_sub.items():
+            for name, subs, tol, agnostic, mp, order, starts in meters:
                 if name in phases and not set(m.phases) <= set(phases[name]):
                     continue        # not on the phases this meter's one device uses
-                det = self.subs.get(name)
-                sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
-                # one full reporting interval each, since a step can land
-                # anywhere inside one, and never less than the merge tolerance
-                tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
-                agnostic = self.agnostic.get(name, False)
-                # a three-phase meter's sessions under the HOUSE's phase names
-                mp = {} if agnostic else self.phase_map(name)
-                for si, s in enumerate(subs):
-                    s = _relabel(s, mp)
+                near = order[bisect.bisect_left(starts, m.start - tol):bisect.bisect_right(starts, m.start + tol)]
+                for si in sorted(near):
+                    s = _relabel(subs[si], mp)
                     if _same_load(m, s, agnostic, tol):
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         return pairs
