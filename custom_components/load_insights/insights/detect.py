@@ -1619,6 +1619,7 @@ class PhaseState:
                 self.open_edges.pop(0)
             return []
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
+        closed += self._unseen_stop(since, new_level)
         if self.open_edges and new_level <= self.baseline + self.noise:
             # back at the idle floor, so whatever was still open has stopped
             # without us seeing it go. Holding those starts open would have
@@ -1701,6 +1702,36 @@ class PhaseState:
                     self.close_hint = o
                     return True
         return False
+
+    def _unseen_stop(self, at: float, level: float) -> List[Session]:
+        """A phase cannot carry more than it reads: when the loads believed
+        running add up to more than the whole reading, one of them stopped
+        unseen, and the one that fits the shortfall - the oldest of those -
+        is closed here. A shortfall nothing fits is left alone.
+
+        Its stop landed in the same reading as another load's step: Home's
+        floor mat against the hob pulsing 2 kW every five seconds, left open
+        nine hours until an unrelated drop of its size closed it. Measured on
+        the WHOLE reading, not above the idle floor (Anze: "closes a session
+        once the meter's total draw is lower than the devices absolutely
+        should be"): the floor of a phase that is never idle is a guess, and
+        reading above it was worse. Against the mat's thermostat (89.9 h
+        heating, 18-27.09) the mat went from 114.0 to 91.1 h counted once, and
+        Kozolec's fridge purity from 73 to 86 %; Home's wconc 50.2 -> 48.6,
+        the kiln's single-leg pulses 140 -> 160 (2026-09-29). Only on a reading
+        of the house alone: one carrying solar reads low with everything on."""
+        if not self.floor_zero or not self.open_edges:
+            return []
+        short = sum(o.now or o.watts for o in self.open_edges) - level
+        if short <= self.noise_at(level):
+            return []
+        for o in self.open_edges:
+            size = o.now or o.watts
+            if abs(size - short) <= self._tol(size, short):
+                self.open_edges.remove(o)
+                self._remember_close(o, at)
+                return [self._close(o, at, size, None)]
+        return []
 
     def _remember_close(self, o, at: float) -> None:
         self.recent_closed.append((o.since, o.watts, at))
