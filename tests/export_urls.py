@@ -31,17 +31,17 @@ HOME = {
             + [f"sensor.solaredge_se17k_i1_ac_{k}" for k in
                ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]
             + [f"sensor.se17k_home_power_phase_{p}" for p in "abc"]
-            + ["sensor.shellypmminig3_84fce63c6654_power", "sensor.nasa_station_power",
+            + ["sensor.blaz_pc_power", "sensor.attic_office_power",
                "sensor.evbox_elvi_power_active_import", "sensor.hidrofor_power",
                "sensor.workshop_boiler_power", "sensor.attic_ac_power",
                "sensor.server_ups_power", "sensor.shellypmminig3_susilna_power",
-               "sensor.shellypmminig3_ecda3bc6b054_power"]),
+               "sensor.workshop_charger_power"]),
         # the two three-phase Shellys, which report every second
         "shellys": (
-            [f"sensor.shellypro3em_34987a459ae0_phase_{p}_active_power" for p in "abc"]
-            + ["sensor.shellypro3em_34987a459ae0_total_active_power"]
-            + [f"sensor.attic_phase_{p}_active_power" for p in "abc"]
-            + ["sensor.attic_total_active_power"]),
+            [f"sensor.hisa_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.hisa_total_active_power"]
+            + [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.mansarda_total_active_power"]),
     },
 }
 
@@ -84,12 +84,12 @@ KOZOLEC = {
             "sensor.jk_bms_id_512_charge",
         ],
         "devices": [
-            "sensor.shellypro4pm_kozolec_switch_0_power",      # Car charger
-            "sensor.shellypro4pm_kozolec_switch_1_power",      # Boiler
-            "sensor.shellypro4pm_kozolec_switch_3_power",      # Washing Machine
-            "sensor.kotlovnica_well_pump_power",
+            "sensor.power_strip_power",      # Car charger
+            "sensor.boiler_power",      # Boiler
+            "sensor.washing_machine_power",      # Washing Machine
+            "sensor.well_pump_power",
             "sensor.kozolec_hidrofor_power",                   # Water Pump
-            "sensor.shelly_pond_switch_0_power",               # Pond
+            "sensor.pond_filter_power",               # Pond
             "sensor.pond_evse_power",
             "sensor.pastir_staja_power",
             "sensor.bug_lamp_power",
@@ -98,6 +98,31 @@ KOZOLEC = {
 }
 
 SITES = {"home": HOME, "kozolec": KOZOLEC}
+
+# Entities renamed on 2026-09-28 (HA_Configs/<site>/rename-plan-2026-09-28*.json).
+# History fetched before then is under the old id and after under the new;
+# the recorder moved the old days to the new id too, so a fetch by the old id
+# came back empty from 23 Sep on - Home's house and attic meters, the office
+# plug, Kozolec's well pump and boiler all missing from the bench for those
+# days. replay.read_csv reads an old id as its new one.
+RENAMED = {
+    "sensor.attic_phase_a_active_power": "sensor.mansarda_phase_a_active_power",
+    "sensor.attic_phase_b_active_power": "sensor.mansarda_phase_b_active_power",
+    "sensor.attic_phase_c_active_power": "sensor.mansarda_phase_c_active_power",
+    "sensor.attic_total_active_power": "sensor.mansarda_total_active_power",
+    "sensor.kotlovnica_well_pump_power": "sensor.well_pump_power",
+    "sensor.nasa_station_power": "sensor.attic_office_power",
+    "sensor.shelly_pond_switch_0_power": "sensor.pond_filter_power",
+    "sensor.shellypmminig3_84fce63c6654_power": "sensor.blaz_pc_power",
+    "sensor.shellypmminig3_ecda3bc6b054_power": "sensor.workshop_charger_power",
+    "sensor.shellypro3em_34987a459ae0_phase_a_active_power": "sensor.hisa_phase_a_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_b_active_power": "sensor.hisa_phase_b_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_c_active_power": "sensor.hisa_phase_c_active_power",
+    "sensor.shellypro3em_34987a459ae0_total_active_power": "sensor.hisa_total_active_power",
+    "sensor.shellypro4pm_kozolec_switch_0_power": "sensor.power_strip_power",
+    "sensor.shellypro4pm_kozolec_switch_1_power": "sensor.boiler_power",
+    "sensor.shellypro4pm_kozolec_switch_3_power": "sensor.washing_machine_power",
+}
 
 
 def link(base: str, entities, start: datetime, end: datetime) -> str:
