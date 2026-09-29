@@ -157,6 +157,7 @@ CONF_SIGNATURE_REVISION = "signature_revision"
 SERVICE_REFRESH = "refresh"
 SERVICE_RESET_DETECTION = "reset_detection"
 SERVICE_NAME_LOAD = "name_load"
+SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
 
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so

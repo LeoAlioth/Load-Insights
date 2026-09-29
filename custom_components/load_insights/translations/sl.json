@@ -269,7 +269,11 @@
                 "description": "{row}\n\nVpišite ime, da dobi svoje entitete. Dvema bremenoma dajte ISTO ime, če sta ena naprava na dveh nastavitvah. Če polje pustite prazno, se vrnete nazaj brez sprememb. Označite vhod, ki je pomagal breme najti, da ga povežete z bremenom - še naprej šteje tudi za celotno lokacijo; povezava se naredi, ko zaključite poimenovanje.",
                 "data": {
                     "name": "Ime",
-                    "link_inputs": "Poveži s tem bremenom"
+                    "link_inputs": "Poveži s tem bremenom",
+                    "same_as_meter": "Ista naprava kot"
+                },
+                "data_description": {
+                    "same_as_meter": "Naprava z lastnim števcem: izberite ta števec in breme dobi natanko njegovo ime ter je ta naprava - zanjo govorijo odčitki in napoved njenega števca, zato ne dobi lastnih zaznanih senzorjev. Izbrano ima prednost pred imenom, vpisanim zgoraj."
                 }
             },
             "inverters": {
@@ -397,6 +401,18 @@
                 "10": "Vsakih 10 minut",
                 "15": "Vsakih 15 minut",
                 "30": "Vsakih 30 minut"
+            }
+        }
+    },
+    "services": {
+        "backfill_statistics": {
+            "name": "Dopolni zgodovino energije bremena",
+            "description": "V statistiko energijskega senzorja poimenovanega bremena zapiše ure, ki jih je videlo zaznavanje - kolikor daleč nazaj jih ima, okoli deset dni - pred prvo uro, ki jo je zabeležil Home Assistant, da nadzorna plošča Energija pokaže tudi njegovo preteklost. Breme, poimenovano zdaj, se dopolni samo, približno uro kasneje; to je za bremena, poimenovana prej. Kar se je zaznavanje naučilo, preden je hranilo ure, jih nima, zato za starejše breme najprej zaženite Reset load detection, ki ohrani imena. Nič že zabeleženega se ne prepiše, zato ponoven zagon ne spremeni ničesar.",
+            "fields": {
+                "name": {
+                    "name": "Ime",
+                    "description": "Poimenovano breme, ki naj se dopolni. Prazno dopolni vsa poimenovana bremena."
+                }
             }
         }
     }

@@ -1,10 +1,12 @@
 """The forecast, published the way the solar forecasts are."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
+from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
@@ -52,22 +54,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     if site.battery_soc and site.battery_capacity_kwh:
         entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
     else:
-        _forget(hass, entry, "battery_soc_forecast")
+        _forget(hass, "sensor", f"{entry.entry_id}_battery_soc_forecast")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if detection is not None:
         entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
         entities += [BaseLoadSensor(detection, entry)]
         for n in sorted(detection.detector.names()):
+            if detection.metered_device(n):
+                # named after a meter holding one device, it IS that device:
+                # the meter's readings and its forecast stand for it, and
+                # detected ones beside them only duplicate it (Anze,
+                # 2026-09-29: "i would expect that we only add forecasting")
+                _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
+                _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
+                continue
             entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
     add(entities)
 
 
-def _forget(hass: HomeAssistant, entry: ConfigEntry, key: str) -> None:
-    """Drop a sensor this site cannot have, so an install that once created
+def _forget(hass: HomeAssistant, domain: str, unique_id: str) -> None:
+    """Drop an entity this site cannot have, so an install that once created
     it is not left with an unavailable leftover in the registry."""
     registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{key}")
+    entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
     if entity_id:
         registry.async_remove(entity_id)
 
@@ -655,3 +665,31 @@ class NamedLoadEnergy(_DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._runner.entry.async_create_background_task(
+            self.hass, self._backfill_when_new(), f"{DOMAIN} backfill {self.entity_id}")
+
+    async def _backfill_when_new(self) -> None:
+        """A new meter's statistics start at its first recorded hour, and the
+        Energy dashboard with them, though detection saw the load for days
+        before it was named. So a meter with no hour of its own yet - one just
+        named - is backfilled once it has one: tried each time Home Assistant
+        has compiled statistics, every five minutes, until its first hour is
+        in (the event fires before the compile commits, so the hour may only
+        show five minutes on). An older meter is
+        load_insights.backfill_statistics' to fill."""
+        if await self._runner.async_first_statistic(self.entity_id) is not None:
+            return
+        done = asyncio.Event()
+
+        async def compiled(_event) -> None:
+            if not done.is_set() and await self._runner.async_backfill_statistics(self._name) is not None:
+                done.set()
+
+        remove = self.hass.bus.async_listen(EVENT_RECORDER_5MIN_STATISTICS_GENERATED, compiled)
+        try:
+            await done.wait()
+        finally:
+            remove()

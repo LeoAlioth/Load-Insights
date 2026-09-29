@@ -57,6 +57,7 @@ NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import named_load_energy
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
+from .insights.named import chosen_name
 
 # What a room says about the devices in it: whether someone is there, and its
 # air. Offered on the suggested-inputs page, by device class.
@@ -752,14 +753,17 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_naming_name(self, user_input: dict[str, Any] | None = None):
         """The name itself. An empty box changes nothing and goes back to the
-        load, where Back is."""
+        load, where Back is. Or the device it is, picked from the meters that
+        hold one: the load is named exactly as that meter, which makes it
+        that device (see insights.named) without a typo in the way (Anze,
+        2026-09-29)."""
         runner, sig = self._picked()
         if runner is None or sig is None:
             return await self.async_step_naming_list()
         inputs = set(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
         helped = [(eid, text) for eid, text in _helpers(self.hass, sig) if eid in inputs]
         if user_input is not None:
-            name = (user_input.get("name") or "").strip()
+            name = chosen_name(user_input.get("name"), user_input.get("same_as_meter"))
             if not name:
                 return await self.async_step_naming_detail()
             was = sig.name
@@ -772,6 +776,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_naming_list()
         head, rest = sig.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
         fields = {vol.Optional("name", description={"suggested_value": sig.name or ""}): selector.TextSelector()}
+        meters = runner.device_meters()
+        if meters:
+            fields[vol.Optional("same_as_meter")] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=meters, mode=selector.SelectSelectorMode.DROPDOWN))
         row = f"{head}\n\n{rest}"
         if helped:
             # offered, not ticked: linking changes the load's forecast
