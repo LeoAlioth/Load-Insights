@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
@@ -17,9 +18,10 @@ from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
 from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner, load_uid
+from .detection import DetectionRunner, device_uid, load_uid
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
                               most_specific, suggest_levels)
+from .insights.model import SiteModel
 from .insights.profile import Forecast
 from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
 
@@ -37,20 +39,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
         GridForecastSensor(coordinator, entry, "grid_forecast"),
     ]
-    # One per device the Energy dashboard lists, from the site model of the
-    # first refresh. A device added to the dashboard later appears after a
-    # reload of the integration; a removed one keeps its entity, unavailable.
-    data: InsightsData = coordinator.data
-    if data is not None:
-        # The state of charge is only forecastable where the Energy dashboard
-        # gives both a battery SOC and a capacity. A site with no battery was
-        # getting the sensor anyway, permanently unavailable (Anze,
-        # 2026-09-17), so it is created only where it can have a value.
-        if data.site.battery_soc and data.site.battery_capacity_kwh:
-            entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
-        else:
-            _forget(hass, entry, "battery_soc_forecast")
-        entities += [DeviceForecastSensor(coordinator, entry, d) for d in data.site.devices]
+    # One per device the Energy dashboard lists. A device added to the
+    # dashboard later appears after a reload of the integration; a removed
+    # one keeps its entity, unavailable. Read from the dashboard itself, as
+    # the first refresh does, rather than from that refresh: setup no longer
+    # waits for it (2026-09-29), and each shows unavailable until it lands.
+    site = SiteModel.from_prefs((await async_get_manager(hass)).data)
+    # The state of charge is only forecastable where the Energy dashboard
+    # gives both a battery SOC and a capacity. A site with no battery was
+    # getting the sensor anyway, permanently unavailable (Anze,
+    # 2026-09-17), so it is created only where it can have a value.
+    if site.battery_soc and site.battery_capacity_kwh:
+        entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
+    else:
+        _forget(hass, entry, "battery_soc_forecast")
+    entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
     if detection is not None:
         entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
@@ -255,7 +258,7 @@ class DeviceForecastSensor(ForecastPowerSensor):
         super().__init__(coordinator, entry, "device_forecast", "device")
         self._energy = device.energy
         self._device = device
-        self._attr_unique_id = f"{entry.entry_id}_device_{device.energy.replace('.', '_')}"
+        self._attr_unique_id = device_uid(entry.entry_id, device.energy)
         # Its own device, named after the dashboard's device and hanging off
         # the site's. Putting the forecast ON the real device (by reusing that
         # device's identifiers) is nicer and was tried on 2026-09-17: it

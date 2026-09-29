@@ -81,6 +81,7 @@
                     "overview": "Pregled",
                     "inputs": "Pojasnjevalni vhodi",
                     "input_links": "Poveži vhod s tem, kar pojasnjuje",
+                    "suggested_inputs": "Predlagani vhodi",
                     "detection": "Zaznavanje porabnikov",
                     "naming": "Poimenuj zaznan porabnik",
                     "grid": "Priključek na omrežje",
@@ -314,13 +315,21 @@
                 "data": {
                     "linked_to": "Povezano z"
                 }
+            },
+            "suggested_inputs": {
+                "title": "Predlagani vhodi",
+                "description": "Senzorji v istem območju kot naprava na nadzorni plošči Energija ali števec poimenovanega porabnika, ki še niso vhodi: ali je kdo tam ter temperatura in vlaga v prostoru. Označite tiste, ki jih je vredno preizkusiti. Vsak postane vhod za celotno lokacijo, povezan s to napravo - in kot vsak vhod ga napoved obdrži le, če kaj pojasni.",
+                "data": {
+                    "suggested": "Dodaj kot vhode"
+                }
             }
         },
         "abort": {
             "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
             "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
             "nothing_to_name": "Zaenkrat ni kaj poimenovati - zaznan ni bil noben porabnik.",
-            "no_inputs": "Vhodov še ni - najprej jih dodajte na strani Pojasnjevalni vhodi."
+            "no_inputs": "Vhodov še ni - najprej jih dodajte na strani Pojasnjevalni vhodi.",
+            "no_suggestions": "Ni kaj predlagati: noben senzor zasedenosti, prisotnosti, gibanja, temperature ali vlage, ki še ni vhod, ni v istem območju kot naprava na nadzorni plošči Energija ali števec poimenovanega porabnika. Napravam in senzorjem v Home Assistantu dodelite območja, pa se bodo tu ujemali."
         }
     },
     "issues": {
@@ -351,6 +360,17 @@
         "house_reading_negative": {
             "title": "Odčitek porabe hiše gre pod nič",
             "description": "Izračunana poraba hiše pade POD NIČ na fazi {phases} ({watts}), ko nič ne teče. Hiša ne more porabiti manj kot nič, zato odčitek ni poraba.\n\nSkoraj vedno gre za eno od dveh stvari. Ali je števec omrežja nastavljen kot odčitek hiše na strani **Nastavitve zaznavanja**, čeprav sodi na **Priključek na omrežje** - mnogo števcev odvzem sporoča negativno, polariteto pa upošteva samo omrežna vloga. Ali pa med **Razsmerniki** manjka razsmernik, zato se proizvedena energija nikoli ne prišteje nazaj in poraba hiše navidezno pada, ko sonce vzhaja.\n\nZaznavanje medtem teče naprej, vse najdeno pa je nezanesljivo."
+        },
+        "energy_dashboard_renamed": {
+            "title": "Nadzorna plošča Energija še vedno navaja preimenovane entitete",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Usmeri nadzorno ploščo Energija na nove ID-je",
+                        "description": "Te entitete so bile preimenovane. Home Assistant je prenesel njihovo zgodovino, nadzorna plošča Energija pa še vedno navaja stare ID-je, zato zanje ne najde podatkov:\n\n{renames}\n\nPotrdite, da nadzorno ploščo usmerite na nove ID-je. Napoved Load Insights za vsako preimenovano napravo obdrži svojo entiteto in zgodovino, Load Insights pa se znova naloži. Dokler ne potrdite, se na nadzorni plošči nič ne spremeni."
+                    }
+                }
+            }
         }
     },
     "selector": {

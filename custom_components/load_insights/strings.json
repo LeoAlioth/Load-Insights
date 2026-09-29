@@ -81,6 +81,7 @@
                     "overview": "Overview",
                     "inputs": "Explanatory inputs",
                     "input_links": "Link an input to what it explains",
+                    "suggested_inputs": "Suggested inputs",
                     "detection": "Load detection",
                     "naming": "Name a detected load",
                     "grid": "Grid connection",
@@ -314,13 +315,21 @@
                 "data": {
                     "linked_to": "Linked to"
                 }
+            },
+            "suggested_inputs": {
+                "title": "Suggested inputs",
+                "description": "Sensors in the same area as a device on the Energy dashboard, or as a named load's meter, that are not inputs yet: whether someone is there, and the room's temperature and humidity. Tick the ones worth trying. Each becomes an input for the whole site, linked to that device - and like any input, the forecast keeps it only if it explains something.",
+                "data": {
+                    "suggested": "Add as inputs"
+                }
             }
         },
         "abort": {
             "no_devices": "The Energy dashboard lists no individual devices.",
             "no_detection": "Load detection is not set up: choose the main meter first.",
             "nothing_to_name": "Nothing to name yet - no loads have been detected.",
-            "no_inputs": "No inputs yet - add them on the Explanatory inputs page first."
+            "no_inputs": "No inputs yet - add them on the Explanatory inputs page first.",
+            "no_suggestions": "Nothing to suggest: no occupancy, presence, motion, temperature or humidity sensor that is not an input yet shares an area with a device on the Energy dashboard or with a named load's meter. Give the devices and sensors areas in Home Assistant and they are matched here."
         }
     },
     "issues": {
@@ -351,6 +360,17 @@
         "house_reading_negative": {
             "title": "The house reading goes negative",
             "description": "What Load Insights works out the house is drawing settles BELOW ZERO on phase {phases} ({watts}) when nothing is running. A house does not draw less than nothing, so the reading is something other than consumption.\n\nAlmost always one of two things. Either a grid meter is set as the house reading on **Detection settings** when it belongs on **Grid connection** - many meters report import as negative, and only the grid role applies that polarity. Or an inverter is missing from **Inverters**, so what it generates is never added back and the house appears to shrink as the sun rises.\n\nDetection carries on meanwhile, and everything it finds is unreliable."
+        },
+        "energy_dashboard_renamed": {
+            "title": "The Energy dashboard still names renamed entities",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Point the Energy dashboard at the new ids",
+                        "description": "These entities were renamed. Home Assistant moved their history, but the Energy dashboard still names the old ids, so it finds no data for them:\n\n{renames}\n\nSubmit to change the dashboard to the new ids. Load Insights' forecast for each renamed device keeps its entity and its history, and Load Insights reloads. Nothing on the dashboard changes unless you submit."
+                    }
+                }
+            }
         }
     },
     "selector": {
