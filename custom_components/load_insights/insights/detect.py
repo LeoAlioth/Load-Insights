@@ -347,12 +347,6 @@ START_SHAPE_SPLIT = 1
 # 33, and a run whose start said nothing went to whichever matched power a
 # watt better. 0 is off.
 MATCH_DURATION_SCORE = 0
-# One device never runs twice at once, so a run is not filed into a
-# signature it overlaps a run of: it goes to the next that fits, or starts
-# its own. Filing checked sizes only, and Home's 635 W floor mat took other
-# phase-C runs of its size, and sessions left open for hours, on top of its
-# own (2026-09-29). 0 is off.
-FILE_ONE_AT_A_TIME = 0
 SHAPE_BUMP_RATIO = 1.15
 SHAPE_EARLY_S = 15.0
 SHAPE_SETTLED_S = 80.0
@@ -3126,8 +3120,6 @@ class Detector:
         context, episode = found if found else (None, None)
         for sig in ([] if best is not None else self.signatures):
             if STAGE_SPLIT and not sig.files_in(context):
-                continue
-            if FILE_ONE_AT_A_TIME and any(a < s.end and s.start < b for a, b in sig.runs):
                 continue
             sc = sig.matches(s, noise)
             if sc is not None and sc > best_score:

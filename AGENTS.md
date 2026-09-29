@@ -670,6 +670,14 @@ Don't re-chase these; each cost real time.
   least partly the inoperative `SUSTAIN_SECONDS` guard plus edge mis-pairing.
 - **`_pair` must stay most-recent-first.** Best-size-fit was tried and is worse
   at both sites.
+- **Filing a run only into a signature it does not overlap** ("one device never
+  runs twice at once", 2026-09-29) is worse where it was meant to help. Against
+  Home's floor-mat thermostat (89.9 h heating, 18-27.09) the mat's signature
+  went from 114.0 to 127.9 h counted once, and its heating runs in it from 1499
+  to 1465: a session left open for hours, already in the signature, pushes the
+  mat's own runs out instead. Home purity +0.2, wconc -0.4, Kozolec even. The
+  energy side of the idea did ship: `_spread` counts overlapping time once.
+  What is left is the unclosed sessions (9-16 h at 636 W) themselves.
 - **Imbalance alone does not mean two loads glued together.** A machine with a
   3-phase motor and single-phase parts is legitimately unbalanced. Rank the
   evidence: co-occurrence reliability first, size second, imbalance last. Real
