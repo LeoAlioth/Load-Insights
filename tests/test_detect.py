@@ -2443,14 +2443,6 @@ def _two_starts(overlap: bool, seed: int = 7):
     return det, by_kind
 
 
-def test_two_loads_that_start_differently_are_kept_apart():
-    """Kozolec's two fridges draw alike; one surges for one reading as it
-    starts, the other starts some 12 W high and settles (2026-09-29)."""
-    det, by_kind = _two_starts(overlap=True)
-    main = lambda k: max(by_kind[k], key=lambda i: sum(1 for r in det.recent if det._moved.get(r["signature"], r["signature"]) == i))  # noqa: E731
-    assert by_kind["A"] and by_kind["B"] and main("A") != main("B"), by_kind
-
-
 def test_one_device_that_starts_either_way_stays_one():
     """Home's office plug starts one way and the other; it never runs twice
     at once, which two fridges do - so it stays one signature (2026-09-29)."""

@@ -235,7 +235,6 @@ pulses the grid meter itself shows in them.
 | `PAIR_TIE_BAND` | **1.0** | how much better a size match must be to override recency. 0 = best-fit, 1 = newest that passes. Above 1 is identical to 1 | ratio | 0–1 | **swept** at both: Home prefers 1.0 clearly (purity 67.6 vs 64.8 % at 0.5); Kozolec flat 0.5–1.0. Stays |
 | ~~`PAIR_AGE_WEIGHT`~~ | removed | weighted ABSOLUTE age rather than rank when choosing | — | — | **swept 0–3 at Kozolec, then removed**: every positive value cost ~6 points. Recency rank carries the information, magnitude does not |
 | `MAX_OPEN_S` | 86400 | a start whose stop never came is dropped after this | physical | 3600–172800 | not tested |
-| `ORPHAN_MARGIN` | 0 (off) | give up on a start once it has run this many times the longest any same-sized load has | count | 2–8 | **swept 3 and 8, not shipped - side effects.** At 3 sessions over 3 h halve (157 → 84) but Home's dryer loses 13 of 34 sessions (it runs long; loads its size run short), pump runs missed 20 → 29, Kozolec's boiler 500 → 496. Needed the bench to slice: fed in one call the library is empty until the end || `MAX_OPEN_EDGES` | 12 | open starts kept per phase; the OLDEST is evicted past this | budget | 6–40 | **swept at both** (production path). Lower looks better at Home by share - cap 4 gives purity 84.9 % - but that is the population trap: NASA's dominant cluster falls 113 → 78. On absolute clusters Home's best is 8 (+3/+8/+1); Kozolec's hidrofor loses 10 at 8. Small, opposite, so it stays. Raising it is worse at Home (24: NASA 113 → 68). Wants eviction by staleness rather than by count |
 | `NOISE_SESSION_WH` / `_S` | 3.0 Wh / 20 s | a session smaller AND shorter than both is dropped as a blip | physical | 1–10 Wh / 5–60 s | not tested |
 
 ### Combining phases
@@ -286,8 +285,6 @@ pulses the grid meter itself shows in them.
 | `INPUT_MIN_RUNS` / `INPUT_MIN_SHARE` / `INPUT_MIN_LIFT` | 8 / 0.6 / 3 | a load runs IN one value of a setting (a washer's cycle phase, a fan's speed) once it has this many runs (time-weighted), this share of them in the value, and that share this many times the value's share of the time | runs / share / × | — | **benched, no change to the scores** (2026-09-28): Home 18-27 Sep with the Sock Eater's cycle phase, appliance state and sub-phase and the RF ceiling fan's speed - purity 71.7 %, wconc 31.1 % fed or not. Two loads tied: #413 5.8 kW A+B+C 6 s x16 (62 % of runs in Wash, 8.1× chance) and #578 127 W A+C 38 s x194 (73 % in Running, 4.1×). The washer's own parts - probably #274 1.8 kW on A (the heater), #7 48 W and #201 126 W on A (the inverter drum) - run in Wash 3-4× chance but share their signatures with look-alikes, so none reaches the share. Weighted by sighting instead of time, a 49 W load starting 285 times a day remembered eight hours - one wash - and read as tied (89 %, 4.7×): hence `INPUT_TIME_TAU_S` |
 | `INPUT_TIME_TAU_S` | 14 d | how long a value's share of the time, and a load's runs in it, are remembered | s | — | see above; not swept |
 | `INPUT_EVIDENCE` | **1** | a load tied to a value of a setting counts as tight about time (evidence's duration term raised to its share) | switch | — | **benched, no change**: scores identical on or off; evidence of the two tied loads 0.72 → 0.77 and 0.50 → 0.65, none newly over the naming bar |
-| `START_SHAPE_SPLIT` | **1** | a run's start - "surge" (see `INRUSH_RATIO`), "bump" (`SHAPE_BUMP_RATIO` 1.15 of where it settled `SHAPE_SETTLED_S` 80 s in, measured `SHAPE_EARLY_S` 15 s in) or "flat" - and surge and bump never share a signature; a signature takes the shape most of its runs show (`SHAPE_MIN_RUNS` 1, `SHAPE_DOMINANCE` 1.5) | switch | — | **benched, shipped (2026-09-29).** Kozolec 8-28 Sep, fridge bench (261 runs off the house reading; A surges, B bumps): fridge purity - each signature's majority kind over its A/B runs - 56 → 73 %; the detector reads A as surge 69/73, B as bump 53/93 (flat 37). Kozolec purity 98.1 → 98.3 %, wconc 93.9 % both. Home 18-27 Sep: purity 63.7 → 63.8 %, wconc 29.7 → 29.8 %; kiln and pump identical. A first try asking for a clear majority first (3 runs, 4:1) never engaged: 51 A and 63 B in one signature |
-| `SHAPE_TOGETHER_RUNS` | 6 | two signatures that start oppositely merge after all if each has this many remembered runs over the same stretch and none overlapped - one device never runs twice at once | runs | — | **benched**: without it the split cost Home wconc 29.7 → 28.2 % and the office plug's concentration 19 → 12 % (it starts both ways); with it Home is back to 29.8 % and 19 %, while the fridges - which do run together - keep 73 % purity (81 % without it) |
 | `INPUT_SPLIT` (`INPUT_RARE_SHARE` 0.25, `INPUT_SPLIT_MIN_TIME_S` 1 d, `INPUT_SPLIT_LIFT` 3, `INPUT_MIN_EPISODES` 3, `INPUT_MIN_COVERAGE` 0.5) | **1** | a run made while a setting holds a rare value joins only signatures born in it; one born by chance goes back into an alike twin (pair lift < 3) or turns ordinary once it has run in under half of the value's episodes since its birth (at least 3) | switch | — | **benched, shipped (2026-09-29).** Home 18-27 Sep with the Sock Eater's phase, state and sub-phase: purity 63.8 → 65.4 %, wconc 29.8 → 30.5 % (office plug 19 → 16 %); kiln and pump benches identical (no washer there). Judged by runs alone, the kiln firing through one afternoon's washing split into Wash/Rinse/Spin/Dry signatures (a burst read as 7× chance) and the floor mat grew a Delayed Start one; by episodes they go back. Tied now: 119 W A+C in Rinse, 61 W C in Dry, 98 W B in End Of Cycle. The heater (~2 kW on A, 2-60 min, in wash AND dry) scatters into one- and two-run signatures and does not tie on 13 washes |
 | `HOLD_MIN_INTERVAL_S` / `HOLD_SUSTAIN_S` | 20 s / 30 s | on a meter this slow in a steady state (a Shelly heartbeating once a minute, a Zigbee plug reporting on change), a pending change counts as having held until the next reading, and holding 30 s is enough | s | — | **benched, shipped (2026-09-29).** Kozolec's IR panel meter alone: 13 runs of 164 min → 46 of 48 min (its readings: 52 runs, mean 40 min, off 2.4 min between); the house's ~500 W signature credited to the panel 8 → 27 of 63; the Boiler meter's library 132 runs of 36 min at 937 W (pulses merged) → 1467 of 3 min at 1906 W (its element: 1546 pulses of ~1 min at 1.9 kW). Kozolec purity 98.3 %, wconc 93.9 → 94.0 %; Home 63.8/29.8 → 63.9/29.6 % (production meters 64.1/29.1 → 64.1/29.2 %); kiln, pump, fridges identical. The Shelly needs no change: it reports each switch within 1-4 s |
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour, for backfilling a newly named load's statistics | s | — | not a detector dial; sized to the 10-day backfill |
@@ -564,7 +561,7 @@ outbound websocket is already on and connected (checked on the devices,
 edge stays open until `MAX_OPEN_S` (24 h) or a size-matching stop turns up.
 `SUSTAIN_AGREE` removed one source (194 -> 157 sessions over three hours in
 ten days at Home, 14 -> 11 at Kozolec). Expiring by how long a load of that
-size is seen to run was built and TESTED (`ORPHAN_MARGIN`) and is off: size
+size is seen to run was built and TESTED (`ORPHAN_MARGIN`, since removed): size
 alone cannot tell an orphan from a real long run of a size other loads run
 briefly - Home's dryer lost a third of its sessions. A start should be given
 up on when the phase shows it is no longer running, not by the clock.
@@ -752,6 +749,27 @@ Don't re-chase these; each cost real time.
   effect: 76.7 vs 76.8 %, mat 108.1 vs 107.4 h). A first "apart" rule - never
   merge a signature with one the switch gate kept its runs out of - split the
   mat three ways (#20 58.6 h of 89.9 h heating, the rest in #312 and #38).
+- **Ablation of every rule that was on, 2026-09-30** (Home 18-27 Sep with its
+  thermostat, `bench.py home`; Kozolec `score` and `fridge`). Base: Home 76.1 /
+  55.4 % (170 signatures), mat 93.9 h counted once of 89.9 h heating, 25.8 h of
+  it not heating (73 % precision), kiln 864 full / 175 single-leg, pump 1117,
+  Kozolec 98.3 / 94.1, fridges 167 at the right length. Removed as neutral:
+  `START_SHAPE_SPLIT` and its shape machinery (Kozolec's two fridges kept apart
+  by their starts: everything within noise, and one right combined fridge is
+  what Anze wants), `PAIR_HOME` (identical: a device's home decides first),
+  `ORPHAN_MARGIN` (was off). Kept, each clearly needed off it: the three
+  cross-leg corroboration rules (kiln 864 -> 787 without the stop one),
+  `SAG_CLOSE` (fridges 167 -> 92), `SAME_CLUSTER_ENDS` and `INPUT_ENDS` (mat
+  OVER 25.8 -> 39.1 / 47.8 h), `_unseen_stop` (38.8 h), `DEVICE_HOME` (38.9 h),
+  learned pairing (38.1 h, pump -11), the switch gate (33.8 h), input keys on
+  edges (60.2 h), `SUB_OVERRIDE` / `SUB_METER_IDENTITY` (Kozolec wconc 94.1 ->
+  87), `SUSTAIN_AGREE`, `STEP_AT_HALFWAY`, `PHASE_BALANCE_MIN`, the blip drop.
+  Held drops and joint stops (`HELD_DROPS`) bench BETTER off (Home 77.3 / 57.5)
+  but the bench has no stepped load: a washer's 2 kW -> 400 W is then one
+  1.2 kW level, 29 % over its energy. Mixed, kept: `SETTLE_SHARE` (off: kiln
+  single-leg 175 -> 147, but pump -20 and the mat +7 h), `HOLD_MIN_INTERVAL_S`
+  (Kozolec wconc -1.1, Home +1.5). `ENERGY_MATCH_LO` cannot be ablated - the
+  score's labels use it too.
 - **Repeated `consolidate` passes do nothing** - it reaches a fixed point after
   one pass. A library that shrank over time did so from merge damage that a
   rebuild undoes.
