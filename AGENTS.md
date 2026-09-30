@@ -476,6 +476,9 @@ live in `data/<hostname>` (gitignored).
 4. a generation bump rebuilds by itself; otherwise call
    `load_insights.reset_detection` to re-run the 10-day backfill
 5. wait for `caught_up`, then read the numbers back off the sensor
+   (a named load's sensors appear as its name re-attaches during the re-read;
+   before the follow-up to build 1613 they stayed unavailable until a reload
+   of the integration - `POST /api/config/config_entries/entry/<id>/reload`)
 
 The detected-loads sensor publishes what the gates measured — `resolution_w`,
 `pf_floor_w`, `noise_floor_w`, `baseline_w` — so a gate can be checked against
