@@ -3249,6 +3249,7 @@ class Detector:
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
@@ -3609,9 +3610,9 @@ class Detector:
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
-        cluster = self._by_density(ph, watts > 0, since, size, keyed, kind)
+        cluster, keys = self._by_density(ph, watts > 0, since, size, keyed, kind)
         if cluster is None:
-            cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keyed)
+            cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys)
             self.next_edge_id += 1
             self.edges.append(cluster)
             kind.append(cluster)
@@ -3620,39 +3621,76 @@ class Detector:
         return cluster.id
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
-                    kind: List["EdgeCluster"]) -> Optional["EdgeCluster"]:
-        """The cluster whose segment of this group's size density the step
-        falls in - the one of them with most steps - or None for a new one.
-        See EDGE_BATCH."""
-        g = f"{ph}|{int(up)}|" + ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
+                    kind: List["EdgeCluster"]):
+        """(the cluster whose segment of this phase and direction's size density
+        the step falls in, or None for a new one; the keys a new one gets).
+
+        What the inputs did is part of the clustering, not a split made before
+        it (Anze, 2026-09-30): a step that came with an input's change joins a
+        cluster of its own only where such steps pile up in the segment far
+        above chance - the floor mat's +630 W with its thermostat, beside a
+        look-alike's +630 W with nothing - and otherwise the segment's plain
+        one. See EDGE_BATCH."""
+        g = f"{ph}|{int(up)}"
+        key = ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
         if g not in self.edge_unit:
             noise = self.phases[ph].noise if ph in self.phases and self.phases[ph].noise else MIN_NOISE_W
             self.edge_unit[g] = EDGE_NOISE_SHARE * noise
         unit = self.edge_unit[g]
         b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
         h = self.edge_hist.setdefault(g, {})
+        hk = self.edge_hist_keys.setdefault(g, {})
         at = self.edge_hist_at.get(g)
         if at is None:
             self.edge_hist_at[g] = since
         elif since - at > 3600.0:
             fade = math.exp(-(since - at) / EDGE_TAU_S)
-            for k in list(h):
-                h[k] *= fade
-                if h[k] < 1e-3:
-                    del h[k]
+            for hist in [h] + list(hk.values()):
+                for k in list(hist):
+                    hist[k] *= fade
+                    if hist[k] < 1e-3:
+                        del hist[k]
             self.edge_hist_at[g] = since
         h[b] = h.get(b, 0.0) + 1.0
+        if key:
+            row = hk.setdefault(key, {})
+            row[b] = row.get(b, 0.0) + 1.0
         segs = self._segs.get(g)
         if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
             segs = self._segs[g] = valley_segments(h)
             self._recut[g] = 0
         self._recut[g] += 1
+        plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
         if seg is None:
-            return None
-        members = [c for c in kind if c.same_signals(keyed)
-                   and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
-        return max(members, key=lambda c: c.count) if members else None
+            return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain)
+        members = [c for c in kind if seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+        if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
+            mine = [c for c in members if c.same_signals(keyed)]
+            return (max(mine, key=lambda c: c.count) if mine else None), keyed
+        mine = [c for c in members if c.same_signals(plain)]
+        return (max(mine, key=lambda c: c.count) if mine else None), plain
+
+    def _keyed_above_chance(self, hk: Dict[int, float], h: Dict[int, float], lo: int, hi: int,
+                            keyed: Dict[str, str]) -> bool:
+        """Do the steps that came with these inputs' changes pile up in bins
+        lo..hi far above the chance of a step landing near such a change -
+        the share of all steps with one within EDGE_LAG_REACH_S, narrowed to
+        the input's learned window? See PAIR_MIN_RUNS for the test."""
+        n = sum(w for b, w in hk.items() if lo <= b <= hi)
+        if n < PAIR_MIN_RUNS:
+            return False
+        seen = sum(c.count for c in self.edges) or 1.0
+        p = 1.0
+        for name, kind in keyed.items():
+            if not kind:
+                continue
+            window = self.window(name)
+            near = sum(self.lag_hist.get(name) or [])
+            if window is None or not near:
+                return False
+            p *= min(1.0, near / seen) * min(1.0, (window[1] - window[0]) / (2 * EDGE_LAG_REACH_S))
+        return above_chance(n, p * sum(w for b, w in h.items() if lo <= b <= hi))
 
     def link(self, a: Optional[int], b: Optional[int], w: float = 1.0) -> None:
         if a is None or b is None or a == b:
@@ -4151,6 +4189,8 @@ class Detector:
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
                 "edge_hist": {g: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for g, h in self.edge_hist.items()},
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
+                "edge_hist_keys": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
+                                   for g, rows in self.edge_hist_keys.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -4175,6 +4215,8 @@ class Detector:
         det.edge_hist = {g: {int(b): float(w) for b, w in h.items()} for g, h in (d.get("edge_hist") or {}).items()}
         det.edge_hist_at = {g: float(t) for g, t in (d.get("edge_hist_at") or {}).items()}
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
+        det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
+                              for g, rows in (d.get("edge_hist_keys") or {}).items()}
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
