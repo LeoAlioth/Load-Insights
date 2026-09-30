@@ -2608,6 +2608,14 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
 
 
 
+def test_a_pair_is_accepted_when_it_is_far_above_chance():
+    """A switch-on closing 40 runs and a switch-off closing 30 of 1000 on the
+    phase meet 1.2 times by chance: 20 is a pair, 3 is not (2026-09-30)."""
+    assert D.above_chance(20, 40 * 30 / 1000)
+    assert not D.above_chance(3, 40 * 30 / 1000)
+    assert not D.above_chance(10, 12.0) and not D.above_chance(5, 0.0)
+
+
 def test_steps_join_the_cluster_their_size_piles_up_in():
     """Two loads 7 % apart - a valley between their piles - are two clusters;
     one load wandering +-3 % is one, however its steps arrive (2026-09-30)."""

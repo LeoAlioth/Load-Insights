@@ -297,10 +297,18 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # cluster each, learned from every run that closes: how often, the stop's size
 # against the start's (a fridge sags, ~0.75; a heat-pump water heater climbs),
 # and how long the runs last. A pair is accepted once it has closed
-# PAIR_MIN_RUNS runs and makes up PAIR_MIN_SHARE of the closes of both of its
-# clusters.
+# PAIR_MIN_RUNS runs and has come together far more often than chance would
+# put its two clusters together: with N closes on the phase, a switch-on
+# closing n_R of them and a switch-off n_F, chance gives n_R n_F / N, and the
+# Chernoff bound must put the odds of its count under 1 in ABOVE_CHANCE_ODDS.
+# The same for the links devices are built from. It replaced fixed shares (30 %
+# of both clusters' closes, 20 % of their links), which were numbers to tune
+# (Anze, 2026-09-30: "can we have it tune itself?"): Home's floor mat 21.7 ->
+# 11.5 h counted while its thermostat was not heating, everything else within
+# a run or two. The odds do not matter - 10, 100 and 1000 bench identically:
+# a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
-PAIR_MIN_SHARE = 0.3
+ABOVE_CHANCE_ODDS = 100.0
 # C - pairing by them: a fall first closes an open run its cluster's accepted
 # pair starts with, at the learned size, whatever plain sizes say; only a fall
 # with no pair model falls back on sizes. And the old guess that a drop fitting
@@ -326,7 +334,7 @@ HELD_DROPS = 8
 # rise and fall, the legs of one run on several phases (the kiln's A and C),
 # one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
 # one rise closed by several falls (600 -> 400 -> 0). Two clusters are one
-# device once their link counts LINK_MIN and makes up LINK_SHARE of the links
+# device once their link counts LINK_MIN and is far above chance (see PAIR_MIN_RUNS)
 # of each; a run then goes to the signature most runs of its device went to.
 # Run length and how often a load runs are what a load DOES, not what it is:
 # they raise or lower the confidence in a device and its guess, and play no part
@@ -342,7 +350,6 @@ HELD_DROPS = 8
 # step: it is closed there. Evidence, not a clock.
 # ^ INPUT_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
 LINK_MIN = 5
-LINK_SHARE = 0.2
 # ^ DEVICE_HOME: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
@@ -3074,6 +3081,14 @@ class EdgeCluster:
                    keys=dict(d.get("keys") or {}))
 
 
+def above_chance(n: float, expected: float, odds: float = ABOVE_CHANCE_ODDS) -> bool:
+    """Is ``n`` so far above chance's ``expected`` that chance gives it under 1
+    in ``odds`` - by the Chernoff bound on a Poisson count? See PAIR_MIN_RUNS."""
+    if expected <= 0 or n <= expected:
+        return False
+    return n * math.log(n / expected) - n + expected >= math.log(odds)
+
+
 def edge_scale(watts: float, unit_w: float) -> float:
     """A step's size in measurement errors, one of them ``unit_w`` watts at
     small steps and EDGE_SCALE_REL of the step at large ones - see EDGE_BATCH."""
@@ -3678,8 +3693,11 @@ class Detector:
                     root[x] = root.get(root[x], root[x])
                     x = root[x]
                 return x
+            whole = sum(total.values())
             for a, b, n in rows:
-                if n >= LINK_MIN and n >= LINK_SHARE * total[a] and n >= LINK_SHARE * total[b]:
+                if n < LINK_MIN:
+                    continue
+                if above_chance(n, total[a] * total[b] / whole):
                     ra, rb = find(a), find(b)
                     if ra != rb:
                         root[max(ra, rb)] = min(ra, rb)
@@ -3770,9 +3788,15 @@ class Detector:
                 by_start[a] = by_start.get(a, 0.0) + acc[0]
                 by_stop[b] = by_stop.get(b, 0.0) + acc[0]
             out: Dict[int, Dict[int, tuple]] = {}
+            phase_of = {c.id: c.phase for c in self.edges}
+            closes: Dict[str, float] = {}
+            for a, _, acc in parsed:
+                closes[phase_of.get(a, "?")] = closes.get(phase_of.get(a, "?"), 0.0) + acc[0]
             for a, b, acc in parsed:
                 n = acc[0]
-                if n < PAIR_MIN_RUNS or n < PAIR_MIN_SHARE * by_start[a] or n < PAIR_MIN_SHARE * by_stop[b]:
+                if n < PAIR_MIN_RUNS:
+                    continue
+                if not above_chance(n, by_start[a] * by_stop[b] / closes[phase_of.get(a, "?")]):
                     continue
                 m_lr, m_ld = acc[1] / n, acc[3] / n
                 sd_lr = math.sqrt(max(0.0, acc[2] / n - m_lr * m_lr))
