@@ -716,6 +716,15 @@ Don't re-chase these; each cost real time.
   per-phase DETECTED steps by time (V 0.466, device-in-top 0.387 vs 0.489 /
   0.322 per phase) is the viable form of a multi-phase event; scripts
   `vector_events_c.py` (raw windows) and `vector_events.py` (joined steps).
+  Anze's objection (2026-09-30): the first comparison changed two things at
+  once - the detector's steps carry a sustain check, the raw vectors did not.
+  Re-run with each component required to hold across the next K readings
+  (SUSTAIN=1): V 0.325 (K 2) and 0.374 (K 3) against 0.320 / 0.375 without,
+  the detector's groups 0.477 / 0.479 on the same events. The sustain check
+  is not the difference; the phases genuinely co-move at 2-6 s, so 36-39 % of
+  events still come out multi-phase and the single-phase hidrofor shows 'ab'
+  on 224 of 2,001. The baseline still differs in being the ONLINE grouping
+  (fading histogram, input keys); the single-phase patterns are the same cut.
 - **Capping an edge cluster's width** at what the meter resolves (8 units of the
   size scale, a noise either side at small steps, ~8 % at large; segments cut
   at their thinnest interior points), meant to break the catch-all groups
