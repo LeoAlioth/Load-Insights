@@ -389,10 +389,6 @@ HELD_DROPS = 8
 # closed it by the end of the window its stop was hidden in another load's
 # step: it is closed there. Evidence, not a clock.
 # ^ INPUT_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
-# ponytail: one bench dial (2026-09-30), gone one way or the other after its bench.
-# FILE_MIN_STEPS n: a run whose start cluster has seen fewer than n steps is not
-# filed - a first sighting makes no signature, so a coincidence never does.
-FILE_MIN_STEPS = 0
 # ^ DEVICE_HOME: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
@@ -3476,11 +3472,6 @@ class Detector:
         the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
-        if FILE_MIN_STEPS and prefer is None:
-            start = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs) if pair and pair[0] is not None), None)
-            c = self.cluster(start) if start is not None else None
-            if c is None or c.count < FILE_MIN_STEPS:
-                return                              # see FILE_MIN_STEPS
         best = None
         device = self.device_of(s)
         if prefer is not None:

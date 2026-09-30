@@ -105,8 +105,18 @@ Home 19-28 Sep and Kozolec 20-29 Sep; older CSVs moved to
 2026-09-30 15:00 was measured on 20-22 days and is not comparable with later
 ones; the ten-day baseline is stated where it was first measured below.
 
-**Ten-day baseline (2026-09-30, Home 19-28 Sep with the thermostat, Kozolec
-20-29 Sep), filing on the run's own phases:** Home purity 75.5 %, wconc 58.6 %
+**Ten-day results on `phase-events` (2026-09-30 evening): starts as all-phase
+events (EVENT_WINDOW_INTERVALS 3, EVENT_BALANCE 0.2), a device its start
+cluster, runs filed on their own phases:** Home purity 82.5 %, wconc 59.7 %
+(hidrofor 74 % in one signature of 57), the mat 43.7 h / 1.9 h outside heating
+/ caught 55 %, kiln 455 / 47, pump 444 clean / 20 missing of 665; Kozolec
+99.9 / 93.3 %, fridges 75 of 91; energy Home 649 kWh detected, the pump's
+signature 1,069 runs at 36 % pump (its cluster still holds another ~900 W
+single-phase load on A), Kozolec 73.4 / 74.1 %. The compressor is one
+three-leg cluster (296 events, 2.5 kW) and the kiln one A+C cluster (485).
+
+**Ten-day baseline (2026-09-30 afternoon, Home 19-28 Sep with the thermostat,
+Kozolec 20-29 Sep), steps per phase, filing on the run's own phases:** Home purity 75.5 %, wconc 58.6 %
 (hidrofor 71 % in one signature of 42), the mat 43.6 h counted once against
 76.4 h of heating, 1.8 h outside it, caught 55 %; kiln 441 full-size / 65
 single-leg (272 pulses in 2 firings); pump 443 clean, 69 long, 43 short, 38
@@ -476,6 +486,15 @@ Open defects, with what is measured and what is guessed. Numbers are from the
 two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
+
+- **Signature churn with a device per start cluster** (2026-09-30, the
+  all-phase events): Home makes 1,835 signatures in ten days and keeps 237 -
+  the 200 cap evicts unnamed ones and their cluster's next run makes a new one.
+  Named loads are never evicted, so the statistics are safe; what suffers is
+  the library's memory of unnamed loads and the store's size. A per-cluster
+  cap tied to the edge library (EDGE_LIBRARY) or signatures born only from
+  established clusters are the candidates; the recurrence gate at 8 steps
+  cost Home too much (see "ruled out").
 
 - **Home's pump and the compressor's A leg share one size cluster, and the
   legs rule chains them into one device** (traced 2026-09-30, ten days,
@@ -847,6 +866,12 @@ Don't re-chase these; each cost real time.
   held. The idea has something at Kozolec; if it comes back it is as a unit that
   settles slowly (a long-run noise, or one that only ever moves once the phase
   has been measured for days), never one that rides the daily swing.
+- **Filing a run only once its start cluster has recurred** (FILE_MIN_STEPS 8,
+  on the all-phase events, ten days, 2026-09-30): Kozolec wconc 93.3 -> 99.8 %
+  (the hidrofor 98 % in 3 signatures for 60 % in 10) but Home purity 82.5 ->
+  80.4, wconc 59.7 -> 54.8, the hidrofor 74 -> 68 %, and a quarter of Home's
+  detected energy left unfiled; signatures made 1,835 -> 973. Home is the
+  harder site, so not adopted. The churn it aimed at stands as a shortfall.
 - **Apparent power (V x I) as a fingerprint.** The step in |S| depends on the
   baseline's reactive and active power - a 1 kW load at PF 0.9 moves |S| by
   0.80-1.09 kVA depending on what else runs - and an inductive load can cancel
