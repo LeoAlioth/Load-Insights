@@ -746,10 +746,21 @@ Don't re-chase these; each cost real time.
   Re-run with each component required to hold across the next K readings
   (SUSTAIN=1): V 0.325 (K 2) and 0.374 (K 3) against 0.320 / 0.375 without,
   the detector's groups 0.477 / 0.479 on the same events. The sustain check
-  is not the difference; the phases genuinely co-move at 2-6 s, so 36-39 % of
-  events still come out multi-phase and the single-phase hidrofor shows 'ab'
-  on 224 of 2,001. The baseline still differs in being the ONLINE grouping
-  (fading histogram, input keys); the single-phase patterns are the same cut.
+  is not the difference. Anze's second objection: "multi-phase" counted any
+  component over its phase's own noise floor, so a 40 W wobble on B beside a
+  900 W start on A made an 'ab' event. With a component counted only above a
+  share of the event's biggest one (REL): K 3, sustain, 0.2 -> V 0.403,
+  device-in-top 0.326; 0.35 -> V 0.409 / 0.337 (per-phase groups 0.479 /
+  0.394); multi-phase events 31 % -> 28 %, the kiln 'ac' on 88 % of its
+  events. What remains of the gap is the trigger's own component: ~15 % of the
+  hidrofor's events come out as 'c' or 'b' because its A start, a motor with
+  an inrush, fails the hold test while a coincident change elsewhere passes.
+  Measuring components off raw windows is the weak part, not the vector;
+  vectors built from the detector's own steps joined by time scored about
+  even (V 0.466 / device-in-top 0.387 vs 0.489 / 0.322). The labelled set has
+  one multi-phase device (the kiln), so it cannot show the vectors' upside.
+  The baseline still differs in being the ONLINE grouping (fading histogram,
+  input keys); the single-phase patterns are the same cut.
 - **Capping an edge cluster's width** at what the meter resolves (8 units of the
   size scale, a noise either side at small steps, ~8 % at large; segments cut
   at their thinnest interior points), meant to break the catch-all groups
