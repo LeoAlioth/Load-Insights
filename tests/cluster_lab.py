@@ -31,6 +31,8 @@ useless, one cluster for everything is perfectly unfragmented and useless.
 """
 from __future__ import annotations
 
+import bisect
+
 import math
 import sys
 from collections import Counter, defaultdict
@@ -115,11 +117,14 @@ def label(sessions, subs):
             got = D.energy_between(rows, s.start, s.end)
             if got is None:
                 continue
-            look = min(span, D.IDLE_WINDOW_S)
-            before = D.energy_between(rows, s.start - look, s.start)
-            if before is None:
+            # what the meter drew just BEFORE the run, held over it - not its
+            # average over the minutes before: a charge that follows another
+            # had the last one in that average and read as nothing (Kozolec's
+            # charger, 2026-10-01)
+            i0 = bisect.bisect_right(rows, (s.start - 10.0, float("inf"))) - 1
+            if i0 < 0:
                 continue
-            rose = got - before * (span / look)
+            rose = got - rows[i0][1] * span / 3600.0
             if rose <= 0:
                 continue
             ratio = rose / want
