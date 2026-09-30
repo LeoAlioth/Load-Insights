@@ -327,8 +327,8 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # put its two clusters together: with N closes on the phase, a switch-on
 # closing n_R of them and a switch-off n_F, chance gives n_R n_F / N, and the
 # Chernoff bound must put the odds of its count under 1 in ABOVE_CHANCE_ODDS.
-# The same for the links devices are built from. It replaced fixed shares (30 %
-# of both clusters' closes, 20 % of their links), which were numbers to tune
+# It replaced fixed shares (30 % of both clusters' closes, and 20 % for the
+# device links that have since gone), which were numbers to tune
 # (Anze, 2026-09-30: "can we have it tune itself?"): Home's floor mat 21.7 ->
 # 11.5 h counted while its thermostat was not heating, everything else within
 # a run or two. The odds do not matter - 10, 100 and 1000 bench identically:
@@ -368,12 +368,14 @@ HELD_DROPS = 8
 # that comes first. Left open, the next stop of its kind closed the newer run
 # and the old one ran on for hours (Home's mat: 114 h of overlapping runs).
 # ^ SAME_CLUSTER_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
-# B2 - DEVICES: edge clusters linked by how they come together - a pair's
-# rise and fall, the legs of one run on several phases (the kiln's A and C),
-# one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
-# one rise closed by several falls (600 -> 400 -> 0). Two clusters are one
-# device once their link counts LINK_MIN and is far above chance (see PAIR_MIN_RUNS)
-# - and a run then goes to the signature most runs of its device went to.
+# B2 - DEVICES: a device is its START CLUSTER, and a start is an all-phase
+# event (EVENT_WINDOW_INTERVALS), so the legs of one run on several phases
+# (the kiln's A and C, the compressor's three) are one cluster from the
+# start. Clusters were joined into devices through links (a pair's rise and
+# fall, legs, one fall closing several rises) until 2026-09-30, when the
+# union-find chained Home's pump into the compressor and then into everything
+# that ever stopped beside either - and a run goes to the signature most runs
+# of its device went to.
 # Run length and how often a load runs are what a load DOES, not what it is:
 # they raise or lower the confidence in a device and its guess, and play no part
 # in grouping runs into devices or edges into runs (Anze, 2026-09-29: "much
@@ -387,7 +389,10 @@ HELD_DROPS = 8
 # closed it by the end of the window its stop was hidden in another load's
 # step: it is closed there. Evidence, not a clock.
 # ^ INPUT_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
-LINK_MIN = 5
+# ponytail: one bench dial (2026-09-30), gone one way or the other after its bench.
+# FILE_MIN_STEPS n: a run whose start cluster has seen fewer than n steps is not
+# filed - a first sighting makes no signature, so a coincidence never does.
+FILE_MIN_STEPS = 0
 # ^ DEVICE_HOME: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...and it tells the pairing where its edges are: the thermostat going off at
 # t means the mat's -635 W on C at t + 5.8 s. A step down there as big or
@@ -1952,12 +1957,6 @@ class PhaseState:
                     break
         if len(taken) >= 2 and abs(left) <= self._tol(watts, watts):
             out = []
-            if self.lib is not None:
-                cs = [self.open_edges[i].cluster for i in taken]
-                for k, a in enumerate(cs):
-                    self.lib.link(a, self.stop_cluster)
-                    for b in cs[k + 1:]:
-                        self.lib.link(a, b)
             for i in sorted(taken, reverse=True):
                 o = self.open_edges.pop(i)
                 out.append(self._close(o, at, o.watts, None))
@@ -1989,10 +1988,6 @@ class PhaseState:
                 continue
             for d in pick:
                 self.held_drops.remove(d)
-                if self.lib is not None:
-                    self.lib.link(o.cluster, d[2])
-                    self.lib.link(o.cluster, self.stop_cluster)
-                    self.lib.link(d[2], self.stop_cluster)
             level = size
             for t, w, _ in sorted(pick):
                 level -= w
@@ -3246,8 +3241,6 @@ class Detector:
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
     pairs: Dict[str, List[float]] = field(default_factory=dict)
-    # "a|b" cluster ids (a < b) -> how often they came together - see LINK_MIN
-    links: Dict[str, float] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -3267,7 +3260,6 @@ class Detector:
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
-    _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
@@ -3292,7 +3284,7 @@ class Detector:
         # which is what lets one leg vouch for another (see _corroborate).
         stream = []
         self._partners, self._learned = None, None
-        self._devices, self._device_home, self._by_id, self._windows = None, None, None, None
+        self._device_home, self._by_id, self._windows = None, None, None
         self._kinds = None
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
@@ -3422,11 +3414,6 @@ class Detector:
             if latest - max(m.end for m in g) < HELD_TAIL_S and len(g) < 3:
                 self.held.extend(g)
                 continue
-            for k, a in enumerate(g):                   # legs of one run are one device
-                for b in g[k + 1:]:
-                    if a.pair and b.pair:
-                        self.link(a.pair[0], b.pair[0])
-                        self.link(a.pair[1], b.pair[1])
             done.append(self._combine(g))
         out = []
         for s in done:
@@ -3489,12 +3476,13 @@ class Detector:
         the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
+        if FILE_MIN_STEPS and prefer is None:
+            start = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs) if pair and pair[0] is not None), None)
+            c = self.cluster(start) if start is not None else None
+            if c is None or c.count < FILE_MIN_STEPS:
+                return                              # see FILE_MIN_STEPS
         best = None
         device = self.device_of(s)
-        if device is None:
-            # a start linked to nothing is a device of its own
-            device = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
-                           if pair and pair[0] is not None), None)
         if prefer is not None:
             seen = set()
             while prefer in self._moved and prefer not in seen:
@@ -3548,13 +3536,12 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
-        devs = self.devices()
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
             if pair and pair[0] is not None:
                 row = self.start_home.setdefault(str(pair[0]), {})
                 row[best.id] = row.get(best.id, 0.0) + 1.0
                 if self._device_home is not None:
-                    pooled = self._device_home.setdefault(devs.get(pair[0], pair[0]), {})
+                    pooled = self._device_home.setdefault(pair[0], {})
                     pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
@@ -3790,49 +3777,6 @@ class Detector:
             p *= min(1.0, near / seen) * min(1.0, (window[1] - window[0]) / (2 * EDGE_LAG_REACH_S))
         return above_chance(n, p * sum(w for b, w in h.items() if lo <= b <= hi))
 
-    def link(self, a: Optional[int], b: Optional[int], w: float = 1.0) -> None:
-        if a is None or b is None or a == b:
-            return
-        key = f"{min(a, b)}|{max(a, b)}"
-        self.links[key] = self.links.get(key, 0.0) + w
-
-    def devices(self) -> Dict[int, int]:
-        """cluster id -> device id (its smallest cluster id) - see LINK_MIN.
-        Worked out once a pass."""
-        if self._devices is None:
-            total: Dict[int, float] = {}
-            rows = []
-            for key, n in self.links.items():
-                a, b = (int(x) for x in key.split("|"))
-                rows.append((a, b, n))
-                total[a] = total.get(a, 0.0) + n
-                total[b] = total.get(b, 0.0) + n
-            root: Dict[int, int] = {}
-
-            def find(x):
-                while root.get(x, x) != x:
-                    root[x] = root.get(root[x], root[x])
-                    x = root[x]
-                return x
-            whole = sum(total.values())
-            rises = {c.id for c in self.edges if c.up}
-            for a, b, n in rows:
-                if n < LINK_MIN:
-                    continue
-                if not (a in rises and b in rises):
-                    # a stop size is shared by every load that stops at it:
-                    # joining through it made Home's mat one device with every
-                    # 600 W load on C (2026-09-30). Starts belong together when
-                    # they start together - a load's legs on two phases, loads
-                    # stopping as one - and a stop hangs off the starts it ends.
-                    continue
-                if above_chance(n, total[a] * total[b] / whole):
-                    ra, rb = find(a), find(b)
-                    if ra != rb:
-                        root[max(ra, rb)] = min(ra, rb)
-            self._devices = {c: find(c) for c in total}
-        return self._devices
-
     def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str) -> Optional["Signature"]:
         """The signature most of this device's runs went to, of those on the
@@ -3842,10 +3786,9 @@ class Detector:
         across phases filed an A run into a C signature, whose power then
         carried all three phases (Home, ten days, 2026-09-30)."""
         if self._device_home is None:
-            devs, self._device_home = self.devices(), {}
+            self._device_home = {}
             for k, home in self.start_home.items():
-                a = int(k)
-                pooled = self._device_home.setdefault(devs.get(a, a), {})
+                pooled = self._device_home.setdefault(int(k), {})
                 for sid, n in home.items():
                     pooled[sid] = pooled.get(sid, 0.0) + n
         cands = []
@@ -3869,11 +3812,9 @@ class Detector:
         DEVICE_FILING. A named pair of them with different names stays apart,
         as do two filed in different values of a setting or on different
         phases. Once a pass."""
-        devs = self.devices()
         votes: Dict[int, Dict[int, float]] = {}
         for k, home in self.start_home.items():
-            a = int(k)
-            d = devs.get(a, a)
+            d = int(k)
             for sid, n in home.items():
                 seen = set()
                 while sid in self._moved and sid not in seen:
@@ -3924,16 +3865,13 @@ class Detector:
         return len(moved)
 
     def device_of(self, s: "Session") -> Optional[int]:
-        devs = self.devices()
-        for pair in ([s.pair] if s.pair else []) + list(s.legs):
-            if pair and pair[0] is not None and pair[0] in devs:
-                return devs[pair[0]]
-        return None
+        """The start cluster of the run, or of its first leg: its device."""
+        return next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
+                     if pair and pair[0] is not None), None)
 
     def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
         if start is None or stop is None or start_w <= 0 or stop_w <= 0:
             return
-        self.link(start, stop)
         acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 6)
         if len(acc) < 6:
             acc.append(0.0)
@@ -4296,7 +4234,7 @@ class Detector:
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
-                "links": {k: _trim(v, 2) for k, v in self.links.items()}}
+                }
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Detector":
@@ -4323,7 +4261,6 @@ class Detector:
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
-        det.links = {k: float(v) for k, v in (d.get("links") or {}).items()}
         return det
 
 
