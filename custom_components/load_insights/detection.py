@@ -90,6 +90,20 @@ def load_uid(entry_id: str, kind: str, name: str) -> str:
     return f"{entry_id}_load_{kind}_{name.lower().replace(' ', '_')}"
 
 
+def is_meter(entry, has_state: bool) -> bool:
+    """Whether a dashboard device's energy entity is a meter detection may learn from.
+
+    Not one of this integration's own named-load sensors: the dashboard lists
+    those too, and read back as a sub-meter a load's estimate became its own
+    truth - and naming a load after it made the load "that metered device",
+    so it got no sensors at all (Home and Kozolec, 2026-09-30, after the full
+    reset left Peč za Glino, Kompresor, Fridges... on the dashboard). Nor an
+    entity that no longer exists: its recorded history is only what it was."""
+    if entry is not None:
+        return entry.platform != DOMAIN
+    return has_state
+
+
 def device_uid(entry_id: str, energy: str) -> str:
     """A dashboard device's forecast sensor's unique id, from its statistic id."""
     return f"{entry_id}_device_{energy.replace('.', '_')}"
@@ -267,6 +281,8 @@ class DetectionRunner:
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
+            if not is_meter(entry, self.hass.states.get(dev.energy) is not None):
+                continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
                 fields = match_meter_entities(self._device_rows(registry, entry.device_id))

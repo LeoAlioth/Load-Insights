@@ -29,6 +29,8 @@
 
 ### Fixes
 
+- **A named load on the Energy dashboard is no longer read as a meter.** Detection learns from every device the dashboard lists, and that included Load Insights' own named-load sensors: a load's estimate was read back as its own truth, and naming a load again after a reset made it "that metered device", with no sensors of its own. Its own sensors, and dashboard entries whose sensor no longer exists, are now left out.
+
 - **`load_insights.reset_detection` can forget the names too.** A reset kept every name and handed it back to the first rebuilt load that looked like it, and a stale name could land on the wrong load (Kozolec's fridges took "Water Pump" after one). With *Forget the names too* the library starts with nothing at all, and the loads are named anew.
 
 - **A named load's sensors come back by themselves after a reset.** The sensors are created for the names the library holds when Load Insights starts, and after a detector update or a reset the library is empty at that moment: the names find their loads during the ten-day re-read, but nothing created their sensors, so every named load stayed unavailable until the integration was reloaded. A name that lands after the start now gets its power and energy sensors the moment it does.
