@@ -3594,17 +3594,25 @@ class Detector:
         EVENT_WINDOW_INTERVALS of the slowest phase's reading interval."""
         return EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.phases.values()) if self.phases else 0.0
 
+    def event_wait(self) -> float:
+        """How long after a rise its event may close: the window, plus the time
+        a companion's step takes to be DECLARED after it began - the sustain
+        rule holds it SUSTAIN_SAMPLES samples and SUSTAIN_INTERVALS intervals -
+        or a leg whose reading falls at the window's edge is not pending yet."""
+        iv = max((st.interval or 0.0) for st in self.phases.values()) if self.phases else 0.0
+        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_INTERVALS * iv, SUSTAIN_SAMPLES * iv)
+
     def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
         """Rises older than the event window (all of them when ``final``)
         become events with whatever rose beside them, get their cluster, and
         end an older open run of the same cluster on their phase. Returns the
         runs so ended, with their phase."""
         out: List[Tuple[str, "Session"]] = []
-        window = self.event_window()
+        window, wait = self.event_window(), self.event_wait()
         pend = sorted(self._pending, key=lambda x: x["since"])
         while pend:
             first = pend[0]
-            if not final and now - first["since"] < window:
+            if not final and now - first["since"] < wait:
                 break
             cluster, members = self._form_event(first, pend, window)
             for m in members:

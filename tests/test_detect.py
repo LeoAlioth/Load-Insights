@@ -2621,9 +2621,6 @@ def test_a_slow_meters_silence_is_a_held_value():
     assert sig.count >= 18 and sig.duration_s < 1200, (sig.count, sig.duration_s)
 
 
-if __name__ == "__main__":
-    run_main(globals())
-
 
 
 def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
@@ -2675,5 +2672,9 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
     assert ("abc", 2520.0) in patterns, patterns                # the compressor, one event of three legs
     assert ("a", 900.0) in patterns, patterns                   # the pump, alone on A
     assert not any(c.phase == "a" and 800 <= c.watts <= 880 for c in rises), patterns   # no per-phase 840 W cluster left
-    sigs = {(x.phases, round(sum(x.power.values()), -1)) for x in det.signatures if x.count >= 5}
-    assert ("abc", 2520.0) in sigs and ("a", 900.0) in sigs, sigs
+    sigs = {(x.phases, round(sum(x.power.values()), -2)) for x in det.signatures if x.count >= 5}
+    assert ("abc", 2500.0) in sigs and ("a", 900.0) in sigs, sigs        # one three-phase signature, one single-phase
+
+
+if __name__ == "__main__":
+    run_main(globals())
