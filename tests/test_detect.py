@@ -2608,6 +2608,15 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
 
 
 
+def test_a_live_meter_carries_load_in_a_one_minute_pass():
+    """Home's phase A reports every 4.3 s, so a live pass holds about 14 of its
+    readings; a dead port reads zero however many there are (2026-09-30)."""
+    live = [(T0 + 4.3 * k, 480.0 + k) for k in range(14)]
+    assert D.carries_load(live)
+    assert not D.carries_load([(T0 + 4.3 * k, 0.0) for k in range(14)])
+    assert not D.carries_load(live[:2])
+
+
 def test_a_slow_meters_silence_is_a_held_value():
     """A Shelly plug reports a change within seconds and otherwise once a
     minute. The IR panel it meters is cycled by a thermostat, 15 minutes on

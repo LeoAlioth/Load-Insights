@@ -1178,8 +1178,13 @@ def carries_load(rows: Sequence[Tuple[float, float]]) -> bool:
     perfectly coherent triple, and all three sit at zero because the
     generator behind them is off. Coherence is necessary and not sufficient:
     a reference for reactive power has to be a circuit something flows
-    through (Anze, 2026-09-18)."""
-    if len(rows) < PV_MIN_SAMPLES:
+    through (Anze, 2026-09-18).
+
+    However few readings a pass holds: a dead port reads zero at any count,
+    and asking for thirty turned Home's phase A away on every one-minute pass
+    - its meter reports every 4.3 s - so A had no power factor live
+    (2026-09-30)."""
+    if len(rows) < 3:
         return False
     live = sum(1 for _, value in rows if abs(value) > SOURCE_IDLE_W)
     return live >= LIVE_SHARE * len(rows)
