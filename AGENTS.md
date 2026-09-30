@@ -736,6 +736,19 @@ Don't re-chase these; each cost real time.
   mat 218.5 / 134.2 h, kiln 863 / 142. Thirty-odd single-leg pulses of 709
   against 4-15 points of purity and 60-70 clean pump runs: dropped, branch
   deleted.
+- **A size scale that follows the phase's noise** (2026-09-30): the edge
+  histogram's unit (a quarter of the phase's noise) is frozen at the phase's
+  first step - at Home a quiet moment, 10 / 20 / 24 W on A / B / C, while the
+  phases run at 80 / 43 / 121 W of noise by the end and C at 120-176 W all day
+  (`dbg_unit.py`). Re-binning the histogram onto the current noise whenever it
+  moved 1.5x from the unit: Kozolec's energy precision 72.5 -> 80.9 % (the pond
+  EVSE's signature 66 -> 85 % its own; its noise settled from 28 to 10 W), score
+  and fridges unchanged; Home 86.2 / 86.0 -> 70.3 / 69.4 %, the mat 53.8 h caught
+  57 % -> 33.0 h caught 35 %, pump 1157 -> 1077. Home's noise swings tenfold
+  between night and day, so the scale re-set several times a day and no segment
+  held. The idea has something at Kozolec; if it comes back it is as a unit that
+  settles slowly (a long-run noise, or one that only ever moves once the phase
+  has been measured for days), never one that rides the daily swing.
 - **Apparent power (V x I) as a fingerprint.** The step in |S| depends on the
   baseline's reactive and active power - a 1 kW load at PF 0.9 moves |S| by
   0.80-1.09 kVA depending on what else runs - and an inductive load can cancel
