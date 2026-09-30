@@ -309,6 +309,17 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
 ABOVE_CHANCE_ODDS = 100.0
+# A run is filed by its DEVICE - the component of edge clusters its start
+# belongs to - into the signature most of the device's runs went to, or a new
+# one for a device not seen before; signatures whose runs are one device's are
+# one signature. No run is filed, and no two signatures merged, because their
+# power looks alike: that was a second grouping beside the devices, and the
+# one that undid what the edges knew (Anze, 2026-09-30: "is this old layer even
+# necessary still? ... this will clean up a lot of redundant code"). A
+# sub-meter's word, the switch gate and a rare input value still decide first.
+# Exploration dial: 0 is filing by likeness.
+DEVICE_FILING = 1
+DEVICE_RISES = 1               # devices are joined through starts only - see devices()
 # C - pairing by them: a fall first closes an open run its cluster's accepted
 # pair starts with, at the learned size, whatever plain sizes say; only a fall
 # with no pair model falls back on sizes. And the old guess that a drop fitting
@@ -3244,6 +3255,9 @@ class Detector:
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
+    _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False)
+    # start cluster -> {signature id: runs filed there} - see DEVICE_FILING
+    start_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     # per phase|direction|inputs: bin -> recency-weighted steps, and when it
     # last faded - see EDGE_BATCH; its segments are cut again every EDGE_RECUT
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
@@ -3309,6 +3323,8 @@ class Detector:
                     gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
                     self.edges = [c for c in self.edges if c.id not in gone]
                     self._kinds = None
+        if DEVICE_FILING:
+            self._merge_devices()
         out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
@@ -3467,17 +3483,24 @@ class Detector:
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
         best, best_score = None, 0.0
         device = self.device_of(s)
+        start = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
+                      if pair and pair[0] is not None), None)
+        if DEVICE_FILING and device is None and start is not None:
+            device = start                             # a cluster linked to nothing is a device of its own
+        by_device = DEVICE_FILING and prefer is None and device is not None
         if prefer is None and device is not None:
             if self._device_home is None:
                 devs, self._device_home = self.devices(), {}
-                for k, home in self.pair_home.items():
-                    d = devs.get(int(k.split(">")[0]))
+                source = ({f"{k}>": v for k, v in self.start_home.items()} if DEVICE_FILING else self.pair_home)
+                for k, home in source.items():
+                    a = int(k.split(">")[0])
+                    d = devs.get(a, a if DEVICE_FILING else None)
                     if d is not None:
                         pooled = self._device_home.setdefault(d, {})
                         for sid, n in home.items():
                             pooled[sid] = pooled.get(sid, 0.0) + n
             home = self._device_home.get(device)
-            if home:
+            if home and not by_device:
                 prefer = max(home, key=home.get)      # the device IS its clusters
         if prefer is not None:
             seen = set()
@@ -3486,12 +3509,25 @@ class Detector:
                 prefer = self._moved[prefer]
         found = self._input_context(s)
         context, episode = found if found else (None, None)
+        if by_device:
+            # the device's signature for this input value, whatever its runs' powers
+            home = self._device_home.get(device) or {}
+            cands = []
+            for sid, n in home.items():
+                seen = set()
+                while sid in self._moved and sid not in seen:
+                    seen.add(sid)
+                    sid = self._moved[sid]
+                sig = self._sig(sid)
+                if sig is not None and sig.id not in avoid and sig.files_in(context):
+                    cands.append((n, sig.id, sig))
+            best = max(cands)[2] if cands else None
         if prefer is not None:
             want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
             if (want is not None and want.matches(s, noise) is not None
                     and want.files_in(context)):
                 best = want
-        for sig in ([] if best is not None else self.signatures):
+        for sig in ([] if best is not None or by_device else self.signatures):
             if not sig.files_in(context):
                 continue
             if sig.id in avoid:
@@ -3534,6 +3570,15 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
+        if DEVICE_FILING:
+            devs = self.devices()
+            for pair in ([s.pair] if s.pair else []) + list(s.legs):
+                if pair and pair[0] is not None:
+                    row = self.start_home.setdefault(str(pair[0]), {})
+                    row[best.id] = row.get(best.id, 0.0) + 1.0
+                    if self._device_home is not None:
+                        pooled = self._device_home.setdefault(devs.get(pair[0], pair[0]), {})
+                        pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
             if pair and None not in pair:
                 home = self.pair_home.setdefault(f"{pair[0]}>{pair[1]}", {})
@@ -3541,7 +3586,10 @@ class Detector:
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
-        self.consolidate(noise, changed=[best])
+        if DEVICE_FILING:
+            self._judge_born()
+        else:
+            self.consolidate(noise, changed=[best])
         if self.orphan_names:
             # after consolidate, so a name lands on the signature that survived
             # the merge rather than on one about to be swallowed
@@ -3694,8 +3742,16 @@ class Detector:
                     x = root[x]
                 return x
             whole = sum(total.values())
+            rises = {c.id for c in self.edges if c.up}
             for a, b, n in rows:
                 if n < LINK_MIN:
+                    continue
+                if DEVICE_RISES and not (a in rises and b in rises):
+                    # a stop size is shared by every load that stops at it:
+                    # joining through it made Home's mat one device with every
+                    # 600 W load on C (2026-09-30). Starts belong together when
+                    # they start together - a load's legs on two phases, loads
+                    # stopping as one - and a stop hangs off the starts it ends.
                     continue
                 if above_chance(n, total[a] * total[b] / whole):
                     ra, rb = find(a), find(b)
@@ -3703,6 +3759,70 @@ class Detector:
                         root[max(ra, rb)] = min(ra, rb)
             self._devices = {c: find(c) for c in total}
         return self._devices
+
+    def _sig(self, sid: int) -> Optional["Signature"]:
+        if self._by_sig is None or sid not in self._by_sig:
+            self._by_sig = {x.id: x for x in self.signatures}
+        return self._by_sig.get(sid)
+
+    def _merge_devices(self) -> int:
+        """Signatures whose runs came from one device are one - see
+        DEVICE_FILING. A named pair of them with different names stays apart,
+        as do two filed in different values of a setting or on different
+        phases. Once a pass."""
+        devs = self.devices()
+        votes: Dict[int, Dict[int, float]] = {}
+        for k, home in self.start_home.items():
+            a = int(k)
+            d = devs.get(a, a)
+            for sid, n in home.items():
+                seen = set()
+                while sid in self._moved and sid not in seen:
+                    seen.add(sid)
+                    sid = self._moved[sid]
+                row = votes.setdefault(sid, {})
+                row[d] = row.get(d, 0.0) + n
+        by_dev: Dict[int, List["Signature"]] = {}
+        for sig in self.signatures:
+            v = votes.get(sig.id)
+            if v:
+                by_dev.setdefault(max(v, key=v.get), []).append(sig)
+        moved: Dict[int, int] = {}
+        for sigs in by_dev.values():
+            if len(sigs) < 2:
+                continue
+            sigs.sort(key=lambda x: (not x.name, -x.count))     # a named one survives
+            keep = sigs[0]
+            for other in sigs[1:]:
+                if other.phases != keep.phases:
+                    continue
+                if other.name and keep.name and other.name != keep.name:
+                    continue
+                if other.born_in != keep.born_in:
+                    # apart while they run in the value more than chance puts
+                    # them there together - a fridge running through every
+                    # rinse is not the washer (as in alike)
+                    born = keep.born_in or other.born_in
+                    if keep.born_in and other.born_in and not (
+                            other.born_in in keep.takes_in or keep.born_in in other.takes_in):
+                        continue
+                    lift = keep.input_lift(other, born)
+                    if lift is None or lift >= INPUT_SPLIT_LIFT:
+                        continue
+                keep.swallow(other)
+                moved[other.id] = keep.id
+        if not moved:
+            return 0
+        self.signatures = [x for x in self.signatures if x.id not in moved]
+        for r in self.recent:
+            if r.get("signature") in moved:
+                r["signature"] = moved[r["signature"]]
+        for s in self.held:
+            if s.signature_id in moved:
+                s.signature_id = moved[s.signature_id]
+        self._moved.update(moved)
+        self._by_sig, self._device_home = None, None
+        return len(moved)
 
     def device_of(self, s: "Session") -> Optional[int]:
         devs = self.devices()
@@ -4147,6 +4267,7 @@ class Detector:
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
                 "edge_hist": {g: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for g, h in self.edge_hist.items()},
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
+                "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
@@ -4171,6 +4292,7 @@ class Detector:
         det.edge_hist = {g: {int(b): float(w) for b, w in h.items()} for g, h in (d.get("edge_hist") or {}).items()}
         det.edge_hist_at = {g: float(t) for g, t in (d.get("edge_hist_at") or {}).items()}
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
+        det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}

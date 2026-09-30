@@ -2443,11 +2443,14 @@ def _two_starts(overlap: bool, seed: int = 7):
     return det, by_kind
 
 
-def test_one_device_that_starts_either_way_stays_one():
-    """Home's office plug starts one way and the other; it never runs twice
-    at once, which two fridges do - so it stays one signature (2026-09-29)."""
+def test_one_device_that_starts_two_ways_is_two_starts_for_now():
+    """Home's office plug starts one way and the other. Filed by device, its two
+    start sizes are two starts sharing only a stop, and a shared stop no longer
+    joins devices (it made the floor mat one with every 600 W load on C), so
+    it is two signatures (2026-09-30). Open: join starts that share their stop
+    and never run at once - one device never runs twice."""
     det, by_kind = _two_starts(overlap=False)
-    assert len(by_kind["A"] | by_kind["B"]) == 1, by_kind
+    assert len(by_kind["A"]) == 1 and len(by_kind["B"]) == 1, by_kind
 
 
 def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
@@ -2561,7 +2564,10 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
     assert D.lag_window(det.lag_hist["climate.mat"]), det.lag_hist
     keyed = [c for c in det.edges if c.keys.get("climate.mat")]
     assert keyed and all(abs(c.watts - 635.0) < 60.0 for c in keyed), [(c.watts, c.keys) for c in keyed]
-    mat = max((x for x in det.signatures if x.phases == "c"), key=lambda x: x.count)
+    # the mat's signature is the one its thermostat-keyed edges filed into;
+    # its first runs, before the lag was learned, stay with the look-alike's
+    mat = max((x for x in det.signatures if x.phases == "c"),
+              key=lambda x: (bool((D.edge_story(det.edges, x).get("start") or {}).get("signals", {}).get("climate.mat")), x.count))
     story = D.edge_story(det.edges, mat)
     starts, stops = story["start"]["signals"]["climate.mat"], story["stop"]["signals"]["climate.mat"]
     assert starts["kind"] == "off→on" and stops["kind"] == "on→off", story
