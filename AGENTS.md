@@ -761,6 +761,16 @@ Don't re-chase these; each cost real time.
   one multi-phase device (the kiln), so it cannot show the vectors' upside.
   The baseline still differs in being the ONLINE grouping (fading histogram,
   input keys); the single-phase patterns are the same cut.
+  The fair form, on the ten days (`vector_events.py edges_ten.json`): the
+  detector's own per-phase steps joined into one event when they come within
+  3 s and the smaller is at least BALANCE of the larger, clustered per
+  pattern on the total size. BALANCE 0.2 / 0.5 / 0.9: V 0.451 / 0.456 /
+  0.448, purity 0.878 / 0.875 / 0.865, device-in-top 0.369 / 0.373 / 0.370;
+  the per-phase groups on the SAME events 0.460 / 0.867 / 0.373. Even. The
+  kiln comes out 'ac' on 660 of 664 events without any device link, which is
+  the structural gain; the labelled set cannot score it. BALANCE hardly
+  matters, as Anze said (a real multi-phase load shows on its other phases at
+  well over 20 %).
 - **Capping an edge cluster's width** at what the meter resolves (8 units of the
   size scale, a noise either side at small steps, ~8 % at large; segments cut
   at their thinnest interior points), meant to break the catch-all groups
