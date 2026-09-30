@@ -491,6 +491,22 @@ Every attribute assembled per update must be in `_unrecorded_attributes`;
 `tests/test_sensor_attributes.py` fails otherwise. The library runs to well
 over 16 KB and the recorder will choke on it.
 
+**Sub-meter reactive power (2026-09-30 night, Home's ten days):** a 3EM
+publishes no reactive power and an UNSIGNED power factor (RPC and Modbus
+alike, fw 2.0.1). Its reactive part is now sqrt(S^2 - P^2) from its apparent
+power, each reading paired with the power reading of the SAME update
+(SAME_UPDATE_S): read "as of", a kiln leg's switch-off paired 34 W with the
+3505 VA before it. Checked on the kiln's legs at Hiša, which must read 0.866
+(phase to phase): within 0.03 of it, A / C / A+C, 62 / 43 / 36 % before, 99 /
+63 / 90 % with the pairing on the power factor, 98 / 86 / 98 % on the apparent
+power; the step-weighted IQR of power factor inside a group Hiša 0.126 ->
+0.022, Mansarda 0.244 -> 0.110. The house scores do not move (purity 79.4 %,
+wconc 55.8 % either way, SUBS=prod): the house's grouping never reads a
+sub-meter's reactive power. Ruled out: signing the size by the grid meter's
+signed change (choose +size or -size by the nearer change) - its noise flips
+small levels, 98 / 86 / 98 -> 94 / 39 / 82 %, spread 0.022 -> 0.198. The same
+pairing on the grid meter's own signed var changed nothing.
+
 ## Known shortfalls
 
 Open defects, with what is measured and what is guessed. Numbers are from the

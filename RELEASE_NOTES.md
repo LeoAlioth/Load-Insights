@@ -29,6 +29,8 @@
 
 ### Fixes
 
+- **A sub-meter's power factors are read at the moment of the step, and from its apparent power.** A meter publishes its readings of one moment as separate entities, milliseconds apart, and taking the others "as of" the power's reading paired a switched-off kiln leg's 34 W with the 3.5 kVA from before - a phantom reactive spike at the very step. Readings from the same update are now paired, and where a meter publishes its apparent power (a Shelly Pro 3EM does, to 0.1 VA) the reactive part comes from that rather than from its two-decimal power factor. The kiln's legs on Home's Hiša meter now read 0.866, as a phase-to-phase element must, for 86-98 % of their steps (36-62 % before).
+
 - **A named load on the Energy dashboard is no longer read as a meter.** Detection learns from every device the dashboard lists, and that included Load Insights' own named-load sensors: a load's estimate was read back as its own truth, and naming a load again after a reset made it "that metered device", with no sensors of its own. Its own sensors, and dashboard entries whose sensor no longer exists, are now left out.
 
 - **`load_insights.reset_detection` can forget the names too.** A reset kept every name and handed it back to the first rebuilt load that looked like it, and a stale name could land on the wrong load (Kozolec's fridges took "Water Pump" after one). With *Forget the names too* the library starts with nothing at all, and the loads are named anew.

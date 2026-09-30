@@ -32,6 +32,10 @@ KIND_BY_DEVICE_CLASS = {
     # the meter's own, SIGNED: V x I gives only its size, so a capacitive load
     # on an inductive floor reads wrong (Anze, 2026-09-30)
     "reactive_power": "var",
+    # the meter's own apparent power: a Pro 3EM publishes it to 0.1 VA, where
+    # its two-decimal power factor moves the derived VAr by ~26 at 900 W
+    # (Anze, 2026-09-30: small steps read far poorer factors than big ones)
+    "apparent_power": "va",
 }
 
 # never a per-phase live reading

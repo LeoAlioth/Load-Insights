@@ -82,6 +82,18 @@ def test_a_meters_own_reactive_power_is_found_beside_its_power():
     assert got.get("power_a", "").endswith("_ac_power_a"), got      # still the watts, not the VAr
 
 
+def test_a_3ems_apparent_power_is_found_beside_its_active_power():
+    """Its 0.1 VA apparent power gives the VAr far finer than its two-decimal
+    power factor (Anze, 2026-09-30)."""
+    rows = [r for p in "abc" for r in (
+        e(f"sensor.hisa_phase_{p}_active_power", "power", "Phase " + p.upper() + " active power"),
+        e(f"sensor.hisa_phase_{p}_apparent_power", "apparent_power", "Phase " + p.upper() + " apparent power"),
+        e(f"sensor.hisa_phase_{p}_power_factor", "power_factor", "Phase " + p.upper() + " power factor"))]
+    got = D.match_meter_entities(rows)
+    assert [got.get(f"va_{p}") for p in "abc"] == [f"sensor.hisa_phase_{p}_apparent_power" for p in "abc"], got
+    assert [got.get(f"power_{p}") for p in "abc"] == [f"sensor.hisa_phase_{p}_active_power" for p in "abc"], got
+
+
 def test_line_to_line_voltage_belongs_to_no_single_phase():
     """It moves when either of its two phases does, so it is not a reading
     of either. However it is spelled."""
