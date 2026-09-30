@@ -265,6 +265,33 @@ EDGE_WINDOW_DEFAULT_S = 10.0
 EDGE_WINDOW_SPREADS = 3.0
 EDGE_WINDOW_MIN_S = 3.0
 EDGE_LIBRARY = 150             # clusters kept per phase and direction
+# Which cluster a step joins is decided by where the steps of its kind PILE UP,
+# not by a fixed +-10 % around whichever cluster happened to be made first.
+# Per phase, direction and what its inputs did, the steps' sizes are kept as a
+# histogram fading over EDGE_TAU_S, on a scale where one unit is one
+# measurement error (EDGE_NOISE_SHARE of the phase's noise at small steps, EDGE_SCALE_REL of the step at
+# large ones); smoothed by EDGE_KERNEL units, it is cut at its valleys, and a
+# step joins the cluster that owns its segment. Against the 7,858 events
+# Home's device meters labelled over 7-28 Sep, V-measure 0.436 ->
+# 0.593 and each device's share in its biggest cluster 0.52 -> 0.82, with 78
+# clusters instead of 498; scikit-learn's Gaussian mixtures, HDBSCAN and DBSCAN
+# all did worse, and splitting by the V x I power factor hurt every method
+# (2026-09-30). Exploration dial: 0 is the old nearest-within-tolerance.
+EDGE_BATCH = 1
+# One measurement error at small steps is EDGE_NOISE_SHARE of the phase's
+# measured noise, fixed per group when it starts: a fixed 15 W suited Home
+# (whose phases' noise is 10, 35 and 114 W) and ran every small fall at quiet
+# Kozolec (10 W) into one cluster - its fridges' runs then closed at 8 % of
+# their length (75 of 248 right, against 175 at 5 W). Benched at a quarter,
+# half and all of the noise: a quarter wins at both sites - Home 82.6 / 66.4 %
+# against 80.9 / 61.3 and 76.3 / 50.2, the pump 1153 clean against 915 and 410,
+# Kozolec's fridges 188 right against 154 and 81 (2026-09-30).
+EDGE_NOISE_SHARE = 0.25
+EDGE_SCALE_REL = 0.02          # ponytail: fixed; the phase's voltage spread is the upgrade
+EDGE_BIN = 0.25
+EDGE_KERNEL = 1.0
+EDGE_TAU_S = 10 * 86400.0
+EDGE_RECUT = 32                # steps into a group before its segments are cut again
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
 # cluster each, learned from every run that closes: how often, the stop's size
@@ -3047,6 +3074,43 @@ class EdgeCluster:
                    keys=dict(d.get("keys") or {}))
 
 
+def edge_scale(watts: float, unit_w: float) -> float:
+    """A step's size in measurement errors, one of them ``unit_w`` watts at
+    small steps and EDGE_SCALE_REL of the step at large ones - see EDGE_BATCH."""
+    return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
+
+
+def valley_segments(hist: Dict[int, float]) -> List[Tuple[int, int]]:
+    """The bins of a size histogram cut into segments at the valleys of its
+    smoothed density: (first bin, last bin) of each, where anything is."""
+    if not hist:
+        return []
+    sd = EDGE_KERNEL / EDGE_BIN
+    reach = int(4 * sd) + 1
+    kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
+    total = sum(kernel)
+    kernel = [k / total for k in kernel]
+    lo, hi = min(hist) - reach, max(hist) + reach
+    dens = [0.0] * (hi - lo + 1)
+    for b, w in hist.items():
+        base = b - lo - reach
+        for k, kw in enumerate(kernel):
+            dens[base + k] += w * kw
+    floor = 0.1 * kernel[reach]                 # a tenth of one step's own peak
+    segs, start = [], None
+    for i, v in enumerate(dens):
+        inside = v >= floor
+        if inside and start is None:
+            start = i
+        cut = start is not None and 0 < i < len(dens) - 1 and dens[i - 1] > v <= dens[i + 1]
+        if start is not None and (not inside or cut):
+            segs.append((start + lo, i - 1 + lo if not inside else i + lo))
+            start = None if not inside else i + 1
+    if start is not None:
+        segs.append((start + lo, hi))
+    return segs
+
+
 def lag_window(hist: Sequence[float]) -> Optional[Tuple[float, float]]:
     """Where an input's changes pile up against the meter's edges: (earliest,
     latest) lag in seconds, from its histogram of lags over
@@ -3165,6 +3229,13 @@ class Detector:
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
+    # per phase|direction|inputs: bin -> recency-weighted steps, and when it
+    # last faded - see EDGE_BATCH; its segments are cut again every EDGE_RECUT
+    edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
+    edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
+    _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _devices: Optional[Dict[int, int]] = field(default=None, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
@@ -3531,8 +3602,12 @@ class Detector:
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
-        scored = [(c.fits(size, pf, 0.0, noise), c) for c in kind if c.same_signals(keyed)]
-        scored = [(g, c) for g, c in scored if g is not None]
+        if EDGE_BATCH:
+            cluster = self._by_density(ph, watts > 0, since, size, keyed, kind)
+            scored = [(0.0, cluster)] if cluster is not None else []
+        else:
+            scored = [(c.fits(size, pf, 0.0, noise), c) for c in kind if c.same_signals(keyed)]
+            scored = [(g, c) for g, c in scored if g is not None]
         if scored:
             cluster = min(scored, key=lambda x: x[0])[1]
         else:
@@ -3543,6 +3618,41 @@ class Detector:
         cluster.absorb(since, size, pf, surge, kinds, lags, values)
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
         return cluster.id
+
+    def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
+                    kind: List["EdgeCluster"]) -> Optional["EdgeCluster"]:
+        """The cluster whose segment of this group's size density the step
+        falls in - the one of them with most steps - or None for a new one.
+        See EDGE_BATCH."""
+        g = f"{ph}|{int(up)}|" + ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
+        if g not in self.edge_unit:
+            noise = self.phases[ph].noise if ph in self.phases and self.phases[ph].noise else MIN_NOISE_W
+            self.edge_unit[g] = EDGE_NOISE_SHARE * noise
+        unit = self.edge_unit[g]
+        b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
+        h = self.edge_hist.setdefault(g, {})
+        at = self.edge_hist_at.get(g)
+        if at is None:
+            self.edge_hist_at[g] = since
+        elif since - at > 3600.0:
+            fade = math.exp(-(since - at) / EDGE_TAU_S)
+            for k in list(h):
+                h[k] *= fade
+                if h[k] < 1e-3:
+                    del h[k]
+            self.edge_hist_at[g] = since
+        h[b] = h.get(b, 0.0) + 1.0
+        segs = self._segs.get(g)
+        if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
+            segs = self._segs[g] = valley_segments(h)
+            self._recut[g] = 0
+        self._recut[g] += 1
+        seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
+        if seg is None:
+            return None
+        members = [c for c in kind if c.same_signals(keyed)
+                   and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+        return max(members, key=lambda c: c.count) if members else None
 
     def link(self, a: Optional[int], b: Optional[int], w: float = 1.0) -> None:
         if a is None or b is None or a == b:
@@ -4011,6 +4121,8 @@ class Detector:
                 "input_until": dict(self.input_until),
                 "input_episodes": {n: dict(row) for n, row in self.input_episodes.items()},
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
+                "edge_hist": {g: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for g, h in self.edge_hist.items()},
+                "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
@@ -4032,6 +4144,9 @@ class Detector:
         det.input_until = {n: float(t) for n, t in (d.get("input_until") or d.get("stage_until") or {}).items()}
         det.input_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("input_episodes") or d.get("stage_episodes") or {}).items()}
         det.edges = [EdgeCluster.from_dict(x) for x in d.get("edges") or []]
+        det.edge_hist = {g: {int(b): float(w) for b, w in h.items()} for g, h in (d.get("edge_hist") or {}).items()}
+        det.edge_hist_at = {g: float(t) for g, t in (d.get("edge_hist_at") or {}).items()}
+        det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
