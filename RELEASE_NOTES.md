@@ -29,6 +29,8 @@
 
 ### Fixes
 
+- **`load_insights.reset_detection` can forget the names too.** A reset kept every name and handed it back to the first rebuilt load that looked like it, and a stale name could land on the wrong load (Kozolec's fridges took "Water Pump" after one). With *Forget the names too* the library starts with nothing at all, and the loads are named anew.
+
 - **A named load's sensors come back by themselves after a reset.** The sensors are created for the names the library holds when Load Insights starts, and after a detector update or a reset the library is empty at that moment: the names find their loads during the ten-day re-read, but nothing created their sensors, so every named load stayed unavailable until the integration was reloaded. A name that lands after the start now gets its power and energy sensors the moment it does.
 
 - **Home's phase A has a power factor again while detection runs live.** A meter is taken as the source of a phase's reactive power only if something flows through it, and that test asked for thirty readings; a live pass reads about a minute, and Home's phase A reports every 4.3 seconds, so it never had thirty and went without. A dead port reads zero however many readings there are, so the count is no longer asked for.

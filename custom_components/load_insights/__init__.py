@@ -51,10 +51,12 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         await _async_for_each_entry(hass, go)
 
     async def _reset_detection(call) -> None:
+        forget = bool(call.data.get("forget_names", False))
+
         async def go(entry_id, _coordinator):
             runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
             if runner is not None:
-                await runner.async_reset()
+                await runner.async_reset(forget_names=forget)
         await _async_for_each_entry(hass, go)
 
     async def _name_load(call) -> None:

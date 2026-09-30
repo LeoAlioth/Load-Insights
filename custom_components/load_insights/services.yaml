@@ -15,10 +15,21 @@ reset_detection:
     describes a site that no longer exists. Names you have given are kept
     and handed back to whatever the backfill finds that looks like them -
     so where the site really has changed, and nothing matches, a name
-    simply does not return.
+    simply does not return - unless you ask for the names to go too.
   target:
     entity:
       integration: load_insights
+  fields:
+    forget_names:
+      name: Forget the names too
+      description: >-
+        Drop the names as well as the library, so nothing learned before
+        - not even a name waiting to find its load - carries over. Name the
+        loads anew once the backfill has run.
+      required: false
+      default: false
+      selector:
+        boolean:
 
 name_load:
   name: Name a load
