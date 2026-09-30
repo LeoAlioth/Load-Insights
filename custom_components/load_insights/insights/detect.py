@@ -307,6 +307,15 @@ EDGE_RECUT = 32                # steps into a group before its segments are cut 
 # companion within 5 s 1 % of the time. A real multi-phase load shows on its
 # other phases at far more than 20 % (Anze). Rises only: a fall closes a run
 # on its own phase at once, so it keeps its per-phase cluster.
+# Three, measured (Home, 19-20 Sep 2026): at two intervals the compressor's
+# three-leg event never formed (13 'abc' steps in two days, no cluster of
+# five), at three it did (70, one cluster of 28 at 2,520 W), at four little
+# more (88) with more coincidences. The reason two is not enough there: the
+# house reading is a template that moves whenever EITHER of its inputs ticks,
+# so its interval (2 s by day) is shorter than the grid meter's own per-phase
+# cadence (4-6 s), and a leg's step shows only when its phase's meter reading
+# arrives. A window learned from the pile-up of leg offsets, as lag_window
+# does for inputs, is the upgrade if coincidences prove costly.
 EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
@@ -2030,6 +2039,8 @@ class PhaseState:
     def _close(self, o: _Open, at: float, watts: float, var: Optional[float], direct: bool = False) -> Session:
         """``direct``: closed by the fall being paired, whose cluster is then
         this run's stop - which teaches the pair (see PAIR_MIN_RUNS)."""
+        if o.cluster is None and self.lib is not None:
+            self.lib.resolve_rise(o)             # its event window has not passed: form the event now
         pair = (o.cluster, self.stop_cluster if direct else None)
         if direct and self.lib is not None:
             self.lib.note_pair(o.cluster, self.stop_cluster, o.watts, watts, at - o.since)
@@ -3617,31 +3628,48 @@ class Detector:
             first = pend[0]
             if not final and now - first["since"] < window:
                 break
-            members, phases = [first], {first["ph"]}
-            for q in sorted(pend[1:], key=lambda x: abs(x["since"] - first["since"])):
-                if q["ph"] in phases or abs(q["since"] - first["since"]) > window:
-                    continue
-                ws = [m["watts"] for m in members] + [q["watts"]]
-                if min(ws) < EVENT_BALANCE * max(ws):
-                    continue
-                members.append(q)
-                phases.add(q["ph"])
+            cluster, members = self._form_event(first, pend, window)
             for m in members:
                 pend.remove(m)
-                self._pending.remove(m)
-            pattern = "".join(sorted(phases))
-            since = min(m["since"] for m in members)
-            vars_ = [m["var"] for m in members]
-            cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
-                                          sum(vars_) if all(v is not None for v in vars_) else None,
-                                          max(m["surge"] for m in members))
-            for m in members:
-                m["open"].cluster = cluster.id
-                self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
                 st = self.phases.get(m["ph"])
                 if st is not None:
                     out.extend((m["ph"], x) for x in st.end_older(cluster.id, m["since"], m["open"]))
         return out
+
+    def _form_event(self, first: dict, pend: List[dict], window: float):
+        """``first`` and whatever rose beside it within ``window`` on other
+        phases become one event and get its cluster; the members leave the
+        pending list. Returns (cluster, members)."""
+        members, phases = [first], {first["ph"]}
+        for q in sorted(pend, key=lambda x: abs(x["since"] - first["since"])):
+            if q is first or q["ph"] in phases or abs(q["since"] - first["since"]) > window:
+                continue
+            ws = [m["watts"] for m in members] + [q["watts"]]
+            if min(ws) < EVENT_BALANCE * max(ws):
+                continue
+            members.append(q)
+            phases.add(q["ph"])
+        for m in members:
+            self._pending.remove(m)
+        pattern = "".join(sorted(phases))
+        since = min(m["since"] for m in members)
+        vars_ = [m["var"] for m in members]
+        cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
+                                      sum(vars_) if all(v is not None for v in vars_) else None,
+                                      max(m["surge"] for m in members))
+        for m in members:
+            m["open"].cluster = cluster.id
+            self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
+        return cluster, members
+
+    def resolve_rise(self, o: "_Open") -> None:
+        """A run is closing before its event window passed: form its event now
+        from what has risen beside it so far, so the run has its start
+        cluster (a start without one is a device of nobody and a signature
+        of its own - hundreds of them from short runs, 2026-09-30)."""
+        first = next((x for x in self._pending if x["open"] is o), None)
+        if first is not None:
+            self._form_event(first, list(self._pending), self.event_window())
 
     def _classify_step(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> "EdgeCluster":
         """File a step - or an all-phase event, ``ph`` then being its phase
