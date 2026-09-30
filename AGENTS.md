@@ -97,6 +97,25 @@ against it, not against memory.
 
 ## Never ship a detector change unmeasured
 
+**The local history is the last ten days** (Anze, 2026-09-30): the sites'
+recorders keep ten days, production's reset re-reads ten, so a longer replay
+measures a library production can never hold. `data/history/<site>/` holds
+Home 19-28 Sep and Kozolec 20-29 Sep; older CSVs moved to
+`data/history/<site>-older/`. Every bench number in this file from before
+2026-09-30 15:00 was measured on 20-22 days and is not comparable with later
+ones; the ten-day baseline is stated where it was first measured below.
+
+**Ten-day baseline (2026-09-30, Home 19-28 Sep with the thermostat, Kozolec
+20-29 Sep), filing on the run's own phases:** Home purity 75.5 %, wconc 58.6 %
+(hidrofor 71 % in one signature of 42), the mat 43.6 h counted once against
+76.4 h of heating, 1.8 h outside it, caught 55 %; kiln 220 full-size / 160
+single-leg of 272 pulses in 2 firings; Kozolec 99.9 / 93.3 %, fridges 75 of 91
+lengths within 25 %, purity 87 %; energy Kozolec 73.4 / 74.1 %, Home 41 / 3 %.
+The 22-day numbers (86.2 / 86.0) came from a long warm-up production never
+gets: on ten days the pump's runs land in a 4,586-run blob on A (17 % pump by
+energy) instead of a signature of their own. Before the own-phases rule the
+same ten days gave 76.2 / 46.3 and a C-phase signature carrying A runs.
+
 There is a bench. Use it — replaying costs minutes and a live site costs a
 deploy cycle plus a ten-day rebuild.
 

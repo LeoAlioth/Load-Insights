@@ -3463,10 +3463,10 @@ class Detector:
             # elsewhere - Home 79.8 / 76.0 % that way, 86.0 / 85.4 trusted,
             # Kozolec 98.3 / 94.1 and 99.8 / 98.9 (2026-09-30)
             want = self._sig(prefer)
-            if want is not None and want.id not in avoid and want.files_in(context):
+            if want is not None and want.id not in avoid and want.files_in(context) and want.phases == s.phases:
                 best = want
         if best is None and device is not None:
-            best = self._device_signature(device, context, avoid)
+            best = self._device_signature(device, context, avoid, s.phases)
         if best is None:
             best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
                              pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count),
@@ -3712,10 +3712,14 @@ class Detector:
             self._devices = {c: find(c) for c in total}
         return self._devices
 
-    def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int]) -> Optional["Signature"]:
-        """The signature most of this device's runs went to, of those that take
-        runs in ``context`` and are not ``avoid``ed, whatever its runs' powers
-        - None for a device not seen yet. See DEVICE_FILING."""
+    def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
+                          phases: str) -> Optional["Signature"]:
+        """The signature most of this device's runs went to, of those on the
+        run's own ``phases`` that take runs in ``context`` and are not
+        ``avoid``ed, whatever its runs' powers - None for a device not seen
+        yet. See DEVICE_FILING. On its own phases: a device whose legs link
+        across phases filed an A run into a C signature, whose power then
+        carried all three phases (Home, ten days, 2026-09-30)."""
         if self._device_home is None:
             devs, self._device_home = self.devices(), {}
             for k, home in self.start_home.items():
@@ -3730,7 +3734,7 @@ class Detector:
                 seen.add(sid)
                 sid = self._moved[sid]
             sig = self._sig(sid)
-            if sig is not None and sig.id not in avoid and sig.files_in(context):
+            if sig is not None and sig.id not in avoid and sig.files_in(context) and sig.phases == phases:
                 cands.append((n, sig.id, sig))
         return max(cands)[2] if cands else None
 
