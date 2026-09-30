@@ -150,7 +150,11 @@ STORAGE_VERSION = 1
 # 15 = edges are clustered by where their sizes pile up, pairs and links are
 #     accepted above chance, and runs are filed by device rather than by how
 #     alike their power looks: every cluster, pair and signature differs.
-DETECTOR_GENERATION = 15
+# 16 = a start is an all-phase event: rises on several phases within the
+#     window are one cluster carrying a phase pattern, a device is its start
+#     cluster (the link table is gone), and a run is filed on its own phases
+#     only - every start cluster, device and signature differs.
+DETECTOR_GENERATION = 16
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
