@@ -292,6 +292,19 @@ EDGE_BIN = 0.25
 EDGE_KERNEL = 1.0
 EDGE_TAU_S = 10 * 86400.0
 EDGE_RECUT = 32                # steps into a group before its segments are cut again
+# A start is an ALL-PHASE EVENT: rises on different phases within this many
+# seconds, the smallest at least EVENT_BALANCE of the largest, are one event,
+# clustered on their phase pattern and total size. Home's three-phase
+# compressor (~840 W a leg) and its single-phase pump (~900 W on A) are the
+# same size on A and both motors; per phase they shared one cluster and the
+# compressor's legs chained the pump into its device. As events they are
+# (840, 850, 830) and (900, 0, 0). Measured 2026-09-30 on ten days: the legs
+# are seen within 5 s in 92 % of the cases they are seen at all (median offset
+# 0.0 s, 90th percentile 4.2 s); the pump gets a false companion within 5 s
+# 1 % of the time. A real multi-phase load shows on its other phases at far
+# more than 20 % (Anze). Rises only: a fall pairs on its own phase.
+EVENT_WINDOW_S = 5.0
+EVENT_BALANCE = 0.2
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
 # cluster each, learned from every run that closes: how often, the stop's size
@@ -1672,15 +1685,11 @@ class PhaseState:
             return []
         cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
-            ended = []
-            if cid is not None:
-                for o in [o for o in self.open_edges if o.cluster == cid]:
-                    self.open_edges.remove(o)
-                    usual = self.lib.usual_length(cid)
-                    at = min(since, o.since + usual) if usual else since
-                    self._remember_close(o, at)
-                    ended.append(self._close(o, at, o.now or o.watts, None))
-            self.open_edges.append(_Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid))
+            ended: List[Session] = []
+            o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid)
+            self.open_edges.append(o)
+            if self.lib is not None:
+                self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_S
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
             return ended
@@ -1785,6 +1794,18 @@ class PhaseState:
                 self._remember_close(o, at)
                 return [self._close(o, at, size, None)]
         return []
+
+    def end_older(self, cid: int, since: float, keep: "_Open") -> List[Session]:
+        """A start cluster rising again ends the older open run of that
+        cluster on this phase, at its usual length if one is known."""
+        out = []
+        for o in [o for o in self.open_edges if o.cluster == cid and o is not keep]:
+            self.open_edges.remove(o)
+            usual = self.lib.usual_length(cid) if self.lib is not None else None
+            at = min(since, o.since + usual) if usual else since
+            self._remember_close(o, at)
+            out.append(self._close(o, at, o.now or o.watts, None))
+        return out
 
     def _remember_close(self, o, at: float) -> None:
         self.recent_closed.append((o.since, o.watts, at))
@@ -3204,6 +3225,8 @@ class Detector:
     # fleet to file as edges; and phase -> [(since, cluster id, watts)] of the
     # recent ones, so a run filed later still finds its edges. Never persisted.
     edge_at: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
+    # rises waiting EVENT_WINDOW_S for companions on other phases; never persisted
+    _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
@@ -3275,6 +3298,14 @@ class Detector:
                 s.phases = ph
                 s.levels = {ph: s.levels.pop("")}
                 closed.append(s)
+            for fph, s in self._flush_events(ts):
+                s.phases = fph
+                s.levels = {fph: s.levels.pop("")}
+                closed.append(s)
+        for fph, s in self._flush_events(latest, final=True):   # the batch is over: nothing more will rise beside them
+            s.phases = fph
+            s.levels = {fph: s.levels.pop("")}
+            closed.append(s)
         oldest = min((rows[0][0] for rows in samples.values() if rows), default=None)
         cut = (oldest or 0.0) - SWITCH_MEMORY_S
         for ph in self.edge_at:
@@ -3550,9 +3581,62 @@ class Detector:
             judged.append(sig)
         return judged
 
-    def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> int:
-        """File a step the meter just took as an edge - see EDGE_LAG_REACH_S -
-        and say which cluster it is."""
+    def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> Optional[int]:
+        """Which cluster a fall belongs to, at once. A rise gets its cluster
+        through note_rise, once EVENT_WINDOW_S has shown which other phases
+        rose with it - see EVENT_WINDOW_S."""
+        if watts > 0:
+            return None
+        cluster = self._classify_step(ph, since, watts, var, surge)
+        self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
+        return cluster.id
+
+    def note_rise(self, state: "PhaseState", o: "_Open") -> None:
+        """A rise just opened on ``state``'s phase: it waits for companions."""
+        self._pending.append({"since": o.since, "ph": state.name, "watts": o.watts, "var": o.var,
+                              "surge": o.surge, "open": o})
+
+    def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
+        """Rises older than EVENT_WINDOW_S (all of them when ``final``) become
+        events with whatever rose beside them, get their cluster, and end an
+        older open run of the same cluster on their phase. Returns the runs
+        so ended, with their phase."""
+        out: List[Tuple[str, "Session"]] = []
+        pend = sorted(self._pending, key=lambda x: x["since"])
+        while pend:
+            first = pend[0]
+            if not final and now - first["since"] < EVENT_WINDOW_S:
+                break
+            members, phases = [first], {first["ph"]}
+            for q in sorted(pend[1:], key=lambda x: abs(x["since"] - first["since"])):
+                if q["ph"] in phases or abs(q["since"] - first["since"]) > EVENT_WINDOW_S:
+                    continue
+                ws = [m["watts"] for m in members] + [q["watts"]]
+                if min(ws) < EVENT_BALANCE * max(ws):
+                    continue
+                members.append(q)
+                phases.add(q["ph"])
+            for m in members:
+                pend.remove(m)
+                self._pending.remove(m)
+            pattern = "".join(sorted(phases))
+            since = min(m["since"] for m in members)
+            vars_ = [m["var"] for m in members]
+            cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
+                                          sum(vars_) if all(v is not None for v in vars_) else None,
+                                          max(m["surge"] for m in members))
+            for m in members:
+                m["open"].cluster = cluster.id
+                self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
+                st = self.phases.get(m["ph"])
+                if st is not None:
+                    out.extend((m["ph"], x) for x in st.end_older(cluster.id, m["since"], m["open"]))
+        return out
+
+    def _classify_step(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> "EdgeCluster":
+        """File a step - or an all-phase event, ``ph`` then being its phase
+        pattern and ``watts`` its total - as an edge (see EDGE_LAG_REACH_S)
+        and return its cluster."""
         size = abs(watts)
         pf = size / math.hypot(size, var) if var is not None and size > 0 else None
         events, times, numbers = self.signals or ({}, {}, {})
@@ -3594,8 +3678,7 @@ class Detector:
             self.edges.append(cluster)
             kind.append(cluster)
         cluster.absorb(since, size, pf, surge, kinds, lags, values)
-        self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
-        return cluster.id
+        return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
                     kind: List["EdgeCluster"]):
@@ -3611,7 +3694,7 @@ class Detector:
         g = f"{ph}|{int(up)}"
         key = ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
         if g not in self.edge_unit:
-            noise = self.phases[ph].noise if ph in self.phases and self.phases[ph].noise else MIN_NOISE_W
+            noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in ph)   # a pattern: its phases' noise together
             self.edge_unit[g] = EDGE_NOISE_SHARE * noise
         unit = self.edge_unit[g]
         b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))

@@ -2578,9 +2578,9 @@ def test_steps_join_the_cluster_their_size_piles_up_in():
     t = T0
     for k in range(400):
         w = rnd.choice([600.0, 645.0]) * (1 + rnd.gauss(0, 0.006))
-        got.setdefault(round(w / 645.0), set()).add(det.classify("a", t, w, None, 0.0))
+        got.setdefault(round(w / 645.0), set()).add(det._classify_step("a", t, w, None, 0.0).id)
         t += 60.0
-    wander = {det.classify("a", t + 60.0 * k, 2000.0 * (1 + rnd.uniform(-0.03, 0.03)), None, 0.0) for k in range(200)}
+    wander = {det._classify_step("a", t + 60.0 * k, 2000.0 * (1 + rnd.uniform(-0.03, 0.03)), None, 0.0).id for k in range(200)}
     main = lambda ids: max(ids, key=lambda i: next(c.count for c in det.edges if c.id == i))  # noqa: E731
     assert main(got[1]) != main(got[round(600 / 645)]) or len(got) == 1, got
     six, forty = [c for c in det.edges if abs(c.watts - 600) < 15], [c for c in det.edges if abs(c.watts - 645) < 15]
@@ -2645,3 +2645,37 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
     got = det.signature_of(run)
     assert got is not sig_c and got.phases == "a", (got.id, got.phases, got.power)
     assert "a" not in sig_c.power
+
+
+def test_rises_on_several_phases_within_the_window_are_one_event():
+    """A three-phase compressor (~840 W a leg) and a single-phase pump (~900 W
+    on A) are the same size on A; as events they are (840, 850, 830) and
+    (900, 0, 0) and never share a cluster (2026-09-30). See EVENT_WINDOW_S."""
+    det = D.Detector()
+    rows, base = {p: [] for p in "abc"}, {"a": 300.0, "b": 200.0, "c": 400.0}
+    def hold(p, w, t0, t1):
+        for t in range(int(t0), int(t1), 2):
+            rows[p].append((T0 + t, base[p] + w))
+    for p in "abc":
+        hold(p, 0.0, 0, 3600)
+    # the compressor: all three legs within 2 s, ten times
+    for k in range(10):
+        t = 200 + 300 * k
+        for p, w, d in (("a", 840.0, 0), ("b", 850.0, 2), ("c", 830.0, 1)):
+            rows[p] = [r for r in rows[p] if not (T0 + t + d <= r[0] < T0 + t + 120)]
+            hold(p, w, t + d, t + 120)
+    # the pump: A alone, ten times, between the compressor's runs
+    for k in range(10):
+        t = 350 + 300 * k
+        rows["a"] = [r for r in rows["a"] if not (T0 + t <= r[0] < T0 + t + 60)]
+        hold("a", 900.0, t, t + 60)
+    for p in "abc":
+        rows[p].sort()
+    det.process(rows, now_ts=T0 + 3700)
+    rises = [c for c in det.edges if c.up and c.count >= 5]
+    patterns = sorted((c.phase, round(c.watts, -1)) for c in rises)
+    assert ("abc", 2520.0) in patterns, patterns                # the compressor, one event of three legs
+    assert ("a", 900.0) in patterns, patterns                   # the pump, alone on A
+    assert not any(c.phase == "a" and 800 <= c.watts <= 880 for c in rises), patterns   # no per-phase 840 W cluster left
+    sigs = {(x.phases, round(sum(x.power.values()), -1)) for x in det.signatures if x.count >= 5}
+    assert ("abc", 2520.0) in sigs and ("a", 900.0) in sigs, sigs
