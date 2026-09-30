@@ -992,6 +992,7 @@ class DetectionRunner:
                 if self.pv_visible.get(p) is False:
                     pv.pop(p)         # this reading never sees the sun; leave its steps alone
             self.submeters = await self._resolve_submeters()
+            self.fleet.parents = {n: m.get("parent") for n, m in self.submeters.items()}
             sub_samples, sub_q, agnostic = {}, {}, {}
             for name, meter in self.submeters.items():
                 ss, sq = await self._read(start, end, meter["fields"])

@@ -80,6 +80,13 @@ NOISE_REL_FLOOR_FACTOR = 1.5
 # 3 kW load (Anze, 2026-09-18).
 GLITCH_FLOOR_W = 200.0
 NOISE_MAD_FACTOR = 4.0
+# The noise is re-learned from how far the reading MOVES between samples, as
+# the seed measures it, not from how far it sits from the level. A load
+# cycling just inside the band - Hiša's phase C, 65 W every 25-50 s - sat
+# 30 W from the level on average, set the floor at 4 x 30 W and so stayed
+# inside it for good: 1,616 of its steps on 28.09 counted from a start on the
+# 19th, none from a start on the 21st. A held level moves by nothing.
+NOISE_FROM_MOVES = True
 # A meter this slow in a steady state - a Shelly plug heartbeating once a
 # minute, a Zigbee plug reporting on change - says a value HELD by staying
 # quiet: it reports a change within seconds and nothing until the next one.
@@ -318,6 +325,23 @@ EDGE_RECUT = 32                # steps into a group before its segments are cut 
 # does for inputs, is the upgrade if coincidences prove costly.
 EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
+# bench: a second clustering dimension - the step's reactive angle,
+# atan2(dQ, dP) in degrees, signed where the meter's VAr is. Within a size
+# segment, steps are cut again at the valleys of their angle density: a pump
+# (~35 deg) and a heater (0 deg) of one size are two kinds of edge (Hart 1992;
+# Barsim & Yang 2014 cluster dP and dQ together).
+EDGE_ANGLE = False
+EDGE_ANGLE_BIN = 3.0           # degrees
+EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
+# A house step that meters below it stepped with at the same moment is
+# several steps: each meter's own share (less its sub-meters', see
+# _meter_steps), and the rest. Kozolec's boiler pulses 1.9 kW about
+# once a minute, and a car charge that started in the same reading was booked
+# at 5.3 kW - then closed when the boiler's pulse ended, the 8 h charge lost
+# (27.09 10:17). The meter knows its own share (Anze, 2026-09-30: use the
+# sub-meters to avoid it).
+SPLIT_BY_METERS = True
+TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
 # cluster each, learned from every run that closes: how often, the stop's size
@@ -1567,6 +1591,7 @@ class PhaseState:
                     self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
                 else:
                     self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
+        prev_w = self.last_w             # the reading before this one - see NOISE_FROM_MOVES
         if not held:
             self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
@@ -1620,7 +1645,8 @@ class PhaseState:
                 o = self.open_edges[0]
                 o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
             if self.level is not None and abs(self.level) >= self.rel_floor:
-                self.rel_diffs.append(abs(w - self.level) / abs(self.level))
+                wander = abs(w - prev_w) if NOISE_FROM_MOVES and prev_w is not None else abs(w - self.level)
+                self.rel_diffs.append(wander / abs(self.level))
                 if len(self.rel_diffs) >= 240:
                     self.noise_rel = min(NOISE_REL_CAP,
                                          NOISE_MAD_FACTOR * _median(self.rel_diffs))
@@ -1636,7 +1662,8 @@ class PhaseState:
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
                 self.level = self.baseline
-                self.idle_diffs.append(abs(w - self.baseline))
+                self.idle_diffs.append(abs(w - prev_w) if NOISE_FROM_MOVES and prev_w is not None
+                                       else abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
                     self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * _median(self.idle_diffs))
                     self.idle_diffs = self.idle_diffs[-120:]
@@ -1697,6 +1724,17 @@ class PhaseState:
             self.pv_level = new_pv
         if _is_the_sun(step, pv_step):
             return []
+        parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None else [step]
+        closed: List[Session] = []
+        for k, part in enumerate(parts):
+            closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
+                                    surge if k == len(parts) - 1 else 0.0, new_level)
+        return closed
+
+    def _declare(self, since: float, step: float, step_q: Optional[float], surge: float,
+                 new_level: float) -> List[Session]:
+        """One declared step - or one part of it, see SPLIT_BY_METERS - as a
+        start or a stop."""
         cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
             ended: List[Session] = []
@@ -1807,7 +1845,33 @@ class PhaseState:
                 self.open_edges.remove(o)
                 self._remember_close(o, at)
                 return [self._close(o, at, size, None)]
-        return []
+        if TOO_BIG not in ("close", "shrink"):
+            return []
+        # A shortfall nothing fits still rules out any run bigger ON ITS OWN
+        # than the whole reading: it cannot be on. Kozolec's 10.5 kW run held
+        # 289 min on a phase reading far less, and took 50 kWh (Anze,
+        # 2026-09-30: "should be stopped as soon as the site's total power has
+        # dropped under the 10.5 kW mark for a couple readings").
+        # On the run's OWN size, never what it is followed to draw now: that
+        # carries the drops held since it started - other loads' stops, when
+        # their starts went unseen - and read Kozolec's 3,346 W charge as
+        # 5,549 W; the rule then closed it at that, and a one-level run's
+        # energy is the mean of its start and its close, so 410 min were
+        # booked at 4,448 W (27.09, 6.8 kWh over).
+        out = []
+        for o in [o for o in self.open_edges if o.watts - level > self.noise_at(level)]:
+            if TOO_BIG == "shrink" and level > self.noise_at(level):
+                # ...but most often it has shrunk, not stopped: Kozolec's charger
+                # follows the sun through a five-hour charge, and closing it at
+                # the first dip cut its recall from 74 to 28 %. It runs on at
+                # what the reading can hold, as a new level.
+                o.watts, o.now = level, None
+                o.levels.append((at, level))
+                continue
+            self.open_edges.remove(o)
+            self._remember_close(o, at)
+            out.append(self._close(o, at, o.watts, None))
+        return out
 
     def end_older(self, cid: int, since: float, keep: "_Open") -> List[Session]:
         """A start cluster rising again ends the older open run of that
@@ -3010,6 +3074,8 @@ class EdgeCluster:
     # look-alike's +630 W with nothing are two kinds of edge. Only half of the
     # +630 W steps on Home's phase C came with the thermostat (2026-09-29).
     keys: Dict[str, str] = field(default_factory=dict)
+    angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE
+    angle_n: float = 0.0
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -3017,8 +3083,13 @@ class EdgeCluster:
         return all(k == self.keys.get(n, "") for n, k in kinds.items())
 
     def absorb(self, ts: float, watts: float, pf: Optional[float], surge: float,
-               kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float]) -> None:
+               kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float],
+               angle: Optional[float] = None) -> None:
         n = min(self.count, ABSORB_WINDOW)
+        if angle is not None:
+            m = min(self.angle_n, ABSORB_WINDOW)
+            self.angle = angle if self.angle is None else (self.angle * m + angle) / (m + 1)
+            self.angle_n += 1.0
         self.watts_mad = (self.watts_mad * n + abs(watts - self.watts)) / (n + 1) if self.count else 0.0
         self.watts = (self.watts * n + watts) / (n + 1) if self.count else watts
         if pf is not None:
@@ -3072,7 +3143,7 @@ class EdgeCluster:
                 "signals": {n: {k: _trim(v, 2) for k, v in row.items()} for n, row in self.signals.items()},
                 "lags": {k: [_trim(x, 2) for x in v] for k, v in self.lags.items()},
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
-                "keys": dict(self.keys)}
+                "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "EdgeCluster":
@@ -3083,7 +3154,7 @@ class EdgeCluster:
                    signals={n: dict(row) for n, row in (d.get("signals") or {}).items()},
                    lags={k: list(v) for k, v in (d.get("lags") or {}).items()},
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
-                   keys=dict(d.get("keys") or {}))
+                   keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0))
 
 
 def above_chance(n: float, expected: float, odds: float = ABOVE_CHANCE_ODDS) -> bool:
@@ -3100,12 +3171,13 @@ def edge_scale(watts: float, unit_w: float) -> float:
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
 
 
-def valley_segments(hist: Dict[int, float]) -> List[Tuple[int, int]]:
+def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
-    smoothed density: (first bin, last bin) of each, where anything is."""
+    smoothed density: (first bin, last bin) of each, where anything is.
+    ``sd`` is the smoothing in bins - the size histogram's by default."""
     if not hist:
         return []
-    sd = EDGE_KERNEL / EDGE_BIN
+    sd = sd or EDGE_KERNEL / EDGE_BIN
     reach = int(4 * sd) + 1
     kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
     total = sum(kernel)
@@ -3254,6 +3326,10 @@ class Detector:
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
+    # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE
+    edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
+    # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
+    meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
@@ -3584,6 +3660,29 @@ class Detector:
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
         return cluster.id
 
+    def metered_parts(self, ph: str, since: float, step: float) -> List[float]:
+        """``step`` cut into the shares the meters below it took with it and
+        the rest, or ``[step]`` - see SPLIT_BY_METERS. A meter that took all
+        of it, or more, leaves it whole: then the step is simply its load's."""
+        if not SPLIT_BY_METERS or self.meter_steps is None or ph not in self.phases:
+            return [step]
+        # Neither a piece nor what is left may be smaller than the step itself
+        # can resolve - its noise, or the pairing's share of it. A server UPS
+        # wandering 60 W inside a kiln pulse's window was carved off both of
+        # its legs, and the two slivers made an A+C "load" of their own: 79
+        # of them in ten days (Home, 2026-10-01).
+        least = max(self.phases[ph].noise_at(), MATCH_EDGE_REL * abs(step))
+        parts, rest = [], step
+        # over the start-event window, no wider: fifteen seconds either side
+        # reached into the kiln's previous pulse and read half a step, and
+        # every pulse was booked as two
+        for _, d in self.meter_steps(ph, since, self.event_window()):
+            if d * step <= 0 or abs(d) < least or abs(rest) - abs(d) < least:
+                continue
+            parts.append(d)
+            rest -= d
+        return parts + [rest] if parts else [step]
+
     def note_rise(self, state: "PhaseState", o: "_Open") -> None:
         """A rise just opened on ``state``'s phase: it waits for companions."""
         self._pending.append({"since": o.since, "ph": state.name, "watts": o.watts, "var": o.var,
@@ -3695,17 +3794,18 @@ class Detector:
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
-        cluster, keys = self._by_density(ph, watts > 0, since, size, keyed, kind)
+        angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
+        cluster, keys = self._by_density(ph, watts > 0, since, size, keyed, kind, angle)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys)
             self.next_edge_id += 1
             self.edges.append(cluster)
             kind.append(cluster)
-        cluster.absorb(since, size, pf, surge, kinds, lags, values)
+        cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
-                    kind: List["EdgeCluster"]):
+                    kind: List["EdgeCluster"], angle: Optional[float] = None):
         """(the cluster whose segment of this phase and direction's size density
         the step falls in, or None for a new one; the keys a new one gets).
 
@@ -3724,12 +3824,13 @@ class Detector:
         b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
         h = self.edge_hist.setdefault(g, {})
         hk = self.edge_hist_keys.setdefault(g, {})
+        ha = self.edge_hist_angle.setdefault(g, {})
         at = self.edge_hist_at.get(g)
         if at is None:
             self.edge_hist_at[g] = since
         elif since - at > 3600.0:
             fade = math.exp(-(since - at) / EDGE_TAU_S)
-            for hist in [h] + list(hk.values()):
+            for hist in [h, ha] + list(hk.values()):
                 for k in list(hist):
                     hist[k] *= fade
                     if hist[k] < 1e-3:
@@ -3739,6 +3840,9 @@ class Detector:
         if key:
             row = hk.setdefault(key, {})
             row[b] = row.get(b, 0.0) + 1.0
+        if angle is not None:
+            ab = int(math.floor(angle / EDGE_ANGLE_BIN))
+            ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
         segs = self._segs.get(g)
         if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
             segs = self._segs[g] = valley_segments(h)
@@ -3749,11 +3853,28 @@ class Detector:
         if seg is None:
             return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain)
         members = [c for c in kind if seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+        if angle is not None:
+            members = self._same_angle(ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
             mine = [c for c in members if c.same_signals(keyed)]
             return (max(mine, key=lambda c: c.count) if mine else None), keyed
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain
+
+    def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
+                    members: List["EdgeCluster"]) -> List["EdgeCluster"]:
+        """The size segment's clusters whose reactive angle lies in the step's
+        own band of the segment's angle density - see EDGE_ANGLE."""
+        col: Dict[int, float] = {}
+        for k, w in ha.items():
+            sb, ab = k.split(":")
+            if seg[0] <= int(sb) <= seg[1]:
+                col[int(ab)] = col.get(int(ab), 0.0) + w
+        ab = int(math.floor(angle / EDGE_ANGLE_BIN))
+        band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
+                     if lo <= ab <= hi), (ab, ab))
+        return [c for c in members if c.angle is not None
+                and band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
     def _keyed_above_chance(self, hk: Dict[int, float], h: Dict[int, float], lo: int, hi: int,
                             keyed: Dict[str, str]) -> bool:
@@ -4230,6 +4351,7 @@ class Detector:
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "edge_hist_keys": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
+                "edge_hist_angle": {g: {k: round(w, 3) for k, w in h.items() if w >= 0.01} for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -4256,6 +4378,7 @@ class Detector:
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
+        det.edge_hist_angle = {g: {k: float(w) for k, w in h.items()} for g, h in (d.get("edge_hist_angle") or {}).items()}
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
@@ -4281,6 +4404,10 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
+    # ...and each channel's own, for a meter with several - see _meter_steps. Never persisted.
+    sub_channel_rows: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict)
+    # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
+    parents: Dict[str, Optional[str]] = field(default_factory=dict)
     # switch -> {on moment: off moment, or None while on}, as the runner last
     # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
     # window with a lookback.
@@ -4358,11 +4485,16 @@ class Fleet:
             oldest = min((r[0] for r in merged), default=latest_seen)
             cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
             self.sub_rows[name] = [r for r in kept if r[0] >= cut]
+            if len(rows_by_phase) > 1:
+                chans = self.sub_channel_rows.setdefault(name, {})
+                for ch, series in rows_by_phase.items():
+                    chans[ch] = sorted(r for r in chans.get(ch, []) + list(series) if r[0] >= cut)
             q = measure_quantum([v for _, v in self.sub_rows[name]])
             if q:
                 self.sub_quantum[name] = q
         events, numbers = self._signal_events()
         self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
+        self.main.meter_steps = self._meter_steps     # the sub-meters' rows are in; see SPLIT_BY_METERS
         closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
         closed_sub = {}
         for name, samples in sub_samples.items():
@@ -4745,14 +4877,39 @@ class Fleet:
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         return pairs
 
+    def _meter_steps(self, ph: str, since: float, window: float) -> List[Tuple[str, float]]:
+        """The pieces of a house step on phase ``ph`` at ``since`` that the
+        meters below it explain - see SPLIT_BY_METERS. Each meter measured to
+        carry that phase gives its own step across ``since`` +- ``window``, less
+        what its own sub-meters stepped: Blaž PC's step counts once, and Hiša
+        adds only what else inside it changed. The pieces do not overlap."""
+        steps: Dict[str, float] = {}
+        for name, rows in self.sub_rows.items():
+            votes = self.phase_votes.get(name) or {}
+            if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
+                continue
+            chans = [c for c, h in self.phase_map(name).items() if h == ph]
+            if not chans:
+                continue
+            by_ch = self.sub_channel_rows.get(name) or {}
+            series = [by_ch[c] for c in chans if c in by_ch] if len(by_ch) > 1 else [rows]
+            d = 0.0
+            for rs in series:
+                times = [r[0] for r in rs]
+                i, j = bisect.bisect_right(times, since - window) - 1, bisect.bisect_right(times, since + window) - 1
+                if i >= 0 and j > i:
+                    d += rs[j][1] - rs[i][1]
+            steps[name] = d
+        return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
+                for name, d in steps.items()]
+
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
                      pool: Optional[List[Session]] = None) -> None:
-        """Each new single-channel session on a three-phase meter votes for
-        the house phase whose single-phase session started with it at the
-        same size - by size and moment only, never by label."""
+        """Each new single-channel session on a meter votes for the house phase
+        whose single-phase session started with it at the same size - by size
+        and moment only, never by label. A meter with no phases of its own
+        votes too: only SPLIT_BY_METERS reads its answer."""
         for name, sessions in closed_sub.items():
-            if self.agnostic.get(name, False):
-                continue
             det = self.subs.get(name)
             sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
             tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
