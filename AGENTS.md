@@ -236,6 +236,11 @@ change-driven one it is at the reading. The detector's per-phase `interval`
 (median gap) already carries the useful part of this for pairing tolerances;
 a periodic flag would add the timing-uncertainty shape only, so nothing was
 built (Anze asked whether knowing helps, 2026-09-30).
+The Shellys' 60 s beat was not the devices' limit: their outbound WebSocket
+to Home Assistant was off, so the integration only polled them once a minute.
+Enabled on all of Home's Wi-Fi Shellys 2026-09-30 (as at Kozolec before); from
+then on they push on change like the 3EMs, and history before that date keeps
+the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
