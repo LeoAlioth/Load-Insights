@@ -194,7 +194,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         sigs = " ".join(f"#{sid}:{n}x{kwh}kWh@{sh:.0%}" for sid, n, kwh, sh in sorted(g["sigs"], key=lambda x: -x[2])[:4])
         # ...and where the rest of its energy went: the signatures holding most
         # of it, whether or not the device is their majority
-        went = sorted(((row.get(name, 0.0), sid, row) for sid, row in per_sig.items() if row.get(name, 0.0) > 0), reverse=True)[:3]
+        went = sorted(((row.get(name, 0.0), sid, row) for sid, row in per_sig.items() if row.get(name, 0.0) > 0), key=lambda x: x[0], reverse=True)[:3]   # ids mix numbers and "gone N"
         went_s = " ".join(f"#{sid}:{e/1000:.2f}kWh={e/row['total']:.0%}of{row['n']}" for e, sid, row in went)
         out["devices"][name]["went"] = [(sid, round(e / 1000.0, 3), round(e / row["total"], 2), row["n"]) for e, sid, row in went]
         print(f"  {name:22s} {t/1000:9.2f} {g['in']/1000:11.2f} {g['of']/1000:9.2f} "

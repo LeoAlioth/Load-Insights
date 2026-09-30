@@ -507,6 +507,17 @@ signed change (choose +size or -size by the nearer change) - its noise flips
 small levels, 98 / 86 / 98 -> 94 / 39 / 82 %, spread 0.022 -> 0.198. The same
 pairing on the grid meter's own signed var changed nothing.
 
+**Ruled out 2026-09-30 night: a sub-meter's steps as evidence in the house's
+clustering** (SUB_KEYS - each meter's steps a "meter:<name>" input, keying
+house steps it saw at the same moment the way a thermostat's change does).
+Home purity 79.4 -> 81.0 %, wconc 55.8 -> 57.6, kiln 454 -> 462 full-size, pump
+451 -> 453 clean, the mat caught 53 -> 49 %; energy F0.5 30.4 -> 28.1 (precision
+74.2 -> 80.3, recall 9.0 -> 7.8). Kozolec energy F0.5 72.7 -> 66.7, recall 73.8
+-> 46.3: the Pond EVSE's rises and falls landed in differently keyed clusters,
+its runs stopped closing, and one run of 10.5 kW for 289 min took 50 kWh.
+Voltage-normalised sizes were measured earlier in the cluster lab: purity
+0.860 / conc 0.760 against 0.861 / 0.766 for plain size (h 0.015).
+
 ## Known shortfalls
 
 Open defects, with what is measured and what is guessed. Numbers are from the
