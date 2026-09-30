@@ -26,7 +26,9 @@ HOME = {
         "meters-and-devices": (
             [f"sensor.solaredge_se17k_m1_ac_{k}" for k in
              ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
-              "voltage_an", "voltage_bn", "voltage_cn")]
+              "voltage_an", "voltage_bn", "voltage_cn",
+              # recorded from 2026-09-30: the meter's own, signed reactive power
+              "var_a", "var_b", "var_c", "va_a", "va_b", "va_c", "pf_a", "pf_b", "pf_c")]
             + ["sensor.solaredge_se17k_i1_ac_power"]
             + [f"sensor.solaredge_se17k_i1_ac_{k}" for k in
                ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]

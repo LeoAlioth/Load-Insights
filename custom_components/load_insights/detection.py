@@ -221,6 +221,7 @@ class DetectionRunner:
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
+        self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self.sessions_today = 0
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         self._unsub = None
@@ -1038,10 +1039,21 @@ class DetectionRunner:
             return eid if eid and home is not None and self._device_of(eid) == home else None
         pf = with_power(f"pf_{phase}")
         volts, amps = with_power(f"voltage_{phase}"), with_power(f"current_{phase}")
-        if not pf and not (volts and amps):
+        var = with_power(f"var_{phase}") or self._var_on(home, phase, power)
+        if not pf and not (volts and amps) and not var:
             return None
         return {f"power_{phase}": power, f"pf_{phase}": pf,
-                f"voltage_{phase}": volts, f"current_{phase}": amps}
+                f"voltage_{phase}": volts, f"current_{phase}": amps, f"var_{phase}": var}
+
+    def _var_on(self, device: Optional[str], phase: str, reference: str) -> Optional[str]:
+        """The device's own reactive power for this phase, if it publishes one
+        - found beside the power, so a site configured before it was enabled
+        uses it without being set up again."""
+        if device is None:
+            return None
+        rows = [r for r in self._device_rows(er.async_get(self.hass), device)
+                if (r.get("device_class") or "") == "reactive_power" and match_meter_entities([r]).get(f"var_{phase}")]
+        return closest_by_name([r["entity_id"] for r in rows], reference) if rows else None
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -1072,7 +1084,7 @@ class DetectionRunner:
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,
-                f"current_{phase}": amps, f"pf_{phase}": None}
+                f"current_{phase}": amps, f"pf_{phase}": None, f"var_{phase}": self._var_on(device, phase, power)}
 
     async def _reactive_series(self, start: datetime, end: datetime,
                                targets: Dict[str, list]) -> Dict[str, Dict[float, float]]:
@@ -1102,9 +1114,13 @@ class DetectionRunner:
                 power_rows = series.get(("power", phase)) or []
                 if not carries_load(power_rows):
                     continue          # coherent, but nothing flows through it
+                signed = series.get(("var", phase))
                 var = _reactive(power_rows, series.get(("voltage", phase)),
-                                series.get(("current", phase)), series.get(("pf", phase)))
+                                series.get(("current", phase)), series.get(("pf", phase)), signed)
                 if var:
+                    covers = bool(signed) and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S
+                    self.reactive_from[phase] = (f"signed {triple.get(f'var_{phase}')}" if covers
+                                                 else f"V x I {triple.get(f'power_{phase}')}")
                     # the reference samples at its own moments; hold each
                     # value forward onto the load's
                     out[phase] = _align(sorted(var.items()), rows)
@@ -1136,7 +1152,7 @@ class DetectionRunner:
         """Every configured field of one role as (kind, phase) -> rows."""
         entities = {}
         for p in PHASES:
-            for kind in ("power", "pf", "current", "voltage"):
+            for kind in ("power", "pf", "current", "voltage", "var"):
                 eid = cfg.get(f"{kind}_{p}")
                 if eid:
                     entities[(kind, p)] = eid
@@ -1209,7 +1225,8 @@ class DetectionRunner:
                 if self._coherent_triple(cfg, p) is None:
                     continue          # different meters; not this power's VAr
                 var = _reactive(samples[p], series.get(("voltage", p)),
-                                series.get(("current", p)), series.get(("pf", p)))
+                                series.get(("current", p)), series.get(("pf", p)),
+                                series.get(("var", p)))
                 if var:
                     q[p] = var
         return samples, q
@@ -1246,13 +1263,31 @@ def _align(source: list, target_rows: list) -> Dict[float, float]:
     return out
 
 
+# How far into a window the meter's own reactive power may start and still be
+# taken for all of it: history reaches back past its first recorded day.
+SIGNED_VAR_SLACK_S = 120.0
+
+
 def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
-              pfs: Optional[list]) -> Dict[float, float]:
+              pfs: Optional[list], signed: Optional[list] = None) -> Dict[float, float]:
     """Reactive VAr at each power sample.
 
     Every entity updates at its own moment, so the other readings are taken
     as of the power sample's time - sample and hold - rather than looked up
-    at the same instant, which almost never matches."""
+    at the same instant, which almost never matches.
+
+    The meter's own reactive power, where it publishes one and it covers the
+    window, is taken as it is: signed, so a step's change is the load's own.
+    The root of (V x I) squared minus P squared has no sign, and a load whose
+    reactive power runs against the floor's reads the wrong size (Anze,
+    2026-09-30)."""
+    if signed and power_rows and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S:
+        out, si = {}, 0
+        for ts, _ in power_rows:
+            si = _as_of(signed, ts, si)
+            if si >= 0:
+                out[ts] = signed[si][1]
+        return out
     volts, amps, pfs = volts or [], amps or [], pfs or []
     out: Dict[float, float] = {}
     vi = ai = fi = 0

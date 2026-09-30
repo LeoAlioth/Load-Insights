@@ -29,6 +29,9 @@ KIND_BY_DEVICE_CLASS = {
     "power_factor": "pf",
     "current": "current",
     "voltage": "voltage",
+    # the meter's own, SIGNED: V x I gives only its size, so a capacitive load
+    # on an inductive floor reads wrong (Anze, 2026-09-30)
+    "reactive_power": "var",
 }
 
 # never a per-phase live reading
@@ -201,6 +204,7 @@ def describe_match(found: Dict[str, str]) -> str:
     for key in found:
         kind, phase = key.rsplit("_", 1)
         kinds.setdefault(kind, []).append(phase.upper())
-    label = {"power": "power", "pf": "power factor", "current": "current", "voltage": "voltage"}
+    label = {"power": "power", "pf": "power factor", "current": "current", "voltage": "voltage",
+             "var": "reactive power"}
     parts = [f"{label.get(k, k)} {'+'.join(sorted(v))}" for k, v in sorted(kinds.items())]
     return "found " + ", ".join(parts)
