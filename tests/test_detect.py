@@ -2625,3 +2625,23 @@ def test_a_slow_meters_silence_is_a_held_value():
 if __name__ == "__main__":
     run_main(globals())
 
+
+
+def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
+    """A device whose starts on A and C are linked (a kiln's legs) has a
+    signature per phase set; an A run never lands in the C one, whose power
+    would then carry an 'a' entry it was never measured on (2026-09-30)."""
+    det = D.Detector()
+    for p in "ac":
+        det.phases[p] = D.PhaseState(min_noise=10.0)
+    sig_c = D.Signature(id=1, phases="c", power={"c": 600.0}, duration_s=100.0, pf=None, count=20, first_seen=0.0, last_seen=0.0)
+    det.signatures = [sig_c]
+    det.next_id = 2
+    det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=650.0, count=30), D.EdgeCluster(id=2, phase="c", up=True, watts=600.0, count=30)]
+    det.links = {"1|2": 30.0}                       # the two starts come together: one device
+    det.start_home = {"2": {"1": 20.0}}             # the C starts went to the C signature
+    run = D.Session(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(1, None))
+    det._file(run)
+    got = det.signature_of(run)
+    assert got is not sig_c and got.phases == "a", (got.id, got.phases, got.power)
+    assert "a" not in sig_c.power
