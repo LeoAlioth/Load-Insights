@@ -251,8 +251,8 @@ pulses the grid meter itself shows in them.
 
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
-| `MATCH_POWER_REL` | 0.10 | power tolerance for a session to match a signature | ratio | 0.05–0.25 | not tested |
-| `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' measured spread that may widen merge admission | ratio | 0–0.20 (above 0.20 the anti-walk guarantee breaks) | **swept.** On the template path it recovered Home's NASA station 22 → 35; on the production path with phantoms removed it does nothing at Home (0, 0.10 and 0.15 identical) - it was compensating for phantom fragmentation. Still positive at Kozolec on held-out days (hidrofor 58 → 65), where nothing is summed. Kept |
+| `MATCH_POWER_REL` | 0.10 | power tolerance for a session to match a name's description after a reset (`_reclaim`); filing no longer matches by power | ratio | 0.05–0.25 | not tested |
+| `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' spread that may widen a name's return after a reset (`alike` now serves only that) | ratio | 0–0.20 | swept for merging, which is gone; kept for name recovery |
 | `MATCH_DURATION_FACTOR` | 3.0 | duration tolerance for a load that keeps time | ratio | 1.5–6 | not tested |
 | `MATCH_PF_TOL` | 0.15 | power-factor tolerance, now widened by both sides' `pf_mad` | ratio | 0.05–0.3 | not swept; the `pf_mad` widening replaced a hard gate and took Kozolec 86 → 30 signatures |
 | `ABSORB_WINDOW` | 100 | caps the weight of history in a signature's running means | budget | 20–500 | not tested (Anze chose 100 over 50) |
@@ -290,6 +290,9 @@ pulses the grid meter itself shows in them.
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour, for backfilling a newly named load's statistics | s | — | not a detector dial; sized to the 10-day backfill |
 | `EDGE_LAG_REACH_S` / `EDGE_LAG_BIN_S` / `EDGE_LAG_MIN` / `EDGE_WINDOW_DEFAULT_S` | 60 s / 2 s / 50 / 10 s | how far either side of an edge an input's change is looked for, the lag histogram's bins, the changes seen before a lag is believed (`lag_window`: a peak 4x the even spread), and the window before that | s | — | not swept; Home's thermostat learned (-11, 0) s from 17k edges, the mat's edges at -5.8 +- 1.7 s |
 | `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction | count | — | not swept; Home used ~400 in all |
+| `EDGE_NOISE_SHARE` / `EDGE_SCALE_REL` | **0.25** / 0.02 | one measurement error on the edge-size scale: this share of the phase's measured noise at small steps, this share of the step at large | ratio | 0.25–1 | **swept 0.25 / 0.5 / 1 (2026-09-30)**: Home 82.6/66.4 vs 80.9/61.3 vs 76.3/50.2, pump 1153 / 915 / 410, Kozolec fridges 188 / 154 / 81. A fixed 15 W ran every small fall at Kozolec into one cluster |
+| `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / `EDGE_RECUT` | 1.0 / 0.25 / 10 d / 32 | smoothing of the size histogram (in measurement errors), its bin, how fast it fades, how many steps before its valleys are cut again | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled) |
+| `PAIR_MIN_RUNS` / `ABOVE_CHANCE_ODDS` / `LINK_MIN` | 8 / 100 / 5 | a pair (and a link between starts) is accepted once it has this many runs and a Chernoff bound puts the odds of its count by chance under 1 in `ABOVE_CHANCE_ODDS` | count | — | **replaced shares of 30 % and 20 % (2026-09-30)**: mat hours outside heating 21.7 -> 11.5; odds 10, 100 and 1000 identical |
 
 ### Suggesting one device across settings
 
@@ -772,4 +775,26 @@ Don't re-chase these; each cost real time.
   score's labels use it too.
 - **Repeated `consolidate` passes do nothing** - it reaches a fixed point after
   one pass. A library that shrank over time did so from merge damage that a
-  rebuild undoes.
+  rebuild undoes. (Consolidation itself is gone since 2026-09-30: signatures
+  merge only when their runs are one device's.)
+- **Clustering the edges, tried 2026-09-30** (offline, 7,858 house steps a
+  device meter or the kiln's pulses labelled, 7-28 Sep; `V` = V-measure). As
+  deployed, nearest within +-10 %: V 0.436, device in its top cluster 0.52,
+  498 clusters. Density valleys on size in measurement errors: 0.593 / 0.82 /
+  78 - shipped. Worse: scikit-learn's Gaussian mixture with BIC (0.397 with PF,
+  0.516 size only), HDBSCAN (0.30-0.35, shatters devices), DBSCAN (0.167, merges
+  everything); splitting by the V x I power factor, in every method, even
+  weighted by each step's own PF error (the kiln's V x I factor moves with the
+  other loads' reactive power, 0.88-0.95); normalising steps to 230 V (no
+  change). scikit-learn is a candidate once the meter's signed reactive power
+  gives a second real dimension - re-test then. Do not tune the width on V:
+  unlabelled loads merge unseen, so wider always "wins".
+- **Step P / (V x step I) as a factor** is steady only where the step dominates
+  the phase's current (the kiln at night: 0.926, middle half 0.910-0.960); the
+  pump reads 1.09 and a resistive boiler 1.25, because current magnitudes do
+  not add. The meter's signed reactive power (Home, from 2026-09-30) is exact.
+- **All-phase events measured from raw readings, as first tried** (every
+  phase's shift over 20 s before and 6-24 s after any trigger): V 0.379 against
+  0.466 joining per-phase steps within 3 s at a balance of 1:2, and 0.489
+  per-phase - the wide windows took in other loads' changes. Measure the size
+  over +-2 readings and widen only while no other phase triggers (Anze).

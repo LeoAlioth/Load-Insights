@@ -147,7 +147,10 @@ STORAGE_VERSION = 1
 #     connection's phases from the data, and a one-device meter decides which
 #     signature a matched session joins - so which sessions share a signature,
 #     and where signatures are placed, both change.
-DETECTOR_GENERATION = 14
+# 15 = edges are clustered by where their sizes pile up, pairs and links are
+#     accepted above chance, and runs are filed by device rather than by how
+#     alike their power looks: every cluster, pair and signature differs.
+DETECTOR_GENERATION = 15
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
