@@ -315,7 +315,8 @@ def _replay(folder: str, site: str | None):
     # the house roles pinned to what production reads, never guessed: with the
     # 3EMs' power factors in the history the guess took Hiša's power for the
     # house's (2026-09-30). HOUSE= modes pin their own built series.
-    pins = PINNED or ([f"power_{p}={e}" for p, e in lab.SITES[site]["main"].items()] if site else [])
+    which = site or next((n for n in lab.SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
+    pins = PINNED or ([f"power_{p}={e}" for p, e in lab.SITES[which]["main"].items()] if which else [])
     for pin in pins:
         argv += ["--role", pin]
     for eid in SWITCHES:
