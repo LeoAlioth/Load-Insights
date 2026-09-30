@@ -1148,13 +1148,12 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
     apart (2026-09-30)."""
     def lib():
         det = D.Detector()
-        det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=600.0), D.EdgeCluster(id=2, phase="a", up=True, watts=610.0)]
-        det.links = {"1|2": 50.0}                        # two starts of one device
+        det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=600.0)]        # one start cluster: one device
         a = D.Signature(id=10, phases="a", power={"a": 600.0}, duration_s=300.0, pf=None, count=5, first_seen=T0, last_seen=T0)
         b = D.Signature(id=11, phases="a", power={"a": 610.0}, duration_s=300.0, pf=None, count=3, first_seen=T0, last_seen=T0)
         a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
         det.signatures = [a, b]
-        det.start_home = {"1": {10: 5.0}, "2": {11: 3.0}}
+        det.start_home = {"1": {10: 5.0, 11: 3.0}}          # its runs went to two signatures
         return det, a, b
     det, a, b = lib()
     b.name = "Oven"
@@ -2638,9 +2637,8 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
     det.signatures = [sig_c]
     det.next_id = 2
     det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=650.0, count=30), D.EdgeCluster(id=2, phase="c", up=True, watts=600.0, count=30)]
-    det.links = {"1|2": 30.0}                       # the two starts come together: one device
     det.start_home = {"2": {"1": 20.0}}             # the C starts went to the C signature
-    run = D.Session(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(1, None))
+    run = D.Session(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(2, None))   # a run of that start on A alone
     det._file(run)
     got = det.signature_of(run)
     assert got is not sig_c and got.phases == "a", (got.id, got.phases, got.power)
