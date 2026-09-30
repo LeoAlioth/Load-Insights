@@ -122,6 +122,23 @@ def _above(rows: list, times: list, a: float, b: float, floor: float) -> float:
     return wh / 3600.0
 
 
+def _held_at(rows: list, times: list, t: float) -> float:
+    import bisect
+    i = bisect.bisect_right(times, t) - 1
+    return rows[i][1] if i >= 0 else 0.0
+
+
+def _started_with(rows: list, times: list, s) -> bool:
+    """Did the device's meter switch on with the run - rise, from just before
+    its start to a minute after, by at least half of what the run started at?
+    Only then is the run the device's. Energy drawn DURING it is not enough:
+    that credits every long run a device merely ran beside, and each of the
+    overlapping ones again - Susilna scored 86 kWh right of 63 (2026-10-01)."""
+    first = sum(rows_[0][1] for rows_ in s.levels.values() if rows_)
+    rise = _held_at(rows, times, s.start + 60.0) - _held_at(rows, times, s.start - 10.0)
+    return first > 0 and rise >= 0.5 * first
+
+
 def _overlap(ivs: list, a: float, b: float) -> float:
     return sum(max(0.0, min(b, y) - max(a, x)) for x, y in ivs)
 
@@ -160,6 +177,8 @@ def energy(site: str, folder: str, dials: list) -> dict:
         row["total"] += s.energy_wh
         row["n"] += 1
         for name, rows in devices.items():
+            if not _started_with(rows, times[name], s):
+                continue
             got_wh = _above(rows, times[name], s.start, s.end, floors[name])
             if got_wh > 0:
                 row[name] = row.get(name, 0.0) + min(got_wh, s.energy_wh)
@@ -226,6 +245,11 @@ def check() -> None:
     assert round(_above(rows, t, 0, 300, 5.0), 2) == 83.33          # 3 kW above a 5 W floor for 100 s
     assert round(_above(rows, t, 120, 140, 5.0), 2) == 16.67        # ...of which 20 s
     assert _above(rows, t, 250, 300, 5.0) == 0.0                     # idle: nothing
+    class S:                                                          # a run of 3 kW from 100 s
+        start, levels = 100.0, {"a": [(100.0, 3000.0)]}
+    assert _started_with(rows, t, S)
+    S.start = 150.0                                                   # a run beside it, started later
+    assert not _started_with(rows, t, S)
     print("ok")
 
 
