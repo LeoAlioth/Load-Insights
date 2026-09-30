@@ -2608,6 +2608,28 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
 
 
 
+def test_steps_join_the_cluster_their_size_piles_up_in():
+    """Two loads 7 % apart - a valley between their piles - are two clusters;
+    one load wandering +-3 % is one, however its steps arrive (2026-09-30)."""
+    rnd = random.Random(3)
+    det = D.Detector()
+    got = {}
+    t = T0
+    for k in range(400):
+        w = rnd.choice([600.0, 645.0]) * (1 + rnd.gauss(0, 0.006))
+        got.setdefault(round(w / 645.0), set()).add(det.classify("a", t, w, None, 0.0))
+        t += 60.0
+    wander = {det.classify("a", t + 60.0 * k, 2000.0 * (1 + rnd.uniform(-0.03, 0.03)), None, 0.0) for k in range(200)}
+    main = lambda ids: max(ids, key=lambda i: next(c.count for c in det.edges if c.id == i))  # noqa: E731
+    assert main(got[1]) != main(got[round(600 / 645)]) or len(got) == 1, got
+    six, forty = [c for c in det.edges if abs(c.watts - 600) < 15], [c for c in det.edges if abs(c.watts - 645) < 15]
+    assert six and forty and max(six, key=lambda c: c.count).count > 150 and max(forty, key=lambda c: c.count).count > 150, \
+        [(round(c.watts), c.count) for c in det.edges]
+    big = max((c for c in det.edges if c.id in wander), key=lambda c: c.count)
+    assert big.count >= 190, [(round(c.watts), c.count) for c in det.edges if c.id in wander]
+    assert D.valley_segments({}) == []
+
+
 def test_a_live_meter_carries_load_in_a_one_minute_pass():
     """Home's phase A reports every 4.3 s, so a live pass holds about 14 of its
     readings; a dead port reads zero however many there are (2026-09-30)."""
