@@ -207,6 +207,20 @@ pulses the grid meter itself shows in them.
 
 ### Reading the meter
 
+**Periodic or change-driven?** Read off each sensor's own history (the gaps
+between recorded rows, the recorder skipping unchanged values; script in the
+2026-09-30 session, `sensor_kinds.py`): Home's Shellys report on a fixed beat
+(Susilna and the server UPS 60 s, the hidrofor 10 s, the EVBox 10 s), the 3EMs
+every 5-16 s on change, the SolarEdge house reading is a template that moves
+whenever either input does (median 1.9 s), the workshop boiler every 146 s;
+Kozolec's Multiplus 5.2 s (62 % at the beat), the bug lamp and pastir 10 s,
+the pond EVSE 10 s, the Shellys 60 s. What it buys: on a periodic sensor a
+step's true moment is anywhere in the beat before the reading; on a
+change-driven one it is at the reading. The detector's per-phase `interval`
+(median gap) already carries the useful part of this for pairing tolerances;
+a periodic flag would add the timing-uncertainty shape only, so nothing was
+built (Anze asked whether knowing helps, 2026-09-30).
+
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
 | `QUANTUM_MIN_SAMPLES` | 40 | changes to see before a resolution is believed | budget | 20–200 | estimator checked on real sensors (1 W, 0.01 A, 0.1 A found correctly); not swept |
@@ -697,6 +711,31 @@ Don't re-chase these; each cost real time.
   test, so the mat loses its keyed cluster and lands in the blob; and a
   variable load IS a continuum. The blob is not the cluster's width: it is one
   device chained from many rise clusters (see the energy bench).
+- **Devices without chaining** (2026-09-30): two rise clusters one device only
+  when their links are at least half of BOTH clusters' steps, instead of "more
+  often than chance". It does what it says - the chance test had chained 32
+  clusters (194-598 W, all three phases, 11,228 runs) and 46 more (730-2,192 W)
+  into two devices at Home; the share rule left single-cluster devices plus
+  the kiln's two legs (0.2, 0.3 and 0.5 alike). And the bench got worse:
+  Home 86.2 / 86.0 -> 79.8 / 59.7 %, the mat 53.8 h caught 57 % -> 32.1 h
+  caught 34 %, pump clean 1157 -> 1084, the hidrofor's signature 66 % -> 47 %
+  pump by energy; Kozolec unchanged. The blob those chains make is where the
+  coincidental and mis-paired runs collect, and while it holds them the named
+  loads stay clean; dissolve it and they land in the load whose start size
+  they share. Fix the runs (pairing), not the device rule. `dbg_devices.py`.
+- **The kiln-leg ideas** (branch `kiln-legs`, 2026-09-30, redone on the
+  density / device base): LEARNED_SETTLE (a run settles by what its pairs
+  learned it drops, pairs learning against the start step) and
+  LEGS_STOP_TOGETHER (a smaller drop while the partner legs stopped whole
+  closes the leg; 1 opens a run for the rest, 2 does not). Against 86.2 / 86.0,
+  mat 53.8 h / 2.4 h outside heating / caught 57 %, kiln 861 / 176, pump 1157:
+  settle alone 80.8 / 74.3, mat 201.7 / 127.3 h, kiln 863 / 156, pump 1103;
+  legs 1 alone 70.6 / 71.3, mat 230.7 / 143.5 h, kiln 866 / 167; both (1, 1)
+  75.0 / 63.7, mat 32.0 / 1.2 h caught 34 %, kiln 864 / 138, pump 1093;
+  (0, 2) 73.8 / 66.0, mat 32.4 / 1.2 h, kiln 874 / 151; (1, 2) 82.0 / 70.7,
+  mat 218.5 / 134.2 h, kiln 863 / 142. Thirty-odd single-leg pulses of 709
+  against 4-15 points of purity and 60-70 clean pump runs: dropped, branch
+  deleted.
 - **Apparent power (V x I) as a fingerprint.** The step in |S| depends on the
   baseline's reactive and active power - a 1 kW load at PF 0.9 moves |S| by
   0.80-1.09 kVA depending on what else runs - and an inductive load can cancel
