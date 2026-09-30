@@ -105,6 +105,7 @@ STAGES: list = []                      # STAGE=entity dials, fed as --stage
 PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
+NO_Q = False                           # NOQ=1: the replay ignores reactive power (--no-q)
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
@@ -250,6 +251,10 @@ def _apply(dials) -> str:
             global SLICE_HOURS
             SLICE_HOURS = float(v)
             continue
+        if k == "NOQ":
+            global NO_Q
+            NO_Q = bool(float(v))
+            continue
         if k == "HOUSE":
             _house_as(v)
             continue
@@ -305,6 +310,8 @@ def _replay(folder: str, site: str | None):
 
     D.Detector._file, D.Fleet.process = spy_file, spy_proc
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
+    if NO_Q:
+        argv.append("--no-q")
     for pin in PINNED:
         argv += ["--role", pin]
     for eid in SWITCHES:
