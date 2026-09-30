@@ -1148,47 +1148,29 @@ def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
         [round(sum(s.power_by_phase().values())) for s in closed]
 
 
-def test_signatures_that_have_become_alike_are_merged():
-    """Power and duration are running MEANS, so two signatures indistinguish-
-    able today need not have been when the second was created. Kozolec had
-    one 1.8 kW load split five ways - 230, 136, 50, 27 and 18 sightings, all
-    within 4 % of each other."""
-    det = D.Detector()
-    h1 = [0] * 24; h1[7] = 5
-    h2 = [0] * 24; h2[8] = 3
-    det.signatures = [
-        _sig(1, 1784.0, 69.0, 0.97, 230, h1, {"Hiša": 100}),
-        _sig(37, 1824.0, 89.0, 0.96, 136, h2, {"Hiša": 36}),
-        _sig(70, 1858.0, 78.0, 0.93, 50),
-        _sig(99, 900.0, 70.0, 0.97, 40),          # half the size: a different load
-    ]
-    det.recent = [{"start": 0.0, "end": 1.0, "phases": "a", "kwh": 0.1, "max_w": 1800,
-                   "levels": 1, "signature": 37}]
-    gone = det.consolidate(100.0)
-    assert gone == 2, [(x.id, x.count) for x in det.signatures]
-    kept = max(det.signatures, key=lambda x: x.count)
-    assert kept.id == 1 and kept.count == 416, (kept.id, kept.count)
-    assert 1790 < kept.power["a"] < 1815, kept.power
-    assert kept.hour_wh[7] == 5 and kept.hour_wh[8] == 3, kept.hour_wh
-    assert kept.locations == {"Hiša": 136}, kept.locations
-    assert det.recent[0]["signature"] == 1, det.recent        # sessions follow
-    assert {x.id for x in det.signatures} == {1, 99}
-
-
-def test_loads_named_differently_are_never_merged():
-    det = D.Detector()
-    det.signatures = [_sig(1, 1800.0, 70.0, 0.97, 10, name="Kettle"),
-                      _sig(2, 1810.0, 72.0, 0.97, 8, name="Toaster")]
-    assert det.consolidate(100.0) == 0
-    assert len(det.signatures) == 2
-
-
-def test_an_unnamed_twin_joins_the_named_one_and_keeps_the_name():
-    det = D.Detector()
-    det.signatures = [_sig(1, 1800.0, 70.0, 0.97, 10, name="Kettle"),
-                      _sig(2, 1810.0, 72.0, 0.97, 8)]
-    assert det.consolidate(100.0) == 1
-    assert det.signatures[0].name == "Kettle" and det.signatures[0].count == 18
+def test_one_devices_signatures_are_one_and_a_name_survives():
+    """Filed by device, the signatures a device's runs went to are merged:
+    the named one survives with the other's energy, two named apart stay
+    apart (2026-09-30)."""
+    def lib():
+        det = D.Detector()
+        det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=600.0), D.EdgeCluster(id=2, phase="a", up=True, watts=610.0)]
+        det.links = {"1|2": 50.0}                        # two starts of one device
+        a = D.Signature(id=10, phases="a", power={"a": 600.0}, duration_s=300.0, pf=None, count=5, first_seen=T0, last_seen=T0)
+        b = D.Signature(id=11, phases="a", power={"a": 610.0}, duration_s=300.0, pf=None, count=3, first_seen=T0, last_seen=T0)
+        a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
+        det.signatures = [a, b]
+        det.start_home = {"1": {10: 5.0}, "2": {11: 3.0}}
+        return det, a, b
+    det, a, b = lib()
+    b.name = "Oven"
+    assert det._merge_devices() == 1
+    (kept,) = det.signatures
+    assert kept.name == "Oven" and kept.hourly == {1000: 150.0, 4600: 20.0}, (kept.name, kept.hourly)
+    assert det._moved == {10: 11}
+    det, a, b = lib()
+    a.name, b.name = "Oven", "Kettle"
+    assert det._merge_devices() == 0 and len(det.signatures) == 2
 
 
 def test_the_day_is_drawn_as_a_block_chart():
@@ -1222,17 +1204,6 @@ def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
     assert lines[-1].strip().startswith("Mo"), lines[-1]
     assert len(lines) == 5, lines                                 # 3 rows, axis, labels
     assert D.day_histogram([0.0] * 7) == []
-
-
-def test_merging_two_signatures_adds_their_weeks_together():
-    det = D.Detector()
-    a = _sig(1, 1800.0, 70.0, 0.97, 10)
-    b = _sig(2, 1810.0, 72.0, 0.97, 8)
-    a.day_wh = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 4.0]
-    b.day_wh = [0.0, 1.0, 0.0, 0.0, 5.0, 0.0, 2.0]
-    det.signatures = [a, b]
-    assert det.consolidate(100.0) == 1
-    assert det.signatures[0].day_wh == [1.0, 3.0, 3.0, 0.0, 5.0, 0.0, 6.0], det.signatures[0].day_wh
 
 
 def test_the_wiring_follows_from_the_same_reading():
@@ -1453,10 +1424,11 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
     assert moved.phases == "ac" and set(moved.levels) == {"c", "a"}
 
 
-def test_a_sub_meter_decides_which_signature_a_session_joins_when_it_fits():
-    """A detection on a sub-meter overrides the house's: the preferred
-    signature wins whenever it fits at all, and is ignored when it does not
-    (Anze, 2026-09-22)."""
+def test_a_sub_meter_decides_which_signature_a_session_joins():
+    """A detection on a sub-meter overrides the house's: the device's own meter
+    saw it run, so its signature takes the run whatever the house's power
+    reading of it looks like (Anze, 2026-09-22; trusted whether or not it
+    fits since 2026-09-30: Home 79.8 / 76.0 -> 86.0 / 85.4 %)."""
     det = D.Detector()
     for p in "a":
         det.phases[p].noise = 10.0
@@ -1472,7 +1444,7 @@ def test_a_sub_meter_decides_which_signature_a_session_joins_when_it_fits():
     assert s.signature_id == 2, "the sub-meter's choice, although 1 fits a little better"
     t = D.Session(phases="a", start=200.0, end=260.0, levels={"a": [(200.0, 1000.0)]})
     det._file(t, prefer=3)
-    assert t.signature_id != 3, "a preference that does not fit is ignored"
+    assert t.signature_id == 3, "taken even where the house read it differently"
 
 
 def test_a_session_waits_only_for_meters_that_could_have_seen_it():
@@ -1590,25 +1562,6 @@ def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
     # and the guard still bites when the pool really would be stretched
     stretched = leg(5, 330.0, 100, "abc", mad=120.0)
     assert not stretched.alike(leg(6, 260.0, 10, "abc"), 115.0)
-
-
-def test_consolidation_re_asks_as_the_mean_moves():
-    """The merge list is chosen against the signature as it stands BEFORE any
-    of them go in. Swallowing them all without re-asking carried it somewhere
-    the later entries would never have been admitted to: a ladder from 400 W
-    to 25 W collapsed into one signature calling itself 94 W."""
-    det = D.Detector()
-    det.tz_offset_s = 0.0
-    for i, w in enumerate([400.0, 330.0, 260.0, 200.0, 150.0, 110.0, 80.0, 55.0, 35.0, 25.0]):
-        det.signatures.append(_plain(i, w, 10))
-    det.consolidate(115.0)
-    got = sorted(round(sum(s.power.values())) for s in det.signatures)
-    # whatever it merges, nothing may end up claiming a power that none of
-    # its constituents was anywhere near
-    for sig in det.signatures:
-        watts = sum(sig.power.values())
-        assert sig.power_mad <= max(0.10 * watts, 115.0), (got, watts, sig.power_mad)
-    assert len(det.signatures) >= 2, got
 
 
 def _session(start, watts, dur, phase="a"):

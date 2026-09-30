@@ -475,18 +475,9 @@ def main() -> int:
         t = e
     detector = fleet.main
     # The detector's OWN measured noise, which is what production passes.
-    # This said 100.0 from when MIN_NOISE_W was 100, and left the harness
-    # misrepresenting the thing it exists to preview: at Kozolec, where the
-    # floor is now 10 W, it merged a 20 W load into a 221 W one and folded
-    # seventy signatures into thirty-five - taking the Hidrofor's clean
-    # 162 / 188 / 221 W cycles with it (Anze, 2026-09-19).
-    noise = max((st.noise for st in detector.phases.values() if st.noise),
-                default=D.MIN_NOISE_W)
-    merged = detector.consolidate(noise)
-
     print()
     print(f"{len(detector.signatures)} signatures from "
-          f"{sum(s.count for s in detector.signatures)} sessions, {merged} merged on the way")
+          f"{sum(s.count for s in detector.signatures)} sessions")
     for phase, state in detector.phases.items():
         if state.baseline is not None:
             print(f"   phase {phase.upper()}: idle {state.baseline:.0f} W, "

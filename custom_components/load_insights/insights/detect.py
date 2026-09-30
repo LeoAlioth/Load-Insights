@@ -276,8 +276,8 @@ EDGE_LIBRARY = 150             # clusters kept per phase and direction
 # 0.593 and each device's share in its biggest cluster 0.52 -> 0.82, with 78
 # clusters instead of 498; scikit-learn's Gaussian mixtures, HDBSCAN and DBSCAN
 # all did worse, and splitting by the V x I power factor hurt every method
-# (2026-09-30). Exploration dial: 0 is the old nearest-within-tolerance.
-EDGE_BATCH = 1
+# (2026-09-30). It replaced joining the nearest cluster within +-10 %.
+# ^ EDGE_BATCH: the name this note goes by elsewhere
 # One measurement error at small steps is EDGE_NOISE_SHARE of the phase's
 # measured noise, fixed per group when it starts: a fixed 15 W suited Home
 # (whose phases' noise is 10, 35 and 114 W) and ran every small fall at quiet
@@ -317,9 +317,10 @@ ABOVE_CHANCE_ODDS = 100.0
 # one that undid what the edges knew (Anze, 2026-09-30: "is this old layer even
 # necessary still? ... this will clean up a lot of redundant code"). A
 # sub-meter's word, the switch gate and a rare input value still decide first.
-# Exploration dial: 0 is filing by likeness.
-DEVICE_FILING = 1
-DEVICE_RISES = 1               # devices are joined through starts only - see devices()
+# Against filing by likeness: Home 82.6 / 64.6 -> 82.4 / 68.7 % with 98
+# signatures for 199, the floor mat's hours outside its thermostat's heating
+# 10.3 -> 2.7 (precision 95 %, caught 58 %), Kozolec 98.5 / 93.1 (2026-09-30).
+# ^ DEVICE_FILING: the name this note goes by elsewhere
 # C - pairing by them: a fall first closes an open run its cluster's accepted
 # pair starts with, at the learned size, whatever plain sizes say; only a fall
 # with no pair model falls back on sizes. And the old guess that a drop fitting
@@ -3011,17 +3012,6 @@ class EdgeCluster:
         learned after this cluster was made counts as having done nothing."""
         return all(k == self.keys.get(n, "") for n, k in kinds.items())
 
-    def fits(self, watts: float, pf: Optional[float], pf_mad: float, noise_w: float) -> Optional[float]:
-        """How far off a step of this size and factor is, as a share of the
-        tolerance - None when it is another kind of step."""
-        tol = power_tolerance(max(MATCH_POWER_REL * max(self.watts, watts), noise_w), self.watts_mad)
-        gap = abs(self.watts - watts)
-        if gap > tol:
-            return None
-        if self.pf is not None and pf is not None and abs(self.pf - pf) > pf_tolerance(self.pf_mad, pf_mad):
-            return None
-        return gap / tol
-
     def absorb(self, ts: float, watts: float, pf: Optional[float], surge: float,
                kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float]) -> None:
         n = min(self.count, ABSORB_WINDOW)
@@ -3207,12 +3197,9 @@ class Detector:
     held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
     signatures: List[Signature] = field(default_factory=list)
     recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
-    # ids that consolidation has retired, so a session filed before a merge
-    # still resolves to the signature that swallowed it
+    # ids a merge has retired, so a session filed before it still resolves to
+    # the signature that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
-    # signature id -> the widest noise it has been asked against every other
-    # at since it last changed - see consolidate. Emptied every pass.
-    _asked_at: Dict[int, float] = field(default_factory=dict, repr=False, compare=False)
     # Names whose signature is gone - after a reset, or after an upgrade that
     # could not read the old library. They hold enough of a description to be
     # recognised again, and are handed back to the first signature that looks
@@ -3244,7 +3231,6 @@ class Detector:
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
     pairs: Dict[str, List[float]] = field(default_factory=dict)
-    pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict)
     # "a|b" cluster ids (a < b) -> how often they came together - see LINK_MIN
     links: Dict[str, float] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
@@ -3283,7 +3269,6 @@ class Detector:
         derived from it. Returns the sessions this batch closed."""
         closed: List[Session] = []
         latest = now_ts or 0.0
-        self._asked_at = {}
         # ALL phases in time order, not one phase after another. Each phase's
         # state is its own, so the order changes nothing by itself - but it
         # means that when one leg of a load is judged, the other legs' state is
@@ -3323,8 +3308,7 @@ class Detector:
                     gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
                     self.edges = [c for c in self.edges if c.id not in gone]
                     self._kinds = None
-        if DEVICE_FILING:
-            self._merge_devices()
+        self._merge_devices()
         out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
         # library for every named load, and nothing about it changes
@@ -3481,27 +3465,12 @@ class Detector:
         the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
         noise = max(self.phases[p].noise for p in s.phases) if s.phases else MIN_NOISE_W
-        best, best_score = None, 0.0
+        best = None
         device = self.device_of(s)
-        start = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
-                      if pair and pair[0] is not None), None)
-        if DEVICE_FILING and device is None and start is not None:
-            device = start                             # a cluster linked to nothing is a device of its own
-        by_device = DEVICE_FILING and prefer is None and device is not None
-        if prefer is None and device is not None:
-            if self._device_home is None:
-                devs, self._device_home = self.devices(), {}
-                source = ({f"{k}>": v for k, v in self.start_home.items()} if DEVICE_FILING else self.pair_home)
-                for k, home in source.items():
-                    a = int(k.split(">")[0])
-                    d = devs.get(a, a if DEVICE_FILING else None)
-                    if d is not None:
-                        pooled = self._device_home.setdefault(d, {})
-                        for sid, n in home.items():
-                            pooled[sid] = pooled.get(sid, 0.0) + n
-            home = self._device_home.get(device)
-            if home and not by_device:
-                prefer = max(home, key=home.get)      # the device IS its clusters
+        if device is None:
+            # a start linked to nothing is a device of its own
+            device = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
+                           if pair and pair[0] is not None), None)
         if prefer is not None:
             seen = set()
             while prefer in self._moved and prefer not in seen:
@@ -3509,32 +3478,17 @@ class Detector:
                 prefer = self._moved[prefer]
         found = self._input_context(s)
         context, episode = found if found else (None, None)
-        if by_device:
-            # the device's signature for this input value, whatever its runs' powers
-            home = self._device_home.get(device) or {}
-            cands = []
-            for sid, n in home.items():
-                seen = set()
-                while sid in self._moved and sid not in seen:
-                    seen.add(sid)
-                    sid = self._moved[sid]
-                sig = self._sig(sid)
-                if sig is not None and sig.id not in avoid and sig.files_in(context):
-                    cands.append((n, sig.id, sig))
-            best = max(cands)[2] if cands else None
         if prefer is not None:
-            want = next((x for x in self.signatures if x.id == prefer and x.id not in avoid), None)
-            if (want is not None and want.matches(s, noise) is not None
-                    and want.files_in(context)):
+            # a sub-meter's word
+            # taken whether or not the run's power looks like it: the device's
+            # own meter saw it run. Asking it to look alike too sent the rest
+            # elsewhere - Home 79.8 / 76.0 % that way, 86.0 / 85.4 trusted,
+            # Kozolec 98.3 / 94.1 and 99.8 / 98.9 (2026-09-30)
+            want = self._sig(prefer)
+            if want is not None and want.id not in avoid and want.files_in(context):
                 best = want
-        for sig in ([] if best is not None or by_device else self.signatures):
-            if not sig.files_in(context):
-                continue
-            if sig.id in avoid:
-                continue
-            sc = sig.matches(s, noise)
-            if sc is not None and sc > best_score:
-                best, best_score = sig, sc
+        if best is None and device is not None:
+            best = self._device_signature(device, context, avoid)
         if best is None:
             best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
                              pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count),
@@ -3570,29 +3524,20 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
-        if DEVICE_FILING:
-            devs = self.devices()
-            for pair in ([s.pair] if s.pair else []) + list(s.legs):
-                if pair and pair[0] is not None:
-                    row = self.start_home.setdefault(str(pair[0]), {})
-                    row[best.id] = row.get(best.id, 0.0) + 1.0
-                    if self._device_home is not None:
-                        pooled = self._device_home.setdefault(devs.get(pair[0], pair[0]), {})
-                        pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
+        devs = self.devices()
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
-            if pair and None not in pair:
-                home = self.pair_home.setdefault(f"{pair[0]}>{pair[1]}", {})
-                home[best.id] = home.get(best.id, 0.0) + 1.0
+            if pair and pair[0] is not None:
+                row = self.start_home.setdefault(str(pair[0]), {})
+                row[best.id] = row.get(best.id, 0.0) + 1.0
+                if self._device_home is not None:
+                    pooled = self._device_home.setdefault(devs.get(pair[0], pair[0]), {})
+                    pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
-        if DEVICE_FILING:
-            self._judge_born()
-        else:
-            self.consolidate(noise, changed=[best])
+        self._judge_born()
         if self.orphan_names:
-            # after consolidate, so a name lands on the signature that survived
-            # the merge rather than on one about to be swallowed
+            # a name lands on a signature as it stands after this filing
             for sig in self.signatures:
                 self._reclaim(sig, noise)
         self._prune(s.end)
@@ -3658,22 +3603,14 @@ class Detector:
             i = bisect.bisect_right(rows, (since, math.inf)) - 1
             if i >= 0:
                 values[name] = rows[i][1]
-        noise = self.phases[ph].noise if ph in self.phases else MIN_NOISE_W
         keyed = {n: kinds.get(n, "") for n in self._learned}
         if self._kinds is None:
             self._kinds = {}
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
-        if EDGE_BATCH:
-            cluster = self._by_density(ph, watts > 0, since, size, keyed, kind)
-            scored = [(0.0, cluster)] if cluster is not None else []
-        else:
-            scored = [(c.fits(size, pf, 0.0, noise), c) for c in kind if c.same_signals(keyed)]
-            scored = [(g, c) for g, c in scored if g is not None]
-        if scored:
-            cluster = min(scored, key=lambda x: x[0])[1]
-        else:
+        cluster = self._by_density(ph, watts > 0, since, size, keyed, kind)
+        if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keyed)
             self.next_edge_id += 1
             self.edges.append(cluster)
@@ -3746,7 +3683,7 @@ class Detector:
             for a, b, n in rows:
                 if n < LINK_MIN:
                     continue
-                if DEVICE_RISES and not (a in rises and b in rises):
+                if not (a in rises and b in rises):
                     # a stop size is shared by every load that stops at it:
                     # joining through it made Home's mat one device with every
                     # 600 W load on C (2026-09-30). Starts belong together when
@@ -3759,6 +3696,28 @@ class Detector:
                         root[max(ra, rb)] = min(ra, rb)
             self._devices = {c: find(c) for c in total}
         return self._devices
+
+    def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int]) -> Optional["Signature"]:
+        """The signature most of this device's runs went to, of those that take
+        runs in ``context`` and are not ``avoid``ed, whatever its runs' powers
+        - None for a device not seen yet. See DEVICE_FILING."""
+        if self._device_home is None:
+            devs, self._device_home = self.devices(), {}
+            for k, home in self.start_home.items():
+                a = int(k)
+                pooled = self._device_home.setdefault(devs.get(a, a), {})
+                for sid, n in home.items():
+                    pooled[sid] = pooled.get(sid, 0.0) + n
+        cands = []
+        for sid, n in (self._device_home.get(device) or {}).items():
+            seen = set()
+            while sid in self._moved and sid not in seen:
+                seen.add(sid)
+                sid = self._moved[sid]
+            sig = self._sig(sid)
+            if sig is not None and sig.id not in avoid and sig.files_in(context):
+                cands.append((n, sig.id, sig))
+        return max(cands)[2] if cands else None
 
     def _sig(self, sid: int) -> Optional["Signature"]:
         if self._by_sig is None or sid not in self._by_sig:
@@ -3924,81 +3883,6 @@ class Detector:
                 out.setdefault(b, {})[a] = (math.exp(m_lr), math.exp(m_lr) * sd_lr, m_ld, sd_ld)
             self._partners = out
         return self._partners.get(stop, {})
-
-    def consolidate(self, noise_w: float = MIN_NOISE_W, changed: Optional[List["Signature"]] = None) -> int:
-        """Merge signatures that have BECOME alike, and say how many went.
-
-        Power and duration are running MEANS, so two signatures that are now
-        indistinguishable need not have been when the second was created.
-        Kozolec had one 1.8 kW load split five ways - 230, 136, 50, 27 and 18
-        sightings, all within 4 % of each other - because the first one's
-        mean duration was different at the moment the second arrived. Filing
-        only ever looks at the signatures as they stand, and nothing came
-        back to them afterwards; this does, by the same rule.
-
-        ``changed``: the signatures that can have become alike to another
-        since the last call - the one a run was just filed into. Asking every
-        pair after every run was three quarters of a backfill: 382 million
-        calls to alike over Home's ten days. A pair that was not alike stays
-        so until one side changes - except that ``noise_w`` is the noise of
-        the phase the run was on, every pair is judged by it, and a wider one
-        admits more. So a pair is asked again only when one side has changed
-        since it was last asked against every other at this noise or wider;
-        that merges exactly what asking them all did, which the benches were
-        set with. Every pass starts by asking all (names and noise move
-        between passes); None asks all now.
-        """
-        judged = self._judge_born()
-        if changed is None:
-            self._asked_at = {}
-        for x in list(changed or ()) + judged:
-            self._asked_at.pop(x.id, None)
-        hot = {x.id for x in self.signatures if self._asked_at.get(x.id, -math.inf) < noise_w}
-        gone = 0
-        again = True
-        while again:
-            again = False
-            self.signatures.sort(key=lambda x: -x.count)
-            later = [j for j, x in enumerate(self.signatures) if x.id in hot]
-            for i, keep in enumerate(self.signatures):
-                if keep.id in hot:
-                    ask = range(i + 1, len(self.signatures))
-                else:
-                    ask = [j for j in later if j > i]
-                doomed = [j for j in ask if keep.alike(self.signatures[j], noise_w)]
-                if not doomed:
-                    continue
-                moved = {}
-                # Re-ask on every one. ``doomed`` was judged against ``keep``
-                # as it stood BEFORE any of them went in, and each swallow
-                # moves its mean - so a list gathered in one breath could
-                # carry it somewhere none of the later entries would have
-                # been admitted to. Reverse order keeps the lower indices
-                # valid as they are popped, and one that no longer fits is
-                # simply left where it is (2026-09-21).
-                for j in reversed(doomed):
-                    if not keep.alike(self.signatures[j], noise_w):
-                        continue
-                    other = self.signatures.pop(j)
-                    moved[other.id] = keep.id
-                    keep.swallow(other)
-                    gone += 1
-                    hot.add(keep.id)                 # it moved: its pairs are open again
-                if not moved:
-                    continue
-                for r in self.recent:            # the sessions still point at them
-                    if r.get("signature") in moved:
-                        r["signature"] = moved[r["signature"]]
-                for s in self.held:
-                    if s.signature_id in moved:
-                        s.signature_id = moved[s.signature_id]
-                self._moved.update(moved)
-                again = True
-                break
-        for x in self.signatures:
-            if x.id in hot:
-                self._asked_at[x.id] = noise_w       # asked against every other, at this noise
-        return gone
 
     def _link_successors(self, now: float) -> None:
         """Point a named signature that has gone quiet at what may have
@@ -4270,7 +4154,6 @@ class Detector:
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
-                "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
                 "links": {k: _trim(v, 2) for k, v in self.links.items()}}
 
     @classmethod
@@ -4296,7 +4179,6 @@ class Detector:
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
-        det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         det.links = {k: float(v) for k, v in (d.get("links") or {}).items()}
         return det
 
