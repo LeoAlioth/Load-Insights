@@ -812,6 +812,14 @@ Don't re-chase these; each cost real time.
   coincidental and mis-paired runs collect, and while it holds them the named
   loads stay clean; dissolve it and they land in the load whose start size
   they share. Fix the runs (pairing), not the device rule. `dbg_devices.py`.
+  Re-run on the ten days with runs filed on their own phases (0.3 and 0.5
+  identical): Home purity 75.5 -> 81.5, wconc 58.6 -> 57.0, pump 443 -> 446
+  clean, kiln 441 / 65 -> 450 / 61, mat unchanged, Kozolec unchanged; the
+  pump's energy still 1 % caught, its runs in a 957-run signature that is
+  44 % pump. The gain in purity is real, but the rule breaks exactly the
+  case it was meant to protect: the compressor's A leg shares the pump's
+  cluster, its co-start share is diluted to 24 %, and the compressor loses
+  its legs. Not adopted; the event unit (Known shortfalls) is the fix.
 - **The kiln-leg ideas** (branch `kiln-legs`, 2026-09-30, redone on the
   density / device base): LEARNED_SETTLE (a run settles by what its pairs
   learned it drops, pairs learning against the start step) and
