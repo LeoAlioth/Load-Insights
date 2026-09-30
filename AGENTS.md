@@ -135,6 +135,17 @@ percentage: if a change removes sessions, a share can rise with nothing
 improved, but a dominant cluster that GROWS while the total shrinks means
 spurious sessions went and real ones consolidated.
 
+### Sub-meters' reactive power in the replay
+
+Production derives a reactive power for every sub-meter from what it
+publishes beside its power; the replay handed sub-meters none, so on the
+graphs every step of Home's two 3EMs sat at "no power factor" (Anze,
+2026-09-30). The export now pulls the 3EMs' per-phase power factor and
+apparent power (`shellys-pf` group, from 2026-09-06), and `replay.py` derives
+each `--sub-phases` meter's reactive power from the power factor found beside
+its power (same pseudo-device) and hands it to the Fleet as `sub_q`. Device
+meters fed with `--sub` still get none: their Shellys publish no factor.
+
 ### The energy score (`tests/energy_bench.py`)
 
 `python3 tests/energy_bench.py home data/history/home SWITCH=... [PLANT=set1]`
@@ -770,6 +781,18 @@ Don't re-chase these; each cost real time.
   transition samples (6 % of rises), or element heating decay (107 aligned
   pulses are flat to 1 %: 100.0 / 100.2 / 100.2 / 99.8 / 98.7 %). It *is* at
   least partly the inoperative `SUSTAIN_SECONDS` guard plus edge mis-pairing.
+- **Home's kiln is wired phase to phase, A-C** (measured 2026-09-30 off the
+  Hiša 3EM's per-phase real and apparent power at 256 pulses: the real step is
+  0.868 of the apparent step on A, quartiles 0.867-0.870, and 0.871 on C; 99 %
+  and 95 % of pulses within 0.04 of sqrt(3)/2, none near 1.0). One resistive
+  element between two phases draws one current 30 degrees off each phase
+  voltage, so each phase reads PF 0.866 with reactive parts of opposite sign;
+  two elements to neutral would read 1.0 on both. Anze expected phase to
+  neutral; the house meter's V x I gave 0.92, blurred by the baseline. So the
+  kiln is always a two-phase load with equal currents on A and C, its per-phase
+  power factor 0.87 is geometry, not the element, and with the signed var its
+  dQ on A and C will have opposite signs. Script: `kiln_wiring.py` (session
+  scratch), the `shellys-pf` export group.
 - **`_pair` must stay most-recent-first.** Best-size-fit was tried and is worse
   at both sites.
 - **Pairing on the edge library, tried 2026-09-29 and parked** (patch kept locally
