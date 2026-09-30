@@ -103,18 +103,23 @@ def install(plants: list) -> None:
     B._read_csv = read
 
 
-def _rose(rows: list, s) -> float:
-    """The device's energy above its idle draw while the session ran - as
-    cluster_lab.label reads a device meter."""
-    span = s.duration_s
-    if span <= 0:
-        return 0.0
-    got = D.energy_between(rows, s.start, s.end)
-    look = min(span, D.IDLE_WINDOW_S)
-    before = D.energy_between(rows, s.start - look, s.start)
-    if got is None or before is None:
-        return 0.0
-    return got - before * (span / look)
+def _above(rows: list, times: list, a: float, b: float, floor: float) -> float:
+    """The device's energy above its idle floor over [a, b], its readings held
+    until the next - the same measure as its truth. Not what its meter ROSE
+    by against the minutes before, as cluster_lab.label reads it: a charge
+    that follows another has the last one in its "before", and read as
+    nothing - 13.8 kWh of Kozolec's charger scored as no one's (2026-10-01)."""
+    import bisect
+    i = max(bisect.bisect_right(times, a) - 1, 0)
+    wh, t = 0.0, a
+    while i < len(rows) and t < b:
+        nxt = rows[i + 1][0] if i + 1 < len(rows) else b
+        end = min(b, nxt)
+        if end > t and rows[i][0] <= t:
+            wh += max(0.0, rows[i][1] - floor) * (end - t)
+        t = max(t, end)
+        i += 1
+    return wh / 3600.0
 
 
 def _overlap(ivs: list, a: float, b: float) -> float:
@@ -128,6 +133,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
     det, filed, subs = B._run(folder, site)
     devices = B._labels_from(folder, site, subs)
     truth: dict = {}
+    floors: dict = {}
     for name, rows in devices.items():
         # the device's idle draw: the level it holds a tenth of the TIME - by
         # time, since a meter that reports on change reads mostly while running
@@ -139,6 +145,8 @@ def energy(site: str, folder: str, dials: list) -> dict:
                 floor = w
                 break
         truth[name] = sum(max(0.0, w - floor) * d for w, d in held) / 3600.0
+        floors[name] = floor
+    times = {name: [r[0] for r in rows] for name, rows in devices.items()}
     for name, watts, _, ivs in PLANTS:
         truth[name] = watts * sum(b - a for a, b in ivs) / 3600.0
     per_sig: dict = {}
@@ -152,9 +160,9 @@ def energy(site: str, folder: str, dials: list) -> dict:
         row["total"] += s.energy_wh
         row["n"] += 1
         for name, rows in devices.items():
-            rose = _rose(rows, s)
-            if rose > 0:
-                row[name] = row.get(name, 0.0) + min(rose, s.energy_wh)
+            got_wh = _above(rows, times[name], s.start, s.end, floors[name])
+            if got_wh > 0:
+                row[name] = row.get(name, 0.0) + min(got_wh, s.energy_wh)
         for name, watts, _, ivs in PLANTS:
             ov = _overlap(ivs, s.start, s.end)
             if ov > 0:
@@ -179,7 +187,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         print(f"     #{sid}: {row['n']} runs, {row['total']/1000:.1f} kWh ({row['total']/total:.0%}), {what}  {devs}")
     out["detected_kwh"] = round(total / 1000.0, 1)
     print(f"  {'device':22s} {'truth kWh':>9s} {'in sigs kWh':>11s} {'sigs kWh':>9s} {'precision':>9s} {'recall':>7s}  signatures (id, runs, kWh, share)")
-    wp = wr = wt = 0.0
+    wp = wr = wt = wrong = 0.0
     for name in sorted(truth, key=lambda n: -truth[n]):
         g, t = got[name], truth[name]
         if t < 50.0:                      # under 50 Wh over the replay: nothing to score
@@ -189,6 +197,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         out["devices"][name] = {"truth_kwh": round(t / 1000.0, 3), "in_kwh": round(g["in"] / 1000.0, 3),
                                 "of_kwh": round(g["of"] / 1000.0, 3), "precision": prec, "recall": rec, "sigs": g["sigs"]}
         wt += t
+        wrong += g["of"] - g["in"]
         wr += rec * t
         wp += (prec if prec is not None else 0.0) * t
         sigs = " ".join(f"#{sid}:{n}x{kwh}kWh@{sh:.0%}" for sid, n, kwh, sh in sorted(g["sigs"], key=lambda x: -x[2])[:4])
@@ -202,14 +211,28 @@ def energy(site: str, folder: str, dials: list) -> dict:
     if wt:
         P, Rc = wp / wt, wr / wt
         f = 1.25 * P * Rc / (0.25 * P + Rc) if P + Rc else 0.0
-        out["precision"], out["recall"], out["f05"] = P, Rc, f
-        print(f"  energy-weighted  precision {P:.1%}  recall {Rc:.1%}  F0.5 {f:.1%}   over {wt/1000:.1f} kWh of truth")
+        out["precision"], out["recall"], out["f05"], out["wrong_kwh"] = P, Rc, f, wrong / 1000.0
+        print(f"  energy-weighted  precision {P:.1%}  recall {Rc:.1%}  F0.5 {f:.1%}   over {wt/1000:.1f} kWh of truth"
+              f"   - {wrong/1000:.1f} kWh in devices' signatures was not theirs")
     if os.environ.get("OUT_JSON"):
         json.dump(out, open(os.environ["OUT_JSON"], "w"), indent=1)
     return out
 
 
+def check() -> None:
+    """python3 tests/energy_bench.py check"""
+    rows = [(0.0, 5.0), (100.0, 3005.0), (200.0, 5.0)]
+    t = [r[0] for r in rows]
+    assert round(_above(rows, t, 0, 300, 5.0), 2) == 83.33          # 3 kW above a 5 W floor for 100 s
+    assert round(_above(rows, t, 120, 140, 5.0), 2) == 16.67        # ...of which 20 s
+    assert _above(rows, t, 250, 300, 5.0) == 0.0                     # idle: nothing
+    print("ok")
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["check"]:
+        check()
+        raise SystemExit(0)
     if len(sys.argv) < 3:
         print(__doc__)
         raise SystemExit(1)
