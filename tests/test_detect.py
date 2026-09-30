@@ -2650,7 +2650,7 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
 def test_rises_on_several_phases_within_the_window_are_one_event():
     """A three-phase compressor (~840 W a leg) and a single-phase pump (~900 W
     on A) are the same size on A; as events they are (840, 850, 830) and
-    (900, 0, 0) and never share a cluster (2026-09-30). See EVENT_WINDOW_S."""
+    (900, 0, 0) and never share a cluster (2026-09-30). See EVENT_WINDOW_INTERVALS."""
     det = D.Detector()
     rows, base = {p: [] for p in "abc"}, {"a": 300.0, "b": 200.0, "c": 400.0}
     def hold(p, w, t0, t1):
