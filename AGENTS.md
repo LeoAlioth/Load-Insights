@@ -475,6 +475,9 @@ live in `data/<hostname>` (gitignored).
 3. restart each (`POST /api/services/homeassistant/restart`), wait for `RUNNING`
 4. a generation bump rebuilds by itself; otherwise call
    `load_insights.reset_detection` to re-run the 10-day backfill
+   (`forget_names: true` drops the carried names too - a full reset; the
+   named loads' registry entities are then removed by hand, and naming a
+   load again recreates the same entity ids, so its statistics carry on)
 5. wait for `caught_up`, then read the numbers back off the sensor
    (a named load's sensors appear as its name re-attaches during the re-read;
    before the follow-up to build 1613 they stayed unavailable until a reload
