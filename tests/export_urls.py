@@ -44,6 +44,12 @@ HOME = {
             + ["sensor.hisa_total_active_power"]
             + [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"]
             + ["sensor.mansarda_total_active_power"]),
+        # ...and their power factors and apparent power per phase, so the
+        # replay can give their steps a reactive power the way production
+        # does (their steps sat at "no power factor" on the graphs, 2026-09-30)
+        "shellys-pf": (
+            [f"sensor.{m}_phase_{p}_{k}" for m in ("hisa", "mansarda") for p in "abc"
+             for k in ("power_factor", "apparent_power")]),
     },
 }
 

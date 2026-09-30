@@ -230,7 +230,8 @@ def pseudo_device(entity_id: str) -> str:
     parts = entity_id.split("_")
     while parts and (parts[-1] in ("a", "b", "c", "1", "2", "3", "an", "bn", "cn",
                                    "l1", "l2", "l3")
-                     or parts[-1] in ("power", "current", "voltage", "pf", "factor")):
+                     or parts[-1] in ("power", "current", "voltage", "pf", "factor",
+                                      "active", "apparent", "reactive")):   # a 3EM's phase_a_active_power beside phase_a_power_factor
         parts.pop()
     return "_".join(parts)
 
@@ -410,12 +411,27 @@ def main() -> int:
             agnostic[name.strip()] = True
     # A three-phase meter, as production reads one: a reading per phase, under
     # the phase letters the METER gives them - which need not be the house's.
+    sub_q = {}
     for pin in args.sub_phases:
         name, _, eids = pin.partition("=")
         rows = {p: series[e.strip()] for p, e in zip("abc", eids.split(",")) if e.strip() in series}
         if rows:
             subs[name.strip()] = rows
             agnostic[name.strip()] = False
+            if not args.no_q:
+                # its reactive power from what the meter publishes beside the
+                # power - a 3EM gives a power factor per phase - as production
+                # derives it for every sub-meter
+                by_kind = {device_kind_phase(e): e for e in series
+                           if pseudo_device(e) == pseudo_device(eids.split(",")[0].strip())}
+                for p, prow in rows.items():
+                    pf = series.get(by_kind.get(("power_factor", p)))
+                    if pf:
+                        var = reactive(prow, None, None, pf)
+                        if var:
+                            sub_q.setdefault(name.strip(), {})[p] = align(sorted(var.items()), prow)
+                if name.strip() in sub_q:
+                    print(f"   {name.strip()}: reactive power from its power factor on {''.join(sorted(sub_q[name.strip()]))}")
 
     # entities that say when a load is on, read as text: on-periods
     switch_spans = {}
@@ -466,7 +482,7 @@ def main() -> int:
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
                       {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
                        for n, byp in subs.items()},
-                      q, None, e, agnostic, pv or None, q_quantum,
+                      q, sub_q or None, e, agnostic, pv or None, q_quantum,
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
