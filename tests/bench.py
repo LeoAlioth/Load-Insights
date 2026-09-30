@@ -97,6 +97,14 @@ PROD_SUBS = {
         "Bathroom IR Panel": "sensor.bathroom_ir_panel_switch_0_power",   # a Shelly heartbeating once a minute
     },
 }
+# the meters production's options declare to hold one device (2026-09-30)
+PROD_SINGLE = {
+    "home": ["Polnilnica", "Workshop charger", "Hidrofor", "Attic AC", "Workshop boiler"],
+    "kozolec": ["Boiler", "Washing machine", "Well pump", "Water pump", "Pond", "Pond EVSE", "Pastir",
+                "Bug lamp", "Bathroom IR Panel"],
+}
+# the Energy dashboard's nesting among PROD_SUBS (2026-09-30); Kozolec's all hang under its inverter
+PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda"}}
 SUBS = "lab"
 LAST_FLEET = None                      # the Fleet of the last _run, for attrib
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
@@ -272,7 +280,8 @@ def _apply(dials) -> str:
             continue
         if not hasattr(D, k):
             raise SystemExit(f"no such dial: {k}")
-        setattr(D, k, type(getattr(D, k))(float(v)))
+        cur = getattr(D, k)
+        setattr(D, k, v if isinstance(cur, str) else type(cur)(float(v)))
     return " ".join(dials) or "defaults"
 
 
@@ -328,6 +337,8 @@ def _replay(folder: str, site: str | None):
     if site and SUBS == "prod":
         for n, e in PROD_SUBS[site].items():
             argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
+            argv += ["--single", n] if n in PROD_SINGLE.get(site, []) else []
+            argv += ["--parent", f"{n}={PROD_PARENTS[site][n]}"] if n in PROD_PARENTS.get(site, {}) else []
     elif site:
         for n, e in lab.SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]

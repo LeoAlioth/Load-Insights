@@ -231,8 +231,8 @@ def pseudo_device(entity_id: str) -> str:
     parts = entity_id.split("_")
     while parts and (parts[-1] in ("a", "b", "c", "1", "2", "3", "an", "bn", "cn",
                                    "l1", "l2", "l3")
-                     or parts[-1] in ("power", "current", "voltage", "pf", "factor",
-                                      "active", "apparent", "reactive")):   # a 3EM's phase_a_active_power beside phase_a_power_factor
+                     or parts[-1] in ("power", "current", "voltage", "pf", "factor", "var",
+                                      "active", "apparent", "reactive")):   # ..._ac_var_a beside ..._ac_power_a   # a 3EM's phase_a_active_power beside phase_a_power_factor
         parts.pop()
     return "_".join(parts)
 
@@ -271,13 +271,21 @@ def reactive(power_rows, volts, amps, pfs, signed=None, vas=None):
     it covers the window, else the root of S squared minus P squared - S the
     meter's own apparent power, then V x I, then P over the power factor."""
     import math
-    if signed and power_rows and signed[0][0] <= power_rows[0][0] + 120.0:
-        out, si = {}, 0
+    if signed and power_rows:
+        # production decides this per pass, minutes at a time: the passes
+        # after the meter's own VAr began read it, the ones before do not.
+        # Decided once for the whole replay, a VAr enabled on the last day
+        # (Home's grid meter, 30.09 07:57) was never read at all.
+        start = signed[0][0]
+        before = [r for r in power_rows if r[0] < start]
+        out = reactive(before, volts, amps, pfs, None, vas) if before else {}
+        si = 0
         for ts, _ in power_rows:
+            if ts < start:
+                continue
             while si + 1 < len(signed) and signed[si + 1][0] <= ts:
                 si += 1
-            if signed[si][0] <= ts:
-                out[ts] = signed[si][1]
+            out[ts] = signed[si][1]
         return out
     out = {}
     vi = ai = fi = si = 0
@@ -319,6 +327,10 @@ def main() -> int:
                         help="ENTITY: a setting a device reports - a washer's cycle phase")
     parser.add_argument("--driver", action="append", default=[],
                         help="ENTITY: a number a load's runs may follow - a room's temperature")
+    parser.add_argument("--parent", action="append", default=[],
+                        help="METER=PARENT: the meter hangs under PARENT, as the Energy dashboard nests them")
+    parser.add_argument("--single", action="append", default=[],
+                        help="a sub-meter declared to hold one device, as production's options say")
     parser.add_argument("--sub-phases", action="append", default=[],
                         metavar="Name=sensor.a,sensor.b,sensor.c", help="a three-phase meter, per phase")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
@@ -483,6 +495,7 @@ def main() -> int:
             part = [(a, rows[i - 1][1])] + part
         return part
     t = first
+    fleet.parents = dict(p.split("=", 1) for p in args.parent)
     while t <= latest:
         e = min(t + step, latest + 1e-6)
         # sliced the way the recorder answers, then cleaned the way production
@@ -491,6 +504,7 @@ def main() -> int:
                       {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
                        for n, byp in subs.items()},
                       q, sub_q or None, e, agnostic, pv or None, q_quantum,
+                      single={n: n in args.single for n in subs} if args.single else None,
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,

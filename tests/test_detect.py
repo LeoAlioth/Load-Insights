@@ -64,7 +64,22 @@ def test_a_load_the_reading_cannot_be_carrying_is_closed():
     assert [o.watts for o in st.open_edges] == [400.0]
     assert st._unseen_stop(T0 + 310, 450.0) == []                        # 400 fits in 450: nothing more
     assert phase(True)._unseen_stop(T0 + 300, 950.0) == []               # it all fits
-    assert phase(True)._unseen_stop(T0 + 300, 100.0) == []               # 900 short: no one load fits it
+    was = D.TOO_BIG
+    try:
+        D.TOO_BIG = "close"
+        low = phase(True)
+        closed = low._unseen_stop(T0 + 300, 100.0)                       # 900 short: no one load fits it,
+        assert len(closed) == 2 and low.open_edges == [], closed         # but neither fits in 100 W at all
+        big = phase(True)
+        big._unseen_stop(T0 + 300, 500.0)                                # 500 short of 1000: nothing fits
+        assert [o.watts for o in big.open_edges] == [400.0], big.open_edges   # the 600 W run cannot be in 500 W
+        D.TOO_BIG = "shrink"
+        big = phase(True)
+        assert big._unseen_stop(T0 + 300, 500.0) == []                   # ...or it shrank to what the reading holds
+        assert [o.watts for o in big.open_edges] == [500.0, 400.0], big.open_edges
+        assert big.open_edges[0].levels[-1] == (T0 + 300, 500.0), big.open_edges[0].levels
+    finally:
+        D.TOO_BIG = was
     assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
 
 
@@ -2675,6 +2690,74 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
     sigs = {(x.phases, round(sum(x.power.values()), -2)) for x in det.signatures if x.count >= 5}
     assert ("abc", 2500.0) in sigs and ("a", 900.0) in sigs, sigs        # one three-phase signature, one single-phase
 
+
+def test_a_pump_and_a_heater_of_one_size_are_two_kinds_of_edge_by_their_reactive_angle():
+    """Hart's plane: 900 W at 0 var and 900 W at 630 var (35 deg) share a size
+    and nothing else."""
+    import random
+    rnd = random.Random(3)
+    def run(on):
+        was = D.EDGE_ANGLE
+        D.EDGE_ANGLE = on
+        try:
+            det = D.Detector()
+            ids = {}
+            for k in range(200):
+                heater = k % 2 == 0
+                w = 900.0 + rnd.gauss(0, 8)
+                var = rnd.gauss(0, 10) if heater else 630.0 + rnd.gauss(0, 15)
+                c = det._classify_step("a", T0 + 60 * k, w, var, 0.0)
+                ids.setdefault(heater, set()).add(c.id)
+            return ids
+        finally:
+            D.EDGE_ANGLE = was
+    off, on = run(False), run(True)
+    assert off[True] & off[False], off                                 # by size alone they share a cluster
+    assert not (on[True] & on[False]), on                              # by angle they never do
+
+
+def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_meter():
+    """Kozolec 27.09 10:17: the charger's 3.4 kW start and the boiler's 1.9 kW
+    pulse in one reading. The boiler's meter knows its share, so the house
+    books two starts, not one of 5.3 kW."""
+    det = D.Detector()
+    for ph in "a":
+        det.phases[ph] = D.PhaseState()
+        det.phases[ph].noise, det.phases[ph].level, det.phases[ph].interval = 20.0, 300.0, 5.0
+    det.meter_steps = lambda ph, since, window: [("Boiler", 1900.0)]
+    assert det.metered_parts("a", T0, 5300.0) == [1900.0, 3400.0]
+    assert det.metered_parts("a", T0, 1910.0) == [1910.0]              # all of it is the boiler's
+    assert det.metered_parts("a", T0, -5300.0) == [-5300.0]            # the boiler rose: not this fall's
+    det.meter_steps = lambda ph, since, window: []
+    assert det.metered_parts("a", T0, 5300.0) == [5300.0]
+
+
+def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
+    """Blaž PC inside Hiša: the PC's step counts once, and Hiša adds only what
+    else inside it changed - the pieces of the house step do not overlap."""
+    f = D.Fleet()
+    rows = lambda before, after: [(T0 - 10, before), (T0 + 1, after)]
+    f.sub_rows = {"Hiša": rows(500, 2700), "Blaž PC": rows(100, 400), "Bojler": rows(0, 0)}
+    f.parents = {"Blaž PC": "Hiša"}
+    f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in f.sub_rows}
+    got = dict(f._meter_steps("c", T0, 5.0))
+    assert got == {"Hiša": 1900.0, "Blaž PC": 300.0, "Bojler": 0.0}, got
+    assert f._meter_steps("a", T0, 5.0) == []                          # none of them is on phase A
+
+
+def test_a_load_cycling_inside_the_noise_band_does_not_hold_the_band_open():
+    """Hiša's phase C: a 65 W load toggling every few readings, inside a floor
+    learned at 128 W. Measured from the level it sat 30 W out and kept the
+    floor up for good; measured by how far the reading moves, a held level
+    moves by nothing and the floor comes down under the load."""
+    import random
+    rnd = random.Random(5)
+    st = D.PhaseState(min_noise=5.0)
+    st.baseline, st.level, st.noise = 410.0, 410.0, 128.0
+    for i in range(1200):
+        on = (i // 5) % 2 == 1
+        st.process(T0 + 5.0 * i, 410.0 + (65.0 if on else 0.0) + rnd.gauss(0, 1.5))
+    assert st.noise < 65.0, st.noise
 
 if __name__ == "__main__":
     run_main(globals())
