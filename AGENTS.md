@@ -476,6 +476,24 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
+- **Home's pump and the compressor's A leg share one size cluster, and the
+  legs rule chains them into one device** (traced 2026-09-30, ten days,
+  `dbg_blob.py`). Cluster #2 on A (911 W, 1,193 rises) holds the hidrofor's
+  starts (470 labelled, alone on their phase 94 % of the time) AND the
+  three-phase Kompresor's A leg (the unlabelled 710: 53 % come with a B and a
+  C rise within 3 s, median legs 831 / 848 / 834 W - the notes say ~840 W per
+  leg). The compressor's legs link #2 to #20 (B 859 W) and #3 (C 697 W): 291
+  and 286 co-starts against 117 and 192 by chance, so the chance test joins
+  them, and device filing then pools the pump's runs with the compressor's.
+  Not PV: the chained clusters' steps come with SMALLER inverter swings than
+  a random daytime step. A share rule on the links cannot fix it either: the
+  pump dilutes the A leg's share to 24 %, so the compressor would lose its
+  legs instead. Per phase the two starts are the same size and both are
+  motors; as EVENTS they are (900, 0, 0) and (840, 850, 830) and trivially
+  apart - the case for clustering joined all-phase events rather than
+  per-phase steps (see the vector study under "ruled out": even on the
+  scores, the kiln A+C on 99 % of its events).
+
 **Sustain now costs loads that wander.** `SUSTAIN_SECONDS = 5.0` could never
 fire at 6 s sampling; `SUSTAIN_INTERVALS = 1.5` fixed that, and was the
 largest improvement found. But a level must now hold for about three
