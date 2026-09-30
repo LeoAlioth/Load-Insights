@@ -79,7 +79,13 @@ NOISE_REL_FLOOR_FACTOR = 1.5
 # 195,890 samples on one phase over ten days) but each one is a phantom
 # 3 kW load (Anze, 2026-09-18).
 GLITCH_FLOOR_W = 200.0
-NOISE_MAD_FACTOR = 4.0
+# 5 since the noise is measured by how the reading moves (NOISE_FROM_MOVES):
+# at 4 Home's house phase C came down to 60 W, just under a 65 W load cycling
+# every 25-50 s, and the half-seen load's steps paired with the floor mat's
+# (5.9 h of the mat outside its heating, against 1.8); at 3 the load was seen
+# whole and crowded the groups (Home purity 71.0 %, 10.2 kWh wrongly placed).
+# Ten days, 2026-10-01 - see the experiments branch's commit for the table.
+NOISE_MAD_FACTOR = 5.0
 # The noise is re-learned from how far the reading MOVES between samples, as
 # the seed measures it, not from how far it sits from the level. A load
 # cycling just inside the band - Hiša's phase C, 65 W every 25-50 s - sat
