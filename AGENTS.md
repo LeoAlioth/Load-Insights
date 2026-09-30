@@ -108,8 +108,9 @@ ones; the ten-day baseline is stated where it was first measured below.
 **Ten-day baseline (2026-09-30, Home 19-28 Sep with the thermostat, Kozolec
 20-29 Sep), filing on the run's own phases:** Home purity 75.5 %, wconc 58.6 %
 (hidrofor 71 % in one signature of 42), the mat 43.6 h counted once against
-76.4 h of heating, 1.8 h outside it, caught 55 %; kiln 220 full-size / 160
-single-leg of 272 pulses in 2 firings; Kozolec 99.9 / 93.3 %, fridges 75 of 91
+76.4 h of heating, 1.8 h outside it, caught 55 %; kiln 441 full-size / 65
+single-leg (272 pulses in 2 firings); pump 443 clean, 69 long, 43 short, 38
+multi, 58 wrong size, 14 missing of 665; Kozolec 99.9 / 93.3 %, fridges 75 of 91
 lengths within 25 %, purity 87 %; energy Kozolec 73.4 / 74.1 %, Home 41 / 3 %.
 The 22-day numbers (86.2 / 86.0) came from a long warm-up production never
 gets: on ten days the pump's runs land in a 4,586-run blob on A (17 % pump by
