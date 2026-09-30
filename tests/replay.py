@@ -37,6 +37,7 @@ DISCOVERY = load("insights.discovery")
 
 KIND_HINTS = (
     ("power_factor", "power_factor"), ("_pf", "power_factor"), ("_var_", "reactive_power"),
+    ("apparent", "apparent_power"),
     ("voltage", "voltage"), ("current", "current"), ("power", "power"),
 )
 
@@ -265,9 +266,10 @@ def device_kind_phase(entity_id: str):
     return (kind, phase)
 
 
-def reactive(power_rows, volts, amps, pfs, signed=None):
+def reactive(power_rows, volts, amps, pfs, signed=None, vas=None):
     """As production's _reactive: the meter's own signed reactive power where
-    it covers the window, else the root of (V x I) squared minus P squared."""
+    it covers the window, else the root of S squared minus P squared - S the
+    meter's own apparent power, then V x I, then P over the power factor."""
     import math
     if signed and power_rows and signed[0][0] <= power_rows[0][0] + 120.0:
         out, si = {}, 0
@@ -278,8 +280,8 @@ def reactive(power_rows, volts, amps, pfs, signed=None):
                 out[ts] = signed[si][1]
         return out
     out = {}
-    vi = ai = fi = 0
-    volts, amps, pfs = volts or [], amps or [], pfs or []
+    vi = ai = fi = si = 0
+    volts, amps, pfs, vas = volts or [], amps or [], pfs or [], vas or []
 
     def walk(rows, ts, i):
         while i + 1 < len(rows) and rows[i + 1][0] <= ts:
@@ -288,11 +290,16 @@ def reactive(power_rows, volts, amps, pfs, signed=None):
 
     for ts, p in power_rows:
         vi, ai, fi = walk(volts, ts, max(vi, 0)), walk(amps, ts, max(ai, 0)), walk(pfs, ts, max(fi, 0))
+        si = walk(vas, ts, max(si, 0))
+        same = lambda rows, i: i + 1 if i + 1 < len(rows) and rows[i + 1][0] - ts <= 1.0 else i   # production's _with_update
+        v, a, f, s = same(volts, vi), same(amps, ai), same(pfs, fi), same(vas, si)
         apparent = None
-        if vi >= 0 and ai >= 0:
-            apparent = volts[vi][1] * amps[ai][1]
-        elif fi >= 0 and pfs[fi][1]:
-            apparent = abs(p) / abs(pfs[fi][1])
+        if s >= 0:
+            apparent = vas[s][1]
+        elif v >= 0 and a >= 0:
+            apparent = volts[v][1] * amps[a][1]
+        elif f >= 0 and pfs[f][1]:
+            apparent = abs(p) / abs(pfs[f][1])
         if apparent is not None:
             out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
     return out
@@ -420,18 +427,19 @@ def main() -> int:
             agnostic[name.strip()] = False
             if not args.no_q:
                 # its reactive power from what the meter publishes beside the
-                # power - a 3EM gives a power factor per phase - as production
+                # power - a 3EM its apparent power and a power factor - as production
                 # derives it for every sub-meter
                 by_kind = {device_kind_phase(e): e for e in series
                            if pseudo_device(e) == pseudo_device(eids.split(",")[0].strip())}
                 for p, prow in rows.items():
                     pf = series.get(by_kind.get(("power_factor", p)))
-                    if pf:
-                        var = reactive(prow, None, None, pf)
+                    va = series.get(by_kind.get(("apparent_power", p)))
+                    if pf or va:
+                        var = reactive(prow, None, None, pf, None, va)
                         if var:
                             sub_q.setdefault(name.strip(), {})[p] = align(sorted(var.items()), prow)
                 if name.strip() in sub_q:
-                    print(f"   {name.strip()}: reactive power from its power factor on {''.join(sorted(sub_q[name.strip()]))}")
+                    print(f"   {name.strip()}: reactive power from its apparent power or power factor on {''.join(sorted(sub_q[name.strip()]))}")
 
     # entities that say when a load is on, read as text: on-periods
     switch_spans = {}

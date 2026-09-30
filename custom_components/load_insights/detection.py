@@ -1062,12 +1062,12 @@ class DetectionRunner:
             # no device on either side means a template or a helper, and we
             # cannot prove they belong together - so we do not assume it
             return eid if eid and home is not None and self._device_of(eid) == home else None
-        pf = with_power(f"pf_{phase}")
+        pf, va = with_power(f"pf_{phase}"), with_power(f"va_{phase}")
         volts, amps = with_power(f"voltage_{phase}"), with_power(f"current_{phase}")
         var = with_power(f"var_{phase}") or self._var_on(home, phase, power)
-        if not pf and not (volts and amps) and not var:
+        if not pf and not va and not (volts and amps) and not var:
             return None
-        return {f"power_{phase}": power, f"pf_{phase}": pf,
+        return {f"power_{phase}": power, f"pf_{phase}": pf, f"va_{phase}": va,
                 f"voltage_{phase}": volts, f"current_{phase}": amps, f"var_{phase}": var}
 
     def _var_on(self, device: Optional[str], phase: str, reference: str) -> Optional[str]:
@@ -1141,10 +1141,12 @@ class DetectionRunner:
                     continue          # coherent, but nothing flows through it
                 signed = series.get(("var", phase))
                 var = _reactive(power_rows, series.get(("voltage", phase)),
-                                series.get(("current", phase)), series.get(("pf", phase)), signed)
+                                series.get(("current", phase)), series.get(("pf", phase)), signed,
+                                series.get(("va", phase)))
                 if var:
                     covers = bool(signed) and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S
                     self.reactive_from[phase] = (f"signed {triple.get(f'var_{phase}')}" if covers
+                                                 else f"apparent {triple.get(f'va_{phase}')}" if series.get(("va", phase))
                                                  else f"V x I {triple.get(f'power_{phase}')}")
                     # the reference samples at its own moments; hold each
                     # value forward onto the load's
@@ -1177,7 +1179,7 @@ class DetectionRunner:
         """Every configured field of one role as (kind, phase) -> rows."""
         entities = {}
         for p in PHASES:
-            for kind in ("power", "pf", "current", "voltage", "var"):
+            for kind in ("power", "pf", "va", "current", "voltage", "var"):
                 eid = cfg.get(f"{kind}_{p}")
                 if eid:
                     entities[(kind, p)] = eid
@@ -1251,7 +1253,7 @@ class DetectionRunner:
                     continue          # different meters; not this power's VAr
                 var = _reactive(samples[p], series.get(("voltage", p)),
                                 series.get(("current", p)), series.get(("pf", p)),
-                                series.get(("var", p)))
+                                series.get(("var", p)), series.get(("va", p)))
                 if var:
                     q[p] = var
         return samples, q
@@ -1293,8 +1295,24 @@ def _align(source: list, target_rows: list) -> Dict[float, float]:
 SIGNED_VAR_SLACK_S = 120.0
 
 
+# A meter reports its readings of one moment as separate entities, stamped
+# milliseconds apart. Read "as of" the power's stamp, a 3EM's apparent power
+# still held the reading BEFORE a kiln leg switched off - 34.5 W against
+# 3505 VA, a 3.5 kvar spike at the very step (Home, 2026-09-30). A reading
+# landing this soon after the power's is the same update.
+SAME_UPDATE_S = 1.0
+
+
+def _with_update(rows: list, ts: float, i: int) -> int:
+    """``i`` (as of ``ts``), or the next row when it is part of the same update."""
+    if i + 1 < len(rows) and rows[i + 1][0] - ts <= SAME_UPDATE_S:
+        return i + 1
+    return i
+
+
 def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
-              pfs: Optional[list], signed: Optional[list] = None) -> Dict[float, float]:
+              pfs: Optional[list], signed: Optional[list] = None,
+              vas: Optional[list] = None) -> Dict[float, float]:
     """Reactive VAr at each power sample.
 
     Every entity updates at its own moment, so the other readings are taken
@@ -1305,7 +1323,9 @@ def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
     window, is taken as it is: signed, so a step's change is the load's own.
     The root of (V x I) squared minus P squared has no sign, and a load whose
     reactive power runs against the floor's reads the wrong size (Anze,
-    2026-09-30)."""
+    2026-09-30). Else the meter's own apparent power, then V x I, then the
+    power factor: finest first. Each paired with the power reading of the
+    same update - see SAME_UPDATE_S."""
     if signed and power_rows and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S:
         out, si = {}, 0
         for ts, _ in power_rows:
@@ -1313,16 +1333,20 @@ def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
             if si >= 0:
                 out[ts] = signed[si][1]
         return out
-    volts, amps, pfs = volts or [], amps or [], pfs or []
+    volts, amps, pfs, vas = volts or [], amps or [], pfs or [], vas or []
     out: Dict[float, float] = {}
-    vi = ai = fi = 0
+    vi = ai = fi = si = 0
     for ts, p in power_rows:
-        vi, ai, fi = _as_of(volts, ts, vi), _as_of(amps, ts, ai), _as_of(pfs, ts, fi)
+        vi, ai, fi, si = _as_of(volts, ts, vi), _as_of(amps, ts, ai), _as_of(pfs, ts, fi), _as_of(vas, ts, si)
+        v, a, f, s = (_with_update(volts, ts, vi), _with_update(amps, ts, ai),
+                      _with_update(pfs, ts, fi), _with_update(vas, ts, si))
         apparent = None
-        if vi >= 0 and ai >= 0:
-            apparent = volts[vi][1] * amps[ai][1]
-        elif fi >= 0 and pfs[fi][1]:
-            apparent = abs(p) / abs(pfs[fi][1])
+        if s >= 0:
+            apparent = vas[s][1]
+        elif v >= 0 and a >= 0:
+            apparent = volts[v][1] * amps[a][1]
+        elif f >= 0 and pfs[f][1]:
+            apparent = abs(p) / abs(pfs[f][1])
         if apparent is None:
             continue
         out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
