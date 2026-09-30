@@ -141,10 +141,15 @@ Production derives a reactive power for every sub-meter from what it
 publishes beside its power; the replay handed sub-meters none, so on the
 graphs every step of Home's two 3EMs sat at "no power factor" (Anze,
 2026-09-30). The export now pulls the 3EMs' per-phase power factor and
-apparent power (`shellys-pf` group, from 2026-09-06), and `replay.py` derives
+apparent power (`shellys-pf` group; the recorder held them from 2026-09-20 only,
+earlier days came back empty), and `replay.py` derives
 each `--sub-phases` meter's reactive power from the power factor found beside
 its power (same pseudo-device) and hands it to the Fleet as `sub_q`. Device
 meters fed with `--sub` still get none: their Shellys publish no factor.
+The bench now PINS the house power roles to the site's configured entities
+(`cluster_lab.SITES[site]["main"]`) instead of letting the replay guess: with
+the 3EMs' factors in the history the guess took Hiša's power for the house's
+and every count halved (caught in the recapture, 2026-09-30).
 
 ### The energy score (`tests/energy_bench.py`)
 

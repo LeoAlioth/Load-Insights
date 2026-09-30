@@ -312,7 +312,11 @@ def _replay(folder: str, site: str | None):
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
     if NO_Q:
         argv.append("--no-q")
-    for pin in PINNED:
+    # the house roles pinned to what production reads, never guessed: with the
+    # 3EMs' power factors in the history the guess took Hiša's power for the
+    # house's (2026-09-30). HOUSE= modes pin their own built series.
+    pins = PINNED or ([f"power_{p}={e}" for p, e in lab.SITES[site]["main"].items()] if site else [])
+    for pin in pins:
         argv += ["--role", pin]
     for eid in SWITCHES:
         argv += ["--switch", f"{eid.split(':')[0]}={eid}"]
