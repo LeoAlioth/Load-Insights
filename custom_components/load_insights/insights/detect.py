@@ -335,7 +335,7 @@ HELD_DROPS = 8
 # one fall closing several rises (a fan's 2 -> 0 ending its 0 -> 1 and 1 -> 2),
 # one rise closed by several falls (600 -> 400 -> 0). Two clusters are one
 # device once their link counts LINK_MIN and is far above chance (see PAIR_MIN_RUNS)
-# of each; a run then goes to the signature most runs of its device went to.
+# - and a run then goes to the signature most runs of its device went to.
 # Run length and how often a load runs are what a load DOES, not what it is:
 # they raise or lower the confidence in a device and its guess, and play no part
 # in grouping runs into devices or edges into runs (Anze, 2026-09-29: "much
