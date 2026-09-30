@@ -865,15 +865,17 @@ class DetectionRunner:
         self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
         self.hass.async_create_task(self._run())
 
-    async def async_reset(self) -> None:
+    async def async_reset(self, forget_names: bool = False) -> None:
         """Forget everything learned and start the backfill again.
 
-        Everything except the NAMES. They are the one thing in the library
-        the user put there by hand, and the backfill re-learns everything
-        else in minutes. Each is carried across as a description and handed
-        back to the first rebuilt signature that looks like it; where the
-        site really has changed - the reason to do this by hand - nothing
-        matches and the name does not return.
+        Everything except the NAMES, unless ``forget_names``. They are the
+        one thing in the library the user put there by hand, and the backfill
+        re-learns everything else in minutes. Each is carried across as a
+        description and handed back to the first rebuilt signature that looks
+        like it; where the site really has changed - the reason to do this by
+        hand - nothing matches and the name does not return. Anze
+        (2026-09-30) would rather drop them than have a stale one land on the
+        wrong load, so the service can forget them too.
 
         Between passes, never under one: a pass running when this lands
         finishes by recording that it has processed up to now, and the ten
@@ -883,7 +885,7 @@ class DetectionRunner:
             if not self._running:
                 break
             await asyncio.sleep(0.5)
-        orphans = self.fleet.main.name_descriptors() if self.fleet else []
+        orphans = self.fleet.main.name_descriptors() if self.fleet and not forget_names else []
         self.fleet = Fleet()
         self.fleet.main.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
