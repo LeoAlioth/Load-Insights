@@ -36,7 +36,7 @@ D = load("insights.detect")
 DISCOVERY = load("insights.discovery")
 
 KIND_HINTS = (
-    ("power_factor", "power_factor"), ("_pf", "power_factor"),
+    ("power_factor", "power_factor"), ("_pf", "power_factor"), ("_var_", "reactive_power"),
     ("voltage", "voltage"), ("current", "current"), ("power", "power"),
 )
 
@@ -264,8 +264,18 @@ def device_kind_phase(entity_id: str):
     return (kind, phase)
 
 
-def reactive(power_rows, volts, amps, pfs):
+def reactive(power_rows, volts, amps, pfs, signed=None):
+    """As production's _reactive: the meter's own signed reactive power where
+    it covers the window, else the root of (V x I) squared minus P squared."""
     import math
+    if signed and power_rows and signed[0][0] <= power_rows[0][0] + 120.0:
+        out, si = {}, 0
+        for ts, _ in power_rows:
+            while si + 1 < len(signed) and signed[si + 1][0] <= ts:
+                si += 1
+            if signed[si][0] <= ts:
+                out[ts] = signed[si][1]
+        return out
     out = {}
     vi = ai = fi = 0
     volts, amps, pfs = volts or [], amps or [], pfs or []
@@ -359,8 +369,10 @@ def main() -> int:
                 print(f"   {p.upper()}: no meter publishes power, voltage and current together")
                 continue
             pw, v, i = trios[p]
-            print(f"   {p.upper()}: {pw}")
-            var = reactive(series[pw], series.get(v), series.get(i), None)
+            signed = next((e for e in series if device_kind_phase(e) == ("reactive_power", p)
+                           and pseudo_device(e) == pseudo_device(pw)), None)
+            print(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
+            var = reactive(series[pw], series.get(v), series.get(i), None, series.get(signed) if signed else None)
             if var:
                 # held forward onto the load reading's own sample times
                 q[p] = align(sorted(var.items()), samples[p])

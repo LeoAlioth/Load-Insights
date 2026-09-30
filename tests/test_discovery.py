@@ -72,6 +72,16 @@ def test_line_to_neutral_is_that_phases_own_voltage():
     assert D.phase_of("meter_l3n_voltage") == "c"
 
 
+def test_a_meters_own_reactive_power_is_found_beside_its_power():
+    """V x I gives only the size of the reactive power; the meter's own
+    reading carries its sign (Anze, 2026-09-30)."""
+    rows = SOLAREDGE + [e(f"sensor.solaredge_se17k_m1_ac_var_{p}", "reactive_power", f"SE17K M1 AC Reactive Power {p.upper()}")
+                        for p in "abc"] + [e("sensor.solaredge_se17k_m1_ac_var", "reactive_power", "SE17K M1 AC Reactive Power")]
+    got = D.match_meter_entities(rows)
+    assert [got.get(f"var_{p}") for p in "abc"] == [f"sensor.solaredge_se17k_m1_ac_var_{p}" for p in "abc"], got
+    assert got.get("power_a", "").endswith("_ac_power_a"), got      # still the watts, not the VAr
+
+
 def test_line_to_line_voltage_belongs_to_no_single_phase():
     """It moves when either of its two phases does, so it is not a reading
     of either. However it is spelled."""
