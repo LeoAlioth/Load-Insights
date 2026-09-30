@@ -135,6 +135,24 @@ percentage: if a change removes sessions, a share can rise with nothing
 improved, but a dominant cluster that GROWS while the total shrinks means
 spurious sessions went and real ones consolidated.
 
+### The energy score (`tests/energy_bench.py`)
+
+`python3 tests/energy_bench.py home data/history/home SWITCH=... [PLANT=set1]`
+scores what a named load's statistics will get right: per device meter, the
+watt-hours of its runs that land in signatures the device dominates (>= 50 %
+of the signature's energy) against the device's energy above its idle draw
+(the level it holds a tenth of the time, by time). Precision = of those
+signatures' energy, the device's share; recall = of the device's energy, the
+share caught; F0.5 weighs precision (under-reporting is the lesser evil). It
+also lists the signatures holding most detected energy and, per device, where
+its energy went. `PLANT=watts:on_s:every_s:phase` adds a square-wave load to
+the house reading (and the grid meter's power and current) to score a load no
+meter watches. 2026-09-30, 20 days: Kozolec new 72.7 / 67.5 % (old 78.0 /
+66.6; the boiler 68 -> 82 % precise, the water pump 13 -> 52 % caught, the
+pond EVSE 90 -> 75 % precise); Home new 55.8 / 10.1 % (old: no signature
+reaches 50 % of any device). The Home number is the blob: one signature with
+16,876 runs and ~470 kWh holding 4-9 % of every device's energy.
+
 ### How to tune without fooling yourself
 
 - **Sweep the dial; a single trial is not a verdict.** A degradation says that
@@ -654,6 +672,44 @@ before until a `reset_detection` re-runs the backfill.
 ## Things already ruled out
 
 Don't re-chase these; each cost real time.
+
+- **All-phase events read off the raw house readings** (2026-09-30, Anze's window
+  rule: each phase's level from the K readings nearest the step on each side,
+  the window reaching at most 30 s and cut at the previous / next trigger on any
+  phase, components under the phase's noise zero). Against 5,100 meter-labelled
+  events at Home the vectors score V 0.257 / 0.320 / 0.375 for K 1 / 2 / 3, the
+  detector's own per-phase groups 0.47 on the same events; 45 % of events come
+  out multi-phase, the single-phase hidrofor among them ('ab' 384, 'abc' 265 of
+  2,689). The house reading is the grid meter and the inverter combined, so PV
+  swings and combination transients move all three phases together, and a
+  level difference between two windows cannot tell that from a load. Joining
+  per-phase DETECTED steps by time (V 0.466, device-in-top 0.387 vs 0.489 /
+  0.322 per phase) is the viable form of a multi-phase event; scripts
+  `vector_events_c.py` (raw windows) and `vector_events.py` (joined steps).
+- **Capping an edge cluster's width** at what the meter resolves (8 units of the
+  size scale, a noise either side at small steps, ~8 % at large; segments cut
+  at their thinnest interior points), meant to break the catch-all groups
+  (Home's phase C group #21: 10-700 W, 2,881 steps). Widths 6 / 8 / 12: Home
+  purity 72.1 / 81.4 / 78.9 (86.2 without), wconc 67-74 (86.0), the mat's hours
+  outside heating 140 h (2.4 h), pump clean 1048-1064 (1157), Kozolec wconc
+  98.9 -> 89.6 (the variable-speed hidrofor over 18 signatures). Narrower
+  segments leave too few thermostat-keyed steps per segment to clear the chance
+  test, so the mat loses its keyed cluster and lands in the blob; and a
+  variable load IS a continuum. The blob is not the cluster's width: it is one
+  device chained from many rise clusters (see the energy bench).
+- **Apparent power (V x I) as a fingerprint.** The step in |S| depends on the
+  baseline's reactive and active power - a 1 kW load at PF 0.9 moves |S| by
+  0.80-1.09 kVA depending on what else runs - and an inductive load can cancel
+  a capacitive baseline and read resistive. Only the SIGNED reactive step dQ is
+  the load's own (vars add; magnitudes do not), and given dP and dQ, S and PF
+  follow, so a separate apparent-power feature adds nothing. Where the var is
+  signed (Home's m1 from 2026-09-30) the coordinate to cluster on is dQ itself
+  with the var resolution as its error bar, not the ratio PF (a flat 0.15 PF
+  tolerance lumps 2 kW at 0.98 and 0.99, 120 var apart). Where it is V x I
+  there is no usable reactive feature. Benched: ignoring reactive power
+  entirely (`NOQ=1`) changes nothing at either site - no filing decision reads
+  PF any more (`Signature.matches` was dead and is gone; `alike` serves only
+  the orphan names), so the V x I factor is description only.
 
 - **Home's kiln ladder** (one flat 2-phase load appearing as ~16 signatures at
   descending powers) is *not*: PV/template skew (it fires at night, 0-5 %

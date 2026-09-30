@@ -2158,29 +2158,6 @@ class Signature:
     duration_mad: float = 0.0
     interval_mad: Optional[float] = None
 
-    def matches(self, s: Session, noise_w: float) -> Optional[float]:
-        """A score in (0, 1] when ``s`` fits, None when it does not.
-
-        A coarsely-measured session gets a wider power band: a 43-second run
-        read every 5 s is eight numbers, and holding that to the same
-        tolerance as a run read forty-three times is asking the meter for
-        precision it never had."""
-        if s.phases != self.phases:
-            return None
-        pw = s.power_by_phase()
-        score = 1.0
-        rel = MATCH_POWER_REL / max(0.25, s.confidence)
-        for ph in self.phases:
-            mine, theirs = self.power.get(ph, 0.0), pw.get(ph, 0.0)
-            tol = power_tolerance(max(rel * max(mine, theirs), noise_w), self.power_mad)
-            if abs(mine - theirs) > tol:
-                return None
-            score *= 1.0 - abs(mine - theirs) / (2 * tol)
-        if self.pf is not None and s.pf is not None and \
-                abs(self.pf - s.pf) > pf_tolerance(self.pf_mad, s.pf_mad):
-            return None
-        return score
-
     def alike(self, other: "Signature", noise_w: float) -> bool:
         """Would these two be the same signature if they arrived now?
 

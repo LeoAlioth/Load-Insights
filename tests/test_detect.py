@@ -741,12 +741,6 @@ def test_how_well_a_run_was_measured_decides_its_weight_and_its_tolerance():
     assert coarse.confidence < fine.confidence
     assert D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
 
-    # the coarse one is admitted at a power the fine one is not
-    sig = _sig(1, 3000.0, 40.0, None, 50)
-    off = lambda n: D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3450.0)]}, samples=n)
-    assert sig.matches(off(4), 50.0) is not None, "a coarsely measured run needs a wider band"
-    assert sig.matches(off(40), 50.0) is None, "a well measured run does not"
-
     # and it pulls the running mean less far
     lax = _sig(2, 3000.0, 40.0, None, 10)
     strict = _sig(3, 3000.0, 40.0, None, 10)
@@ -2630,3 +2624,4 @@ def test_a_slow_meters_silence_is_a_held_value():
 
 if __name__ == "__main__":
     run_main(globals())
+
