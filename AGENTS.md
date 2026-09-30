@@ -107,13 +107,18 @@ ones; the ten-day baseline is stated where it was first measured below.
 
 **Ten-day results on `phase-events` (2026-09-30 evening): starts as all-phase
 events (EVENT_WINDOW_INTERVALS 3, EVENT_BALANCE 0.2), a device its start
-cluster, runs filed on their own phases:** Home purity 82.5 %, wconc 59.7 %
-(hidrofor 74 % in one signature of 57), the mat 43.7 h / 1.9 h outside heating
-/ caught 55 %, kiln 455 / 47, pump 444 clean / 20 missing of 665; Kozolec
-99.9 / 93.3 %, fridges 75 of 91; energy Home 649 kWh detected, the pump's
-signature 1,069 runs at 36 % pump (its cluster still holds another ~900 W
-single-phase load on A), Kozolec 73.4 / 74.1 %. The compressor is one
-three-leg cluster (296 events, 2.5 kW) and the kiln one A+C cluster (485).
+cluster, runs filed on their own phases, an event closed after the window
+plus the sustain time:** Home purity 80.9 %, wconc 56.9 % (hidrofor 72 % in
+one signature of 62), the mat 42.6 h / 1.8 h outside heating / caught 53 %,
+kiln 454 / 53, pump 452 clean / 17 missing of 665; Kozolec 99.9 / 93.7 %,
+fridges 68 of 89; energy Home 674 kWh detected, the pump's signature 1,024
+runs at 30 % pump (its cluster still holds another ~900 W single-phase load
+on A), Susilna 17 % caught (7 before). The compressor is one three-leg
+cluster (315 events, 2.5 kW) and the kiln one A+C cluster (490). Against the
+ten-day baseline below: purity +5.4, wconc -1.7, kiln single-legs 65 -> 53,
+pump 443 -> 452 clean. With the event closed at the window alone (a leg at
+the edge not yet declared): 82.5 / 59.7, kiln 455 / 47, pump 444 - within a
+point or two, and the wait is right by construction.
 
 **Ten-day baseline (2026-09-30 afternoon, Home 19-28 Sep with the thermostat,
 Kozolec 20-29 Sep), steps per phase, filing on the run's own phases:** Home purity 75.5 %, wconc 58.6 %
