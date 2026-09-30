@@ -298,12 +298,16 @@ EDGE_RECUT = 32                # steps into a group before its segments are cut 
 # compressor (~840 W a leg) and its single-phase pump (~900 W on A) are the
 # same size on A and both motors; per phase they shared one cluster and the
 # compressor's legs chained the pump into its device. As events they are
-# (840, 850, 830) and (900, 0, 0). Measured 2026-09-30 on ten days: the legs
-# are seen within 5 s in 92 % of the cases they are seen at all (median offset
-# 0.0 s, 90th percentile 4.2 s); the pump gets a false companion within 5 s
-# 1 % of the time. A real multi-phase load shows on its other phases at far
-# more than 20 % (Anze). Rises only: a fall pairs on its own phase.
-EVENT_WINDOW_S = 5.0
+# (840, 850, 830) and (900, 0, 0). The legs switch together; what spreads
+# them on the meter is the reading cadence - each phase's step is stamped at
+# the first reading that shows it - so the window is that many of the slowest
+# phase's intervals (Anze: from the sensor's readout, not a constant). Home's
+# phases tick every 2 s and the legs' offsets there run to 4.2 s at the 90th
+# percentile, 0.0 s median (ten days, 2026-09-30); the pump gets a false
+# companion within 5 s 1 % of the time. A real multi-phase load shows on its
+# other phases at far more than 20 % (Anze). Rises only: a fall closes a run
+# on its own phase at once, so it keeps its per-phase cluster.
+EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
@@ -1689,7 +1693,7 @@ class PhaseState:
             o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid)
             self.open_edges.append(o)
             if self.lib is not None:
-                self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_S
+                self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_INTERVALS
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
             return ended
@@ -3225,7 +3229,7 @@ class Detector:
     # fleet to file as edges; and phase -> [(since, cluster id, watts)] of the
     # recent ones, so a run filed later still finds its edges. Never persisted.
     edge_at: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
-    # rises waiting EVENT_WINDOW_S for companions on other phases; never persisted
+    # rises waiting the event window for companions on other phases; never persisted
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
@@ -3583,8 +3587,8 @@ class Detector:
 
     def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> Optional[int]:
         """Which cluster a fall belongs to, at once. A rise gets its cluster
-        through note_rise, once EVENT_WINDOW_S has shown which other phases
-        rose with it - see EVENT_WINDOW_S."""
+        through note_rise, once the event window has shown which other
+        phases rose with it - see EVENT_WINDOW_INTERVALS."""
         if watts > 0:
             return None
         cluster = self._classify_step(ph, since, watts, var, surge)
@@ -3596,20 +3600,26 @@ class Detector:
         self._pending.append({"since": o.since, "ph": state.name, "watts": o.watts, "var": o.var,
                               "surge": o.surge, "open": o})
 
+    def event_window(self) -> float:
+        """How long rises on different phases may lie apart and be one event:
+        EVENT_WINDOW_INTERVALS of the slowest phase's reading interval."""
+        return EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.phases.values()) if self.phases else 0.0
+
     def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
-        """Rises older than EVENT_WINDOW_S (all of them when ``final``) become
-        events with whatever rose beside them, get their cluster, and end an
-        older open run of the same cluster on their phase. Returns the runs
-        so ended, with their phase."""
+        """Rises older than the event window (all of them when ``final``)
+        become events with whatever rose beside them, get their cluster, and
+        end an older open run of the same cluster on their phase. Returns the
+        runs so ended, with their phase."""
         out: List[Tuple[str, "Session"]] = []
+        window = self.event_window()
         pend = sorted(self._pending, key=lambda x: x["since"])
         while pend:
             first = pend[0]
-            if not final and now - first["since"] < EVENT_WINDOW_S:
+            if not final and now - first["since"] < window:
                 break
             members, phases = [first], {first["ph"]}
             for q in sorted(pend[1:], key=lambda x: abs(x["since"] - first["since"])):
-                if q["ph"] in phases or abs(q["since"] - first["since"]) > EVENT_WINDOW_S:
+                if q["ph"] in phases or abs(q["since"] - first["since"]) > window:
                     continue
                 ws = [m["watts"] for m in members] + [q["watts"]]
                 if min(ws) < EVENT_BALANCE * max(ws):
