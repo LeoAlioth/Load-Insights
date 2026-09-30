@@ -73,6 +73,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                 continue
             entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
     add(entities)
+    if detection is not None:
+        known = set(detection.detector.names())
+
+        @callback
+        def _follow_names() -> None:
+            """A name that lands after setup gets its entities at once. After a
+            reset the library is empty at setup and the carried names find
+            their loads only during the re-read; until 2026-09-30 every named
+            load then stayed unavailable until the next reload."""
+            new = [n for n in detection.detector.names() if n not in known]
+            if not new:
+                return
+            known.update(new)
+            add([e for n in new if not detection.metered_device(n)
+                 for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n))])
+
+        detection.add_listener(_follow_names)
 
 
 def _forget(hass: HomeAssistant, domain: str, unique_id: str) -> None:
