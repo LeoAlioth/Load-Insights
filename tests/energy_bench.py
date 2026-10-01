@@ -145,7 +145,11 @@ def _overlap(ivs: list, a: float, b: float) -> float:
 
 def energy(site: str, folder: str, dials: list) -> dict:
     plants = [d[6:] for d in dials if d.startswith("PLANT=")]
-    tag = B._apply([d for d in dials if not d.startswith("PLANT=")])
+    # QGATE=x: only runs whose quality is at least x have their energy
+    # attributed - the rest are detected but left as no one's (see
+    # QUALITY_SNR_FULL in detect.py)
+    gate = next((float(d[6:]) for d in dials if d.startswith("QGATE=")), 0.0)
+    tag = B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE="))]) + (f" QGATE={gate:g}" if gate else "")
     install(plants)
     det, filed, subs = B._run(folder, site)
     devices = B._labels_from(folder, site, subs)
@@ -167,8 +171,12 @@ def energy(site: str, folder: str, dials: list) -> dict:
     for name, watts, _, ivs in PLANTS:
         truth[name] = watts * sum(b - a for a, b in ivs) / 3600.0
     per_sig: dict = {}
+    gated = 0.0
     for s in filed:
         if s.energy_wh <= 0:
+            continue
+        if s.quality < gate:
+            gated += s.energy_wh
             continue
         # the signature it stands in now, merges followed; one since evicted
         # still counts - its runs were detected and their energy written
@@ -195,7 +203,8 @@ def energy(site: str, folder: str, dials: list) -> dict:
             got[best]["sigs"].append((sid, row["n"], round(row["total"] / 1000.0, 2), round(row[best] / row["total"], 2)))
     out = {"site": site, "dials": tag, "devices": {}}
     total = sum(r["total"] for r in per_sig.values())
-    print(f"  {tag}   {len(per_sig)} signatures with energy, {total/1000:.0f} kWh detected in all")
+    print(f"  {tag}   {len(per_sig)} signatures with energy, {total/1000:.0f} kWh detected in all"
+          + (f", {gated/1000:.0f} kWh more left unattributed below quality {gate:g}" if gate else ""))
     # the signatures holding most of the detected energy: a blob here is
     # energy no name will ever fit
     big = sorted(per_sig.items(), key=lambda kv: -kv[1]["total"])[:5]
