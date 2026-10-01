@@ -24,7 +24,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench as B  # noqa: E402
 
-D, R = B.D, B.R
 PLANTS: list = []          # (name, watts, phase, [(on, off), ...])
 GRID = "sensor.solaredge_se17k_m1_ac_"
 SETS = {"set1": ["1200:480:18000:a", "150:1200:10800:b", "40:2700:7200:b"]}
@@ -56,17 +55,16 @@ def _square(rows: list, ivs: list, amp) -> list:
     return out
 
 
-def install(plants: list) -> None:
-    """Plant the loads under whatever reader the bench installed."""
+def planted(plants: list):
+    """The series with the loads planted, for the bench to build its house
+    from - or None, nothing to plant."""
     specs = []
     for p in plants:
         specs += SETS.get(p, [p])
     if not specs:
-        return
-    orig = B._read_csv
+        return None
 
-    def read(paths, keep):
-        s = orig(paths, keep)
+    def plant(s):
         for k, spec in enumerate(specs):
             watts, on_s, every_s, ph = spec.split(":")
             watts, on_s, every_s = float(watts), float(on_s), float(every_s)
@@ -90,9 +88,7 @@ def install(plants: list) -> None:
                         return (abs(g - lv * watts) - abs(g)) / max(B._at(volts, ts, 230.0), 100.0)
                     s[f"{GRID}current_{ph}"] = _square(amps, ivs, more)
         return s
-    if R.read_csv is orig:
-        R.read_csv = read
-    B._read_csv = read
+    return plant
 
 
 def _above(rows: list, times: list, a: float, b: float, floor: float) -> float:
@@ -142,8 +138,8 @@ def energy(site: str, folder: str, dials: list) -> None:
     # QUALITY_SNR_FULL in detect.py)
     gate = next((float(d[6:]) for d in dials if d.startswith("QGATE=")), 0.0)
     tag = B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE="))]) + (f" QGATE={gate:g}" if gate else "")
-    install(plants)
-    det, filed, subs = B._run(folder, site)
+    fleet, filed, subs = B._run(folder, site, planted(plants))
+    det = fleet.main
     devices = B._labels_from(folder, site, subs)
     truth: dict = {}
     floors: dict = {}

@@ -21,8 +21,8 @@ matches a device's sensors, and anything it gets wrong can be pinned with
 """
 import argparse
 import bisect
-import math
 import csv
+import math
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -86,14 +86,15 @@ def expand(paths):
 ON_STATES = {"on", "heating", "cooling", "drying"}
 
 
-def read_states(paths, entity_id):
-    """An entity's TEXT states over time [(ts, state)] - a washer's cycle
-    phase, a fan's speed exported as its own series."""
-    rows = []
+def _rows(paths, entity_id=None):
+    """(entity_id, epoch seconds, state) for every row of the exports, or of
+    one entity's; an id renamed since is read as its new one."""
     for path in expand(paths):
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                if (row.get("entity_id") or "").strip() != entity_id:
+                eid = (row.get("entity_id") or "").strip()
+                eid = RENAMED.get(eid, eid)       # history from before a rename
+                if not eid or (entity_id and eid != entity_id):
                     continue
                 when = (row.get("last_changed") or row.get("last_updated") or "").strip()
                 try:
@@ -102,30 +103,20 @@ def read_states(paths, entity_id):
                     continue
                 if moment.tzinfo is None:
                     moment = moment.replace(tzinfo=timezone.utc)
-                state = (row.get("state") or "").strip()
-                if state and state not in ("unknown", "unavailable"):
-                    rows.append((moment.timestamp(), state))
-    return sorted(set(rows))
+                yield eid, moment.timestamp(), (row.get("state") or "").strip()
+
+
+def read_states(paths, entity_id):
+    """An entity's TEXT states over time [(ts, state)] - a washer's cycle
+    phase, a fan's speed exported as its own series."""
+    return sorted({(ts, state) for _, ts, state in _rows(paths, entity_id)
+                   if state and state not in ("unknown", "unavailable")})
 
 
 def read_switch(paths, entity_id):
     """An entity's on-periods [(on, off)] from the exports' TEXT states - on,
     or a thermostat's heating (its hvac_action exported as its own series)."""
-    rows = []
-    for path in expand(paths):
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                if (row.get("entity_id") or "").strip() != entity_id:
-                    continue
-                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
-                try:
-                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if moment.tzinfo is None:
-                    moment = moment.replace(tzinfo=timezone.utc)
-                rows.append((moment.timestamp(), (row.get("state") or "").strip().lower() in ON_STATES))
-    rows.sort()
+    rows = sorted((ts, state.lower() in ON_STATES) for _, ts, state in _rows(paths, entity_id))
     spans, on = [], None
     for t, is_on in rows:
         if is_on and on is None:
@@ -138,33 +129,18 @@ def read_switch(paths, entity_id):
     return spans
 
 
-def read_csv(paths, keep_coarse=False):
+def read_csv(paths, keep_coarse=False, say=print):
     """entity_id -> [(epoch seconds, value)], numbers only, in time order.
 
     Order across files does not matter, and the overlap between one day's
     export and the next is harmless: rows are sorted and de-duplicated."""
     series = defaultdict(list)
-    paths = expand(paths)
-    for path in paths:
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                eid = (row.get("entity_id") or "").strip()
-                eid = RENAMED.get(eid, eid)       # history from before a rename
-                raw = (row.get("state") or "").strip()
-                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
-                if not eid or not when:
-                    continue
-                try:
-                    value = float(raw)
-                except ValueError:
-                    continue                      # unavailable, unknown, a text state
-                try:
-                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if moment.tzinfo is None:
-                    moment = moment.replace(tzinfo=timezone.utc)
-                series[eid].append((moment.timestamp(), value))
+    for eid, ts, raw in _rows(paths):
+        try:
+            value = float(raw)
+        except ValueError:
+            continue                              # unavailable, unknown, a text state
+        series[eid].append((ts, value))
     out, coarse = {}, 0
     for eid, rows in series.items():
         rows.sort()
@@ -174,12 +150,12 @@ def read_csv(paths, keep_coarse=False):
             coarse += gone
         out[eid] = rows
     if coarse:
-        print(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
-    print(f"read {len(paths)} file(s)")
+        say(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
+    say(f"read {len(expand(paths))} file(s)")
     return out
 
 
-def guess_roles(series):
+def guess_roles(series, say=print):
     """Which entity is which per-phase reading, by the live matcher.
 
     With one correction the live flow does not need. There, the user picks a
@@ -205,20 +181,9 @@ def guess_roles(series):
                   and D.carries_generation(series[r["entity_id"]]) is False]
         if better:
             pick = max(better, key=lambda e: DISCOVERY._score(e, e, "load") or 0)
-            print(f"   ({chosen} carries generation - using {pick} for phase {p.upper()})")
+            say(f"   ({chosen} carries generation - using {pick} for phase {p.upper()})")
             fields[f"power_{p}"] = pick
     return fields
-
-
-def align(source, target_rows):
-    """``source`` read as of each of ``target_rows``' moments."""
-    out, i = {}, 0
-    for ts, _ in target_rows:
-        while i + 1 < len(source) and source[i + 1][0] <= ts:
-            i += 1
-        if source and source[0][0] <= ts:
-            out[ts] = source[i][1]
-    return out
 
 
 def pseudo_device(entity_id: str) -> str:
@@ -267,53 +232,21 @@ def device_kind_phase(entity_id: str):
 
 
 def reactive(power_rows, volts, amps, pfs, signed=None, vas=None):
-    """As production's _reactive: the meter's own signed reactive power where
-    it covers the window, else the root of S squared minus P squared - S the
-    meter's own apparent power, then V x I, then P over the power factor."""
-    import math
-    if signed and power_rows:
-        # production decides this per pass, minutes at a time: the passes
-        # after the meter's own VAr began read it, the ones before do not.
-        # Decided once for the whole replay, a VAr enabled on the last day
-        # (Home's grid meter, 30.09 07:57) was never read at all.
-        start = signed[0][0]
-        before = [r for r in power_rows if r[0] < start]
-        out = reactive(before, volts, amps, pfs, None, vas) if before else {}
-        si = 0
-        for ts, _ in power_rows:
-            if ts < start:
-                continue
-            while si + 1 < len(signed) and signed[si + 1][0] <= ts:
-                si += 1
-            out[ts] = signed[si][1]
-        return out
-    out = {}
-    vi = ai = fi = si = 0
-    volts, amps, pfs, vas = volts or [], amps or [], pfs or [], vas or []
-
-    def walk(rows, ts, i):
-        while i + 1 < len(rows) and rows[i + 1][0] <= ts:
-            i += 1
-        return i if rows and rows[0][0] <= ts else -1
-
-    for ts, p in power_rows:
-        vi, ai, fi = walk(volts, ts, max(vi, 0)), walk(amps, ts, max(ai, 0)), walk(pfs, ts, max(fi, 0))
-        si = walk(vas, ts, max(si, 0))
-        same = lambda rows, i: i + 1 if i + 1 < len(rows) and rows[i + 1][0] - ts <= 1.0 else i   # production's _with_update
-        v, a, f, s = same(volts, vi), same(amps, ai), same(pfs, fi), same(vas, si)
-        apparent = None
-        if s >= 0:
-            apparent = vas[s][1]
-        elif v >= 0 and a >= 0:
-            apparent = volts[v][1] * amps[a][1]
-        elif f >= 0 and pfs[f][1]:
-            apparent = abs(p) / abs(pfs[f][1])
-        if apparent is not None:
-            out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
+    """Production's _reactive, with the meter's own signed reactive power
+    taken from its first reading on. Production decides per pass, minutes at
+    a time: the passes after the meter's own VAr began read it, the ones
+    before do not. Decided once for the whole replay, a VAr enabled on the
+    last day (Home's grid meter, 30.09 07:57) was never read at all."""
+    if not (signed and power_rows):
+        return D._reactive(power_rows, volts, amps, pfs, None, vas)
+    start = signed[0][0]
+    before = [r for r in power_rows if r[0] < start]
+    out = D._reactive(before, volts, amps, pfs, None, vas) if before else {}
+    out.update(D._reactive([r for r in power_rows if r[0] >= start], volts, amps, pfs, signed, vas))
     return out
 
 
-def main() -> int:
+def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", nargs="+", help="History panel exports")
     parser.add_argument("--role", action="append", default=[],
@@ -350,57 +283,53 @@ def main() -> int:
                         help="ignore reactive power entirely")
     parser.add_argument("--rates", action="store_true",
                         help="print each entity's sampling rate and stop")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    series = read_csv(args.csv, args.keep_coarse)
-    if args.rates:
-        for eid, rows in sorted(series.items()):
-            if len(rows) < 3:
-                print(f"  {eid:62} {len(rows)} rows")
-                continue
-            gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
-            span = (rows[-1][0] - rows[0][0]) / 86400.0
-            print(f"  {eid:62} {len(rows):>8} rows, {span:5.1f} days, "
-                  f"median gap {gaps[len(gaps) // 2]:6.1f} s")
-        return 0
+
+def run(args, transform=None, say=print):
+    """Replay the exports ``args`` (see parse) through a Fleet, as production
+    would have read them; ``transform`` may rebuild the series first.
+    Returns the Fleet, every session its house detector filed (in order),
+    and each sub-meter's series as the Fleet was fed it, its phases summed."""
+    series = read_csv(args.csv, args.keep_coarse, say)
+    if transform:
+        series = transform(series)
     if not series:
-        print("no numeric rows found - is this a History panel export?")
-        return 1
-    fields = guess_roles(series)
+        raise SystemExit("no numeric rows found - is this a History panel export?")
+    fields = guess_roles(series, say)
     for pin in args.role:
         key, _, eid = pin.partition("=")
         fields[key.strip()] = eid.strip()
     fields = {k: v for k, v in fields.items() if v in series}
 
     span = [t for rows in series.values() for t, _ in rows]
-    print(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
-          f"{(max(span) - min(span)) / 86400:.1f} days")
-    print("matched:")
+    say(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
+        f"{(max(span) - min(span)) / 86400:.1f} days")
+    say("matched:")
     for key in sorted(fields):
-        print(f"   {key:12} {fields[key]}")
+        say(f"   {key:12} {fields[key]}")
     phases = [p for p in D.PHASES if fields.get(f"power_{p}")]
     if not phases:
-        print("no per-phase power found - pin one with --role power_a=sensor.x")
-        return 1
+        raise SystemExit("no per-phase power found - pin one with --role power_a=sensor.x")
 
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
     q = {}
     q_quantum = {}
     if not args.no_q:
         trios = coherent_triples(series, fields, phases)
-        print("reactive power from:")
+        say("reactive power from:")
         for p in phases:
             if p not in trios:
-                print(f"   {p.upper()}: no meter publishes power, voltage and current together")
+                say(f"   {p.upper()}: no meter publishes power, voltage and current together")
                 continue
             pw, v, i = trios[p]
             signed = next((e for e in series if device_kind_phase(e) == ("reactive_power", p)
                            and pseudo_device(e) == pseudo_device(pw)), None)
-            print(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
+            say(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
             var = reactive(series[pw], series.get(v), series.get(i), None, series.get(signed) if signed else None)
             if var:
                 # held forward onto the load reading's own sample times
-                q[p] = align(sorted(var.items()), samples[p])
+                q[p] = D._align(sorted(var.items()), samples[p])
             # ...and what those amps can resolve, the same way production
             # measures it, so the preview is not kinder than the real thing
             amps, volts = series.get(i) or [], series.get(v) or []
@@ -409,21 +338,21 @@ def main() -> int:
                 if dq:
                     lvl = sorted(x for _, x in volts)[len(volts) // 2]
                     q_quantum[p] = dq * lvl
-                    print(f"      amps resolve {dq:g} A -> {dq * lvl:.1f} VA per quantum; "
-                          f"no power factor under {D.PF_MIN_QUANTA * dq * lvl:.0f} W")
+                    say(f"      amps resolve {dq:g} A -> {dq * lvl:.1f} VA per quantum; "
+                        f"no power factor under {D.PF_MIN_QUANTA * dq * lvl:.0f} W")
     pv = {}
     for eid in args.pv:
         rows = series.get(eid)
         if not rows:
-            print(f"   (no rows for {eid})")
+            say(f"   (no rows for {eid})")
             continue
         for p in phases:
             bucket = pv.setdefault(p, {})
-            for ts, watts in align(rows, samples[p]).items():
+            for ts, watts in D._align(rows, samples[p]).items():
                 bucket[ts] = bucket.get(ts, 0.0) + watts
     for p in list(pv):
         verdict = D.carries_generation(samples[p])
-        print(f"   array shows in phase {p.upper()}: {verdict}")
+        say(f"   array shows in phase {p.upper()}: {verdict}")
         if verdict is False:
             pv.pop(p)
 
@@ -454,9 +383,9 @@ def main() -> int:
                     if pf or va:
                         var = reactive(prow, None, None, pf, None, va)
                         if var:
-                            sub_q.setdefault(name.strip(), {})[p] = align(sorted(var.items()), prow)
+                            sub_q.setdefault(name.strip(), {})[p] = D._align(sorted(var.items()), prow)
                 if name.strip() in sub_q:
-                    print(f"   {name.strip()}: reactive power from its apparent power or power factor on {''.join(sorted(sub_q[name.strip()]))}")
+                    say(f"   {name.strip()}: reactive power from its apparent power or power factor on {''.join(sorted(sub_q[name.strip()]))}")
 
     # entities that say when a load is on, read as text: on-periods
     switch_spans = {}
@@ -466,9 +395,9 @@ def main() -> int:
     drivers = {eid.strip(): sorted(series.get(eid.strip()) or []) for eid in args.driver}
     inputs = {eid.strip(): read_states(args.csv, eid.strip()) for eid in args.input}
     for eid, rows in inputs.items():
-        print(f"input {eid}: {len(rows)} changes")
+        say(f"input {eid}: {len(rows)} changes")
     for eid, rows in drivers.items():
-        print(f"driver {eid}: {len(rows)} readings")
+        say(f"driver {eid}: {len(rows)} readings")
 
     def held(rows, a, b):
         """[a - SWITCH_MEMORY_S, b) as production reads it: with the value in
@@ -478,7 +407,12 @@ def main() -> int:
         return rows[max(i - 1, 0):bisect.bisect_left(ts, b)]
     fleet = D.Fleet()
     fleet.wait_cap_s = D.METER_WAIT_CAP_S          # as production's default; METER_WAIT_CAP_S=0 to judge at once
-    fleet.main.tz_offset_s = 0.0
+    filed, fed, file = [], {}, fleet.main._file
+
+    def keep(s, *a, **kw):                          # every session the house files, for the bench
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
@@ -510,10 +444,15 @@ def main() -> int:
             e = min(t + args.live_pass_s, latest + 1e-6)         # then pass by pass, as a caught-up site
         # sliced the way the recorder answers, then cleaned the way production
         # cleans it, so both paths are the same code
+        sub_slice = {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
+                     for n, byp in subs.items()}
+        for n, byp in sub_slice.items():
+            merged = []                                 # this slice's phases summed...
+            for rows in byp.values():
+                merged = D._sum_series(merged, list(rows))
+            fed.setdefault(n, []).extend(merged)         # ...after the last slice's
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
-                      {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
-                       for n, byp in subs.items()},
-                      q, sub_q or None, e, agnostic, pv or None, q_quantum,
+                      sub_slice, q, sub_q or None, e, agnostic, pv or None, q_quantum,
                       single={n: n in args.single for n in subs} if args.single else None,
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
@@ -521,7 +460,22 @@ def main() -> int:
                       drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
                       inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None)
         t = e
-    detector = fleet.main
+    return fleet, filed, {k: sorted(v) for k, v in fed.items() if v}
+
+
+def main() -> int:
+    args = parse(sys.argv[1:])
+    if args.rates:
+        for eid, rows in sorted(read_csv(args.csv, args.keep_coarse).items()):
+            if len(rows) < 3:
+                print(f"  {eid:62} {len(rows)} rows")
+                continue
+            gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
+            span = (rows[-1][0] - rows[0][0]) / 86400.0
+            print(f"  {eid:62} {len(rows):>8} rows, {span:5.1f} days, "
+                  f"median gap {gaps[len(gaps) // 2]:6.1f} s")
+        return 0
+    detector = run(args)[0].main
     # The detector's OWN measured noise, which is what production passes.
     print()
     print(f"{len(detector.signatures)} signatures from "

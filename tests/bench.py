@@ -55,8 +55,6 @@ from __future__ import annotations
 
 import bisect
 import collections
-import contextlib
-import io
 import sys
 from pathlib import Path
 
@@ -130,7 +128,6 @@ PROD_SINGLE = {
 }
 # the Energy dashboard's nesting among PROD_SUBS (2026-09-30); Kozolec's all hang under its inverter
 PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda"}}
-LAST_FLEET = None                      # the Fleet of the last _run, for attrib
 # the bench's own dials, each a global of the same name - see _apply
 SUBS = "lab"
 HOUSE = ""                             # HOUSE=prod - see the docstring
@@ -154,7 +151,6 @@ PHYSICS = {
     "NASA station": "electronic", "Server UPS": "electronic", "EVBox": "electronic",
     "Pond EVSE": "electronic", "Pastir": "electronic", "Bug lamp": "electronic",
 }
-_read_csv = R.read_csv
 HOUSE_IDS = {p: f"sensor.se17k_home_power_phase_{p}" for p in "abc"}
 
 def _peak(s) -> float:
@@ -176,10 +172,9 @@ def _near(sessions):
     return lambda t, tol: got[bisect.bisect_left(starts, t - tol):bisect.bisect_right(starts, t + tol)]
 
 
-def _prod_house(paths, keep):
+def _prod_house(s: dict) -> dict:
     """Home's house reading the way production builds it: the grid meter
     negated plus a third of the inverter, through combine()."""
-    s = _read_csv(paths, keep)
     inv = s.get("sensor.solaredge_se17k_i1_ac_power")
     if inv:
         for p in "abc":
@@ -206,45 +201,25 @@ def _apply(dials) -> str:
             raise SystemExit(f"no such dial: {k}")
     if HOUSE not in ("", "prod"):
         raise SystemExit(f"HOUSE={HOUSE}: prod is the only house left")
-    if HOUSE == "prod":
-        R.read_csv = _prod_house
     return " ".join(dials) or "defaults"
 
 
 _RUNS: dict = {}
 
 
-def _run(folder: str, site: str | None):
-    """Replay a folder; return the main detector, every session it filed, and
-    each sub-meter's full series. Once per folder and site in a process, so
-    `home` scores the kiln, the pump and the mat off one replay."""
+def _run(folder: str, site: str | None, before=None):
+    """Replay a folder; return the Fleet, every session its house detector
+    filed, and each sub-meter's full series. Once per folder and site in a
+    process, so `home` scores the kiln, the pump and the mat off one replay.
+    ``before`` may rebuild the series before the house is built from them
+    (energy_bench's planted loads)."""
     if (folder, site) not in _RUNS:
-        _RUNS[(folder, site)] = _replay(folder, site)
+        _RUNS[(folder, site)] = _replay(folder, site, before)
     return _RUNS[(folder, site)]
 
 
-def _replay(folder: str, site: str | None):
-    filed, seen, full = [], {}, {}
-    of, op = D.Detector._file, D.Fleet.process
-
-    def spy_file(self, s, *a, **kw):
-        of(self, s, *a, **kw)
-        if self is seen.get("main"):
-            filed.append(s)
-
-    def spy_proc(self, m, sub, *a, **kw):
-        seen["main"] = self.main
-        global LAST_FLEET
-        LAST_FLEET = self
-        for name, byp in (sub or {}).items():
-            merged = []                   # this slice's phases summed...
-            for rows in byp.values():
-                merged = D._sum_series(merged, list(rows))
-            full.setdefault(name, []).extend(merged)     # ...after the last slice's
-        return op(self, m, sub, *a, **kw)
-
-    D.Detector._file, D.Fleet.process = spy_file, spy_proc
-    argv = ["replay.py", folder, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
+def _replay(folder: str, site: str | None, before=None):
+    argv = [folder, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
     if LIVE:
         argv += ["--live-days", str(LIVE)]
     if NOQ:
@@ -269,14 +244,11 @@ def _replay(folder: str, site: str | None):
     elif site:
         for n, e in SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]
-    saved, sys.argv = sys.argv, argv
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            R.main()
-    finally:
-        sys.argv = saved
-        D.Detector._file, D.Fleet.process = of, op
-    return seen["main"], filed, {k: sorted(v) for k, v in full.items() if v}
+
+    def transform(s):
+        s = before(s) if before else s
+        return _prod_house(s) if HOUSE == "prod" else s
+    return R.run(R.parse(argv), transform, say=lambda *a, **k: None)
 
 
 def _labels_from(folder: str, site: str, fed: dict) -> dict:
@@ -285,7 +257,7 @@ def _labels_from(folder: str, site: str, fed: dict) -> dict:
     would 'label' half the house."""
     if SUBS != "prod":
         return fed
-    s = _read_csv([folder], False)
+    s = R.read_csv([folder], False)
     return {n: sorted(s[e]) for n, e in SITES[site]["subs"].items() if s.get(e)}
 
 
@@ -367,7 +339,8 @@ def attrib(site: str, folder: str, dials) -> None:
     global SUBS
     SUBS = "prod"
     tag = _apply(dials)
-    det, filed, fed = _run(folder, site)
+    fleet, filed, fed = _run(folder, site)
+    det = fleet.main
     labels = label(filed, _labels_from(folder, site, fed))
     per = collections.defaultdict(lambda: [0, 0])
     for i, name in labels.items():
@@ -389,15 +362,16 @@ def attrib(site: str, folder: str, dials) -> None:
     print(f"  {'':44s} placed at: " + "  ".join(
         f"{n.split()[0]}->" + ",".join(f"{w}:{c}" for w, c in where[n].most_common(3))
         for n in sorted(where, key=lambda n: -sum(where[n].values())) if sum(where[n].values()) >= 20))
-    maps = {n: LAST_FLEET.phase_map(n) for n in LAST_FLEET.phase_votes}
+    maps = {n: fleet.phase_map(n) for n in fleet.phase_votes}
     print(f"  {'':44s} phase maps: " + "; ".join(
-        f"{n} " + ",".join(f"{k}->{v}" for k, v in sorted(m.items())) + f" ({sum(sum(r.values()) for r in LAST_FLEET.phase_votes[n].values())} votes)"
+        f"{n} " + ",".join(f"{k}->{v}" for k, v in sorted(m.items())) + f" ({sum(sum(r.values()) for r in fleet.phase_votes[n].values())} votes)"
         for n, m in maps.items()))
 
 
 def score(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
-    det, filed, subs = _run(folder, site)
+    fleet, filed, subs = _run(folder, site)
+    det = fleet.main
     subs = _labels_from(folder, site, subs)
     assign = {i: det.signature_of(s).id for i, s in enumerate(filed) if det.signature_of(s)}
     labels = label(filed, subs)
@@ -416,7 +390,7 @@ def _kiln_pulses(folder: str) -> list:
     """The kiln's pulses as the grid meter itself shows them: A and C dropping
     ~3 kW together (m1 reads minus the house, so a load switching on is a
     drop). The truth `kiln` scores against - no detector involved."""
-    s = _read_csv([folder], False)
+    s = R.read_csv([folder], False)
     a = s.get("sensor.solaredge_se17k_m1_ac_power_a") or []
     c = s.get("sensor.solaredge_se17k_m1_ac_power_c") or []
 
@@ -453,7 +427,8 @@ def kiln(folder: str, dials) -> None:
     on one phase (two of them, 2.5 and 5 min long, run on days the kiln never
     fired) and depended on which signatures the library happened to keep."""
     tag = _apply(dials)
-    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    det = fleet.main
     pulses = _kiln_pulses(folder)
     fires = _firings(pulses)
     inside = lambda t: any(a <= t <= b for a, b in fires)  # noqa: E731
@@ -491,7 +466,7 @@ def _fridge_runs(folder: str) -> list:
     12 W above where it settles a minute later, "?" neither seen.
     Returns (start, end, step, kind)."""
     import statistics as st
-    rows = _read_csv([folder], False).get(FRIDGE_POWER) or []
+    rows = R.read_csv([folder], False).get(FRIDGE_POWER) or []
     runs, i = [], 6
     while i < len(rows) - 25:
         t0 = rows[i][0]
@@ -533,7 +508,8 @@ def fridge(folder: str, dials) -> None:
     were spread over - ideally two, one per fridge."""
     import statistics as st
     tag = _apply(dials)
-    det, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
+    det = fleet.main
     truth = _fridge_runs(folder)
     at = _near(filed)
     hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
@@ -575,7 +551,8 @@ def inputs_bench(folder: str, dials) -> None:
     detector ties to one value of a setting, how strongly, and what that did
     to their evidence - the naming page's bar is DEFAULT_MIN_EVIDENCE."""
     tag = _apply(dials)
-    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    det = fleet.main
     bar = 0.7                                  # const.DEFAULT_MIN_EVIDENCE
     print(f"  {tag}   signatures {len(det.signatures)}, over the naming bar {sum(s.evidence >= bar for s in det.signatures)}")
     for name in STAGES:
@@ -598,7 +575,8 @@ def inputs_bench(folder: str, dials) -> None:
 
 def surge(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
-    det, filed, subs = _run(folder, site)
+    fleet, filed, subs = _run(folder, site)
+    det = fleet.main
     labels = label(filed, subs)
     bydev = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
@@ -624,7 +602,7 @@ def _pump_runs(folder: str) -> list:
     Assistant records only changes, so the reading before a start can be
     minutes old: a switch is taken as the middle of the 10 s before the first
     reading that shows it."""
-    h = _read_csv([folder], False).get("sensor.hidrofor_power") or []
+    h = R.read_csv([folder], False).get("sensor.hidrofor_power") or []
     runs, on = [], None
     for t, w in h:
         if on is None and w > 300:
@@ -637,7 +615,7 @@ def _pump_runs(folder: str) -> list:
 
 def pump(folder: str, dials) -> None:
     tag = _apply(dials)
-    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    _, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
     on_a = _near(x for x in filed if "a" in x.phases)
     n, runs = collections.Counter(), _pump_runs(folder)
     for a, b in runs:
@@ -659,7 +637,7 @@ def pump(folder: str, dials) -> None:
 def lengths(kfolder: str, pfolder: str, dials) -> None:
     import statistics
     tag = _apply(dials)
-    a = _read_csv([kfolder], False).get("sensor.solaredge_se17k_m1_ac_power_a") or []
+    a = R.read_csv([kfolder], False).get("sensor.solaredge_se17k_m1_ac_power_a") or []
     truth = []
     for t in _kiln_pulses(kfolder):
         i = bisect.bisect_left(a, (t, -1e18))
@@ -698,7 +676,8 @@ def mat(folder: str, dials) -> None:
     "capturing 80 % of actual energy ... is much preferred over assigning 20 %
     over"). Local days from the first to the last of heating on record."""
     tag = _apply(dials + [f"SWITCH={MAT_THERMOSTAT}"] if f"SWITCH={MAT_THERMOSTAT}" not in dials else dials)
-    det, filed, _ = _run(folder, "home")                 # with Home's device meters, as `score` runs
+    fleet, filed, _ = _run(folder, "home")                 # with Home's device meters, as `score` runs
+    det = fleet.main
     heat = [(a, b) for a, b in R.read_switch([folder], MAT_THERMOSTAT) if b is not None]
     starts = sorted(a + 5.5 for a, _ in heat)
 
