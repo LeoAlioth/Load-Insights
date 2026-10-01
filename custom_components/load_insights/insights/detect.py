@@ -3524,6 +3524,8 @@ class Detector:
     edge_at: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
     # rises waiting the event window for companions on other phases; never persisted
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
+    # runs ended by a stop found inside a rise when its event formed - see _split_rise
+    _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
@@ -3895,7 +3897,10 @@ class Detector:
     def metered_parts(self, ph: str, since: float, step: float) -> List[float]:
         """``step`` cut into the shares the meters below it took with it and
         the rest, or ``[step]`` - see SPLIT_BY_METERS. A meter that took all
-        of it, or more, leaves it whole: then the step is simply its load's."""
+        of it, or more, leaves it whole: then the step is simply its load's.
+        A share the other way is a change the grid netted into this step - a
+        load stopping in the reading another started - and the rest is the
+        larger for it."""
         if not SPLIT_BY_METERS or self.meter_steps is None or ph not in self.phases:
             return [step]
         # Neither a piece nor what is left may be smaller than the step itself
@@ -3909,7 +3914,7 @@ class Detector:
         # reached into the kiln's previous pulse and read half a step, and
         # every pulse was booked as two
         for _, d in self.meter_steps(ph, since, self.event_window(), step > 0, step):
-            if d * step <= 0 or abs(d) < least or abs(rest) - abs(d) < least:
+            if abs(d) < least or (d * step > 0 and abs(rest) - abs(d) < least):
                 continue
             parts.append(d)
             rest -= d
@@ -3937,7 +3942,8 @@ class Detector:
         become events with whatever rose beside them, get their cluster, and
         end an older open run of the same cluster on their phase. Returns the
         runs so ended, with their phase."""
-        out: List[Tuple[str, "Session"]] = []
+        out: List[Tuple[str, "Session"]] = list(self._split_closed)
+        self._split_closed = []
         window, wait = self.event_window(), self.event_wait()
         pend = sorted(self._pending, key=lambda x: x["since"])
         while pend:
@@ -3994,6 +4000,9 @@ class Detector:
             return
         o, whole = m["open"], m["watts"]
         for part in parts[:-1]:
+            if part < 0:                       # a stop netted into this rise: it ends its run now
+                self._split_closed.extend((m["ph"], x) for x in st._declare(m["since"], part, None, 0.0, st.level, o.q))
+                continue
             extra = _Open(m["since"], part, None if m["var"] is None else m["var"] * part / whole,
                           [(m["since"], part)], q=o.q)
             extra.cluster = self._classify_step(m["ph"], m["since"], part, extra.var, 0.0).id
@@ -5384,7 +5393,15 @@ class Fleet:
                     break
                 a, b = na, nb
             gain = self.gain(name, "p")
-            own = [e for e in ms if (up is None or (e[1] > 0) == up) and e[3] <= g_span[1] and e[4] >= g_span[0]]
+            # its steps the grid step's way over the grid step's span - and one
+            # the other way the grid did not take on its own, netted into this
+            # reading: Home's pump stopping (-810 W on its plug) in the very
+            # reading another 1.9 kW load started showed on the grid as one
+            # +1,108 W rise, and the pump's run went on for minutes. One the
+            # grid took as its own step stays out: the kiln's previous pulse
+            # ending seconds before this one began (see e039b4c).
+            own = [e for e in ms if e[3] <= g_span[1] and e[4] >= g_span[0]
+                   and (up is None or (e[1] > 0) == up or not self._grid_took(grid, e, gain, noise_g, noise, cap))]
             if not own:
                 out[name] = (0.0, None, None, noise, 0.0)
                 continue
@@ -5401,6 +5418,15 @@ class Fleet:
             q = own[0][2] if clean else None
             out[name] = (share, own[0][1] if clean else None, q, noise, conf)
         return out
+
+    def _grid_took(self, grid: "PhaseState", e: tuple, gain: float, noise_g: float, noise_m: float,
+                   reach: float) -> bool:
+        """Did the grid declare a step of its own the way of the meter's step
+        ``e``, over its span and big enough to hold it - within both meters'
+        noise and METER_CAL_SLACK?"""
+        size = abs(e[1]) * gain
+        tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * size
+        return any((g[1] > 0) == (e[1] > 0) and abs(g[1]) >= size - tol for g in self._near(grid, e[3], e[4], reach))
 
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
                      pool: Optional[List[Session]] = None) -> None:

@@ -2729,7 +2729,9 @@ def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_mete
     det.meter_steps = lambda ph, since, window, up=None, size=None: [("Boiler", 1900.0)]
     assert det.metered_parts("a", T0, 5300.0) == [1900.0, 3400.0]
     assert det.metered_parts("a", T0, 1910.0) == [1910.0]              # all of it is the boiler's
-    assert det.metered_parts("a", T0, -5300.0) == [-5300.0]            # the boiler rose: not this fall's
+    # the Fleet offers a meter's step the other way only where the grid netted
+    # it into this one - then the rest is the larger for it
+    assert det.metered_parts("a", T0, -5300.0) == [1900.0, -7200.0]
     det.meter_steps = lambda ph, since, window, up=None, size=None: []
     assert det.metered_parts("a", T0, 5300.0) == [5300.0]
 
@@ -2913,9 +2915,27 @@ def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
     assert f._step_meter("c", T0, 65.0, True) == "Hiša"
     assert f._step_meter("c", T0, 65.0, False) is None                  # it rose; this step fell
     assert f._step_meter("c", T0, 900.0, True) is None                  # nothing saw all of it
-    _declare(f.subs["Hiša"].phases["a"], (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before
+    _declare(f.subs["Hiša"].phases["a"], (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before,
+    _declare(f.main.phases["c"], (T0 - 3.0, -65.0, None, T0 - 4.0, T0 - 3.0))          # a step the grid took on its own,
     assert f._step_meter("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
 
+
+
+def test_a_stop_netted_into_another_loads_start_is_split_out():
+    """Home 28.09 01:16:35: the pump stopped (its plug 810 W, then 0.5 W ten
+    seconds later) in the reading a 1.9 kW load started - one +1,108 W rise on
+    the grid. Its pieces are the pump's -810 and a +1,918 start; had the grid
+    taken the stop on its own, the rise would stay whole."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
+    _declare(plug, (T0 + 5.0, -810.0, None, T0 - 1.0, T0 + 9.0))
+    _declare(grid, (T0, 1108.0, None, T0 - 3.0, T0 + 2.0))
+    assert f._meter_steps("c", T0, 6.0, True, 1108.0) == [("Hidrofor", -810.0)]
+    det = f.main
+    det.meter_steps = f._meter_steps
+    assert det.metered_parts("c", T0, 1108.0) == [-810.0, 1918.0]
+    _declare(grid, (T0 + 6.0, -800.0, None, T0 + 2.0, T0 + 6.0))          # the grid saw the stop by itself
+    assert det.metered_parts("c", T0, 1108.0) == [1108.0]
 
 def test_a_meter_learns_its_gain_against_the_grid():
     """A plug reading 4 % low is matched in the grid's terms once learned."""
