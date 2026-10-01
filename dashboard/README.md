@@ -2,17 +2,10 @@
 
 `forecast-cards-live.yaml` draws one forecast-vs-actual graph per device,
 for every device on your Energy dashboard, and finds them again on every
-render - so a device added to the dashboard just appears.
+render - so a device added to the dashboard just appears. How to paste it,
+and the two HACS cards it needs, is in the file's own header.
 
-## `forecast-cards-live.yaml` - the self-updating card
-
-Paste it into a dashboard as a **manual card**. Its `cards:` is a single
-JavaScript expression that finds every sensor carrying a `detailedForecast`
-attribute - exactly the Load Insights forecast sensors - and returns a card
-for each. `entities:` is only what config-template-card watches to know when
-to redraw; any one forecast sensor will do, since they all refresh together.
-
-### Not auto-entities
+## Not auto-entities
 
 `auto-entities` is the obvious candidate and cannot do this: it produces a
 list of ENTITY configs, and its own `card_param: cards` example works only

@@ -56,50 +56,11 @@ day, the day-ahead ones after two, the week-ahead table after eight.
 into a dashboard and it draws one graph per forecast sensor - actual, forecast
 and the likely range - finding them again on every render, so a device added
 to the Energy dashboard just appears. Needs config-template-card beside
-Plotly. The rest of this section is the hand-written version of one card.
+Plotly Graph Card; the file's header says how to paste it.
 
 Every forecast-type sensor carries `history` (the last 48 hours, actual) and
-`detailedForecast` (the next 168, forecast) in the same shape, so a chart card
-that can read attributes draws both from one entity. With
-[Plotly Graph Card](https://github.com/dbuezas/lovelace-plotly-graph-card):
-
-```yaml
-type: custom:plotly-graph
-title: Consumption - actual and forecast
-hours_to_show: 72
-time_offset: 24h
-refresh_interval: 60
-entities:
-  - entity: sensor.kozolec_insights_consumption_forecast
-    name: Actual
-    type: bar
-    filters:
-      - fn: |-
-          ({meta}) => ({
-            xs: meta.attributes.history.map(p => new Date(p.period_start)),
-            ys: meta.attributes.history.map(p => p.kwh),
-          })
-  - entity: sensor.kozolec_insights_consumption_forecast
-    name: Forecast
-    line:
-      width: 2
-      dash: dot
-    filters:
-      - fn: |-
-          ({meta}) => ({
-            xs: meta.attributes.detailedForecast.map(p => new Date(p.period_start)),
-            ys: meta.attributes.detailedForecast.map(p => p.kwh),
-          })
-layout:
-  yaxis:
-    title: kWh / h
-    rangemode: tozero
-```
-
-The same pair works for the unmetered remainder and for any device sensor.
-Note that the forecast drawn over past hours is today's fit, which already
-contains them - a picture of how well the profile explains the week, not a
-test of yesterday's prediction. Scoring stored past forecasts is later work.
+`detailedForecast` (the next 168, forecast) in the same shape, so any chart
+card that reads attributes can draw both from one entity.
 
 The forecast is recomputed once an hour from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight
@@ -291,8 +252,8 @@ return.
 ## Requirements
 
 - Home Assistant with the Energy dashboard configured, at least a grid source.
-  Any supported core works for phase 1; the power-sensor fields that phase 2
-  (load detection) will use arrived in 2025.12 / 2026.3 / 2026.6.
+  Any supported core works for the forecasts; the power-sensor fields that
+  load detection uses arrived in 2025.12 / 2026.3 / 2026.6.
 - Nothing else. No cloud, no extra Python packages.
 
 ## Install
@@ -319,6 +280,5 @@ Home Assistant. Its tests run on bare Python:
 python3 tests/run_all.py
 ```
 
-Phase 2 adds load detection / classification on the unmetered remainder from
-the dashboard's power sensors (per phase where CTs exist), and a test rig for
-the Home Assistant layer.
+Load detection is replayed and scored over exported history, also without
+Home Assistant - `tests/replay.py` and `tests/bench.py`; see AGENTS.md.
