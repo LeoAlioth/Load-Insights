@@ -3749,7 +3749,7 @@ class Detector:
         # over the start-event window, no wider: fifteen seconds either side
         # reached into the kiln's previous pulse and read half a step, and
         # every pulse was booked as two
-        for _, d in self.meter_steps(ph, since, self.event_window()):
+        for _, d in self.meter_steps(ph, since, self.event_window(), step > 0):
             if d * step <= 0 or abs(d) < least or abs(rest) - abs(d) < least:
                 continue
             parts.append(d)
@@ -5012,14 +5012,14 @@ class Fleet:
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         return pairs
 
-    def _meter_steps(self, ph: str, since: float, window: float) -> List[Tuple[str, float]]:
+    def _meter_steps(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> List[Tuple[str, float]]:
         """The pieces of a grid step on phase ``ph`` at ``since`` that the
         meters below it explain - see SPLIT_BY_METERS. Each meter measured to
         carry that phase gives its own declared step there, in the grid's
         terms (its gain), less what its own sub-meters stepped: Blaž PC's step
         counts once, and Hiša adds only what else inside it changed. The
         pieces do not overlap."""
-        steps = {n: m[0] for n, m in self._meter_totals(ph, since, window).items()}
+        steps = {n: m[0] for n, m in self._meter_totals(ph, since, window, up).items()}
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
@@ -5032,7 +5032,7 @@ class Fleet:
             return None
         noise = main.phases[ph].noise_at()
         took = {}
-        for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window()).items():
+        for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window(), up).items():
             if (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
                 took[n] = (d, raw, raw_q, noise_m)
 
@@ -5069,10 +5069,13 @@ class Fleet:
             return 1.0
         return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
 
-    def _meter_totals(self, ph: str, since: float, window: float) -> Dict[str, tuple]:
-        """Per meter measured to carry grid phase ``ph``: (its declared step
-        within ``since`` +- ``window`` in the grid's terms, the same raw, its
-        reactive part raw, its noise) - see METER_CAL_SLACK."""
+    def _meter_totals(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> Dict[str, tuple]:
+        """Per meter measured to carry grid phase ``ph``: (its declared steps
+        within ``since`` +- ``window`` in the grid's terms, the same raw, their
+        reactive part raw, its noise) - see METER_CAL_SLACK. Only steps the
+        same way as the grid's, ``up``: the kiln's previous pulse ending a few
+        seconds before this one began summed to a sliver, and the split cut
+        every pulse in two (ladder 31 -> 66)."""
         out: Dict[str, tuple] = {}
         for name, det in self.subs.items():
             votes = self.phase_votes.get(name) or {}
@@ -5088,7 +5091,7 @@ class Fleet:
                 for t, w, q in reversed(st.declared):
                     if t < since - window:
                         break
-                    if t <= since + window:
+                    if t <= since + window and (up is None or (w > 0) == up):
                         raw += w
                         if q is not None:
                             raw_q += q
