@@ -253,8 +253,9 @@ class DetectionRunner:
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         self._unsub = None
         self._listeners: List = []
-        self._running = False
-        self._backfill_lock = asyncio.Lock()
+        # held by a pass, and by whatever must not run under one: a reset, a
+        # rename, a statistics rewrite - each waits for the pass to finish
+        self._lock = asyncio.Lock()
 
     @property
     def config(self) -> dict:
@@ -629,14 +630,8 @@ class DetectionRunner:
             "sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
         if entity_id is None:
             return 0, 0.0
-        async with self._backfill_lock:
+        async with self._lock:                # the library, between passes: a pass changes it
             if await self.async_first_statistic(entity_id) is None:
-                return None
-            for _ in range(600):              # the library, between passes: a pass changes it
-                if not self._running:
-                    break
-                await asyncio.sleep(0.5)
-            else:
                 return None
             seen = min((h for sig in self.detector.signatures for h in sig.hourly), default=None)
             if seen is None:
@@ -885,20 +880,17 @@ class DetectionRunner:
         finishes by recording that it has processed up to now, and the ten
         days are never re-read (Home, 2026-09-29: one signature, from the
         minute of the reset)."""
-        for _ in range(600):              # a backfill slice takes seconds, not minutes
-            if not self._running:
-                break
-            await asyncio.sleep(0.5)
-        orphans = self.fleet.main.name_descriptors() if self.fleet and not forget_names else []
-        self.fleet = Fleet()
-        self.fleet.main.carry_names(orphans)
-        self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
-        self.last_processed = None
-        self.caught_up = False
-        self.refiling = True
-        self.samples_read = 0
-        self._saved_at = None
-        await self._persist(force=True)          # a reset must survive a crash
+        async with self._lock:
+            orphans = self.fleet.main.name_descriptors() if self.fleet and not forget_names else []
+            self.fleet = Fleet()
+            self.fleet.main.carry_names(orphans)
+            self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+            self.last_processed = None
+            self.caught_up = False
+            self.refiling = True
+            self.samples_read = 0
+            self._saved_at = None
+            await self._persist(force=True)          # a reset must survive a crash
         for cb in self._listeners:
             cb()
         self.hass.async_create_task(self._run())
@@ -910,118 +902,106 @@ class DetectionRunner:
         # A reload - every options change is one - used to drop whatever was
         # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
         # the pending delayed write then landed after the next runner's own.
-        if not self._running:
+        if not self._lock.locked():
             await self._persist(force=True)
 
     async def async_follow_renames(self, renames: Dict[str, str]) -> None:
         """Rename entities in what the detector learned - between passes,
         never under one, and written at once: the options change that follows
         reloads the entry, and the new runner reads the store."""
-        for _ in range(600):              # a backfill slice takes seconds, not minutes
-            if not self._running:
-                break
-            await asyncio.sleep(0.5)
-        else:
-            _LOGGER.warning("Load detection busy; renames %s not applied to what it learned", renames)
-            return
-        self._running = True
-        try:
+        async with self._lock:
             self.fleet.rename_entities(renames)
             await self._persist(force=True)
-        finally:
-            self._running = False
 
     @callback
     def _tick(self, _now) -> None:
         self.hass.async_create_task(self._run())
 
     async def _run(self) -> None:
-        if self._running or not self.enabled:
+        if self._lock.locked() or not self.enabled:
             return
-        self._running = True
-        try:
-            began = time.monotonic()
-            now = dt_util.utcnow()
-            start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
-            end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples = await self._derive_load(start, end)
-            # the arrays, for telling a cloud from a load switching
-            self.solar = await self._resolve_solar()
-            generation: Dict[str, list] = {}
-            for fields in self.solar:
-                rows, _ = await self._read(start, end, fields)
-                for p, series in rows.items():
-                    generation.setdefault(p, [])
-                    generation[p] = _sum_series(generation[p], series)
-            # after the sum, not before: where the inverter is added back the
-            # grid meter is the circuit every household watt flows through,
-            # so its VAr is the one that steps when a load switches
-            q = await self._reactive_series(start, end, samples)
-            pv: Dict[str, Dict[float, float]] = {}
-            for p, target in samples.items():
-                if generation.get(p):
-                    pv[p] = _align(generation[p], target)
-            for p, rows in samples.items():
-                if p in self.fleet.main.phases:
-                    # a fixed floor since 2026-09-23 - see _meter_wait_field in
-                    # config_flow; a value stored by an older version is not read
-                    self.fleet.main.phases[p].min_noise = MIN_NOISE_W
-                    # a reading that never exports is the house alone, and
-                    # the house cannot draw less than nothing. Kept, and
-                    # saved, where a pass is too short to say: "can't tell"
-                    # read as "no" switched the guard off on every live pass.
-                    verdict = carries_generation(rows)
+        async with self._lock:
+            try:
+                began = time.monotonic()
+                now = dt_util.utcnow()
+                start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
+                end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
+                samples = await self._derive_load(start, end)
+                # the arrays, for telling a cloud from a load switching
+                self.solar = await self._resolve_solar()
+                generation: Dict[str, list] = {}
+                for fields in self.solar:
+                    rows, _ = await self._read(start, end, fields)
+                    for p, series in rows.items():
+                        generation.setdefault(p, [])
+                        generation[p] = _sum_series(generation[p], series)
+                # after the sum, not before: where the inverter is added back the
+                # grid meter is the circuit every household watt flows through,
+                # so its VAr is the one that steps when a load switches
+                q = await self._reactive_series(start, end, samples)
+                pv: Dict[str, Dict[float, float]] = {}
+                for p, target in samples.items():
+                    if generation.get(p):
+                        pv[p] = _align(generation[p], target)
+                for p, rows in samples.items():
+                    if p in self.fleet.main.phases:
+                        # a fixed floor since 2026-09-23 - see _meter_wait_field in
+                        # config_flow; a value stored by an older version is not read
+                        self.fleet.main.phases[p].min_noise = MIN_NOISE_W
+                        # a reading that never exports is the house alone, and
+                        # the house cannot draw less than nothing. Kept, and
+                        # saved, where a pass is too short to say: "can't tell"
+                        # read as "no" switched the guard off on every live pass.
+                        verdict = carries_generation(rows)
+                        if verdict is not None:
+                            self.fleet.main.phases[p].floor_zero = verdict is False
+                for p in list(pv):
+                    verdict = carries_generation(samples[p])
                     if verdict is not None:
-                        self.fleet.main.phases[p].floor_zero = verdict is False
-            for p in list(pv):
-                verdict = carries_generation(samples[p])
-                if verdict is not None:
-                    self.pv_visible[p] = verdict
-                if self.pv_visible.get(p) is False:
-                    pv.pop(p)         # this reading never sees the sun; leave its steps alone
-            self.submeters = await self._resolve_submeters()
-            self.fleet.parents = {n: m.get("parent") for n, m in self.submeters.items()}
-            sub_samples, sub_q, agnostic = {}, {}, {}
-            for name, meter in self.submeters.items():
-                ss, sq = await self._read(start, end, meter["fields"])
-                if ss:
-                    sub_samples[name], sub_q[name] = ss, sq
-                    agnostic[name] = meter["agnostic"]
-            # the recorder's start-of-window row is a copy, not a reading - see
-            # without_window_start; the sums above needed it, the detector must not
-            samples = without_window_start(samples, start.timestamp())
-            sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
-            single = {n: self.holds_one_device(n) for n in self.submeters}
-            switches, numbers, inputs = await self._read_inputs(start, end)
-            read = time.monotonic()
-            self.fleet.wait_cap_s = self.meter_wait_s
-            await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
-                dict(self.q_quantum), single, switches or None, numbers or None,
-                inputs or None,
-            )
-            self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
-                              "hours": round((end - start).total_seconds() / 3600.0, 2)}
-            self.samples_read += sum(len(rows) for rows in samples.values())
-            self._update_average_power(end.timestamp())
-            self.last_processed = end
-            self.caught_up = end >= now - timedelta(minutes=1)
-            self.last_run = now
-            await self._persist()
-            for cb in self._listeners:
-                cb()
-            if self.caught_up and self.refiling:
-                self.refiling = False
-                # the ten days re-read are the named loads' history now
-                self.entry.async_create_background_task(
-                    self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
-            if not self.caught_up:
-                # keep slicing without waiting for the next tick
-                async_call_later(self.hass, 2, self._tick)
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Load detection run failed")
-        finally:
-            self._running = False
+                        self.pv_visible[p] = verdict
+                    if self.pv_visible.get(p) is False:
+                        pv.pop(p)         # this reading never sees the sun; leave its steps alone
+                self.submeters = await self._resolve_submeters()
+                self.fleet.parents = {n: m.get("parent") for n, m in self.submeters.items()}
+                sub_samples, sub_q, agnostic = {}, {}, {}
+                for name, meter in self.submeters.items():
+                    ss, sq = await self._read(start, end, meter["fields"])
+                    if ss:
+                        sub_samples[name], sub_q[name] = ss, sq
+                        agnostic[name] = meter["agnostic"]
+                # the recorder's start-of-window row is a copy, not a reading - see
+                # without_window_start; the sums above needed it, the detector must not
+                samples = without_window_start(samples, start.timestamp())
+                sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
+                single = {n: self.holds_one_device(n) for n in self.submeters}
+                switches, numbers, inputs = await self._read_inputs(start, end)
+                read = time.monotonic()
+                self.fleet.wait_cap_s = self.meter_wait_s
+                await self.hass.async_add_executor_job(
+                    self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
+                    dict(self.q_quantum), single, switches or None, numbers or None,
+                    inputs or None,
+                )
+                self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
+                                  "hours": round((end - start).total_seconds() / 3600.0, 2)}
+                self.samples_read += sum(len(rows) for rows in samples.values())
+                self._update_average_power(end.timestamp())
+                self.last_processed = end
+                self.caught_up = end >= now - timedelta(minutes=1)
+                self.last_run = now
+                await self._persist()
+                for cb in self._listeners:
+                    cb()
+                if self.caught_up and self.refiling:
+                    self.refiling = False
+                    # the ten days re-read are the named loads' history now
+                    self.entry.async_create_background_task(
+                        self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
+                if not self.caught_up:
+                    # keep slicing without waiting for the next tick
+                    async_call_later(self.hass, 2, self._tick)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Load detection run failed")
 
     def _device_of(self, entity_id: Optional[str]) -> Optional[str]:
         """Which device publishes this entity, or None."""
