@@ -127,16 +127,28 @@ def _band(x: Optional[float], lo: float, plateau_lo: float,
     return 1.0
 
 
-def _fmt_w(watts: float) -> str:
-    return f"{watts:.0f} W" if watts < 1000 else f"{watts / 1000:.1f} kW"
+def _fmt_w(x: float) -> str:
+    """Watts below a kilowatt, kilowatts above - the one watts formatter;
+    detect.py and the pages import it from here.
+
+    Everything was printed as kilowatts to one decimal, which is fine for a
+    kettle and useless for everything a submeter sees: a whole library of a
+    computer, a UPS and an office plug read "0.0 kW on A" line after line,
+    every row identical and none of them wrong (Anze, 2026-09-22)."""
+    return f"{x:.0f} W" if abs(x) < 1000 else f"{x / 1000:.1f} kW"
 
 
-def _fmt_s(seconds: float) -> str:
-    if seconds < 90:
-        return f"{seconds:.0f} s"
-    if seconds < 5400:
-        return f"{seconds / 60:.0f} min"
-    return f"{seconds / 3600:.1f} h"
+def _fmt_s(x: Optional[float]) -> str:
+    """A duration in the unit that reads best - the one duration formatter."""
+    if x is None:
+        return "?"
+    if x < 90:
+        return f"{x:.0f} s"
+    if x < 5400:
+        return f"{x / 60:.0f} min"
+    if x < 172800:                      # past two days, hours stop being readable
+        return f"{x / 3600:.1f} h"
+    return f"{x / 86400:.1f} days"
 
 
 # ---------------------------------------------------------------- appliances

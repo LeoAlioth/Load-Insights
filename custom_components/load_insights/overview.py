@@ -23,6 +23,7 @@ from .const import (
     SOURCE_NONE,
     SOURCE_UTILITY,
 )
+from .insights.classify import _fmt_w
 from .insights.detect import most_specific
 from .insights.scoring import LEADS_H
 
@@ -38,12 +39,6 @@ def _when(value: Optional[datetime]) -> str:
     if delta < 172800:
         return f"{delta / 3600:.0f} h ago"
     return f"{delta / 86400:.0f} days ago"
-
-
-def _w(value: Optional[float]) -> str:
-    if value is None:
-        return "-"
-    return f"{value:.0f} W" if abs(value) < 1000 else f"{value / 1000:.1f} kW"
 
 
 def overview_text(hass: HomeAssistant, entry_id: str) -> str:
@@ -67,7 +62,8 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
         fc = data.consumption
         lines.append(f"**Forecast** - computed {_when(data.computed_at)}, "
                      f"from {fc.span_weeks:.0f} weeks of history.")
-        lines.append(f"- Next hour {_w(fc.next_hour_w)}, today {fc.today_kwh:.1f} kWh, "
+        next_hour = "-" if fc.next_hour_w is None else _fmt_w(fc.next_hour_w)
+        lines.append(f"- Next hour {next_hour}, today {fc.today_kwh:.1f} kWh, "
                      f"tomorrow {fc.tomorrow_kwh:.1f} kWh.")
         if data.grid is not None and data.grid.hours:
             g = data.grid
@@ -88,7 +84,7 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
         ledger = (data.ledgers or {}).get("consumption")
         hour = ledger.metrics(dt_util.now(), LEADS_H[0]) if ledger is not None else None
         if hour and hour.get("n"):
-            lines.append(f"- An hour ahead it has been out by {_w(hour.get('mae_w'))} on average "
+            lines.append(f"- An hour ahead it has been out by {_fmt_w(hour.get('mae_w'))} on average "
                          f"over {hour['n']} settled hours.")
         else:
             lines.append("- Scoring has nothing settled yet; the first figures appear after a day.")
@@ -122,13 +118,13 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
                  f"already accounted for by a device's own meter.")
     running = det.active(dt_util.utcnow().timestamp())
     if running:
-        bits = ", ".join(f"{_w(a['watts'])} on {a['phases'].upper()}" for a in running[:4])
+        bits = ", ".join(f"{_fmt_w(a['watts'])} on {a['phases'].upper()}" for a in running[:4])
         lines.append(f"- On right now: {bits}.")
     else:
         lines.append("- Nothing unexplained is running right now.")
     idle = [st.baseline for st in det.phases.values() if st.baseline is not None]
     if idle:
-        lines.append(f"- Base load {_w(sum(idle))} across {len(idle)} phases.")
+        lines.append(f"- Base load {_fmt_w(sum(idle))} across {len(idle)} phases.")
     if runner.solar:
         seen = runner.pv_visible
         verdict = ("it shows in the meter" if any(seen.values())
