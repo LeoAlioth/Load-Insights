@@ -101,20 +101,24 @@ NOISE_FROM_MOVES = True
 # zero after the pump stopped and nothing written for 15 minutes - could not
 # confirm the stop, declared -253 of its -809 and carried a phantom 590 W into
 # the next start. Replaces a rule for meters slower than 20 s only.
-SUSTAIN_CADENCES = 2.0         # see below: the silence that counts as holding, in minimum cadences
-# ...but a level is CONFIRMED over SUSTAIN_PERIODS of the meter's PERIOD - its
-# usual gap. Its minimum cadence is how soon it would report a change, which
-# is what silence means; on a polled meter it is timing jitter - Kozolec's
-# Victron, polled every 5.8 s, has 1-4 s gaps, a 2.7 s cadence, and two of
-# them confirmed a level on a single new reading (recall 74 -> 45 %).
-SUSTAIN_PERIODS = 2.0
-# A span starts at the last old-level reading when the gap to the first new
-# one is at most SPAN_PERIODS of the period - nothing went unwritten; after a
-# longer silence, one minimum cadence before the first new reading. Home's
-# grid meter, polled every 2 s, read the old level last 3.8 s before the
-# kiln's new one; one 1.04 s cadence back put the span at -1.0..0 against
-# Hisa's -5.8..-0.8 and called the same switch-on a 4 % overlap.
-SPAN_PERIODS = 2.5
+# One rule for every meter, change-driven or polled: silence up to
+# SUSTAIN_CADENCES of its cadence is the ordinary spacing of its readings,
+# longer is its value HELD, unwritten. So a level is confirmed over that long
+# (the hidrofor's plug, every 10 s: 20 s - Anze), a change seen first after a
+# silence happened at most that long before (a span's start - see
+# PhaseState.span_start), and a silence that long confirms a pending level
+# (see confirm_silence). Confirmed over the PERIOD - the median gap - instead,
+# Hisa's 3EM, reporting on change within 4 s but writing every 15 s when
+# little moves, held a level 30 s: the floor mat merged into the kiln's start
+# as one +3,516 W step with a span 28.8 s long.
+SUSTAIN_CADENCES = 2.0
+# A meter reports its readings of one moment as separate entities, stamped
+# milliseconds apart. Home's grid is the SolarEdge meter plus the inverter: the
+# inverter's write 28 ms before the meter's showed the old level, and a kiln-
+# sized step got a span of -0.0..0 - a 1 % overlap with Mansarda's own. A
+# reading this close to another is the same update: not evidence the old
+# level held, nor a gap between readings.
+SAME_UPDATE_S = 1.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -1572,6 +1576,7 @@ class PhaseState:
     declared: List[tuple] = field(default_factory=list, repr=False, compare=False)
     declared_t: List[float] = field(default_factory=list, repr=False, compare=False)   # their times, for bisect
     steady_ts: Optional[float] = field(default=None, repr=False, compare=False)   # its last reading at the held level
+    steady_before: Optional[float] = field(default=None, repr=False, compare=False)   # ...and the update's before that
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
@@ -1644,7 +1649,7 @@ class PhaseState:
             pass                          # not a reading: no cadence, no quantum
         elif self.last_ts is not None:
             gap = ts - self.last_ts
-            if 0.0 < gap < 120.0:        # a restart gap is not a sampling rate
+            if SAME_UPDATE_S < gap < 120.0:   # one update is not a gap; a restart's is not a sampling rate
                 if INTERVAL_PERCENTILE:
                     # the meter's CADENCE, not the gap between recorded
                     # changes - see INTERVAL_PERCENTILE
@@ -1698,6 +1703,8 @@ class PhaseState:
 
         if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
+            if self.steady_ts is None or ts - self.steady_ts > SAME_UPDATE_S:
+                self.steady_before = self.steady_ts
             self.steady_ts = ts
             # With one load running, what the phase does IS what that load
             # does, so its wander can be attributed. With two it cannot, and
@@ -1745,7 +1752,7 @@ class PhaseState:
         # but at Home's new 2.4 s the 5 s floor bound instead and meant three
         # OR four readings on timing jitter, and at 1 s would mean six. The
         # absolute figure is only a fallback while the interval is unknown.
-        sustain = SUSTAIN_PERIODS * self.period() if self.period() else SUSTAIN_SECONDS
+        sustain = self.sustain()
         need = SUSTAIN_SAMPLES
         if CORROBORATED_STOP_SAMPLES and self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
@@ -1810,9 +1817,10 @@ class PhaseState:
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
 
-    def period(self) -> float:
-        """This meter's usual gap between readings - see SUSTAIN_PERIODS."""
-        return self.interval or reading_cadence(self.gaps)
+    def sustain(self) -> float:
+        """How long a new level must hold to be confirmed - see SUSTAIN_CADENCES."""
+        cad = self.cadence()
+        return SUSTAIN_CADENCES * cad if cad else SUSTAIN_SECONDS
 
     def cadence(self) -> float:
         """How soon this meter reports a change - see reading_cadence; its
@@ -1833,16 +1841,20 @@ class PhaseState:
 
     def span_start(self, first_off: float) -> float:
         """From when a change seen first at ``first_off`` can have happened:
-        one reporting cadence before it, or the last steady reading if that is
-        later. Taken from the last steady reading alone, a meter whose value
-        had held for a minute - unwritten, the recorder keeping only changes -
-        had a span reaching a minute back, and chained in other loads' steps
-        (the hidrofor's plug; Anze, 2026-10-01)."""
-        held_until = self.steady_ts if self.steady_ts is not None else first_off
-        period, cadence = self.period(), reading_cadence(self.gaps)
-        if not cadence or (period and first_off - held_until <= SPAN_PERIODS * period):
-            return held_until                       # nothing unwritten between: from its last reading
-        return max(held_until, first_off - cadence)
+        its last reading at the old level - not one of the change's own update
+        (see SAME_UPDATE_S) - but no earlier than SUSTAIN_CADENCES of its
+        cadence before: a longer silence is the old value held, unwritten.
+        Taken from the last steady reading alone, a meter whose value had held
+        for a minute had a span reaching a minute back, and chained in other
+        loads' steps (the hidrofor's plug; Anze, 2026-10-01)."""
+        held_until = self.steady_ts
+        if held_until is not None and first_off - held_until <= SAME_UPDATE_S:
+            held_until = self.steady_before         # the change's own update
+        cad = self.cadence()
+        if not cad:
+            return first_off if held_until is None else held_until
+        earliest = first_off - SUSTAIN_CADENCES * cad
+        return earliest if held_until is None else max(held_until, earliest)
 
     def _step_quality(self, step: float, held: list, since: float, was: float) -> float:
         """0..1 - see QUALITY_SNR_FULL."""
@@ -3309,13 +3321,15 @@ def reading_cadence(gaps: Sequence[float]) -> float:
     every 10 s that holds its value looks silent exactly like one reporting
     on change (the hidrofor's Zigbee plug: 4,586 of 6,100 gaps exactly 10 s,
     the rest its unchanged readings, unwritten)."""
-    g = sorted(x for x in gaps if x >= 1.0)         # same-instant copies are not a cadence
+    g = sorted(x for x in gaps if x > SAME_UPDATE_S)   # one update's writes are not a cadence
     if len(g) < 10:
         return 0.0
-    # its shortest usual gap - the 2nd percentile, not the 10th: a Shelly
+    # its shortest usual gap - the 5th percentile. Not the 10th: a Shelly
     # heartbeating once a minute reports a change within ~5 s, and its 60 s
-    # heartbeats filled the tenth percentile (Kozolec's IR panel, 59.6 s)
-    return g[int(0.02 * (len(g) - 1))]
+    # heartbeats filled the tenth percentile (Kozolec's IR panel, 31 s; 6.5 at
+    # the 5th). Not the 2nd: Kozolec's Victron, polled every 5.5 s, has 2 % of
+    # its gaps at 1.6-2.3 s from timing jitter - 5.0 s at the 5th.
+    return g[int(0.05 * (len(g) - 1))]
 
 
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
@@ -3853,11 +3867,10 @@ class Detector:
 
     def event_wait(self) -> float:
         """How long after a rise its event may close: the window, plus the time
-        a companion's step takes to be DECLARED after it began - SUSTAIN_PERIODS
-        of its phase's period - or a leg whose reading falls at the window's
-        edge is not pending yet."""
-        per = max((st.period() for st in self.phases.values()), default=0.0)
-        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_PERIODS * per)
+        a companion's step takes to be DECLARED after it began - its phase's
+        sustain - or a leg whose reading falls at the window's edge is not
+        pending yet."""
+        return self.event_window() + max([SUSTAIN_SECONDS] + [st.sustain() for st in self.phases.values()])
 
     def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
         """Rises older than the event window (all of them when ``final``)
@@ -5021,7 +5034,7 @@ class Fleet:
             if not iv or 2.0 * iv > m.duration_s:
                 continue
             heard = max((st.last_ts or 0.0 for st in det.phases.values()), default=0.0)
-            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_PERIODS + 1.0) * iv
+            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + max(st.sustain() for st in det.phases.values()) + iv
             if heard < need:
                 return False
         return True

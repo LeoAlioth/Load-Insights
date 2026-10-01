@@ -2835,22 +2835,40 @@ def test_a_meter_reading_less_often_is_compared_over_its_own_span():
     assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
 
-def test_a_change_reporters_span_starts_one_cadence_before_its_first_new_reading():
+def test_a_change_reporters_span_starts_two_cadences_before_its_first_new_reading():
     """The recorder keeps only changes, so a meter's silence is a held value:
-    the change is within one cadence before its first new reading."""
+    the change is within SUSTAIN_CADENCES of its cadence before its first new
+    reading - the hidrofor's 10 s plug about 20 s, two cycles (Anze)."""
     poll = [10.0] * 15 + [20.0, 30.0, 60.0, 10.0, 40.0]                            # a 10 s poll, unchanged ones unwritten
     assert D.reading_cadence(poll) == 10.0
     change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
     assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
-    assert D.reading_cadence([60.0] * 40 + [5.0]) == 5.0                           # heartbeats do not hide a quick report
+    assert D.reading_cadence([60.0] * 40 + [5.0] * 3) == 5.0                       # heartbeats do not hide a quick report
+    jitter = [5.5] * 95 + [1.8, 2.1, 2.3, 9.0, 8.8]                                # polled every 5.5 s, 2 % early by jitter
+    assert D.reading_cadence(jitter) == 5.5
     st = D.PhaseState()
     st.steady_ts, st.gaps = T0 - 60.0, list(change)
-    assert T0 - 1.5 <= st.span_start(T0) <= T0 - 0.9                               # not a minute back
+    assert T0 - 2.6 <= st.span_start(T0) <= T0 - 2.0                               # not a minute back
     st.gaps = poll
-    assert st.span_start(T0) == T0 - 10.0                                          # one poll back
+    assert st.span_start(T0) == T0 - 20.0                                          # two polls back
     grid = D.PhaseState()                                                          # polled every 2 s, some jitter
     grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.0] * 3 + [2.0] * 40, T0 - 3.8
     assert grid.span_start(T0) == T0 - 3.8                                         # nothing unwritten: from its last reading
+
+
+def test_a_reading_of_the_changes_own_update_is_not_the_old_level_holding():
+    """Home's grid is two writes per update - the inverter's, then the meter's
+    ~25 ms later: the inverter's still showed the old level. The span starts at
+    the update before, not 28 ms before the step (Home, 2026-09-23 16:20:06)."""
+    st = D.PhaseState(min_noise=10.0)
+    ts = T0
+    for _ in range(60):                                              # pairs, 2 s apart
+        st.process(ts, 230.0); st.process(ts + 0.025, 235.0); ts += 2.0
+    st.process(ts, 232.0)                                            # the inverter's write: old level
+    for k in range(4):
+        st.process(ts + 0.028 + 2.0 * k, 3160.0); st.process(ts + 0.05 + 2.0 * k, 3165.0)
+    step = next(e for e in st.declared if e[1] > 2000)
+    assert abs(step[3] - (ts - 2.0 + 0.025)) < 0.01, step[3] - ts   # the last steady update, 2 s back
 
 
 def test_a_reading_followed_by_silence_held_on_any_meter():
