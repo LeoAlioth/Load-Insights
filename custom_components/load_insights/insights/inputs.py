@@ -38,7 +38,10 @@ weekly profile cannot see: a price that moves day to day, occupancy, a mode.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, tzinfo
 from typing import Dict, Optional, Sequence, Tuple
+
+from .profile import slot_of
 
 MAX_LABELS = 8          # more distinct values than this and it is treated as numeric
 BANDS = 4               # quantile bands for a numeric input
@@ -81,14 +84,16 @@ def label_history(raw: Dict[float, object]) -> Tuple[Dict[float, str], str]:
 
 
 def project(labels: Dict[float, str], horizon_keys: Sequence[float],
-            tz_offset_s: float = 0.0, current: Optional[str] = None) -> Dict[float, str]:
+            tz: tzinfo, current: Optional[str] = None) -> Dict[float, str]:
     """The horizon's labels: projected where the input is schedule-like, held
-    where it is not, absent where neither applies."""
+    where it is not, absent where neither applies. Slots are the profile's,
+    in the site's zone ``tz`` - an hour of the week on either side of a
+    clock change."""
     if not labels:
         return {}
     by_slot: Dict[int, Counter] = {}
     for k, lab in labels.items():
-        by_slot.setdefault(_slot(k, tz_offset_s), Counter())[lab] += 1
+        by_slot.setdefault(slot_of(datetime.fromtimestamp(k, tz)), Counter())[lab] += 1
     firm: Dict[int, str] = {}
     for slot, c in by_slot.items():
         lab, n = c.most_common(1)[0]
@@ -96,20 +101,12 @@ def project(labels: Dict[float, str], horizon_keys: Sequence[float],
             firm[slot] = lab
     out: Dict[float, str] = {}
     for i, k in enumerate(sorted(horizon_keys)):
-        lab = firm.get(_slot(k, tz_offset_s))
+        lab = firm.get(slot_of(datetime.fromtimestamp(k, tz)))
         if lab is not None:
             out[k] = lab
         elif current is not None and i < HOLD_HOURS:
             out[k] = current
     return out
-
-
-def _slot(key: float, tz_offset_s: float) -> int:
-    """(weekday, hour) of an epoch second, in the site's local time."""
-    local = key + tz_offset_s
-    hour = int(local // 3600)
-    # 1970-01-01 was a Thursday, so shift to make Monday 0
-    return ((hour // 24 + 3) % 7) * 24 + (hour % 24)
 
 
 def usable(labels: Dict[float, str]) -> bool:

@@ -47,6 +47,8 @@
 
 ### Fixes
 
+- **An input's schedule is projected into the right hours across a clock change.** An input such as a tariff is carried into the forecast's week by its hour of the week, and those hours were counted at the offset of the moment the forecast ran - so every hour on the other side of a change to or from summer time was an hour off. With the October change inside the coming week, 13 of its 168 hours carried the wrong label; with the March change in the history, 20 hours were wrong or missing. The hours are now read in the site's own time zone, either side of a change: 168 of 168 in each case.
+
 - **The Grid connection page sees a Shelly Pro 3EM's phases.** A Pro 3EM is a device for its totals with a device for each phase hanging off it, and picking it on the Grid connection page read only the totals: it proposed no per-phase readings, where load detection, reading the phases' devices too, found all three. The page now reads them as detection does and proposes each phase's power, current, voltage and power factor; a disabled reading on a phase's device is counted in its note.
 
 - **The grid meter's net readings are suggested over its gross ones.** An Enphase gateway publishes what the house draws (`current_power_consumption_l1`, never negative) beside what crosses the grid connection (`current_net_power_consumption_l1`, signed), and the Grid connection page filled in the first, whose name is shorter. It now suggests the net one, and the house's own page still takes the gross; nothing already set up changes.

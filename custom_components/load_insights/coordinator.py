@@ -194,10 +194,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # --- any other attached entity, fitted the same way ---
         input_entities = tuple(opts.get(CONF_INPUT_ENTITIES) or ())
         input_kinds: Dict[str, str] = {}
-        tz_offset = now.utcoffset().total_seconds() if now.utcoffset() else 0.0
         horizon_keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
         for eid in input_entities:
-            signal, input_kinds[eid] = await self._input_signal(eid, start, now, horizon_keys, tz_offset)
+            signal, input_kinds[eid] = await self._input_signal(eid, start, now, horizon_keys)
             if signal is not None:
                 cal_signals.append(signal)
 
@@ -359,7 +358,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         return out
 
     async def _input_signal(self, eid: str, start: datetime, now: datetime,
-                            horizon_keys: List[float], tz_offset: float) -> Tuple[Optional[CalendarSignals], str]:
+                            horizon_keys: List[float]) -> Tuple[Optional[CalendarSignals], str]:
         """An attached entity as the fit takes it - its labelled history and
         the horizon's projected labels - and how it was read. None when it
         cannot take part yet."""
@@ -374,7 +373,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             current = (await self.hass.async_add_executor_job(
                 label_history, {max(labels) if labels else 0.0: st.state}
             ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
-        future = await self.hass.async_add_executor_job(project, labels, horizon_keys, tz_offset, current)
+        future = await self.hass.async_add_executor_job(project, labels, horizon_keys, now.tzinfo, current)
         merged = dict(labels)
         merged.update(future)
         return CalendarSignals.from_labels(eid, merged), kind
