@@ -66,7 +66,7 @@ from .insights.detect import (
     clears_for_naming,
     offer_for_naming,
 )
-from .insights.discovery import closest_by_name, match_meter_entities
+from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
 from .insights.named import metered_device, one_device_meters, plan_rewrite
 
@@ -1069,9 +1069,7 @@ class DetectionRunner:
         uses it without being set up again."""
         if device is None:
             return None
-        rows = [r for r in self._device_rows(er.async_get(self.hass), device)
-                if (r.get("device_class") or "") == "reactive_power" and match_meter_entities([r]).get(f"var_{phase}")]
-        return closest_by_name([r["entity_id"] for r in rows], reference) if rows else None
+        return beside(self._device_rows(er.async_get(self.hass), device), reference, "var", phase)
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -1092,13 +1090,7 @@ class DetectionRunner:
         device = self._device_of(amps)
         if device is None or device != self._device_of(volts):
             return None
-        registry = er.async_get(self.hass)
-        candidates = [r["entity_id"] for r in self._device_rows(registry, device)
-                      if (r.get("device_class") or "") == "power"
-                      and match_meter_entities([r]).get(f"power_{phase}")]
-        if not candidates:
-            return None
-        power = closest_by_name(candidates, amps)
+        power = beside(self._device_rows(er.async_get(self.hass), device), amps, "power", phase)
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,

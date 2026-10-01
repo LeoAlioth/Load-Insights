@@ -55,7 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
 NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
-from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
+from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import named_load_energy
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
 from .insights.named import chosen_name

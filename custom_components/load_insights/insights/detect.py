@@ -21,7 +21,6 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 from __future__ import annotations
 
 import bisect
-import itertools
 import math
 import statistics
 from dataclasses import dataclass, field, replace
@@ -29,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, classify
+from .phases import phase_mapping
 
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
@@ -5224,7 +5224,7 @@ class Fleet:
                     row[house] = row.get(house, 0) + 1
 
     def phase_map(self, name: str) -> Dict[str, str]:
-        return phase_mapping(self.phase_votes.get(name) or {})
+        return phase_mapping(self.phase_votes.get(name) or {}, min_votes=PHASE_MAP_MIN_VOTES)
 
     def _locate(self, latest: float) -> None:
         # BEST fit, not first fit. Taking the first session that passed and
@@ -5295,35 +5295,6 @@ class Fleet:
             ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
             *((k, {p: {t: x for t, x in v} for p, v in (carry.get(k) or {}).items()}) for k in ("q", "pv"))) if v}
         return f
-
-
-def phase_mapping(votes: Dict[str, Dict[str, int]], phases: Sequence[str] = PHASES,
-                  min_votes: Optional[int] = None) -> Dict[str, str]:
-    """Which house phase each of a meter's own channels carries.
-
-    ``votes[channel][house_phase]`` counts sessions that started on that
-    channel and on that house phase at the same moment and the same size.
-    The answer is a PERMUTATION - each channel its own phase - chosen to agree
-    with the most sessions, not a separate vote per channel: a two-phase load
-    such as Home's kiln steps on two house phases at once, and one channel on
-    its own would tie between them. With fewer than ``min_votes`` sessions in
-    all, a meter's own labels stand (identity), and a tie keeps them too.
-
-    Pure and self-contained on purpose: Load Juggler has the same question to
-    answer about a charger's phases (Anze, 2026-09-23)."""
-    channels = sorted(votes)
-    ident = {c: c for c in channels}
-    if min_votes is None:
-        min_votes = PHASE_MAP_MIN_VOTES
-    if not channels or sum(sum(r.values()) for r in votes.values()) < min_votes:
-        return ident
-    pool = sorted(set(phases) | set(channels))
-    best, best_score = ident, sum(votes[c].get(c, 0) for c in channels)
-    for perm in itertools.permutations(pool, len(channels)):
-        score = sum(votes[c].get(p, 0) for c, p in zip(channels, perm))
-        if score > best_score:
-            best, best_score = dict(zip(channels, perm)), score
-    return best
 
 
 def _relabel(s: Session, mapping: Dict[str, str]) -> Session:

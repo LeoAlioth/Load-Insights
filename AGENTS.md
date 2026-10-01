@@ -10,6 +10,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | path | what |
 |---|---|
 | `custom_components/load_insights/insights/detect.py` | the pure detector - edges, sessions, signatures, merging. No Home Assistant imports; this is what the bench runs. |
+| `custom_components/load_insights/insights/phases.py` | which of a device's sensors are its per-phase readings, and which phase each of a meter's channels carries (`phase_mapping`). Load Juggler carries a verbatim copy at `custom_components/dynamic_ocpp_evse/phases.py`, synced by hand: change it here, copy it there whole. Stdlib only, no Load Insights imports; `tests/test_phases.py` fails while the two differ. |
 | `custom_components/load_insights/insights/classify.py` | what a load might be, from power, duration, factor, name hints (EN + SL) |
 | `custom_components/load_insights/detection.py` | the HA runner - reads the recorder, resolves sub-meters from the Energy dashboard, owns `DETECTOR_GENERATION` |
 | `custom_components/load_insights/config_flow.py` | setup and the naming pages |
