@@ -2804,6 +2804,29 @@ def test_the_union_reaches_as_far_as_the_slower_meters_span():
     share = f._meter_totals("c", T0, f.main.event_window(), True)["Hidrofor"][0]
     assert share is None, share
 
+
+def test_a_meter_that_held_its_value_did_not_take_the_step():
+    """Home's workshop boiler meter read 0 W for hours while an unmetered 2.2 kW
+    load on phase B switched 69 times; each unplaced step joined the boiler's
+    cluster as the busiest at its size. A meter that wrote nothing that moved
+    for three cadences after the step - its value held - cannot be where it
+    happened. One that stepped, is still changing, or cannot be judged yet can."""
+    f = _fleet_with_meters({"Workshop boiler": 0.0})
+    boiler = f.subs["Workshop boiler"].phases["a"]
+    boiler.interval = 10.0                                               # sustain 3 x 10 s
+    f._pass_end = T0 + 3600.0
+    assert f._meter_held("Workshop boiler", "c", T0, True)               # silent all along: held
+    assert not f._meter_held("Workshop boiler", "a", T0, True)           # not measured on A: cannot say
+    f._pass_end = T0 + 20.0
+    assert not f._meter_held("Workshop boiler", "c", T0, True)           # too soon to tell
+    f._pass_end = T0 + 3600.0
+    boiler.pending = [(T0 + 4.0, 2100.0, None, None)]
+    assert not f._meter_held("Workshop boiler", "c", T0, True)           # changing
+    boiler.pending = []
+    _declare(boiler, (T0 + 6.0, 2140.0, None, T0 - 4.0, T0 + 6.0))
+    assert not f._meter_held("Workshop boiler", "c", T0, True)           # it stepped: a placement missed
+    assert f._meter_held("Workshop boiler", "c", T0, False)              # ...but not the other way
+
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
     only what else inside it changed - the pieces of a grid step do not overlap."""
@@ -2817,13 +2840,13 @@ def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
     """The cycler inside Hisa is Hisa's; Blaz PC's step, which Hisa saw too,
     is Blaz PC's. Each compared by the step its own detector declared."""
     f = _fleet_with_meters({"Hiša": 300.0, "Blaž PC": 300.0}, {"Blaž PC": "Hiša"})
-    assert f._step_home("c", T0, 300.0, True) == "Blaž PC"
+    assert f._step_meter("c", T0, 300.0, True) == "Blaž PC"
     f = _fleet_with_meters({"Hiša": 65.0, "Blaž PC": 0.0}, {"Blaž PC": "Hiša"})
-    assert f._step_home("c", T0, 65.0, True) == "Hiša"
-    assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
-    assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
+    assert f._step_meter("c", T0, 65.0, True) == "Hiša"
+    assert f._step_meter("c", T0, 65.0, False) is None                  # it rose; this step fell
+    assert f._step_meter("c", T0, 900.0, True) is None                  # nothing saw all of it
     _declare(f.subs["Hiša"].phases["a"], (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before
-    assert f._step_home("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
+    assert f._step_meter("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
 
 
 def test_a_meter_learns_its_gain_against_the_grid():
@@ -2831,7 +2854,7 @@ def test_a_meter_learns_its_gain_against_the_grid():
     f = _fleet_with_meters({"Plug": 960.0})
     _declare(f.main.phases["c"], (T0, 1000.0, None, T0 - 1.0, T0 + 2.0))   # the grid's own step
     for _ in range(D.METER_GAIN_MIN):
-        assert f._step_home("c", T0, 1000.0, True) == "Plug"
+        assert f._step_meter("c", T0, 1000.0, True) == "Plug"
     assert abs(f.gain("Plug") - 1000.0 / 960.0) < 1e-6, f.gain("Plug")
     assert abs(f._meter_totals("c", T0, 5.0)["Plug"][0] - 1000.0) < 1e-6
 
@@ -2844,10 +2867,10 @@ def test_a_meter_reading_less_often_is_compared_over_its_own_span():
     _declare(f.subs["Hiša"].phases["a"], (T0 + 0.3, 2240.0, None, T0 - 1.0, T0 + 7.0))
     g = f.main.phases["c"]
     _declare(g, (T0, 2800.0, None, T0 - 2.0, T0 + 2.0), (T0 + 6.0, -580.0, None, T0 + 4.0, T0 + 8.0))
-    assert f._step_home("c", T0, 2800.0, True) == "Hiša"
+    assert f._step_meter("c", T0, 2800.0, True) == "Hiša"
     assert dict(f._meter_steps("c", T0, 6.0, True, 2800.0)) == {"Hiša": 2800.0}   # all of it: no phantom
     g.declared.pop(); g.declared_t.pop()                                        # without the -580 ...
-    assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
+    assert f._step_meter("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
 
 def test_a_change_reporters_span_starts_three_cadences_before_its_first_new_reading():

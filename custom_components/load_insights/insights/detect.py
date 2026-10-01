@@ -3541,7 +3541,9 @@ class Detector:
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
-    step_home: Optional[object] = field(default=None, repr=False, compare=False)
+    step_meter: Optional[object] = field(default=None, repr=False, compare=False)
+    # (meter, phase, since, up) -> it held its value through that moment, set by the Fleet - see _likely_meter
+    meter_held: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
@@ -4034,14 +4036,14 @@ class Detector:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in self._learned}
         placed = bool(EDGE_BY_METER) and len(ph) == 1 and (watts > 0 or not EDGE_WHERE_RISES_ONLY)
-        where = (self.step_home(ph, since, size, watts > 0, var) or "") if placed and self.step_home is not None else ""
+        where = (self.step_meter(ph, since, size, watts > 0, var) or "") if placed and self.step_meter is not None else ""
         if self._kinds is None:
             self._kinds = {}
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
         if EDGE_BY_METER == "hard" and placed and not where:
-            where = self._likely_home(ph, watts > 0, size)
+            where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
@@ -4145,13 +4147,17 @@ class Detector:
         return [c for c in members if c.angle is not None
                 and band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
-    def _likely_home(self, ph: str, up: bool, size: float) -> str:
+    def _likely_meter(self, ph: str, up: bool, size: float, since: Optional[float] = None) -> str:
         """Where a step no meter placed most likely happened: the meter whose
         cluster at this size has seen more steps than the plain one there, or
         nowhere. A meter misses a step now and then - a late report, a reading
         at the window's edge - and each miss founded a plain cluster beside the
         located one: Home went from 241 signatures to 279 (2026-10-01). A load
-        no meter watches stays plain wherever the plain cluster is the bigger."""
+        no meter watches stays plain wherever the plain cluster is the bigger.
+        Never a meter that HELD its value through the step - nothing written
+        but its old level, the recorder keeping only changes: an unmetered
+        2.2 kW load on Home's phase B joined the workshop boiler's cluster 69
+        times, 6.2 kWh, while the boiler's meter read 0 W for hours."""
         def busiest(where: str) -> float:
             g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
             unit, segs = self.edge_unit.get(g), self._segs.get(g)
@@ -4164,7 +4170,9 @@ class Detector:
             return max((c.count for c in self._kinds.get((ph, up), []) if c.where == where
                         and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]), default=0.0)
         plain = busiest("")
-        best = max(((busiest(w), w) for w in {c.where for c in self._kinds.get((ph, up), [])} if w), default=(0.0, ""))
+        held = (lambda w: since is not None and self.meter_held is not None and self.meter_held(w, ph, since, up))
+        best = max(((busiest(w), w) for w in {c.where for c in self._kinds.get((ph, up), [])} if w and not held(w)),
+                   default=(0.0, ""))
         return best[1] if best[0] > plain else ""
 
     def _keyed_above_chance(self, hk: Dict[int, float], h: Dict[int, float], lo: int, hi: int,
@@ -4715,6 +4723,7 @@ class Fleet:
     meter_gain: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict)
+    _pass_end: float = field(default=0.0, repr=False, compare=False)   # how far this pass's readings reach - see _meter_held
     # switch -> {on moment: off moment, or None while on}, as the runner last
     # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
     # window with a lookback.
@@ -4806,7 +4815,9 @@ class Fleet:
             closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
                                            None, (sub_q_quantum or {}).get(name))
         self.main.meter_steps = self._meter_steps
-        self.main.step_home = self._step_home
+        self.main.step_meter = self._step_meter
+        self.main.meter_held = self._meter_held
+        self._pass_end = max(latest, latest_seen)
         closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
         self._file_waiting(closed_main, closed_sub, latest)
         self._locate([], {}, latest)
@@ -5195,7 +5206,26 @@ class Fleet:
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
-    def _step_home(self, ph: str, since: float, size: float, up: bool, var: Optional[float] = None) -> Optional[str]:
+    def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
+        """Did meter ``name`` hold its value through a step on grid phase
+        ``ph`` at ``since``? As of the pass's end it has written nothing that
+        moved for SUSTAIN_CADENCES of its cadence after it - silence is its
+        value held - has nothing pending, and declared no step that way near
+        it. Too soon to tell, or a meter not measured on ``ph``: no."""
+        det = self.subs.get(name)
+        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] if det else []
+        if not chans:
+            return False
+        for c in chans:
+            st = det.phases[c]
+            reach = st.sustain()
+            if self._pass_end < since + reach or st.pending:
+                return False
+            if any((e[1] > 0) == up for e in self._near(st, since - reach, since + reach, reach)):
+                return False                          # it stepped: a placement missed, not a silence
+        return True
+
+    def _step_meter(self, ph: str, since: float, size: float, up: bool, var: Optional[float] = None) -> Optional[str]:
         """The innermost meter whose own declared step was all of a grid step
         on ``ph`` - within both meters' noise and METER_CAL_SLACK; of several,
         the one none of the others hangs under. Teaches the meter its gains."""
@@ -5221,14 +5251,14 @@ class Fleet:
         inner = [n for n in took if not any(under(o, n) for o in took if o != n)]
         if not inner:
             return None
-        home = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
-        _, raw, raw_q, noise_m, conf = took[home]
+        meter = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
+        _, raw, raw_q, noise_m, conf = took[meter]
         main.placement_conf = conf
         if raw is not None and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
-            self._learn_gain(home, "p", size, raw)
+            self._learn_gain(meter, "p", size, raw)
             if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
-                self._learn_gain(home, "q", var, raw_q)
-        return home
+                self._learn_gain(meter, "q", var, raw_q)
+        return meter
 
     def _learn_gain(self, name: str, kind: str, grid: float, meter: float) -> None:
         if not grid or not meter:
