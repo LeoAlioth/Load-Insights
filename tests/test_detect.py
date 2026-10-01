@@ -2776,5 +2776,14 @@ def test_a_step_belongs_to_the_innermost_meter_that_saw_all_of_it():
     assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
     assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
 
+
+def test_a_meter_reporting_on_change_is_timed_by_its_shortest_gaps():
+    """A periodic meter's cadence is its period; one that reports on change
+    is as quick as its shortest usual gap, not its idle heartbeat."""
+    assert abs(D.reading_cadence([10.0, 10.2, 9.9, 10.1] * 5) - 10.0) < 0.2   # a 10 s poll
+    change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
+    assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
+    assert D.reading_cadence([5.0, 6.0]) == 0.0                           # too few to say
+
 if __name__ == "__main__":
     run_main(globals())
