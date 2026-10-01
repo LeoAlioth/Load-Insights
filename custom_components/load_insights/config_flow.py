@@ -2,7 +2,7 @@
 explanatory inputs. Options: change the inputs later."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import logging
 
@@ -259,11 +259,7 @@ def _group_detail(hass, runner, where: str, shown: int, waiting: int) -> str:
 def _behind(seconds: Optional[float]) -> str:
     if seconds is None:
         return "it has not read anything yet"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f} minutes behind"
-    if seconds < 172800:
-        return f"{seconds / 3600:.0f} hours behind"
-    return f"{seconds / 86400:.1f} days behind"
+    return f"{dt_util.get_age(dt_util.utcnow() - timedelta(seconds=max(0.0, seconds)))} behind"
 
 
 def _since(when: float) -> str:

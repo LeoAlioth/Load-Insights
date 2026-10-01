@@ -28,14 +28,8 @@ from .insights.scoring import LEADS_H
 def _when(value: Optional[datetime]) -> str:
     if value is None:
         return "never"
-    delta = (dt_util.utcnow() - dt_util.as_utc(value)).total_seconds()
-    if delta < 90:
-        return "just now"
-    if delta < 5400:
-        return f"{delta / 60:.0f} min ago"
-    if delta < 172800:
-        return f"{delta / 3600:.0f} h ago"
-    return f"{delta / 86400:.0f} days ago"
+    # get_age refuses a moment in the future, as after the clock is set back
+    return f"{dt_util.get_age(min(dt_util.as_utc(value), dt_util.utcnow()))} ago"
 
 
 def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
