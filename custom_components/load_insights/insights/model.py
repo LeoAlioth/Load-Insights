@@ -226,17 +226,9 @@ def migrate_inputs(options: dict) -> dict:
     legacy = options.get("device_state_sensors")
     if legacy is None:
         return options
-    inputs = list(options.get("input_entities") or [])
-    links = {k: list(v) for k, v in (options.get("input_links") or {}).items()}
-    for device, eids in legacy.items():
-        for eid in ([eids] if isinstance(eids, str) else list(eids or [])):
-            if eid not in inputs:
-                inputs.append(eid)
-            if device not in links.setdefault(eid, []):
-                links[eid].append(device)
-    out = {k: v for k, v in options.items() if k != "device_state_sensors"}
-    out["input_entities"], out["input_links"] = inputs, links
-    return out
+    return add_inputs({k: v for k, v in options.items() if k != "device_state_sensors"},
+                      [(eid, device) for device, eids in legacy.items()
+                       for eid in ([eids] if isinstance(eids, str) else list(eids or []))])
 
 
 def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:

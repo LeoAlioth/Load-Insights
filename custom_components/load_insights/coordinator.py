@@ -180,13 +180,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         temps_hist: Dict[float, float] = {}
         temps_fc: Dict[float, float] = {}
         if temp_entity and weather_entity:
-            trows = await get_instance(self.hass).async_add_executor_job(
-                rec_stats.statistics_during_period,
-                self.hass, start, None, {temp_entity}, "hour", {"temperature": UnitOfTemperature.CELSIUS}, {"mean"},
-            )
-            for r in trows.get(temp_entity, []):
-                if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                    temps_hist[float(r["start"])] = float(r["mean"])
+            temps_hist = await self._hourly_means(temp_entity, start, {"temperature": UnitOfTemperature.CELSIUS})
             temps_fc = await self._forecast_temperatures(weather_entity, now)
 
         # --- calendars: every linked one, over history and horizon ---
@@ -218,7 +212,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
         fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
-            forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None, cal_signals or None
+            forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None, cal_signals or None
         )
         cons_fc = await fit(consumption)
         rem_fc = await fit(remainder) if remainder else None
@@ -275,20 +269,10 @@ class InsightsCoordinator(DataUpdateCoordinator):
             numbers: List[Tuple[str, Dict[float, float], Optional[float]]] = []
             for st_entity in linked.get(d.energy, []):
                 if st_entity not in means:
-                    srows = await get_instance(self.hass).async_add_executor_job(
-                        rec_stats.statistics_during_period,
-                        self.hass, start, None, {st_entity}, "hour", None, {"mean"},
-                    )
-                    means[st_entity] = {float(r["start"]): float(r["mean"]) for r in srows.get(st_entity, [])
-                                        if r.get("mean") is not None and isinstance(r.get("start"), (int, float))}
+                    means[st_entity] = await self._hourly_means(st_entity, start)
                 if not means[st_entity]:
                     continue              # no hourly means: a state, among the signals already
-                st = self.hass.states.get(st_entity)
-                try:
-                    live = float(st.state) if st is not None else None
-                except (TypeError, ValueError):
-                    live = None
-                numbers.append((st_entity, means[st_entity], live))
+                numbers.append((st_entity, means[st_entity], _read_number(self.hass, [st_entity])))
             if len(numbers) > 1:
                 hist, live = [h for _, h, _ in numbers], [v for _, _, v in numbers]
             elif numbers:
@@ -296,7 +280,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             else:
                 hist, live = None, None
             fc = await self.hass.async_add_executor_job(
-                forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
+                forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
                 cal_signals or None, hist or None, live,
             )
             device_fc[d.energy] = fc
@@ -407,14 +391,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         taking the state that was in force at the top of each hour - which is
         what a schedule-like input needs and what the recorder can give for a
         sensor with no statistics."""
-        rows = await get_instance(self.hass).async_add_executor_job(
-            rec_stats.statistics_during_period,
-            self.hass, start, None, {entity_id}, "hour", None, {"mean"},
-        )
-        out: Dict[float, object] = {}
-        for r in rows.get(entity_id, []):
-            if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                out[float(r["start"])] = float(r["mean"])
+        out: Dict[float, object] = await self._hourly_means(entity_id, start)
         if out:
             return out
         states = await get_instance(self.hass).async_add_executor_job(
@@ -435,6 +412,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
             if k >= changes[0][0]:
                 out[k] = current
         return out
+
+    async def _hourly_means(self, entity_id: str, start: datetime,
+                            units: Optional[Dict[str, str]] = None) -> Dict[float, float]:
+        """hour key -> the entity's hourly mean statistic since ``start``,
+        in ``units`` where given."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.statistics_during_period,
+            self.hass, start, None, {entity_id}, "hour", units, {"mean"},
+        )
+        return {float(r["start"]): float(r["mean"]) for r in rows.get(entity_id, []) if r.get("mean") is not None}
 
     async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:
         """(start_key, end_key, title) for every event of a calendar between
@@ -533,18 +520,5 @@ NUMERIC_STATE_DOMAINS = ("sensor", "input_number", "number")
 
 def _rows_to_samples(rows: List[dict], tz) -> List[tuple]:
     """Recorder rows -> (local period start, kWh). ``start`` is an epoch float
-    in current cores; a datetime is accepted too."""
-    out = []
-    for r in rows:
-        v = r.get("change")
-        if v is None:
-            continue
-        s = r.get("start")
-        if isinstance(s, (int, float)):
-            t = datetime.fromtimestamp(s, tz)
-        elif isinstance(s, datetime):
-            t = s.astimezone(tz)
-        else:
-            continue
-        out.append((t, float(v)))
-    return out
+    (StatisticsRow, every core this runs on)."""
+    return [(datetime.fromtimestamp(r["start"], tz), float(r["change"])) for r in rows if r.get("change") is not None]
