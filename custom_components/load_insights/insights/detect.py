@@ -279,15 +279,10 @@ EXPORT_SHARE = 0.005
 # own it switched the house's floor guard off on every pass, until one cloud
 # edge left Home's phase B floor at -1483 W for good (2026-09-25).
 GENERATION_MIN_SAMPLES = int(round(1.0 / EXPORT_SHARE))
-# Below this an AC input is carrying nothing; a generator sits here almost
-# always, while a utility connection crosses zero and moves on.
+# Below this a reading is carrying nothing - a generator's idle AC input port
 SOURCE_IDLE_W = 25.0
-SOURCE_IDLE_SHARE = 0.9
 # a reference circuit has to carry something this often to be one
 LIVE_SHARE = 0.2
-SOURCE_UTILITY = "utility"
-SOURCE_GENERATOR = "generator"
-SOURCE_NONE = "none"
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
 # How much better a size match must be before it overrides RECENCY when a
 # step down chooses which open start it closes. 0 is pure best-fit, 1 treats
@@ -1311,37 +1306,6 @@ def carries_load(rows: Sequence[Tuple[float, float]]) -> bool:
         return False
     live = sum(1 for _, value in rows if abs(value) > SOURCE_IDLE_W)
     return live >= LIVE_SHARE * len(rows)
-
-
-def classify_source(rows: Sequence[Tuple[float, float]]) -> Optional[str]:
-    """What is behind an AC input, from the reading alone.
-
-    The reading cannot tell a utility meter from a generator's - both are
-    watts at an input port - but the BEHAVIOUR separates them, and neither
-    is a preference anyone should have to type (Anze, 2026-09-18):
-
-      * only a utility ABSORBS a surplus, so a reading that goes usefully
-        negative is the grid and nothing else;
-      * a generator is off far more than it is on, so a source that spends
-        almost all its life at zero and never absorbs is one;
-      * a port that has never carried anything at all is, as far as the data
-        goes, not connected.
-
-    The last two are the same reading for a generator that has not run in
-    the window, which is the one case the setting is worth overriding for -
-    "you will need the generator" and "you will go dark" are not the same
-    warning. Callers should keep the most informative verdict they have seen
-    rather than following this down to ``none`` again.
-
-    None when there is too little to look at."""
-    if len(rows) < PV_MIN_SAMPLES:
-        return None
-    if any(value < -EXPORT_FLOOR_W for _, value in rows):
-        return SOURCE_UTILITY
-    live = sum(1 for _, value in rows if abs(value) > SOURCE_IDLE_W)
-    if not live:
-        return SOURCE_NONE
-    return SOURCE_GENERATOR if live <= (1.0 - SOURCE_IDLE_SHARE) * len(rows) else SOURCE_UTILITY
 
 
 def measure_quantum(values: Sequence[float]) -> float:

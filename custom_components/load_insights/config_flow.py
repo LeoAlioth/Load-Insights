@@ -23,8 +23,8 @@ from .const import (
     CONF_INV_INPUT_PREFIX,
     CONF_INV_TOPOLOGY,
     SOURCE_KINDS,
+    SOURCE_UTILITY,
     CONF_SOURCE_KIND,
-    DEFAULT_SOURCE_KIND,
     LAYOUT_PARALLEL,
     LAYOUT_SERIES,
     CONF_CALENDAR_ENTITIES,
@@ -82,8 +82,10 @@ def _grid_fields(defaults: dict) -> dict:
             out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
                 selector.EntitySelector(selector.EntitySelectorConfig(
                     domain="sensor", device_class=device_class))
+    # an "auto" stored before 2026-10-01 was the utility all along
+    kind = defaults.get(CONF_SOURCE_KIND)
     out[vol.Optional(CONF_SOURCE_KIND,
-                     default=defaults.get(CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND))] = selector.SelectSelector(
+                     default=kind if kind in SOURCE_KINDS else SOURCE_UTILITY)] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(SOURCE_KINDS), translation_key=CONF_SOURCE_KIND,
                                       mode=selector.SelectSelectorMode.DROPDOWN))
     return out

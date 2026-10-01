@@ -247,7 +247,7 @@
                 },
                 "data_description": {
                     "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
-                    "source_kind": "Left on automatic this is read off the reading itself: only the utility absorbs a surplus, and a generator is off far more than it is on. Override it for a generator that has not run lately, which reads exactly like nothing connected - and \"you will need the generator\" is not the same warning as \"you will go dark\"."
+                    "source_kind": "Says what a shortfall at the grid connection is: energy bought from the utility, a generator someone has to start, or - off grid - a load that goes unserved. The forecast's arithmetic is the same either way; this decides how the overview words it."
                 }
             },
             "naming_detail": {
@@ -385,7 +385,6 @@
         },
         "source_kind": {
             "options": {
-                "auto": "Work it out from the data",
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"

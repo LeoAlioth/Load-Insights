@@ -16,12 +16,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_DETECTION,
     CONF_SOURCE_KIND,
-    DEFAULT_SOURCE_KIND,
-    SOURCE_AUTO,
     DOMAIN,
     SOURCE_GENERATOR,
     SOURCE_NONE,
-    SOURCE_UTILITY,
 )
 from .insights.classify import _fmt_w
 from .insights.detect import most_specific
@@ -46,12 +43,8 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry_id)
     runner = (hass.data.get(DOMAIN) or {}).get(f"{entry_id}_detection")
     entry = hass.config_entries.async_get_entry(entry_id)
-    # Set explicitly it is the answer; left on automatic the reading itself
-    # says which, and until detection has looked, the ordinary case.
-    kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(
-        CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND)
-    if kind == SOURCE_AUTO:
-        kind = getattr(runner, "source_kind", None) or SOURCE_UTILITY
+    # what the grid page says is connected; unsaid (or the old "auto"), the utility
+    kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(CONF_SOURCE_KIND)
     lines: list[str] = []
 
     data = getattr(coordinator, "data", None)
