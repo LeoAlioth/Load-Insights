@@ -10,7 +10,7 @@ site and ten at once on a laptop.
     python3 tests/bench.py home   FOLDER [DIAL=VALUE ...]   score, mat, kiln and pump off two replays
     python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER [DIAL=VALUE ...]
 
-SITE is a key of cluster_lab.SITES (home, kozolec); FOLDER a directory of the
+SITE is a key of SITES below (home, kozolec); FOLDER a directory of the
 per-day CSVs fetch_history.py writes. Build tuning and hold-out folders of
 symlinks rather than pointing at data/history/<site> while a fetch is
 writing to it - runs started seconds apart would read different days.
@@ -63,15 +63,40 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cluster_lab as lab  # noqa: E402
 import replay as R  # noqa: E402
 
 D = R.D
+# Each site's house reading and the device meters ground truth is labelled by.
+SITES = {
+    "kozolec": {
+        "main": {"a": "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"},
+        "subs": {
+            "Boiler": "sensor.boiler_power",
+            "Hidrofor": "sensor.kozolec_hidrofor_power",
+            "Well pump": "sensor.well_pump_power",
+            "Pond EVSE": "sensor.pond_evse_power",
+            "Pastir": "sensor.pastir_staja_power",
+            "Bug lamp": "sensor.bug_lamp_power",
+        },
+    },
+    "home": {
+        "main": {p: f"sensor.se17k_home_power_phase_{p}" for p in "abc"},
+        "subs": {
+            "Workshop boiler": "sensor.workshop_boiler_power",
+            "Attic AC": "sensor.attic_ac_power",
+            "Hidrofor": "sensor.hidrofor_power",
+            "EVBox": "sensor.evbox_elvi_power_active_import",
+            "NASA station": "sensor.attic_office_power",
+            "Server UPS": "sensor.server_ups_power",
+            "Susilna": "sensor.shellypmminig3_susilna_power",
+        },
+    },
+}
 MIN_SESSIONS = 60                      # devices below this are too few to read
 # Every meter production reads, the way _resolve_submeters hands them over:
 # a three-phase meter per phase under its OWN labels, anything else as one
 # total whose phase is unknown. SUBS=prod feeds these to the Fleet; the
-# default feeds only cluster_lab's device meters, as the bench always has.
+# default feeds only SITES' device meters, as the bench always has.
 PROD_SUBS = {
     "home": {
         "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
@@ -333,8 +358,8 @@ def _replay(folder: str, site: str | None):
     # the house roles pinned to what production reads, never guessed: with the
     # 3EMs' power factors in the history the guess took Hiša's power for the
     # house's (2026-09-30). HOUSE= modes pin their own built series.
-    which = site or next((n for n in lab.SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
-    pins = PINNED or ([f"power_{p}={e}" for p, e in lab.SITES[which]["main"].items()] if which else [])
+    which = site or next((n for n in SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
+    pins = PINNED or ([f"power_{p}={e}" for p, e in SITES[which]["main"].items()] if which else [])
     for pin in pins:
         argv += ["--role", pin]
     for eid in SWITCHES:
@@ -349,7 +374,7 @@ def _replay(folder: str, site: str | None):
             argv += ["--single", n] if n in PROD_SINGLE.get(site, []) else []
             argv += ["--parent", f"{n}={PROD_PARENTS[site][n]}"] if n in PROD_PARENTS.get(site, {}) else []
     elif site:
-        for n, e in lab.SITES[site]["subs"].items():
+        for n, e in SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]
     saved, sys.argv = sys.argv, argv
     try:
@@ -362,13 +387,73 @@ def _replay(folder: str, site: str | None):
 
 
 def _labels_from(folder: str, site: str, fed: dict) -> dict:
-    """The device meters the score is labelled by - cluster_lab's, always.
+    """The device meters the score is labelled by - SITES', always.
     Fed production's meters, the Fleet also sees circuit meters, and a circuit
     would 'label' half the house."""
     if SUBS != "prod":
         return fed
     s = _read_csv([folder], False)
-    return {n: sorted(s[e]) for n, e in lab.SITES[site]["subs"].items() if s.get(e)}
+    return {n: sorted(s[e]) for n, e in SITES[site]["subs"].items() if s.get(e)}
+
+
+def label(sessions, subs):
+    """Which device meter's energy ROSE while each session ran."""
+    out = {}
+    for i, s in enumerate(sessions):
+        span = s.duration_s
+        if span <= 0:
+            continue
+        want = s.energy_wh
+        if want <= 0:
+            continue
+        best, best_gap = None, None
+        for name, rows in subs.items():
+            got = D.energy_between(rows, s.start, s.end)
+            if got is None:
+                continue
+            # what the meter drew just BEFORE the run, held over it - not its
+            # average over the minutes before: a charge that follows another
+            # had the last one in that average and read as nothing (Kozolec's
+            # charger, 2026-10-01)
+            i0 = bisect.bisect_right(rows, (s.start - 10.0, float("inf"))) - 1
+            if i0 < 0:
+                continue
+            rose = got - rows[i0][1] * span / 3600.0
+            if rose <= 0:
+                continue
+            ratio = rose / want
+            if D.ENERGY_MATCH_LO <= ratio <= D.ENERGY_MATCH_HI:
+                gap = abs(ratio - 1.0)
+                if best_gap is None or gap < best_gap:
+                    best, best_gap = name, gap
+        if best:
+            out[i] = best
+    return out
+
+
+def _score(assign, labels):
+    """Purity (of a signature's labelled sessions, the share of its majority
+    device) and, per device, its concentration: (share in its main
+    signature, sessions, signatures). Concentration, not a count of
+    fragments: the boiler in 24 clusters sounds like a disaster, but 383 of
+    its 489 sessions in ONE of them is the row its owner would name; the
+    rest is a tail of real behaviour (2026-09-22)."""
+    clusters = collections.defaultdict(list)
+    for i, cid in assign.items():
+        clusters[cid].append(i)
+    pure_hits = pure_total = 0
+    for ids in clusters.values():
+        got = [labels[i] for i in ids if i in labels]
+        if got:
+            pure_hits += collections.Counter(got).most_common(1)[0][1]
+            pure_total += len(got)
+    spread = collections.defaultdict(collections.Counter)
+    for i, name in labels.items():
+        if i in assign:
+            spread[name][assign[i]] += 1
+    conc = {name: (c.most_common(1)[0][1] / sum(c.values()), sum(c.values()), len(c)) for name, c in spread.items()}
+    return {"clusters": len(clusters), "purity": pure_hits / pure_total if pure_total else 0.0,
+            "concentration": conc}
 
 
 # Which production meter each labelled device should end up placed at, and the
@@ -390,7 +475,7 @@ def attrib(site: str, folder: str, dials) -> None:
     SUBS = "prod"
     tag = _apply(dials)
     det, filed, fed = _run(folder, site)
-    labels = lab.label(filed, _labels_from(folder, site, fed))
+    labels = label(filed, _labels_from(folder, site, fed))
     per = collections.defaultdict(lambda: [0, 0])
     for i, name in labels.items():
         sig = det.signature_of(filed[i])
@@ -422,8 +507,8 @@ def score(site: str, folder: str, dials) -> None:
     det, filed, subs = _run(folder, site)
     subs = _labels_from(folder, site, subs)
     assign = {i: det.signature_of(s).id for i, s in enumerate(filed) if det.signature_of(s)}
-    labels = lab.label(filed, subs)
-    r = lab.score(assign, labels, filed)
+    labels = label(filed, subs)
+    r = _score(assign, labels)
     big = {n: v for n, v in r["concentration"].items() if v[1] >= MIN_SESSIONS}
     tot = sum(v[1] for v in big.values()) or 1
     wc = sum(v[0] * v[1] for v in big.values()) / tot
@@ -662,7 +747,7 @@ def inputs_bench(folder: str, dials) -> None:
 def surge(site: str, folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, subs = _run(folder, site)
-    labels = lab.label(filed, subs)
+    labels = label(filed, subs)
     bydev = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
         sig = det.signature_of(filed[i])

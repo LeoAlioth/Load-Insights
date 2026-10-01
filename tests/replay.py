@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import load  # noqa: E402
-from export_urls import RENAMED  # noqa: E402  - ids renamed since some history was fetched
+from fetch_history import RENAMED  # noqa: E402  - ids renamed since some history was fetched
 
 D = load("insights.detect")
 DISCOVERY = load("insights.phases")

@@ -106,7 +106,7 @@ def install(plants: list) -> None:
 def _above(rows: list, times: list, a: float, b: float, floor: float) -> float:
     """The device's energy above its idle floor over [a, b], its readings held
     until the next - the same measure as its truth. Not what its meter ROSE
-    by against the minutes before, as cluster_lab.label reads it: a charge
+    by against the minutes before, as bench.label once read it: a charge
     that follows another has the last one in its "before", and read as
     nothing - 13.8 kWh of Kozolec's charger scored as no one's (2026-10-01)."""
     import bisect
