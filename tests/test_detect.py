@@ -2937,6 +2937,32 @@ def test_a_stop_netted_into_another_loads_start_is_split_out():
     _declare(grid, (T0 + 6.0, -800.0, None, T0 + 2.0, T0 + 6.0))          # the grid saw the stop by itself
     assert det.metered_parts("c", T0, 1108.0) == [1108.0]
 
+
+def test_a_one_device_meters_runs_go_to_one_signature():
+    """Kozolec's pump plug kept two kinds of pump run apart in its own library,
+    and the house, mapping each to a signature of its own, held the pump in two
+    - 83 and 73 of its runs - each a load to name. A meter that holds one
+    device sends every run it saw where its runs go."""
+    f = D.Fleet()
+    f.main.phases["a"] = D.PhaseState()
+    plug = D.Detector()
+    plug.phases["a"] = D.PhaseState()
+    f.subs = {"Pump": plug}
+    f.single = {"Pump": True}
+    f.agnostic = {"Pump": True}
+    sig = lambda i, n: D.Signature(id=i, phases="a", power={"a": 900.0}, duration_s=70.0, pf=None,
+                                   count=n, first_seen=T0, last_seen=T0)
+    home, other = sig(10, 30), sig(11, 8)
+    home.locations["Pump"], other.locations["Pump"] = 30, 8
+    f.main.signatures, f.main.next_id = [home, other], 12
+    plug.signatures = [sig(2, 8)]
+    f.identity = {"Pump": {"2": 11}}                                      # its second kind went to #11
+    s = D.Session(phases="a", start=T0, end=T0 + 70.0, levels={"a": [(T0, 900.0)]})
+    s.signature_id = 2
+    m = D.Session(phases="a", start=T0, end=T0 + 70.0, levels={"a": [(T0, 905.0)]})
+    f._file_as(m, "Pump", s)
+    assert f.main.signature_of(m).id == 10
+
 def test_a_meter_learns_its_gain_against_the_grid():
     """A plug reading 4 % low is matched in the grid's terms once learned."""
     f = _fleet_with_meters({"Plug": 960.0})

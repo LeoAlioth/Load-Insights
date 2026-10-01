@@ -5146,7 +5146,13 @@ class Fleet:
         own = _relabel(s, mp)
         sub_sig = det.signature_of(s) if det is not None else None
         prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
-        if not self._one_device(name):  # a circuit meter holds many loads: its sessions do not decide
+        if self.holds_one_device(name):
+            # one device: every run its meter saw goes where its runs go, not
+            # one signature per kind of run the meter's own library keeps apart -
+            # Kozolec's pump plug kept two, and the pump stood in two signatures
+            # of 83 and 73 of its runs, each a load to name (Anze, 2026-10-01)
+            prefer = self._meter_home(name) or prefer
+        elif not self._one_device(name):  # a circuit meter holds many loads: its sessions do not decide
             prefer = None
         main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
         switch = self._switch_for(m, main_iv) if self.switch_on else None
