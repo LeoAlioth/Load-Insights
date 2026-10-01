@@ -53,6 +53,8 @@ from .insights.detect import (
     Fleet,
     carries_generation,
     MIN_NOISE_W,
+    _as_of,
+    _median,
     _sum_series,
     without_window_start,
     names_in_store,
@@ -84,20 +86,6 @@ STATE_DOMAINS = ("select", "input_select", "fan")
 def load_uid(entry_id: str, kind: str, name: str) -> str:
     """A named load's entity's unique id - ``kind`` "power" or "energy"."""
     return f"{entry_id}_load_{kind}_{name.lower().replace(' ', '_')}"
-
-
-def is_meter(entry, has_state: bool) -> bool:
-    """Whether a dashboard device's energy entity is a meter detection may learn from.
-
-    Not one of this integration's own named-load sensors: the dashboard lists
-    those too, and read back as a sub-meter a load's estimate became its own
-    truth - and naming a load after it made the load "that metered device",
-    so it got no sensors at all (Home and Kozolec, 2026-09-30, after the full
-    reset left Peč za Glino, Kompresor, Fridges... on the dashboard). Nor an
-    entity that no longer exists: its recorded history is only what it was."""
-    if entry is not None:
-        return entry.platform != DOMAIN
-    return has_state
 
 
 def device_uid(entry_id: str, energy: str) -> str:
@@ -196,7 +184,10 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
     kiln's estimate would be fed in as a measurement, with the kiln then
     detected inside it (Anze, 2026-09-28: "make sure that the generated
     detected entities do not back feed to any detection as if they were
-    actual measurements")."""
+    actual measurements"). Read back as a sub-meter a load's estimate became
+    its own truth - and naming a load after it made the load "that metered
+    device", so it got no sensors at all (Home and Kozolec, 2026-09-30, after
+    the full reset left Peč za Glino, Kompresor, Fridges... on the dashboard)."""
     own = frozenset(e.entity_id for e in er.async_get(hass).entities.values() if e.platform == DOMAIN)
     return SiteModel.from_prefs(prefs, ignore=own)
 
@@ -280,7 +271,10 @@ class DetectionRunner:
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
-            if not is_meter(entry, self.hass.states.get(dev.energy) is not None):
+            # Not an entity that no longer exists: its recorded history is only
+            # what it was. (Not one of our own named-load sensors either - see
+            # energy_site, which has already left those out.)
+            if entry is None and self.hass.states.get(dev.energy) is None:
                 continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
@@ -1156,7 +1150,7 @@ class DetectionRunner:
                         del steps[:-AMP_STEP_MEMORY]
                         dq = quantum_of_steps(steps)
                         if dq:
-                            self.q_quantum[phase] = dq * _median_of([v for _, v in volts])
+                            self.q_quantum[phase] = dq * _median([v for _, v in volts])
                 break
         return out
 
@@ -1243,26 +1237,6 @@ class DetectionRunner:
         return samples, q
 
 
-def _as_of(rows: list, ts: float, i: int) -> int:
-    """Index of the last row at or before ``ts``, walking forward from ``i``;
-    -1 when the series has not started yet."""
-    if not rows or rows[0][0] > ts:
-        return -1
-    i = max(i, 0)
-    while i + 1 < len(rows) and rows[i + 1][0] <= ts:
-        i += 1
-    return i
-
-
-def _median_of(values: list) -> float:
-    """Plain median, for the one voltage level a quantum is scaled by."""
-    kept = sorted(values)
-    if not kept:
-        return 0.0
-    mid = len(kept) // 2
-    return kept[mid] if len(kept) % 2 else 0.5 * (kept[mid - 1] + kept[mid])
-
-
 def _align(source: list, target_rows: list) -> Dict[float, float]:
     """``source`` read as of each of ``target_rows``' moments."""
     out: Dict[float, float] = {}
@@ -1308,12 +1282,7 @@ def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
     power factor: finest first. Each paired with the power reading of the
     same update - see SAME_UPDATE_S."""
     if signed and power_rows and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S:
-        out, si = {}, 0
-        for ts, _ in power_rows:
-            si = _as_of(signed, ts, si)
-            if si >= 0:
-                out[ts] = signed[si][1]
-        return out
+        return _align(signed, power_rows)
     volts, amps, pfs, vas = volts or [], amps or [], pfs or [], vas or []
     out: Dict[float, float] = {}
     vi = ai = fi = si = 0

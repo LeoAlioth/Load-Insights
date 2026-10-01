@@ -1283,13 +1283,11 @@ def exports_positive(grid_rows: Sequence[Tuple[float, float]],
         return None
     # the grid reading as of each of those moments, sample and hold
     seen = []
-    at = sorted(busy)
     rows = sorted(grid_rows)
     j = 0
-    for ts in at:
-        while j + 1 < len(rows) and rows[j + 1][0] <= ts:
-            j += 1
-        if rows and rows[0][0] <= ts:
+    for ts in sorted(busy):
+        j = _as_of(rows, ts, j)
+        if j >= 0:
             seen.append(rows[j][1])
     if len(seen) < PV_MIN_SAMPLES:
         return None
