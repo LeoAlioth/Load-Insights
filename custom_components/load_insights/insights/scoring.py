@@ -12,7 +12,7 @@ and is the one number that says whether the spread is honest.
 A daily headline sits beside the hourly ones: the "tomorrow" total the
 forecast showed at noon, against what the day then used.
 
-Keys are epoch seconds of the period start (see series._key). The ledger is
+Keys are epoch seconds of the period start (see series.py). The ledger is
 plain data so it round-trips through JSON into Home Assistant's .storage.
 """
 from __future__ import annotations
@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from .profile import floor_hour
 
 # The week-ahead lead is the horizon's LAST hour: a 168-row horizon starting
 # at the current hour ends 167 h ahead, and "168 h ahead" is never in it.
@@ -31,14 +33,6 @@ METRIC_WINDOW_DAYS = 7
 DAY_WINDOW_DAYS = 60
 PENDING_GRACE_H = 48        # a pending hour with no actual after this long is a gap, dropped
 NOON = 12
-
-
-def _key(t: datetime) -> float:
-    return t.timestamp()
-
-
-def floor_hour(dt: datetime) -> datetime:
-    return dt.replace(minute=0, second=0, microsecond=0)
 
 
 @dataclass
@@ -62,9 +56,9 @@ class Ledger:
         """Note what the forecast says for the hours exactly LEADS_H ahead,
         and at noon what it says for tomorrow."""
         cur = floor_hour(now)
-        by_key = {_key(t): (v, b) for (t, v), b in zip(hourly, bands)}
+        by_key = {t.timestamp(): (v, b) for (t, v), b in zip(hourly, bands)}
         for lead in LEADS_H:
-            target = _key(cur) + lead * 3600.0
+            target = cur.timestamp() + lead * 3600.0
             if target in by_key:
                 self.pending.setdefault(lead, {})[target] = by_key[target][0]
                 if lead == BAND_LEAD_H:
@@ -76,8 +70,8 @@ class Ledger:
     # ------------------------------------------------------------ settle
     def settle(self, now: datetime, actual: Sequence[Tuple[datetime, float]]) -> None:
         """Pair every pending hour whose actual is known; drop the stale."""
-        cur_k = _key(floor_hour(now))
-        act = {_key(t): v for t, v in actual if v is not None}
+        cur_k = floor_hour(now).timestamp()
+        act = {t.timestamp(): v for t, v in actual if v is not None}
         for lead in LEADS_H:
             pend = self.pending.setdefault(lead, {})
             for k in sorted(pend):
@@ -101,7 +95,7 @@ class Ledger:
         # hour still to run, which is exactly what it did once.
         by_day: Dict[str, List[float]] = {}
         for t, v in actual:
-            if v is not None and _key(t) < cur_k:
+            if v is not None and t.timestamp() < cur_k:
                 by_day.setdefault(t.date().isoformat(), []).append(v)
         today = floor_hour(now).date().isoformat()
         for day in sorted(self.pending_day):
@@ -123,7 +117,7 @@ class Ledger:
 
     # ------------------------------------------------------------ metrics
     def metrics(self, now: datetime, lead: int, window_days: int = METRIC_WINDOW_DAYS) -> dict:
-        since = _key(floor_hour(now)) - window_days * 86400.0
+        since = floor_hour(now).timestamp() - window_days * 86400.0
         rows = [e for e in self.errors.get(lead, []) if e[0] >= since]
         if not rows:
             return {"n": 0, "mae_w": None, "bias_w": None}
@@ -135,7 +129,7 @@ class Ledger:
         }
 
     def coverage(self, now: datetime, window_days: int = METRIC_WINDOW_DAYS) -> Optional[float]:
-        since = _key(floor_hour(now)) - window_days * 86400.0
+        since = floor_hour(now).timestamp() - window_days * 86400.0
         rows = [e for e in self.band_errors if e[0] >= since]
         if not rows:
             return None

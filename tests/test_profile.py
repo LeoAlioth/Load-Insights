@@ -48,7 +48,7 @@ def test_recency_weighting_prefers_the_last_weeks():
     between, and nearer the recent level than a flat average would put it."""
     cut = P.floor_hour(NOW) - timedelta(weeks=2)
     samples = [(t, v * (2.0 if t >= cut else 1.0)) for t, v in weeks_of(NOW, 8)]
-    prof = P.fit_profile(samples, NOW, half_life_weeks=3.0)
+    prof = P.fit_profile(samples, NOW)                     # HALF_LIFE_WEEKS, 3
     t = P.floor_hour(NOW) + timedelta(hours=1)
     flat = (6 * 1.0 + 2 * 2.0) / 8 * pattern(t)          # 1.25 x
     assert prof.slot_kwh(t) > flat
