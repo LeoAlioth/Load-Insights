@@ -1396,13 +1396,14 @@ def test_a_level_is_the_readings_that_agree_not_the_median_of_a_transition():
     assert len(closed) == 1 and closed[0].start == 500.0, closed         # the pump, not the 179 W
     assert abs(closed[0].levels[""][0][1] - 845.0) < 5.0, closed
     assert [o.watts for o in st.open_edges] == [179.0]
-    # and a real two-reading off-gap after a half-caught reading still counts:
-    # the time away is measured from the first reading that left the level
+    # and a real off-gap after a half-caught reading still counts: the time
+    # away - SUSTAIN_CADENCES of the 6 s interval - is measured from the first
+    # reading that left the level, which alone makes it long enough
     st = D.PhaseState(min_noise=10.0)
     st.level, st.baseline, st.interval, st.noise = 4150.0, 1250.0, 6.0, 16.0
     st.open_edges = [D._Open(since=0.0, watts=2900.0, var=None, levels=[(0.0, 2900.0)])]
     closed = []
-    for t, w in ((48.0, 1622.0), (54.0, 1251.0), (60.0, 1232.0)):
+    for t, w in ((48.0, 1622.0), (54.0, 1251.0), (60.0, 1232.0), (66.0, 1240.0)):
         closed += st.process(t, w)
     assert len(closed) == 1 and abs(st.level - 1241.5) < 15.0, (closed, st.level)
 
@@ -1467,8 +1468,8 @@ def test_a_session_waits_only_for_meters_that_could_have_seen_it():
     run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
     fast.phases["a"].last_ts = 90.0
     assert not fleet._heard_from_all(run, 6.0, 90.0), "the plug has not reported far enough yet"
-    fast.phases["a"].last_ts = 110.0
-    assert fleet._heard_from_all(run, 6.0, 110.0), "and the slow meter is not waited for"
+    fast.phases["a"].last_ts = 120.0                                 # past its own sustain: 3 x 10 s
+    assert fleet._heard_from_all(run, 6.0, 120.0), "and the slow meter is not waited for"
     fast.phases["a"].last_ts = 0.0
     assert fleet._heard_from_all(run, 6.0, 60.0 + D.MATCH_PATIENCE_S), "never past the patience"
 
@@ -2835,10 +2836,10 @@ def test_a_meter_reading_less_often_is_compared_over_its_own_span():
     assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
 
-def test_a_change_reporters_span_starts_two_cadences_before_its_first_new_reading():
+def test_a_change_reporters_span_starts_three_cadences_before_its_first_new_reading():
     """The recorder keeps only changes, so a meter's silence is a held value:
     the change is within SUSTAIN_CADENCES of its cadence before its first new
-    reading - the hidrofor's 10 s plug about 20 s, two cycles (Anze)."""
+    reading - the hidrofor's 10 s plug three cycles, 30 s."""
     poll = [10.0] * 15 + [20.0, 30.0, 60.0, 10.0, 40.0]                            # a 10 s poll, unchanged ones unwritten
     assert D.reading_cadence(poll) == 10.0
     change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
@@ -2848,9 +2849,9 @@ def test_a_change_reporters_span_starts_two_cadences_before_its_first_new_readin
     assert D.reading_cadence(jitter) == 5.5
     st = D.PhaseState()
     st.steady_ts, st.gaps = T0 - 60.0, list(change)
-    assert T0 - 2.6 <= st.span_start(T0) <= T0 - 2.0                               # not a minute back
+    assert T0 - 3.9 <= st.span_start(T0) <= T0 - 3.0                               # not a minute back
     st.gaps = poll
-    assert st.span_start(T0) == T0 - 20.0                                          # two polls back
+    assert st.span_start(T0) == T0 - 30.0                                          # three polls back
     grid = D.PhaseState()                                                          # polled every 2 s, some jitter
     grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.9] * 3 + [2.0] * 40, T0 - 3.8
     assert grid.span_start(T0) == T0 - 3.8                                         # nothing unwritten: from its last reading

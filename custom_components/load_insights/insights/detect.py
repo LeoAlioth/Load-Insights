@@ -110,8 +110,14 @@ NOISE_FROM_MOVES = True
 # (see confirm_silence). Confirmed over the PERIOD - the median gap - instead,
 # Hisa's 3EM, reporting on change within 4 s but writing every 15 s when
 # little moves, held a level 30 s: the floor mat merged into the kiln's start
-# as one +3,516 W step with a span 28.8 s long.
-SUSTAIN_CADENCES = 2.0
+# as one +3,516 W step with a span 28.8 s long. Three, on the moving-gap
+# cadence (see CADENCE_GAPS), ten days, hard placement, energy gated at 0.3:
+#               Home pur/wconc  mat over  F0.5 / wrong kWh  Koz wconc  F0.5 / wrong
+#   2 cadences   73.1 / 42.3     2.5 h    21.5 % / 1.5       97.6     83.1 % / 16.2
+#   3 cadences   75.3 / 48.2     4.2 h    42.5 % / 7.8       98.1     84.2 % / 17.1
+# At two, Home's grid meter (cadence 1.1 s, writing every 2.0-2.3 s) read its
+# ordinary gaps as silence and its energy recall fell to 5 %.
+SUSTAIN_CADENCES = 3.0
 # A meter reports its readings of one moment as separate entities, stamped
 # milliseconds apart. Home's grid is the SolarEdge meter plus the inverter: the
 # inverter's write 28 ms before the meter's showed the old level, and a kiln-
