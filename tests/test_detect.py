@@ -2875,6 +2875,26 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
     _declare(f.subs["Hidrofor"].phases["a"], (T0 + 2.0, 84.5, None, T0 - 8.0, T0 + 2.0))
     assert f._energy_pairs([run])
 
+
+def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
+    """Home's plain cluster of 1 kW phase-A starts filed its runs as the
+    hidrofor, its majority: a 2.3 kW load's last 1,064 W step went with them
+    while the hidrofor's plug showed no start. A signature placed at a
+    one-device meter is avoided while that meter held through the start - as
+    one placed at a switch that was off."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    f.single = {"Hidrofor": True}
+    f.subs["Hidrofor"].phases["a"].interval = 10.0
+    f._pass_end = T0 + 3600.0
+    home = D.Signature(id=31, phases="c", power={"c": 900.0}, duration_s=70.0, pf=None, count=40, first_seen=T0, last_seen=T0)
+    home.locations["Hidrofor"] = 30
+    other = D.Signature(id=32, phases="c", power={"c": 1000.0}, duration_s=600.0, pf=None, count=40, first_seen=T0, last_seen=T0)
+    f.main.signatures = [home, other]
+    run = D.Session(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
+    assert f._held_homes(run) == [31]                                    # the plug held: not the hidrofor
+    _declare(f.subs["Hidrofor"].phases["a"], (T0 + 3.0, 880.0, None, T0 - 7.0, T0 + 3.0))
+    assert f._held_homes(run) == []                                      # the plug started with it
+
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
     only what else inside it changed - the pieces of a grid step do not overlap."""
