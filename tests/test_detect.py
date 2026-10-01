@@ -2785,5 +2785,22 @@ def test_a_meter_reporting_on_change_is_timed_by_its_shortest_gaps():
     assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
     assert D.reading_cadence([5.0, 6.0]) == 0.0                           # too few to say
 
+
+def test_a_step_and_a_run_carry_how_sure_the_detector_is_of_them():
+    st = D.PhaseState()
+    st.noise, st.level, st.interval = 20.0, 300.0, 2.0
+    held = lambda *w: [(T0 + k, x, None, None) for k, x in enumerate(w)]
+    clean = st._step_quality(1000.0, held(1300, 1301, 1299), T0, 300.0)
+    assert clean > 0.95, clean                                           # 50 x the noise, readings agree
+    assert st._step_quality(25.0, held(325, 326), T0, 300.0) < 0.1       # barely above the noise
+    assert st._step_quality(1000.0, held(1100, 1300, 1500), T0, 300.0) < 0.7   # never settled
+    st.last_step_ts = T0 - 1.0
+    assert abs(st._step_quality(1000.0, held(1300, 1301), T0, 300.0) - D.QUALITY_CROWDED * clean) < 0.05
+    o = D._Open(T0, 1000.0, None, [(T0, 1000.0)], q=0.9)
+    assert abs(st._close(o, T0 + 60, 1000.0, None).quality - D.QUALITY_UNSEEN_STOP) < 1e-9   # no stop seen
+    st.stop_q = 0.8
+    assert abs(st._close(o, T0 + 60, 1000.0, None).quality - 0.8) < 1e-9                   # the lesser end
+    assert st._close(o, T0 + 60, 700.0, None).quality == 0.0                               # 30 % apart in size
+
 if __name__ == "__main__":
     run_main(globals())

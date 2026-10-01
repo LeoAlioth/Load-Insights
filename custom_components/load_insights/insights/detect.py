@@ -379,7 +379,17 @@ WHERE_TOL_REL = 0.15
 # the kiln's neighbouring pulses (see WHERE_WINDOW_FROM_METER).
 METER_CADENCE_WINDOW = True
 METER_WINDOW_CADENCES = 2.0
-TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
+TOO_BIG = "close"
+# How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
+# step's size against the noise at its level (full at QUALITY_SNR_FULL times
+# it), how closely the readings it settled on agree, and whether another step
+# on its phase came just before it; a run's is the lesser of its start's and
+# its stop's, times how closely the two agree in size. A run no stop was seen
+# for - ended by the reading, or by its cluster rising again - takes
+# QUALITY_UNSEEN_STOP for its stop.
+QUALITY_SNR_FULL = 6.0
+QUALITY_CROWDED = 0.6
+QUALITY_UNSEEN_STOP = 0.5             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
 # cluster each, learned from every run that closes: how often, the stop's size
@@ -806,6 +816,7 @@ class Session:
     levels: Dict[str, List[Tuple[float, float]]]   # phase -> [(since_ts, watts above baseline)]
     pf: Optional[float] = None           # mean power factor during the session, if known
     pf_mad: float = 0.0                  # ...and how far the amps' resolution could put it out
+    quality: float = 1.0                 # how sure the detector is of it, 0..1 - see QUALITY_SNR_FULL
     # How many meter samples the run actually spanned. A 43-second load read
     # every 5 s is eight numbers; the same load read every second is
     # forty-three, and the second measurement deserves more weight and a
@@ -1458,6 +1469,7 @@ class _Open:
     now: Optional[float] = None
     # the edge cluster it started with - see PAIR_MIN_RUNS
     cluster: Optional[int] = None
+    q: float = 1.0                                # its start's quality - see QUALITY_SNR_FULL; not persisted
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
@@ -1546,6 +1558,8 @@ class PhaseState:
     lib: Optional[object] = field(default=None, repr=False, compare=False)
     name: str = field(default="", repr=False, compare=False)
     stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
+    stop_q: Optional[float] = field(default=None, repr=False, compare=False)    # the stop being paired's quality
+    last_step_ts: Optional[float] = field(default=None, repr=False, compare=False)
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
@@ -1762,30 +1776,43 @@ class PhaseState:
             self.pv_level = new_pv
         if _is_the_sun(step, pv_step):
             return []
+        quality = self._step_quality(step, held, since, new_level - step)
+        self.last_step_ts = since
         parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None else [step]
         closed: List[Session] = []
         for k, part in enumerate(parts):
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
-                                    surge if k == len(parts) - 1 else 0.0, new_level)
+                                    surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
 
+    def _step_quality(self, step: float, held: list, since: float, was: float) -> float:
+        """0..1 - see QUALITY_SNR_FULL."""
+        snr = abs(step) / max(self.noise_at(was), 1e-9)
+        f_snr = min(1.0, max(0.0, (snr - 1.0) / (QUALITY_SNR_FULL - 1.0)))
+        vals = [x for _, x, _, _ in held]
+        spread = (max(vals) - min(vals)) if len(vals) > 1 else 0.0
+        f_settle = min(1.0, max(0.0, 1.0 - spread / abs(step))) if step else 0.0
+        window = EVENT_WINDOW_INTERVALS * (self.interval or SUSTAIN_SECONDS)
+        f_crowd = QUALITY_CROWDED if self.last_step_ts is not None and since - self.last_step_ts < window else 1.0
+        return f_snr * f_settle * f_crowd
+
     def _declare(self, since: float, step: float, step_q: Optional[float], surge: float,
-                 new_level: float) -> List[Session]:
+                 new_level: float, quality: float = 1.0) -> List[Session]:
         """One declared step - or one part of it, see SPLIT_BY_METERS - as a
         start or a stop."""
         cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
             ended: List[Session] = []
-            o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid)
+            o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid, q=quality)
             self.open_edges.append(o)
             if self.lib is not None:
                 self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_INTERVALS
             if len(self.open_edges) > MAX_OPEN_EDGES:
                 self.open_edges.pop(0)
             return ended
-        self.stop_cluster = cid
+        self.stop_cluster, self.stop_q = cid, quality
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
-        self.stop_cluster = None
+        self.stop_cluster, self.stop_q = None, None
         closed += self._unseen_stop(since, new_level)
         if self.open_edges and new_level <= self.baseline + self.noise:
             # back at the idle floor, so whatever was still open has stopped
@@ -2153,7 +2180,11 @@ class PhaseState:
         # reads PF 1.00, and 63 % of all samples came out at unity. Believing
         # that split the library into 86 signatures where suppressing it
         # gives 24 (Anze, 2026-09-22).
+        stop_q = self.stop_q if self.stop_q is not None else QUALITY_UNSEEN_STOP
+        agree = abs(o.watts - watts) / max(o.watts, abs(watts), 1e-9)
+        f_pair = min(1.0, max(0.0, 1.0 - agree / (2.0 * MATCH_EDGE_REL)))
         return Session(phases="", start=o.since, end=at, levels={"": levels},
+                       quality=min(o.q, stop_q) * f_pair,
                        surge_w=o.surge,
                        pf=_pf_from(levels[0][1], q),
                        pf_mad=_pf_spread(levels[0][1], q, self.q_quantum),
@@ -3580,6 +3611,7 @@ class Detector:
                 pfs.append(m.pf)
         return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
                        levels=levels, pf=(sum(pfs) / len(pfs)) if pfs else None,
+                       quality=min(m.quality for m in g),
                        surge_w=sum(m.surge_w for m in g),
                        pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0),
                        legs=[m.pair for m in g if m.pair])
