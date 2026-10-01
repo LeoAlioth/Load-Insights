@@ -2724,11 +2724,11 @@ def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_mete
     for ph in "a":
         det.phases[ph] = D.PhaseState()
         det.phases[ph].noise, det.phases[ph].level, det.phases[ph].interval = 20.0, 300.0, 5.0
-    det.meter_steps = lambda ph, since, window, up=None: [("Boiler", 1900.0)]
+    det.meter_steps = lambda ph, since, window, up=None, size=None: [("Boiler", 1900.0)]
     assert det.metered_parts("a", T0, 5300.0) == [1900.0, 3400.0]
     assert det.metered_parts("a", T0, 1910.0) == [1910.0]              # all of it is the boiler's
     assert det.metered_parts("a", T0, -5300.0) == [-5300.0]            # the boiler rose: not this fall's
-    det.meter_steps = lambda ph, since, window, up=None: []
+    det.meter_steps = lambda ph, since, window, up=None, size=None: []
     assert det.metered_parts("a", T0, 5300.0) == [5300.0]
 
 
@@ -2775,7 +2775,7 @@ def _fleet_with_meters(steps, parents=None):
         det.phases["a"] = D.PhaseState()
         det.phases["a"].noise = 5.0
         if w:
-            det.phases["a"].declared.append((T0 + 0.5, w, None))
+            det.phases["a"].declared.append((T0 + 0.5, w, None, T0 - 1.0, T0 + 2.0))
         f.subs[name] = det
     f.parents = dict(parents or {})
     f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in steps}
@@ -2800,7 +2800,7 @@ def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
     assert f._step_home("c", T0, 65.0, True) == "Hiša"
     assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
     assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
-    f.subs["Hiša"].phases["a"].declared.insert(0, (T0 - 3.0, -65.0, None))   # its last pulse ending just before
+    f.subs["Hiša"].phases["a"].declared.insert(0, (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before
     assert f._step_home("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
 
 
@@ -2811,6 +2811,20 @@ def test_a_meter_learns_its_gain_against_the_grid():
         assert f._step_home("c", T0, 1000.0, True) == "Plug"
     assert abs(f.gain("Plug") - 1000.0 / 960.0) < 1e-6, f.gain("Plug")
     assert abs(f._meter_totals("c", T0, 5.0)["Plug"][0] - 1000.0) < 1e-6
+
+
+def test_a_meter_reading_less_often_is_compared_over_its_own_span():
+    """The kiln's element on and a 580 W load off six seconds later: +2,800 and
+    -580 on the grid, read every 2 s; +2,240 on Hisa, which read only then.
+    Over Hisa's span the grid's net is its step: the rise is Hisa's, whole."""
+    f = _fleet_with_meters({"Hiša": 0.0})
+    f.subs["Hiša"].phases["a"].declared.append((T0 + 0.3, 2240.0, None, T0 - 1.0, T0 + 7.0))
+    g = f.main.phases["c"]
+    g.declared += [(T0, 2800.0, None, T0 - 2.0, T0 + 2.0), (T0 + 6.0, -580.0, None, T0 + 4.0, T0 + 8.0)]
+    assert f._step_home("c", T0, 2800.0, True) == "Hiša"
+    assert dict(f._meter_steps("c", T0, 6.0, True, 2800.0)) == {"Hiša": 2800.0}   # all of it: no phantom
+    g.declared.pop()                                                            # without the -580 ...
+    assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
 if __name__ == "__main__":
     run_main(globals())
