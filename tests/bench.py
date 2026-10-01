@@ -23,8 +23,6 @@ bench's own:
                  with COMBINE_SETTLE_S - rather than reading Anze's template
                  sensor. They agree to 0.1 W but not in timing, and the scores
                  differed (purity 67.6 vs 68.4 %). Always use it at Home.
-    HOUSE=residual  that, less every meter in CIRCUITS
-    HOUSE=Hiša   one CIRCUITS meter read as though it were the house
     SLICE=6      feed the replay in slices this many hours long, as
                  production's backfill does (the default); 0 for one call
     LIVE=5       ...but the last this many days in one-minute passes, as a
@@ -132,16 +130,20 @@ PROD_SINGLE = {
 }
 # the Energy dashboard's nesting among PROD_SUBS (2026-09-30); Kozolec's all hang under its inverter
 PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda"}}
-SUBS = "lab"
 LAST_FLEET = None                      # the Fleet of the last _run, for attrib
+# the bench's own dials, each a global of the same name - see _apply
+SUBS = "lab"
+HOUSE = ""                             # HOUSE=prod - see the docstring
+START_STATE = True                     # the recorder's start-of-window row, as production gets it
+SLICE = 6.0                            # production's backfill slice, hours; SLICE=0 for one call
+LIVE = 0.0                             # the last days in one-minute passes
+NOQ = False                            # NOQ=1: the replay ignores reactive power (--no-q)
+_flag = lambda v: bool(float(v))  # noqa: E731
+OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "NOQ": _flag}
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
-STAGES: list = []                      # STAGE=entity dials, fed as --stage
-PINNED: list = []                      # --role pins for a house built by _house_as
-START_STATE = True                     # the recorder's start-of-window row, as production gets it
-SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
-LIVE_DAYS = 0.0                        # the last days in one-minute passes - LIVE=
-NO_Q = False                           # NOQ=1: the replay ignores reactive power (--no-q)
+STAGES: list = []                      # INPUT=entity dials, fed as --input
+LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES}
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
@@ -155,165 +157,57 @@ PHYSICS = {
 _read_csv = R.read_csv
 HOUSE_IDS = {p: f"sensor.se17k_home_power_phase_{p}" for p in "abc"}
 
-# Home's circuit and device meters that sit directly under the grid
-# connection (nothing here is inside another), by the channels each publishes.
-# "Hiša" is one of them - the house circuit's 3EM, not the whole house.
-# Which HOUSE phase a channel carries is MEASURED - see _phase_map - because
-# the labels lie: the attic 3EM's phase b carries what the house shows on C.
-CIRCUITS = {
-    "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
-    "Mansarda": [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"],
-    "Hidrofor": ["sensor.hidrofor_power"],
-    "Susilna": ["sensor.shellypmminig3_susilna_power"],
-}
+def _peak(s) -> float:
+    """A session's peak, summed over its phases."""
+    return sum(max(v for _, v in lv) for lv in s.levels.values())
 
 
-def _at(rows, t):
+def _at(rows, t, default=None):
+    """The value ``rows`` held at ``t``: its last reading at or before it."""
     i = bisect.bisect_right(rows, (t, float("inf"))) - 1
-    return rows[i][1] if i >= 0 else None
+    return rows[i][1] if i >= 0 else default
 
 
-def _phase_map(s, channels, house) -> dict:
-    """channel -> the house phase it carries: the one whose steps match the
-    channel's own (same moment, within a quarter in size) most often. A
-    multi-channel meter's channels take DIFFERENT phases - the permutation
-    with the most matches - since a 2-phase load such as the kiln steps on
-    two house phases at once and would otherwise tie."""
-    import itertools
-    hits = {}
-    for ch in channels:
-        rows = s.get(ch) or []
-        c = collections.Counter()
-        for (t0, w0), (t1, w1) in zip(rows, rows[1:]):
-            d = w1 - w0
-            if abs(d) <= 300 or t1 - t0 >= 30:
-                continue
-            for p, hr in house.items():
-                a, b = _at(hr, t0 - 3), _at(hr, t1 + 8)
-                if a is not None and b is not None and abs((b - a) - d) < 0.25 * abs(d):
-                    c[p] += 1
-        hits[ch] = c
-    phases = sorted(house)
-    best, score = {}, -1
-    for perm in itertools.permutations(phases, len(channels)):
-        sc = sum(hits[ch][p] for ch, p in zip(channels, perm))
-        if sc > score:
-            best, score = dict(zip(channels, perm)), sc
-    return best
+def _near(sessions):
+    """A lookup over ``sessions``: (t, tol) -> those starting within tol of t,
+    in start order."""
+    got = sorted(sessions, key=lambda x: x.start)
+    starts = [x.start for x in got]
+    return lambda t, tol: got[bisect.bisect_left(starts, t - tol):bisect.bisect_right(starts, t + tol)]
 
 
-def _house_as(mode: str) -> None:
-    """HOUSE=prod: the house the way production builds it. HOUSE=residual:
-    that, less every meter in CIRCUITS, each read as of the house's own
-    readings. HOUSE=<a CIRCUITS name>: that meter alone, as if it were the
-    house - to see what detecting a load on its own circuit is worth."""
-    global PINNED
-    # Pin the house to the reading built here. Left to guess, the replay
-    # refuses any phase that dips below zero as "carrying generation" - which
-    # a house less its sub-meters does - and silently took the attic 3EM's
-    # own channels instead for two of the three phases (2026-09-23).
-    PINNED = [] if mode == "prod" else [f"power_{p}={HOUSE_IDS[p]}" for p in "abc"]
-
-    def read(paths, keep):
-        s = _read_csv(paths, keep)
-        inv = s.get("sensor.solaredge_se17k_i1_ac_power")
-        if inv:
-            for p in "abc":
-                m1 = s.get(f"sensor.solaredge_se17k_m1_ac_power_{p}")
-                if m1:
-                    s[HOUSE_IDS[p]] = D.combine(
-                        [(m1, -1.0), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S)
-        if mode == "prod":
-            return s
-        house = {p: s[HOUSE_IDS[p]] for p in "abc" if s.get(HOUSE_IDS[p])}
-        maps = {name: _phase_map(s, chans, house) for name, chans in CIRCUITS.items()}
-        print("phase map: " + "; ".join(f"{n} " + ",".join(f"{c.split('_')[-3] if 'phase' in c else 'one'}->{p}"
-                                                              for c, p in m.items()) for n, m in maps.items()))
-        if mode == "residual":
-            for p, hr in house.items():
-                chans = [s[c] for m in maps.values() for c, q in m.items() if q == p and s.get(c)]
-                s[HOUSE_IDS[p]] = [(ts, w - sum((_at(r, ts) or 0.0) for r in chans)) for ts, w in hr]
-            return s
-        if mode in ("residual_interp", "residual_1s"):
-            # Anze (2026-09-23): what if every series were put on one clock by
-            # interpolating first? Between two readings no further apart than
-            # the meter's own cadence the line is drawn; across a longer gap
-            # the value is HELD, because Home Assistant records only changes
-            # and a line across a quiet hour would invent a ramp.
-            def interp(rows):
-                gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
-                reach = 2.0 * gaps[len(gaps) // 2] if gaps else 0.0
-                times = [r[0] for r in rows]
-                def at(ts):
-                    i = bisect.bisect_right(times, ts) - 1
-                    if i < 0:
-                        return 0.0
-                    if i + 1 < len(rows) and rows[i + 1][0] - rows[i][0] <= reach:
-                        (t0, v0), (t1, v1) = rows[i], rows[i + 1]
-                        return v0 + (v1 - v0) * (ts - t0) / (t1 - t0)
-                    return rows[i][1]
-                return at, reach
-            for p, hr in house.items():
-                chans = [interp(s[c])[0] for m in maps.values() for c, q in m.items() if q == p and s.get(c)]
-                if mode == "residual_interp":
-                    grid = hr
-                else:
-                    hat, _ = interp(hr)
-                    grid = [(float(ts), hat(ts)) for ts in range(int(hr[0][0]) + 1, int(hr[-1][0]))]
-                s[HOUSE_IDS[p]] = [(ts, w - sum(f(ts) for f in chans)) for ts, w in grid]
-            return s
-        m = maps[mode]
+def _prod_house(paths, keep):
+    """Home's house reading the way production builds it: the grid meter
+    negated plus a third of the inverter, through combine()."""
+    s = _read_csv(paths, keep)
+    inv = s.get("sensor.solaredge_se17k_i1_ac_power")
+    if inv:
         for p in "abc":
-            s.pop(HOUSE_IDS[p], None)
-        for c, p in m.items():
-            if s.get(c):
-                s[HOUSE_IDS[p]] = s[c]
-        return s
-    R.read_csv = read
+            m1 = s.get(f"sensor.solaredge_se17k_m1_ac_power_{p}")
+            if m1:
+                s[HOUSE_IDS[p]] = D.combine([(m1, -1.0), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S)
+    return s
 
 
 def _apply(dials) -> str:
+    """Set each DIAL=VALUE: an entity list of the bench's (LISTS), one of its
+    own settings (OWN), or a constant of detect.py."""
     for d in dials:
         k, v = d.split("=", 1)
-        if k == "SUBS":
-            global SUBS
-            SUBS = v
-            continue
-        if k == "START_STATE":
-            global START_STATE
-            START_STATE = bool(float(v))
-            continue
-        if k == "SLICE":
-            global SLICE_HOURS
-            SLICE_HOURS = float(v)
-            continue
-        if k == "LIVE":
-            global LIVE_DAYS
-            LIVE_DAYS = float(v)
-            continue
-        if k == "NOQ":
-            global NO_Q
-            NO_Q = bool(float(v))
-            continue
-        if k == "HOUSE":
-            _house_as(v)
-            continue
-        if k == "SWITCH":
-            if v not in SWITCHES:
-                SWITCHES.append(v)        # an entity whose on-periods say when a load runs
-            continue
-        if k == "DRIVER":
-            if v not in DRIVERS:
-                DRIVERS.append(v)         # a number a load's runs may follow
-            continue
-        if k == "INPUT":
-            if v not in STAGES:
-                STAGES.append(v)          # a setting a device reports
-            continue
-        if not hasattr(D, k):
+        if k in LISTS:
+            if v not in LISTS[k]:
+                LISTS[k].append(v)
+        elif k in OWN:
+            globals()[k] = OWN[k](v)
+        elif hasattr(D, k):
+            cur = getattr(D, k)
+            setattr(D, k, v if isinstance(cur, str) else type(cur)(float(v)))
+        else:
             raise SystemExit(f"no such dial: {k}")
-        cur = getattr(D, k)
-        setattr(D, k, v if isinstance(cur, str) else type(cur)(float(v)))
+    if HOUSE not in ("", "prod"):
+        raise SystemExit(f"HOUSE={HOUSE}: prod is the only house left")
+    if HOUSE == "prod":
+        R.read_csv = _prod_house
     return " ".join(dials) or "defaults"
 
 
@@ -350,17 +244,16 @@ def _replay(folder: str, site: str | None):
         return op(self, m, sub, *a, **kw)
 
     D.Detector._file, D.Fleet.process = spy_file, spy_proc
-    argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
-    if LIVE_DAYS:
-        argv += ["--live-days", str(LIVE_DAYS)]
-    if NO_Q:
+    argv = ["replay.py", folder, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
+    if LIVE:
+        argv += ["--live-days", str(LIVE)]
+    if NOQ:
         argv.append("--no-q")
     # the house roles pinned to what production reads, never guessed: with the
     # 3EMs' power factors in the history the guess took Hiša's power for the
-    # house's (2026-09-30). HOUSE= modes pin their own built series.
+    # house's (2026-09-30)
     which = site or next((n for n in SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
-    pins = PINNED or ([f"power_{p}={e}" for p, e in SITES[which]["main"].items()] if which else [])
-    for pin in pins:
+    for pin in ([f"power_{p}={e}" for p, e in SITES[which]["main"].items()] if which else []):
         argv += ["--role", pin]
     for eid in SWITCHES:
         argv += ["--switch", f"{eid.split(':')[0]}={eid}"]
@@ -527,16 +420,12 @@ def _kiln_pulses(folder: str) -> list:
     a = s.get("sensor.solaredge_se17k_m1_ac_power_a") or []
     c = s.get("sensor.solaredge_se17k_m1_ac_power_c") or []
 
-    def at(rows, t):
-        i = bisect.bisect_right(rows, (t, float("inf"))) - 1
-        return rows[i][1] if i >= 0 else None
-
     pulses = []
     for i in range(1, len(a)):
         t, w = a[i]
         if not 2600 < a[i - 1][1] - w < 3400:
             continue
-        cb, ca = at(c, a[i - 1][0]), at(c, t + 7.0)
+        cb, ca = _at(c, a[i - 1][0]), _at(c, t + 7.0)
         if cb is None or ca is None or not 2400 < cb - ca < 3500:
             continue
         if pulses and t - pulses[-1] < 20:
@@ -568,12 +457,11 @@ def kiln(folder: str, dials) -> None:
     pulses = _kiln_pulses(folder)
     fires = _firings(pulses)
     inside = lambda t: any(a <= t <= b for a, b in fires)  # noqa: E731
-    watts = lambda s: sum(max(v for _, v in lv) for lv in s.levels.values())  # noqa: E731
     n = collections.Counter()
     for s in filed:
         if not inside(s.start):
             continue
-        w, long = watts(s), s.end - s.start > 90
+        w, long = _peak(s), s.end - s.start > 90
         if s.phases == "ac" and 5400 <= w <= 6400:
             n["full"] += 1
             n["glued"] += long            # two pulses read as one
@@ -647,13 +535,10 @@ def fridge(folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
     truth = _fridge_runs(folder)
-    starts = sorted(((f.start, f) for f in filed), key=lambda p: p[0])
-    keys = [k for k, _ in starts]
+    at = _near(filed)
     hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
     for t0, t1, step, kind in truth:
-        lo = bisect.bisect_left(keys, t0 - 30)
-        near = [f for k, f in starts[lo:lo + 20] if abs(k - t0) <= 30]
-        near = [f for f in near if 30 <= sum(max(v for _, v in lv) for lv in f.levels.values()) <= 130]
+        near = [f for f in at(t0, 30) if 30 <= _peak(f) <= 130]
         if not near:
             continue
         f = min(near, key=lambda f: abs(f.start - t0))
@@ -683,39 +568,6 @@ def fridge(folder: str, dials) -> None:
                 d, g = sig.driver_effect(n, "d"), sig.driver_effect(n, "g")
                 fmt = lambda e: f"{e[0] * 100:+5.1f} %/unit r2 {e[1]:.2f}" if e else "-"  # noqa: E731
                 print(f"  {'':44s} {kind} #{sid} x{sig.count} ev {sig.evidence:.2f}  {n}: length {fmt(d)}   gap {fmt(g)}")
-
-
-MAT = "climate.termostat_kopalnica:hvac_action"
-
-
-def switch(folder: str, dials) -> None:
-    """Home's bathroom floor mat against its thermostat's heating: of the
-    heating runs, how many the house filed a session for at the right moment
-    and phase, how many of those were credited to the thermostat, and which
-    signatures they went to - one, ideally. Also what else was credited to it.
-    Pass SWITCH=climate.termostat_kopalnica:hvac_action to feed the switch."""
-    tag = _apply(dials)
-    det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
-    truth = [(a, b) for a, b in R.read_switch([folder], MAT) if b is not None and 20 <= b - a <= 3600]
-    starts = sorted(((f.start, f) for f in filed), key=lambda p: p[0])
-    keys = [k for k, _ in starts]
-    name = D.SWITCH_PREFIX + MAT.split(":")[0]
-    found, sigs = 0, collections.Counter()
-    for a, b in truth:
-        lo = bisect.bisect_left(keys, a - 15)
-        near = [f for k, f in starts[lo:lo + 20] if abs(k - a) <= 15 and f.phases == "c"
-                and 450 <= sum(max(v for _, v in lv) for lv in f.levels.values()) <= 850]
-        if not near:
-            continue
-        found += 1
-        sig = det.signature_of(min(near, key=lambda f: abs(f.start - a)))
-        sigs[sig.id if sig else None] += 1
-    others = sum(s.locations.get(name, 0) for s in det.signatures if not (s.phases == "c" and 450 <= s.power.get("c", 0) <= 850))
-    placed = [s for s in det.signatures if s.location == name]
-    top = ", ".join(f"#{i}:{k}" for i, k in sigs.most_common(4))
-    print(f"  {tag:44s} heating runs {len(truth)}  filed at the moment {found}  in signatures {top}")
-    print(f"  {'':44s} signatures placed at the thermostat: " + (", ".join(f"#{s.id} {sum(s.power.values()):.0f} W x{s.count} ({s.locations.get(name, 0)} credited)" for s in placed) or "none")
-          + f"   credited to it off the mat's size: {others}")
 
 
 def inputs_bench(folder: str, dials) -> None:
@@ -786,19 +638,14 @@ def _pump_runs(folder: str) -> list:
 def pump(folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
-    on_a = sorted((x for x in filed if "a" in x.phases), key=lambda x: x.start)
-    starts = [x.start for x in on_a]
+    on_a = _near(x for x in filed if "a" in x.phases)
     n, runs = collections.Counter(), _pump_runs(folder)
     for a, b in runs:
-        i = bisect.bisect_left(starts, a - 25)
-        near, best = [], None
-        while i < len(on_a) and on_a[i].start <= a + 25:
-            near.append(on_a[i])
-            i += 1
-        for x in near:
-            if 600 <= max(v for _, v in x.levels["a"]) <= 1300 and (
-                    best is None or abs(x.start - a) < abs(best.start - a)):
-                best = x
+        near = on_a(a, 25)
+        # the A leg's peak, not the whole session's: a run married to
+        # another phase is "multi", not "wrong size"
+        best = min((x for x in near if 600 <= max(v for _, v in x.levels["a"]) <= 1300),
+                   key=lambda x: abs(x.start - a), default=None)
         if best is None:
             n["missing" if not near else "wrong size"] += 1
         elif best.phases != "a":
@@ -812,7 +659,6 @@ def pump(folder: str, dials) -> None:
 def lengths(kfolder: str, pfolder: str, dials) -> None:
     import statistics
     tag = _apply(dials)
-    watts = lambda x: sum(max(v for _, v in lv) for lv in x.levels.values())  # noqa: E731
     a = _read_csv([kfolder], False).get("sensor.solaredge_se17k_m1_ac_power_a") or []
     truth = []
     for t in _kiln_pulses(kfolder):
@@ -825,18 +671,17 @@ def lengths(kfolder: str, pfolder: str, dials) -> None:
 
     def errors(folder, real, keep, tol_start):
         _, filed, _ = _run(folder, None)
-        got = sorted((x for x in filed if keep(x)), key=lambda x: x.start)
-        st, out = [x.start for x in got], []
+        at, out = _near(x for x in filed if keep(x)), []
         for t0, t1 in real:
-            i = bisect.bisect_left(st, t0 - tol_start)
-            if i < len(got) and abs(got[i].start - t0) <= tol_start and abs(got[i].end - t1) <= 30:
-                out.append(((got[i].end - got[i].start) - (t1 - t0), got[i].start - t0, got[i].end - t1))
+            got = at(t0, tol_start)[:1]                  # the first to start in the window
+            if got and abs(got[0].end - t1) <= 30:
+                out.append(((got[0].end - got[0].start) - (t1 - t0), got[0].start - t0, got[0].end - t1))
         return out
     med = lambda xs: statistics.median(xs) if xs else float("nan")  # noqa: E731
     for name, real, e in (
-            ("kiln", truth, errors(kfolder, truth, lambda x: x.phases == "ac" and 5400 <= watts(x) <= 6400, 10)),
+            ("kiln", truth, errors(kfolder, truth, lambda x: x.phases == "ac" and 5400 <= _peak(x) <= 6400, 10)),
             ("hidrofor", _pump_runs(pfolder), errors(pfolder, _pump_runs(pfolder),
-                                                     lambda x: x.phases == "a" and 600 <= watts(x) <= 1300, 15))):
+                                                     lambda x: x.phases == "a" and 600 <= _peak(x) <= 1300, 15))):
         print(f"  {tag:30s} {name:8s} {len(e):3d}/{len(real)} matched: length off by {med([x[0] for x in e]):+5.1f} s"
               f" (start {med([x[1] for x in e]):+5.1f}, end {med([x[2] for x in e]):+5.1f});"
               f" real median {med([t1 - t0 for t0, t1 in real]):5.1f} s")
@@ -896,36 +741,17 @@ def home(folder: str, dials) -> None:
     pump(folder, dials)
 
 
+CMDS = {"score": (score, 2), "kiln": (kiln, 1), "inputs": (inputs_bench, 1), "fridge": (fridge, 1),
+        "surge": (surge, 2), "attrib": (attrib, 2), "pump": (pump, 1), "mat": (mat, 1),
+        "home": (home, 1), "lengths": (lengths, 2)}       # command -> (function, arguments before the dials)
+
+
 def main() -> int:
-    if len(sys.argv) < 3:
+    fn, n = CMDS.get(sys.argv[1] if len(sys.argv) > 1 else "", (None, 0))
+    if fn is None or len(sys.argv) < 2 + n:
         print(__doc__)
         return 1
-    cmd = sys.argv[1]
-    if cmd == "score":
-        score(sys.argv[2], sys.argv[3], sys.argv[4:])
-    elif cmd == "kiln":
-        kiln(sys.argv[2], sys.argv[3:])
-    elif cmd == "switch":
-        switch(sys.argv[2], sys.argv[3:])
-    elif cmd == "inputs":
-        inputs_bench(sys.argv[2], sys.argv[3:])
-    elif cmd == "fridge":
-        fridge(sys.argv[2], sys.argv[3:])
-    elif cmd == "surge":
-        surge(sys.argv[2], sys.argv[3], sys.argv[4:])
-    elif cmd == "attrib":
-        attrib(sys.argv[2], sys.argv[3], sys.argv[4:])
-    elif cmd == "pump":
-        pump(sys.argv[2], sys.argv[3:])
-    elif cmd == "mat":
-        mat(sys.argv[2], sys.argv[3:])
-    elif cmd == "home":
-        home(sys.argv[2], sys.argv[3:])
-    elif cmd == "lengths":
-        lengths(sys.argv[2], sys.argv[3], sys.argv[4:])
-    else:
-        print(__doc__)
-        return 1
+    fn(*sys.argv[2:2 + n], sys.argv[2 + n:])
     return 0
 
 
