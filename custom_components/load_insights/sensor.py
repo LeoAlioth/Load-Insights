@@ -10,14 +10,15 @@ from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GEN
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NAME, DEFAULT_NAME, DOMAIN
+from .const import DOMAIN
 from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
@@ -101,20 +102,30 @@ def _forget(hass: HomeAssistant, domain: str, unique_id: str) -> None:
         registry.async_remove(entity_id)
 
 
-class _Base(CoordinatorEntity, SensorEntity):
-    _attr_has_entity_name = True
+def on_site(entity: Entity, entry: ConfigEntry, key: str, unique_id: Optional[str] = None) -> None:
+    """Make ``entity`` one of the site device's, named by its translation
+    ``key``. The device itself is made by async_setup_entry before any
+    platform, so the identifiers are all an entity needs to join it."""
+    entity._attr_has_entity_name = True
+    entity._attr_translation_key = key
+    entity._attr_unique_id = unique_id or f"{entry.entry_id}_{key}"
+    entity._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
 
+
+class _PowerW(SensorEntity):
+    """A power reading in watts, shown whole."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+
+class _Base(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, key: str, which: str) -> None:
         super().__init__(coordinator)
         self._which = which
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.data.get(CONF_NAME, DEFAULT_NAME),
-            manufacturer="Load Insights",
-            model="Site",
-        )
+        on_site(self, entry, key)
 
     def _forecast(self) -> Optional[Forecast]:
         data: Optional[InsightsData] = self.coordinator.data
@@ -138,7 +149,7 @@ class _Base(CoordinatorEntity, SensorEntity):
         return super().available and self._forecast() is not None
 
 
-class ForecastPowerSensor(_Base):
+class ForecastPowerSensor(_PowerW, _Base):
     """State: expected average power over the coming hour, in W.
     Attributes: the 7-day hourly forecast in the shape the solar forecast
     integrations use, so a card built for one plots the other."""
@@ -148,10 +159,6 @@ class ForecastPowerSensor(_Base):
     # nothing reads them back from history. They stay live and on cards.
     _unrecorded_attributes = frozenset({"detailedForecast", "history"})
 
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
 
     @property
     def native_value(self) -> Optional[float]:
@@ -314,8 +321,6 @@ class DeviceForecastSensor(ForecastPowerSensor):
             if self._device.included_in:
                 attrs["included_in"] = self._device.included_in
             data: Optional[InsightsData] = self.coordinator.data
-            if data is not None and data.ledgers and self._energy in data.ledgers:
-                attrs["score"] = _score_attrs(data.ledgers[self._energy], data.computed_at)
             fc = self._forecast()
             st_entity = (data.device_state_sensors or {}).get(self._energy) if data else None
             if st_entity and fc is not None:
@@ -359,14 +364,11 @@ class _DetectionBase(SensorEntity):
     """Fed by the detection runner rather than the coordinator: its cadence is
     the meter's, not the statistics'."""
 
-    _attr_has_entity_name = True
     _attr_should_poll = False
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, key: str) -> None:
         self._runner = runner
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        on_site(self, entry, key)
 
     async def async_added_to_hass(self) -> None:
         self._runner.add_listener(self.async_write_ha_state)
@@ -390,14 +392,8 @@ class DetectedLoadsSensor(_DetectionBase):
     # through put the recorder over its 16 KB ceiling on a real site, which
     # logs a warning, refuses to store the attributes and says the database
     # will suffer - 989 times at Anze's house (2026-09-22). The list drifted
-    # because it was a list; test_sensor_attributes.py now fails if a key is
-    # added without it.
-    _unrecorded_attributes = frozenset({
-        "active", "signatures", "recent_sessions", "meters", "meter_hierarchy",
-        "named_loads", "looks_like_one_device", "noise_floor_w", "baseline_w",
-        "processed_until", "caught_up", "awaiting_name",
-        "resolution_w", "pf_floor_w",
-    })
+    # because it was a list, so it is the recorder's own "all of them".
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "detected_loads")
@@ -474,13 +470,9 @@ class DetectedLoadsSensor(_DetectionBase):
         }
 
 
-class UnknownLoadPowerSensor(_DetectionBase):
+class UnknownLoadPowerSensor(_PowerW, _DetectionBase):
     """Power of everything detected as on right now, in W."""
 
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "unknown_load_power")
@@ -491,13 +483,9 @@ class UnknownLoadPowerSensor(_DetectionBase):
 
 
 class _GridBase(CoordinatorEntity, SensorEntity):
-    _attr_has_entity_name = True
-
     def __init__(self, coordinator, entry: ConfigEntry, key: str) -> None:
         super().__init__(coordinator)
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        on_site(self, entry, key)
 
     def _grid(self):
         data: Optional[InsightsData] = self.coordinator.data
@@ -509,14 +497,10 @@ class _GridBase(CoordinatorEntity, SensorEntity):
         return CoordinatorEntity.available.fget(self) and g is not None and bool(g.hours)
 
 
-class GridForecastSensor(_GridBase):
+class GridForecastSensor(_PowerW, _GridBase):
     """State: the meter's expected average power over the coming hour, in W -
     positive importing, negative exporting. Attributes: the hourly detail."""
 
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
     _unrecorded_attributes = frozenset({"detailedForecast"})
 
     @property
@@ -583,15 +567,11 @@ class BatterySocForecastSensor(_GridBase):
         }
 
 
-class BaseLoadSensor(_DetectionBase):
+class BaseLoadSensor(_PowerW, _DetectionBase):
     """What the site draws with nothing switched on: the sum of each phase's
     idle baseline, which the detector tracks anyway to know when a load
     starts. Creeping upward is the thing to watch."""
 
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "base_load")
@@ -618,7 +598,7 @@ class BaseLoadSensor(_DetectionBase):
         }
 
 
-class NamedLoadPower(_DetectionBase):
+class NamedLoadPower(_PowerW, _DetectionBase):
     """Mean watts a named load drew over the stretch of data last processed.
 
     Not the instantaneous power, which was the first design and was three
@@ -637,10 +617,6 @@ class NamedLoadPower(_DetectionBase):
     instantaneous reading never did.
     """
 
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 0
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
         super().__init__(runner, entry, "named_load_power")

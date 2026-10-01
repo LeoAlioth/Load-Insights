@@ -10,7 +10,9 @@ added over time, and Anze's house logged the warning 989 times (2026-09-22).
 
 This reads the dict each ``extra_state_attributes`` returns and checks the keys
 against what the class excludes, so the two cannot drift apart again. Sensors
-whose attributes are small and worth keeping opt out by name below.
+whose attributes are small and worth keeping opt out by name below. MATCH_ALL
+("*"), the recorder's "every attribute", excludes every key - which is what
+Detected loads, whose list drifted, now says.
 """
 import ast
 import sys
@@ -35,7 +37,8 @@ def _classes(tree):
 
 
 def _excluded(cls):
-    """The frozenset({...}) assigned to _unrecorded_attributes, as a set."""
+    """The frozenset({...}) assigned to _unrecorded_attributes, as a set -
+    "*" for MATCH_ALL."""
     for node in cls.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -45,6 +48,8 @@ def _excluded(cls):
         for s in ast.walk(node.value):
             if isinstance(s, ast.Constant) and isinstance(s.value, str):
                 out.add(s.value)
+            elif isinstance(s, ast.Name) and s.id == "MATCH_ALL":
+                out.add("*")
         return out
     return None
 
@@ -86,28 +91,12 @@ def test_an_attribute_assembled_per_update_is_kept_out_of_the_database():
         if built is None:
             continue                       # publishes no attributes of its own
         excluded = _excluded(cls) or set()
-        missing = sorted(built - excluded)
+        missing = [] if "*" in excluded else sorted(built - excluded)
         assert not missing, (
             f"{cls.name} assembles {missing} on every update and lets the "
             f"recorder store them - add them to _unrecorded_attributes")
         checked += 1
     assert checked >= 3, f"only {checked} sensors examined - did the parse work?"
-
-
-def test_detected_loads_keeps_nothing_it_publishes():
-    """The one the ceiling was actually breached by. It excludes every key it
-    returns, built or not - a signature library, the per-submeter breakdown
-    and the last forty sessions have no business in the database, and the
-    state (how many unexplained loads are on) is the recordable part."""
-    tree = ast.parse(SENSOR.read_text(encoding="utf-8"))
-    cls = next(c for c in _classes(tree) if c.name == "DetectedLoadsSensor")
-    excluded = _excluded(cls)
-    built = _published(cls)
-    assert built, "could not read the attribute keys"
-    assert built <= excluded, sorted(built - excluded)
-    for key in ("meters", "signatures", "recent_sessions", "named_loads",
-                "meter_hierarchy", "looks_like_one_device", "caught_up"):
-        assert key in excluded, key
 
 
 if __name__ == "__main__":
