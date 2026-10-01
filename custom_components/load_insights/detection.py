@@ -168,7 +168,11 @@ STORAGE_VERSION = 1
 #     window are one cluster carrying a phase pattern, a device is its start
 #     cluster (the link table is gone), and a run is filed on its own phases
 #     only - every start cluster, device and signature differs.
-DETECTOR_GENERATION = 16
+# 17 = a step's place is part of its kind (the innermost meter that saw all
+#     of it), a house step its meters stepped with is booked as their shares,
+#     a run bigger than the whole reading is closed, and noise is learned from
+#     how the reading moves - every cluster, run and signature differs.
+DETECTOR_GENERATION = 17
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
