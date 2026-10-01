@@ -532,6 +532,7 @@ charge that followed another as no one's). Ten days, SUBS=prod:
 | ... factor 5 | 74.4 / 48.9 | 2.8 h | 36.9 % / 7.4 | 94.6 | 81.3 % / 21.9 |
 | ... factor 3 | 71.0 / 38.5 | 5.4 h | 41.7 % / 10.2 | 97.1 | 82.4 % / 16.9 |
 | ... factor 3 + EDGE_BY_METER | 70.8 / 35.9 | 3.9 h | 47.1 % / 5.7 | 97.4 | 83.8 % / 17.6 |
+| ... + an unplaced step joins the busier located cluster (deployed, generation 17) | 71.4 / 36.0 | 3.9 h | 41.0 % / 3.6 | 97.4 | 82.6 % / 18.9 |
 
 SPLIT_BY_METERS books a house step its meters stepped with as their shares
 and the rest; TOO_BIG closes a run bigger than the whole reading, on its
@@ -539,7 +540,9 @@ start size (its followed size carried held drops and booked a 3,346 W charge
 at 4,448 W for 410 min). NOISE_FROM_MOVES re-learns noise from moves: a 65 W
 load cycling on Hisa's phase C (25-50 s) had held the house's floor at 228 W.
 EDGE_BY_METER groups a single-phase step under the innermost meter that saw
-all of it; it splits devices whose meter misses steps (Home 279 signatures).
+all of it; it splits devices whose meter misses steps (Home 279 signatures,
+270 with the busier-cluster rule - the fragmentation is NOT solved: Home's
+wconc 36 against the baseline's 48).
 
 ## Known shortfalls
 
