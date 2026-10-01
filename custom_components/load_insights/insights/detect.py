@@ -1936,6 +1936,8 @@ class PhaseState:
         # booked at 4,448 W (27.09, 6.8 kWh over).
         out = []
         for o in [o for o in self.open_edges if o.watts - level > self.noise_at(level)]:
+            if o not in self.open_edges:
+                continue                  # closed meanwhile - see Detector.resolve_rise
             self.open_edges.remove(o)
             self._remember_close(o, at)
             out.append(self._close(o, at, o.watts, None))
@@ -2084,11 +2086,9 @@ class PhaseState:
                 if left <= self.noise:
                     break
         if len(taken) >= 2 and abs(left) <= self._tol(watts, watts):
-            out = []
-            for i in sorted(taken, reverse=True):
-                o = self.open_edges.pop(i)
-                out.append(self._close(o, at, o.watts, None))
-            return sorted(out, key=lambda x: x.start)
+            # all out before any closes - see Detector.resolve_rise
+            gone = [self.open_edges.pop(i) for i in sorted(taken, reverse=True)]
+            return sorted((self._close(o, at, o.watts, None) for o in gone), key=lambda x: x.start)
         if self.open_edges:
             self.held_drops.append((at, watts, self.stop_cluster))
             del self.held_drops[:-HELD_DROPS]
@@ -3717,14 +3717,14 @@ class Detector:
         out: List[Tuple[str, "Session"]] = list(self._split_closed)
         self._split_closed = []
         window, wait = self.event_window(), self.event_wait()
-        pend = sorted(self._pending, key=lambda x: x["since"])
-        while pend:
+        while self._pending:
+            # read afresh each time: forming one event can form others (see resolve_rise)
+            pend = sorted(self._pending, key=lambda x: x["since"])
             first = pend[0]
             if not final and now - first["since"] < wait:
                 break
             cluster, members = self._form_event(first, pend, window)
             for m in members:
-                pend.remove(m)
                 st = self.phases.get(m["ph"])
                 if st is not None:
                     out.extend((m["ph"], x) for x in st.end_older(cluster.id, m["since"], m["open"]))
@@ -3789,7 +3789,13 @@ class Detector:
         """A run is closing before its event window passed: form its event now
         from what has risen beside it so far, so the run has its start
         cluster (a start without one is a device of nobody and a signature
-        of its own - hundreds of them from short runs, 2026-09-30)."""
+        of its own - hundreds of them from short runs, 2026-09-30).
+
+        Forming it can cut a single-phase rise into the meters' shares, and a
+        share that is a stop is declared at once (_split_rise) - pairing on
+        that phase while its caller is pairing or flushing there. So callers
+        take every run they close out of open_edges before closing any, and
+        _flush_events re-reads what is pending after each event it forms."""
         first = next((x for x in self._pending if x["open"] is o), None)
         if first is not None:
             self._form_event(first, list(self._pending), self.event_window())
