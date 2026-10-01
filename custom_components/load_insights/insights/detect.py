@@ -1553,6 +1553,7 @@ class PhaseState:
     # every step this phase declared, (since, watts, var), newest last - what a
     # meter's step IS when the grid's is compared with it (METER_CAL_SLACK)
     declared: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    steady_ts: Optional[float] = field(default=None, repr=False, compare=False)   # its last reading at the held level
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
@@ -1675,6 +1676,7 @@ class PhaseState:
 
         if abs(w - self.level) < self.noise_at(self.level):
             self.pending = []
+            self.steady_ts = ts
             # With one load running, what the phase does IS what that load
             # does, so its wander can be attributed. With two it cannot, and
             # nothing is recorded rather than something wrong.
@@ -1771,10 +1773,15 @@ class PhaseState:
             return []
         quality = self._step_quality(step, held, since, new_level - step)
         self.last_step_ts = since
-        self.declared.append((since, step, step_q))
+        # its span: from its last reading at the old level to the first it settled on
+        self.declared.append((since, step, step_q, self.steady_ts if self.steady_ts is not None else since,
+                              held[0][0] if held else since))
         if len(self.declared) > 4000:
             del self.declared[:1000]
-        parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None else [step]
+        # a fall is split at once; a rise when its event forms (see
+        # Detector._form_event), when the grid's steps across a meter's span
+        # are all declared
+        parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None and step < 0 else [step]
         closed: List[Session] = []
         for k, part in enumerate(parts):
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
@@ -3749,7 +3756,7 @@ class Detector:
         # over the start-event window, no wider: fifteen seconds either side
         # reached into the kiln's previous pulse and read half a step, and
         # every pulse was booked as two
-        for _, d in self.meter_steps(ph, since, self.event_window(), step > 0):
+        for _, d in self.meter_steps(ph, since, self.event_window(), step > 0, step):
             if d * step <= 0 or abs(d) < least or abs(rest) - abs(d) < least:
                 continue
             parts.append(d)
@@ -3810,6 +3817,8 @@ class Detector:
         for m in members:
             self._pending.remove(m)
         pattern = "".join(sorted(phases))
+        if len(members) == 1:
+            self._split_rise(members[0])
         since = min(m["since"] for m in members)
         vars_ = [m["var"] for m in members]
         cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
@@ -3819,6 +3828,27 @@ class Detector:
             m["open"].cluster = cluster.id
             self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
         return cluster, members
+
+    def _split_rise(self, m: dict) -> None:
+        """A single-phase rise cut into the shares the meters below took with
+        it - see SPLIT_BY_METERS. The first shares become rises of their own;
+        the last stays this one. A rise on several phases at once is one load
+        and is never cut phase by phase."""
+        st = self.phases.get(m["ph"])
+        parts = self.metered_parts(m["ph"], m["since"], m["watts"])
+        if st is None or len(parts) < 2:
+            return
+        o, whole = m["open"], m["watts"]
+        for part in parts[:-1]:
+            extra = _Open(m["since"], part, None if m["var"] is None else m["var"] * part / whole,
+                          [(m["since"], part)], q=o.q)
+            extra.cluster = self._classify_step(m["ph"], m["since"], part, extra.var, 0.0).id
+            self.edge_at.setdefault(m["ph"], []).append((m["since"], extra.cluster, part))
+            st.open_edges.append(extra)
+        rest = parts[-1]
+        o.watts, o.levels = rest, [(o.since, rest)]
+        o.var = None if o.var is None else o.var * rest / whole
+        m["watts"], m["var"] = rest, o.var
 
     def resolve_rise(self, o: "_Open") -> None:
         """A run is closing before its event window passed: form its event now
@@ -5012,14 +5042,21 @@ class Fleet:
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         return pairs
 
-    def _meter_steps(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> List[Tuple[str, float]]:
+    def _span_net(self, ph: str, span: Tuple[float, float]) -> float:
+        """The grid's net declared change on ``ph`` across a meter step's span."""
+        st = self.main.phases[ph]
+        slack = st.interval or 1.0
+        return sum(w for t, w, *_ in st.declared[-200:] if span[0] - slack <= t <= span[1] + slack)
+
+    def _meter_steps(self, ph: str, since: float, window: float, up: Optional[bool] = None,
+                     size: Optional[float] = None) -> List[Tuple[str, float]]:
         """The pieces of a grid step on phase ``ph`` at ``since`` that the
         meters below it explain - see SPLIT_BY_METERS. Each meter measured to
         carry that phase gives its own declared step there, in the grid's
         terms (its gain), less what its own sub-meters stepped: Blaž PC's step
         counts once, and Hiša adds only what else inside it changed. The
         pieces do not overlap."""
-        steps = {n: m[0] for n, m in self._meter_totals(ph, since, window, up).items()}
+        steps = {n: (m[0] if m[0] is not None else (size or 0.0)) for n, m in self._meter_totals(ph, since, window, up).items()}
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
@@ -5033,7 +5070,9 @@ class Fleet:
         noise = main.phases[ph].noise_at()
         took = {}
         for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window(), up).items():
-            if (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
+            if d is None:                   # all of the grid's step across the meter's span
+                took[n] = (size if up else -size, None, None, noise_m)
+            elif (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
                 took[n] = (d, raw, raw_q, noise_m)
 
         def under(n: str, anc: str) -> bool:
@@ -5049,7 +5088,7 @@ class Fleet:
             return None
         home = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
         _, raw, raw_q, noise_m = took[home]
-        if size >= 10.0 * math.hypot(noise, noise_m):          # a step both saw clearly teaches the gains
+        if raw is not None and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(home, "p", size, raw)
             if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
                 self._learn_gain(home, "q", var, raw_q)
@@ -5084,19 +5123,33 @@ class Fleet:
             chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
             if not chans:
                 continue
-            raw, raw_q, have_q, noise = 0.0, 0.0, False, 0.0
+            raw, raw_q, have_q, noise, span = 0.0, 0.0, False, 0.0, None
             for c in chans:
                 st = det.phases[c]
                 noise = max(noise, st.noise_at())
-                for t, w, q in reversed(st.declared):
+                for t, w, q, a, b in reversed(st.declared):
                     if t < since - window:
                         break
                     if t <= since + window and (up is None or (w > 0) == up):
                         raw += w
+                        span = (min(a, span[0]), max(b, span[1])) if span else (a, b)
                         if q is not None:
                             raw_q += q
                             have_q = True
-            out[name] = (raw * self.gain(name, "p"), raw, raw_q if have_q else None, noise)
+            d = raw * self.gain(name, "p")
+            # Over the meter's own span, the grid may have declared several
+            # steps where the meter, reading less often, declared one: the
+            # kiln's element on and a 580 W load off six seconds later were
+            # +2,800 and -580 on the grid, +2,240 on Hisa. Compared with the
+            # grid's net change across that span, the meter's step is all of
+            # the grid's there, and so all of this one (Anze, 2026-10-01: "the
+            # same span on both sensors").
+            if span is not None and ph in self.main.phases and raw:
+                net = self._span_net(ph, span)
+                noise_g = self.main.phases[ph].noise_at()
+                if net and (net > 0) == (raw > 0) and abs(d - net) <= math.hypot(noise, noise_g) + METER_CAL_SLACK * abs(net):
+                    d = None            # all of the grid's step - its own size, filled in by the caller
+            out[name] = (d, raw, raw_q if have_q else None, noise)
         return out
 
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
