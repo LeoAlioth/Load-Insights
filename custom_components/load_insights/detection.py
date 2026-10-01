@@ -40,12 +40,14 @@ from .const import (
     NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_DETECTION_INTERVAL,
+    CONF_METER_WAIT,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     SAVE_MAX_INTERVAL_S,
     DOMAIN,
 )
 from .insights.detect import (
+    METER_WAIT_CAP_S,
     SAME_UPDATE_S,
     SWITCH_MEMORY_S,
     combine,
@@ -843,6 +845,16 @@ class DetectionRunner:
         return value if value > 0 else DETECTION_INTERVAL_MINUTES
 
     @property
+    def meter_wait_s(self) -> float:
+        """At most how long the grid's steps wait for the meters below it -
+        see METER_WAIT_CAP_S; as configured or defaulted, never negative."""
+        try:
+            value = float(self.config.get(CONF_METER_WAIT, METER_WAIT_CAP_S))
+        except (TypeError, ValueError):
+            return METER_WAIT_CAP_S
+        return max(0.0, value)
+
+    @property
     def enabled(self) -> bool:
         """Enough to work out what the house draws: a reading that already is
         the house, or a grid meter, or an inverter."""
@@ -1017,6 +1029,7 @@ class DetectionRunner:
             single = {n: self.holds_one_device(n) for n in self.submeters}
             switches, numbers, inputs = await self._read_inputs(start, end)
             read = time.monotonic()
+            self.fleet.wait_cap_s = self.meter_wait_s
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
                 dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,

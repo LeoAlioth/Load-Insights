@@ -472,6 +472,7 @@ def main() -> int:
         i = bisect.bisect_left(ts, a - D.SWITCH_MEMORY_S)
         return rows[max(i - 1, 0):bisect.bisect_left(ts, b)]
     fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S          # as production's default; METER_WAIT_CAP_S=0 to judge at once
     fleet.main.tz_offset_s = 0.0
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False

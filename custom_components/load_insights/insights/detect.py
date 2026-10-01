@@ -606,6 +606,17 @@ SUB_SAMPLE_TAIL_S = 2 * 3600.0
 # the wait has to outlast the slowest meter's silence, or the answer arrives
 # after the question has been thrown away (2026-09-19).
 MATCH_PATIENCE_S = 20 * 60.0
+# A live pass reads the recorder up to now, and a meter slower than the grid
+# reports the same change later - the workshop boiler's, every 10 s, up to
+# 10 s later and its own step confirmed 30 s after that. Judged at once, a
+# grid step near a pass's end could not yet be told from a meter that held
+# its value (see Fleet._meter_held), nor placed under the meter that took it.
+# So the grid is judged only up to now minus SUSTAIN_CADENCES of the slowest
+# meter's cadence - every meter has had its say by then - and its newer
+# readings wait for the next pass. A meter slower than this cap is not waited
+# for (the 60 s heartbeat plugs); the named loads' live sensors lag by the
+# wait. Set on the detection settings page; 0 judges every step at once.
+METER_WAIT_CAP_S = 45.0
 # How many single-phase sessions a three-phase meter must have shared with the
 # house before its channels are mapped onto the house's phases. Until then its
 # own labels stand. Home's attic 3EM calls the house's C "b" and its A "c", so
@@ -4724,6 +4735,9 @@ class Fleet:
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict)
     _pass_end: float = field(default=0.0, repr=False, compare=False)   # how far this pass's readings reach - see _meter_held
+    wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
+    # the grid's readings, reactive and PV newer than the wait, for the next pass
+    _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # switch -> {on moment: off moment, or None while on}, as the runner last
     # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
     # window with a lookback.
@@ -4818,7 +4832,11 @@ class Fleet:
         self.main.step_meter = self._step_meter
         self.main.meter_held = self._meter_held
         self._pass_end = max(latest, latest_seen)
-        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
+        main_now = now_ts
+        if self.wait_cap_s or self._carry:
+            end = now_ts or max((r[-1][0] for r in (main_samples or {}).values() if r), default=0.0)
+            main_samples, main_q, pv, main_now = self._hold_back(main_samples, main_q, pv, end)
+        closed_main = self.main.process(main_samples, main_q, main_now, pv, main_q_quantum, file=False)
         self._file_waiting(closed_main, closed_sub, latest)
         self._locate([], {}, latest)
 
@@ -5206,6 +5224,37 @@ class Fleet:
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
+    def _hold_back(self, rows, q, pv, end: float):
+        """The grid's readings up to ``end`` minus the wait - SUSTAIN_CADENCES
+        of the slowest meter not over wait_cap_s - with the last pass's held
+        ones in front; the newer ones, and their reactive and PV values, are
+        kept for the next pass. See METER_WAIT_CAP_S."""
+        wait = max([0.0] + [x for det in self.subs.values() for st in det.phases.values() if st.last_ts is not None
+                            for x in (st.sustain(),) if x <= self.wait_cap_s])
+        cut = end - wait
+        held = self._carry
+        out_rows, keep_rows = {}, {}
+        for ph in set(rows or {}) | set(held.get("rows") or {}):
+            both = sorted(list((held.get("rows") or {}).get(ph, [])) + [tuple(r) for r in (rows or {}).get(ph, [])])
+            out_rows[ph] = [r for r in both if r[0] <= cut]
+            keep_rows[ph] = [r for r in both if r[0] > cut]
+
+        def split(new, old):
+            if not new and not old:
+                return new, {}
+            out, keep = {}, {}
+            for ph in set(new or {}) | set(old or {}):
+                both = {**(old or {}).get(ph, {}), **(new or {}).get(ph, {})}
+                out[ph] = {t: v for t, v in both.items() if t <= cut}
+                keep[ph] = {t: v for t, v in both.items() if t > cut}
+            return out, keep
+        out_q, keep_q = split(q, held.get("q"))
+        out_pv, keep_pv = split(pv, held.get("pv"))
+        self._carry = {k: {ph: v for ph, v in d.items() if v} for k, d in
+                       (("rows", keep_rows), ("q", keep_q), ("pv", keep_pv))}
+        self._carry = {k: d for k, d in self._carry.items() if d}
+        return out_rows, out_q, out_pv, cut
+
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
         ``ph`` at ``since``? As of the pass's end it has written nothing that
@@ -5411,7 +5460,10 @@ class Fleet:
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
                 "agnostic": self.agnostic, "phase_votes": self.phase_votes,
                 "unfiled": [s.to_dict() for s in self.unfiled], "identity": self.identity,
-                "meter_gain": self.meter_gain}
+                "meter_gain": self.meter_gain,
+                "carry": {"rows": {p: [list(r) for r in v] for p, v in (self._carry.get("rows") or {}).items()},
+                          **{k: {p: [[t, x] for t, x in v.items()] for p, v in (self._carry.get(k) or {}).items()}
+                             for k in ("q", "pv")}}}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Fleet":
@@ -5428,6 +5480,10 @@ class Fleet:
         f.unfiled = [Session.from_dict(x) for x in d.get("unfiled") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
+        carry = d.get("carry") or {}
+        f._carry = {k: v for k, v in (
+            ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
+            *((k, {p: {t: x for t, x in v} for p, v in (carry.get(k) or {}).items()}) for k in ("q", "pv"))) if v}
         return f
 
 
