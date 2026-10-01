@@ -518,6 +518,29 @@ its runs stopped closing, and one run of 10.5 kW for 289 min took 50 kWh.
 Voltage-normalised sizes were measured earlier in the cluster lab: purity
 0.860 / conc 0.760 against 0.861 / 0.766 for plain size (h 0.015).
 
+**Experiments branch, 2026-10-01 (not on dev): measured on the corrected
+benches** - energy: a run is a device's only when its meter switched on with
+it, credited with the meter's draw above its idle floor; labels: against the
+meter's draw just before the run (the old "minutes before" average read a
+charge that followed another as no one's). Ten days, SUBS=prod:
+
+| version | Home pur/wconc | mat over | Home F0.5 / wrong kWh | Koz wconc | Koz F0.5 / wrong |
+|---|---|---|---|---|---|
+| baseline (dev) | 75.4 / 48.1 | 1.8 h | 38.4 % / 8.0 | 89.9 | 80.9 % / 22.4 |
+| split + close, noise as before | 78.3 / 52.1 | 1.8 h | 34.2 % / 8.1 | 89.6 | 81.3 % / 23.6 |
+| + noise from moves, factor 4 | 72.0 / 44.4 | 5.9 h | 38.2 % / 7.2 | 95.0 | 82.9 % / 18.0 |
+| ... factor 5 | 74.4 / 48.9 | 2.8 h | 36.9 % / 7.4 | 94.6 | 81.3 % / 21.9 |
+| ... factor 3 | 71.0 / 38.5 | 5.4 h | 41.7 % / 10.2 | 97.1 | 82.4 % / 16.9 |
+| ... factor 3 + EDGE_BY_METER | 70.8 / 35.9 | 3.9 h | 47.1 % / 5.7 | 97.4 | 83.8 % / 17.6 |
+
+SPLIT_BY_METERS books a house step its meters stepped with as their shares
+and the rest; TOO_BIG closes a run bigger than the whole reading, on its
+start size (its followed size carried held drops and booked a 3,346 W charge
+at 4,448 W for 410 min). NOISE_FROM_MOVES re-learns noise from moves: a 65 W
+load cycling on Hisa's phase C (25-50 s) had held the house's floor at 228 W.
+EDGE_BY_METER groups a single-phase step under the innermost meter that saw
+all of it; it splits devices whose meter misses steps (Home 279 signatures).
+
 ## Known shortfalls
 
 Open defects, with what is measured and what is guessed. Numbers are from the
