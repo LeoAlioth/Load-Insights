@@ -273,15 +273,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 if not means[st_entity]:
                     continue              # no hourly means: a state, among the signals already
                 numbers.append((st_entity, means[st_entity], _read_number(self.hass, [st_entity])))
-            if len(numbers) > 1:
-                hist, live = [h for _, h, _ in numbers], [v for _, _, v in numbers]
-            elif numbers:
-                hist, live = numbers[0][1], numbers[0][2]
-            else:
-                hist, live = None, None
             fc = await self.hass.async_add_executor_job(
                 forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
-                cal_signals or None, hist or None, live,
+                cal_signals or None, [h for _, h, _ in numbers] or None, [v for _, _, v in numbers] or None,
             )
             device_fc[d.energy] = fc
             if numbers:
