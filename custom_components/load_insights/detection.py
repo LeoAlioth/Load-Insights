@@ -173,7 +173,13 @@ STORAGE_VERSION = 1
 #     of it), a house step its meters stepped with is booked as their shares,
 #     a run bigger than the whole reading is closed, and noise is learned from
 #     how the reading moves - every cluster, run and signature differs.
-DETECTOR_GENERATION = 17
+# 18 = a meter's step is its own detector's, weighed against the grid's over
+#     both spans; a level is confirmed, a silence held and a span started over
+#     three of the meter's cadence (how often it writes while its value
+#     moves); only a start is placed; a step no meter placed never joins a
+#     meter that held its value - which steps are declared, and where every
+#     start cluster sits, differ.
+DETECTOR_GENERATION = 18
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
