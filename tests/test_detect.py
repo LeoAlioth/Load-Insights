@@ -13,6 +13,14 @@ T0 = 1_789_000_000.0     # some epoch, arbitrary
 DT = 5.0
 
 
+def _sig(id, watts, dur=60.0, count=5, phases="a", pf=None, **kw):
+    """A signature of ``watts`` split evenly over ``phases``, first seen at 0
+    and last at ``id`` unless ``kw`` says otherwise."""
+    kw = {"first_seen": 0.0, "last_seen": float(id), **kw}
+    return D.Signature(id=id, phases=phases, power={p: watts / len(phases) for p in phases},
+                       duration_s=dur, pf=pf, count=count, **kw)
+
+
 def series(seconds, fn, seed=0, base=300.0, noise=15.0):
     rnd = random.Random(seed)
     out = []
@@ -214,12 +222,10 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     fleet.subs["pump"] = D.Detector()
     fleet.agnostic["pump"] = True
     # the plug's own library is one load, so it holds one device by its shape...
-    fleet.subs["pump"].signatures.append(D.Signature(
-        id=1, phases="a", power={"a": 880.0}, duration_s=140.0, pf=None, count=50, first_seen=T0, last_seen=T0))
+    fleet.subs["pump"].signatures.append(_sig(1, 880.0, 140.0, 50, first_seen=T0, last_seen=T0))
     # ...and the house has placed the pump there, on A, often enough to know
-    fleet.main.signatures.append(D.Signature(
-        id=1, phases="a", power={"a": 880.0}, duration_s=140.0, pf=None, count=45, first_seen=T0, last_seen=T0,
-        locations={"pump": D.METER_PHASES_MIN + 20}))
+    fleet.main.signatures.append(_sig(1, 880.0, 140.0, 45, first_seen=T0, last_seen=T0,
+                                      locations={"pump": D.METER_PHASES_MIN + 20}))
     assert fleet.meter_phases() == {"pump": "a"}
     two = D.Session("ab", T0 + 1000, T0 + 1140, {"a": [(T0 + 1000, 300.0)], "b": [(T0 + 1000, 420.0)]})
     other = D.Session("b", T0 + 3000, T0 + 3140, {"b": [(T0 + 3000, 720.0)]})
@@ -246,8 +252,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     a session on such an on-period is credited to the thermostat, and a switch
     is deeper than the circuit meter that saw it too (2026-09-28)."""
     fleet = D.Fleet()
-    sig = D.Signature(id=1, phases="c", power={"c": 640.0}, duration_s=120.0, pf=None, count=1,
-                      first_seen=T0, last_seen=T0)
+    sig = _sig(1, 640.0, 120.0, 1, phases="c", first_seen=T0, last_seen=T0)
     fleet.main.signatures.append(sig)
     fleet.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0 + 1000: T0 + 1120, T0 + 5000: None}
 
@@ -359,8 +364,8 @@ def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
 
 def test_overlapping_signatures_are_never_suggested_as_one_device():
     sigs = [
-        D.Signature(id=1, phases="a", power={"a": 1000.0}, duration_s=300, pf=None, count=5, first_seen=T0, last_seen=T0),
-        D.Signature(id=2, phases="a", power={"a": 2000.0}, duration_s=300, pf=None, count=5, first_seen=T0, last_seen=T0),
+        _sig(1, 1000.0, 300, first_seen=T0, last_seen=T0),
+        _sig(2, 2000.0, 300, first_seen=T0, last_seen=T0),
     ]
     recent = [{"signature": 1, "start": T0, "end": T0 + 600}, {"signature": 2, "start": T0 + 300, "end": T0 + 900}]
     assert D.suggest_levels(sigs, recent) == []
@@ -598,8 +603,7 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     cap = D.MAX_SIGNATURES
     det = D.Detector()
     det.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=1, first_seen=0.0, last_seen=i * hour)
+        _sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour)
         for i in range(cap + 5)
     ]
     det.signatures[0].name = "Boiler"                # named, stalest of all, count 1
@@ -618,13 +622,11 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     # a library FULL of established loads still admits a newcomer - over the cap
     det2 = D.Detector()
     det2.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=20, first_seen=0.0, last_seen=i * hour)
+        _sig(i, 100.0 + i, 60.0, 20, last_seen=i * hour)
         for i in range(cap)
     ]
     now = cap * hour
-    det2.signatures.append(D.Signature(id=9999, phases="a", power={"a": 5000.0}, duration_s=40.0,
-                                       pf=None, count=1, first_seen=now, last_seen=now))
+    det2.signatures.append(_sig(9999, 5000.0, 40.0, 1, first_seen=now, last_seen=now))
     det2._prune(now=now)
     assert any(s.id == 9999 for s in det2.signatures)
     assert len(det2.signatures) == cap + 1, "established loads are not traded for a cap"
@@ -635,8 +637,7 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     day = 86400.0
     det3 = D.Detector()
     det3.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=20, first_seen=0.0, last_seen=500 * day + i)
+        _sig(i, 100.0 + i, 60.0, 20, last_seen=500 * day + i)
         for i in range(cap + 1)
     ]
     det3.signatures[0].last_seen = 0.0               # gone for five hundred days
@@ -707,12 +708,6 @@ def test_a_glitch_below_zero_cannot_drag_the_floor_down():
     assert any(1900 < w < 2100 for w in got), got
 
 
-def _sig(id, watts, dur, pf, count, hours=None, loc=None, name=None):
-    return D.Signature(id=id, phases="a", power={"a": watts}, duration_s=dur, pf=pf, count=count,
-                       first_seen=0.0, last_seen=float(id), hour_wh=list(hours or [0.0] * 24),
-                       locations=dict(loc or {}), name=name)
-
-
 def test_two_loads_starting_together_are_not_one_two_phase_load():
     """A real multi-phase load is balanced by design. Coinciding in time was
     the only test, so a 2 kW load on A married a 163 W blip on C and the pair
@@ -741,8 +736,8 @@ def test_how_well_a_run_was_measured_decides_its_weight_and_its_tolerance():
     assert D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
 
     # and it pulls the running mean less far
-    lax = _sig(2, 3000.0, 40.0, None, 10)
-    strict = _sig(3, 3000.0, 40.0, None, 10)
+    lax = _sig(2, 3000.0, 40.0, 10)
+    strict = _sig(3, 3000.0, 40.0, 10)
     import datetime as _dt
     lax.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=4), _dt.timezone.utc)
     strict.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=40), _dt.timezone.utc)
@@ -755,11 +750,11 @@ def test_a_named_load_that_changed_points_at_what_replaced_it():
     unnamed. The hint is recorded; nothing is renamed without the user."""
     day = 86400.0
     det = D.Detector()
-    old = _sig(1, 3000.0, 40.0, 0.95, 200, name="Kiln")
+    old = _sig(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
     old.last_seen = 0.0
-    new = _sig(2, 2400.0, 42.0, 0.95, 60)
+    new = _sig(2, 2400.0, 42.0, 60, pf=0.95)
     new.last_seen = 9 * day
-    unrelated = _sig(3, 300.0, 42.0, 0.95, 60)      # nothing like it
+    unrelated = _sig(3, 300.0, 42.0, 60, pf=0.95)      # nothing like it
     unrelated.last_seen = 9 * day
     det.signatures = [old, new, unrelated]
     det._link_successors(now=10 * day)
@@ -784,7 +779,7 @@ def test_a_mature_signature_still_follows_a_load_that_changes():
     import datetime as _dt
     tz = _dt.timezone.utc
     run = lambda w: D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, w)]}, samples=40)
-    young, mature = _sig(1, 3000.0, 40.0, None, 10), _sig(2, 3000.0, 40.0, None, 300)
+    young, mature = _sig(1, 3000.0, 40.0, 10), _sig(2, 3000.0, 40.0, 300)
     before = mature.power["a"]
     young.absorb(run(2000.0), tz)
     mature.absorb(run(2000.0), tz)
@@ -796,7 +791,7 @@ def test_a_mature_signature_still_follows_a_load_that_changes():
     assert mature.count == 301, "the history is kept, only the weight is capped"
 
     # over fifty runs at the new power it gets most of the way there
-    sig = _sig(3, 3000.0, 40.0, None, 300)
+    sig = _sig(3, 3000.0, 40.0, 300)
     for _ in range(50):
         sig.absorb(run(2000.0), tz)
     assert sig.power["a"] < 2650.0, sig.power["a"]
@@ -812,12 +807,10 @@ def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
     det = D.Detector()
     # a library already full of well-evidenced everyday loads
     det.signatures = [
-        D.Signature(id=i, phases="a", power={"a": 100.0 + i}, duration_s=60.0, pf=None,
-                    count=30, first_seen=0.0, last_seen=400 * day + i)
+        _sig(i, 100.0 + i, 60.0, 30, last_seen=400 * day + i)
         for i in range(cap)
     ]
-    rare = D.Signature(id=9999, phases="a", power={"a": 7000.0}, duration_s=3600.0, pf=0.99,
-                       count=8, first_seen=0.0, last_seen=400 * day - 180 * day)
+    rare = _sig(9999, 7000.0, 3600.0, 8, pf=0.99, last_seen=400 * day - 180 * day)
     rare.power_mad, rare.duration_mad = 40.0, 20.0        # tight: real evidence
     det.signatures.append(rare)
     assert rare.evidence >= D.ESTABLISHED_EVIDENCE
@@ -827,16 +820,16 @@ def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
     # and it is not offered a successor merely for being rare
     rare.name = "Kiln"
     rare.interval_s = 180 * day
-    other = _sig(1234, 7000.0, 3600.0, 0.99, 20)
+    other = _sig(1234, 7000.0, 3600.0, 20, pf=0.99)
     other.last_seen = 400 * day
     det.signatures = [rare, other]
     det._link_successors(now=400 * day)
     assert rare.successor_id is None, "a rare load was declared replaced for running rarely"
 
     # a load that runs every five minutes and has not for a week IS quiet
-    fast = _sig(5, 2000.0, 60.0, 0.95, 200, name="Pump")
+    fast = _sig(5, 2000.0, 60.0, 200, pf=0.95, name="Pump")
     fast.interval_s, fast.last_seen = 300.0, 0.0
-    heir = _sig(6, 2100.0, 60.0, 0.95, 20)
+    heir = _sig(6, 2100.0, 60.0, 20, pf=0.95)
     heir.last_seen = 8 * day
     det.signatures = [fast, heir]
     det._link_successors(now=8 * day)
@@ -851,8 +844,7 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     import datetime as _dt
     tz = _dt.timezone.utc
     det = D.Detector()
-    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=60.0, pf=None, count=0,
-                      first_seen=0.0, last_seen=0.0, name="Boiler")
+    sig = _sig(1, 2000.0, 60.0, 0, last_seen=0.0, name="Boiler")
     det.signatures = [sig]
     run = lambda i: D.Session(phases="a", start=T0 + i * 3600, end=T0 + i * 3600 + 1800.0,
                               levels={"a": [(T0 + i * 3600, 2000.0)]}, samples=20)
@@ -864,8 +856,7 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     assert seen == sorted(seen)
 
     # two signatures under one name are one device, so their energy adds
-    twin = D.Signature(id=2, phases="a", power={"a": 2000.0}, duration_s=60.0, pf=None, count=3,
-                       first_seen=0.0, last_seen=0.0, name="Boiler")
+    twin = _sig(2, 2000.0, 60.0, 3, last_seen=0.0, name="Boiler")
     twin.hour_wh = [500.0] + [0.0] * 23
     det.signatures.append(twin)
     assert round(det.energy_by_name()["Boiler"] / 1000.0, 3) == 5.5
@@ -877,8 +868,7 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     assert sig.name == "Boiler"
 
     # an unnamed signature contributes nothing to anyone's meter
-    det.signatures.append(D.Signature(id=3, phases="a", power={"a": 9.0}, duration_s=1.0, pf=None,
-                                      count=1, first_seen=0.0, last_seen=0.0))
+    det.signatures.append(_sig(3, 9.0, 1.0, 1, last_seen=0.0))
     assert set(det.energy_by_name()) == {"Boiler"}
 
 
@@ -920,9 +910,8 @@ def test_stored_state_carries_only_the_precision_it_has():
     meter reset."""
     import json
     det = D.Detector()
-    sig = D.Signature(id=1, phases="a", power={"a": 2000.123456789}, duration_s=61.987654321,
-                      pf=0.9543210987, count=40, first_seen=1_789_000_000.25,
-                      last_seen=1_789_050_000.75, name="Boiler")
+    sig = _sig(1, 2000.123456789, 61.987654321, 40, pf=0.9543210987, first_seen=1_789_000_000.25,
+               last_seen=1_789_050_000.75, name="Boiler")
     sig.hour_wh = [276.1825572400394] * 24
     sig.day_wh = [946.9116248229 for _ in range(7)]
     det.signatures = [sig]
@@ -944,9 +933,9 @@ def test_a_name_can_be_moved_to_the_load_that_replaced_it():
     did draw it - but stops it answering to a name nothing matches."""
     day = 86400.0
     det = D.Detector()
-    old = _sig(1, 3000.0, 40.0, 0.95, 200, name="Kiln")
+    old = _sig(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
     old.last_seen, old.hour_wh = 0.0, [1000.0] + [0.0] * 23
-    new = _sig(2, 2400.0, 42.0, 0.95, 60)
+    new = _sig(2, 2400.0, 42.0, 60, pf=0.95)
     new.last_seen, new.hour_wh = 9 * day, [250.0] + [0.0] * 23
     det.signatures = [old, new]
     det._link_successors(now=10 * day)
@@ -1053,7 +1042,7 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     and that is what its owner would recognise first."""
     import datetime as _dt
     tz = _dt.timezone.utc
-    clock = _sig(1, 1800.0, 70.0, 0.96, 60)
+    clock = _sig(1, 1800.0, 70.0, 60, pf=0.96)
     clock.interval_s, clock.interval_mad = 840.0, 60.0      # every 14 min, tight
     clock.first_seen = clock.last_seen - 59 * 840.0             # 60 starts over 13.8 h...
     clock.hour_wh = [500.0] * 24
@@ -1069,7 +1058,7 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     tells loads apart; everything else goes underneath, where it wraps."""
     import datetime as _dt
     tz = _dt.timezone.utc
-    clock = _sig(1, 1800.0, 70.0, 0.96, 60)
+    clock = _sig(1, 1800.0, 70.0, 60, pf=0.96)
     clock.interval_s, clock.interval_mad = 840.0, 60.0
     clock.first_seen = clock.last_seen - 5 * 86400.0
     clock.hour_wh = [500.0] * 24
@@ -1088,10 +1077,10 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
 def test_a_possible_second_setting_is_described_not_numbered():
     """"set 4 of one device" meant nothing on a page where no other row was in
     set 4. Say what the other load looks like instead (Anze, 2026-09-23)."""
-    other = _sig(9, 1000.0, 600.0, 0.99, 20)
+    other = _sig(9, 1000.0, 600.0, 20, pf=0.99)
     assert D.same_device_phrase([other]) == "maybe the same device as the 1.0 kW, 10 min load"
     assert D.same_device_phrase([]) == ""
-    three = [_sig(i, 1000.0 * i, 60.0, 0.99, 20) for i in (1, 2, 3)]
+    three = [_sig(i, 1000.0 * i, 60.0, 20, pf=0.99) for i in (1, 2, 3)]
     assert D.same_device_phrase(three).endswith("and 1 more"), D.same_device_phrase(three)
     assert D.on_phases("a") == "on phase A" and D.on_phases("ac") == "on phases A and C"
     assert D.on_phases("abc") == "on all three phases"
@@ -1138,8 +1127,8 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
     def lib():
         det = D.Detector()
         det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=600.0)]        # one start cluster: one device
-        a = D.Signature(id=10, phases="a", power={"a": 600.0}, duration_s=300.0, pf=None, count=5, first_seen=T0, last_seen=T0)
-        b = D.Signature(id=11, phases="a", power={"a": 610.0}, duration_s=300.0, pf=None, count=3, first_seen=T0, last_seen=T0)
+        a = _sig(10, 600.0, 300.0, first_seen=T0, last_seen=T0)
+        b = _sig(11, 610.0, 300.0, 3, first_seen=T0, last_seen=T0)
         a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
         det.signatures = [a, b]
         det.start_home = {"1": {10: 5.0, 11: 3.0}}          # its runs went to two signatures
@@ -1171,7 +1160,6 @@ def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
     belongs to three hours and two days (Anze, 2026-09-17)."""
     from datetime import datetime, timezone
     det = D.Detector()
-    det.tz_offset_s = 0.0
     start = datetime(2026, 9, 18, 23, 40, tzinfo=timezone.utc).timestamp()   # a Friday
     det._file(D.Session(phases="a", start=start, end=start + 6000,
                         levels={"a": [(start, 2000.0)]}, pf=1.0))
@@ -1393,12 +1381,9 @@ def test_a_sub_meter_decides_which_signature_a_session_joins():
     det = D.Detector()
     for p in "a":
         det.phases[p].noise = 10.0
-    near = D.Signature(id=1, phases="a", power={"a": 1000.0}, duration_s=60.0, pf=None,
-                       count=5, first_seen=0.0, last_seen=0.0)
-    other = D.Signature(id=2, phases="a", power={"a": 1040.0}, duration_s=60.0, pf=None,
-                        count=5, first_seen=0.0, last_seen=0.0)
-    far = D.Signature(id=3, phases="a", power={"a": 3000.0}, duration_s=60.0, pf=None,
-                      count=5, first_seen=0.0, last_seen=0.0)
+    near = _sig(1, 1000.0, last_seen=0.0)
+    other = _sig(2, 1040.0, last_seen=0.0)
+    far = _sig(3, 3000.0, last_seen=0.0)
     det.signatures = [near, other, far]
     s = D.Session(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
     det._file(s, prefer=2)
@@ -1460,13 +1445,6 @@ def test_a_session_waits_for_a_slow_meter_to_say_what_it_saw():
 
 
 
-def _plain(id, watts, count, dur=100.0, mad=0.0):
-    sig = D.Signature(id=id, phases="a", power={"a": watts}, duration_s=dur, pf=None,
-                      count=count, first_seen=0.0, last_seen=float(id))
-    sig.power_mad = mad
-    return sig
-
-
 def test_a_merge_owns_up_to_the_distance_it_just_closed():
     """Averaging two signatures' deviations throws away the gap between their
     MEANS, so folding two tight signatures 300 W apart produced one claiming
@@ -1474,7 +1452,7 @@ def test_a_merge_owns_up_to_the_distance_it_just_closed():
     tightness, which feeds evidence, which feeds the confidence the user is
     shown - a merge made a signature look BETTER measured the further apart
     the things it merged."""
-    keep, other = _plain(1, 1000.0, 10), _plain(2, 700.0, 10)
+    keep, other = _sig(1, 1000.0, 100.0, 10), _sig(2, 700.0, 100.0, 10)
     keep.swallow(other)
     assert round(sum(keep.power.values())) == 850
     # 150 W from the new mean on each side, and neither had any spread before
@@ -1487,18 +1465,18 @@ def test_a_pool_may_not_be_stretched_wider_than_the_tolerance_that_made_it():
     """Merging is transitive: each one re-centres the band on the new mean,
     so A reaches B, the pair reaches C, and it walks. What it has already
     absorbed has to stay inside the tolerance that let the pair match."""
-    keep = _plain(1, 400.0, 10)
-    assert keep.alike(_plain(2, 330.0, 10), 115.0)          # 70 apart, inside 115
-    keep.swallow(_plain(2, 330.0, 10))                      # now 365 W, spread 35
-    assert keep.alike(_plain(3, 260.0, 10), 115.0)          # 105 apart, spread would be 70
-    keep.swallow(_plain(3, 260.0, 10))                      # now 330 W, spread 70
+    keep = _sig(1, 400.0, 100.0, 10)
+    assert keep.alike(_sig(2, 330.0, 100.0, 10), 115.0)          # 70 apart, inside 115
+    keep.swallow(_sig(2, 330.0, 100.0, 10))                      # now 365 W, spread 35
+    assert keep.alike(_sig(3, 260.0, 100.0, 10), 115.0)          # 105 apart, spread would be 70
+    keep.swallow(_sig(3, 260.0, 100.0, 10))                      # now 330 W, spread 70
     # 200 W is 130 away - outside the band on its own terms
-    assert not keep.alike(_plain(4, 200.0, 10), 115.0)
+    assert not keep.alike(_sig(4, 200.0, 100.0, 10), 115.0)
     # and a pool already at the limit refuses a partner that is inside the
     # band on its own terms, because taking it would push the pool past it
-    stretched = _plain(5, 330.0, 100, mad=120.0)
+    stretched = _sig(5, 330.0, 100.0, 100, power_mad=120.0)
     assert abs(330.0 - 260.0) < 115.0                       # the pair would match
-    assert not stretched.alike(_plain(6, 260.0, 10), 115.0)  # the pool would not
+    assert not stretched.alike(_sig(6, 260.0, 100.0, 10), 115.0)  # the pool would not
 
 
 def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
@@ -1507,9 +1485,7 @@ def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
     wanders about three times what one leg does, so it was refused merges an
     identical single-phase load was granted (Anze, 2026-09-22)."""
     def leg(i, per_phase, count, phases, mad=0.0):
-        sig = D.Signature(id=i, phases=phases, power={p: per_phase for p in phases},
-                          duration_s=60.0, pf=None, count=count,
-                          first_seen=0.0, last_seen=1.0, power_mad=mad)
+        sig = _sig(i, per_phase * len(phases), 60.0, count, phases=phases, last_seen=1.0, power_mad=mad)
         sig.hour_wh = [10.0] * 24
         return sig
 
@@ -1544,7 +1520,6 @@ def test_a_name_outlives_the_library_it_was_written_on():
     dashboard with it (Anze, 2026-09-22: "we dont want people loosing their
     named entities if they update integration")."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
     assert det.signatures, "no signature to name"
@@ -1557,7 +1532,6 @@ def test_a_name_outlives_the_library_it_was_written_on():
 
     # the library is thrown away and learned again from the same history
     fresh = D.Detector()
-    fresh.tz_offset_s = 0.0
     fresh.orphan_names = orphans
     samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
     fresh.process(samples, now_ts=t2)
@@ -1571,7 +1545,6 @@ def test_a_name_does_not_come_back_to_a_load_that_is_not_it():
     there. A name that finds nothing like itself stays waiting rather than
     landing on the nearest stranger."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     det.orphan_names = [{"name": "Kiln", "phases": "a", "power": {"a": 6000.0},
                          "duration_s": 3600.0, "pf": 0.99}]
     samples, t = _session(T0, 150.0, 120.0)          # a small brief thing, nothing like a kiln
@@ -1635,13 +1608,11 @@ def test_a_rebuilt_library_gets_its_names_back():
     counts only what it gains (named.carry_reading), so it neither steps
     down nor counts the ten days twice."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
     assert det.rename(det.signatures[0].id, "Kompresor")
     carried = det.name_descriptors()
     fresh = D.Detector()
-    fresh.tz_offset_s = 0.0
     fresh.carry_names(carried)
     assert fresh.energy_by_name() == {}
     samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
@@ -1655,7 +1626,6 @@ def test_a_reset_on_a_reset_keeps_the_names_still_waiting():
     dropped the mat, the kiln and the washer - none had run in between, so
     their names were still waiting, not on a signature."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
     det.rename(det.signatures[0].id, "Kompresor")
@@ -1689,7 +1659,6 @@ def test_a_generation_bump_keeps_names():
     from someone's Energy dashboard (Anze, 2026-09-22: "i just want this fixed
     for future updates/of the detection library versions/resets")."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
     sig = det.signatures[0]
@@ -1702,7 +1671,6 @@ def test_a_generation_bump_keeps_names():
     assert [o["name"] for o in orphans] == ["Kiln"]
 
     fresh = D.Detector()                        # what `raw = {}` leaves behind
-    fresh.tz_offset_s = 0.0
     fresh.carry_names(orphans)
 
     samples, t2 = _session(T0 + 100000.0, 2000.0, 600.0)
@@ -1717,7 +1685,6 @@ def test_the_only_paths_that_discard_the_library_both_carry_names():
     descriptors into carry_names - so neither can quietly grow a third
     behaviour."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
     det.rename(det.signatures[0].id, "Kiln")
@@ -1736,8 +1703,7 @@ def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
     workshop since Tuesday. A row that says a load is on RIGHT NOW turns
     naming into walking over and looking at it."""
     now = 1_000_000.0
-    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
-                      count=9, first_seen=now - 86400.0, last_seen=now - 600.0)
+    sig = _sig(1, 2000.0, 600.0, 9, pf=0.99, first_seen=now - 86400.0, last_seen=now - 600.0)
     assert "last ran 10 min ago" in sig.describe(timezone.utc, now)
     assert "running now" in sig.describe(timezone.utc, now, running=True)
     assert "last ran" not in sig.describe(timezone.utc, now, running=True)
@@ -1755,7 +1721,6 @@ def test_running_now_names_the_signatures_that_are_on():
     load ever runs there is nothing to say it is on. From the second time,
     the open edge is matched on its size and the row can say so."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     rows, t = [], T0
     for _ in range(40):
         rows.append((t, 200.0)); t += 10.0
@@ -1821,18 +1786,13 @@ def test_a_time_is_not_claimed_on_the_strength_of_one_occasion():
     assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], 3 * 86400.0, 9) == ""
 
 
-def _lvl(id, watts, dur=100.0, pf=0.96, phases="a", count=5):
-    return D.Signature(id=id, phases=phases, power={p: watts / len(phases) for p in phases},
-                       duration_s=dur, pf=pf, count=count, first_seen=0.0, last_seen=1.0)
-
-
 def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     """"Never two of them at once" has to be OBSERVED. The session list is
     finite - two hundred entries against a library several times that at a
     busy house - so for most pairs there is nothing recorded either way, and
     reading that silence as "they never overlap" offered a 149 W load and a
     2.7 kW one as one device (Anze's house, 2026-09-22)."""
-    a, b = _lvl(1, 1000.0), _lvl(2, 2700.0)
+    a, b = _sig(1, 1000.0, 100.0, pf=0.96), _sig(2, 2700.0, 100.0, pf=0.96, last_seen=1.0)
     assert D.suggest_levels([a, b], []) == []               # nothing seen of either
     seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
     assert D.suggest_levels([a, b], seen_a) == []           # only one side seen
@@ -1843,7 +1803,7 @@ def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     # eighteen to one - is refused whatever the recording says, because the
     # recording was never the whole fault. Being seen apart is necessary and
     # nowhere near sufficient: most short loads in a house never overlap.
-    far = [_lvl(3, 150.0), _lvl(4, 2700.0)]
+    far = [_sig(3, 150.0, 100.0, pf=0.96, last_seen=1.0), _sig(4, 2700.0, 100.0, pf=0.96, last_seen=1.0)]
     apart = [{"signature": 3, "start": 0.0, "end": 50.0},
              {"signature": 4, "start": 500.0, "end": 550.0}]
     assert D.suggest_levels(far, apart) == []
@@ -1857,8 +1817,8 @@ def test_levels_of_one_device_run_for_about_as_long_each_time():
     seen = [{"signature": 1, "start": 0.0, "end": 30.0},
             {"signature": 2, "start": 500.0, "end": 530.0},
             {"signature": 3, "start": 1000.0, "end": 1600.0}]
-    brief_a, brief_b = _lvl(1, 3000.0, dur=25.0), _lvl(2, 5900.0, dur=23.0)
-    lengthy = _lvl(3, 4100.0, dur=600.0)
+    brief_a, brief_b = _sig(1, 3000.0, 25.0, pf=0.96), _sig(2, 5900.0, 23.0, pf=0.96, last_seen=1.0)
+    lengthy = _sig(3, 4100.0, 600.0, pf=0.96, last_seen=1.0)
     groups = D.suggest_levels([brief_a, brief_b, lengthy], seen)
     assert groups == [[1, 2]], groups
 
@@ -1866,7 +1826,7 @@ def test_levels_of_one_device_run_for_about_as_long_each_time():
 def test_a_load_that_overlaps_another_is_never_the_same_device():
     """The whole test: one appliance cannot run two of its own settings at
     once, so an observed overlap rules the pair out however well they match."""
-    a, b = _lvl(1, 1000.0), _lvl(2, 2000.0)
+    a, b = _sig(1, 1000.0, 100.0, pf=0.96), _sig(2, 2000.0, 100.0, pf=0.96, last_seen=1.0)
     together = [{"signature": 1, "start": 0.0, "end": 100.0},
                 {"signature": 2, "start": 50.0, "end": 150.0}]
     assert D.suggest_levels([a, b], together) == []
@@ -1876,7 +1836,6 @@ def test_a_thermostat_absorbs_its_own_short_and_long_runs():
     """The whole point, end to end: the same tank reheating from nearly hot and
     from stone cold is one load, and was two."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     t = T0
     for seconds in (70, 65, 75, 68, 20, 300, 72):          # one thermostat, varied
         rows = []
@@ -1900,8 +1859,7 @@ def test_the_naming_page_lengthens_as_loads_are_named():
     much work the person has already done (Anze, 2026-09-22)."""
     sigs = []
     for i in range(40):
-        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
-                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
         sig.hour_wh = [40.0] * 24
         sigs.append(sig)
     assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
@@ -1917,8 +1875,7 @@ def test_the_naming_page_lengthens_as_loads_are_named():
 
 def test_the_naming_page_never_runs_dry():
     """A bar that hides everything is worse than one set too low."""
-    weak = [D.Signature(id=i, phases="a", power={"a": 500.0}, duration_s=60.0, pf=0.9,
-                        count=2, first_seen=0.0, last_seen=1.0) for i in range(9)]
+    weak = [_sig(i, 500.0, 60.0, 2, pf=0.9, last_seen=1.0) for i in range(9)]
     assert all(s.evidence < 0.7 for s in weak), "none of these clears the bar"
     got = D.offer_for_naming(weak, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
     assert len(got) == 5, "the best of the rest come along anyway"
@@ -1937,8 +1894,7 @@ def test_the_page_can_say_how_many_are_waiting():
     Kozolec showing 6 of 12, Home 14 of 60 (Anze's screenshots, 2026-09-22)."""
     sigs = []
     for i in range(30):
-        sig = D.Signature(id=i, phases="a", power={"a": 1000.0 + i * 50}, duration_s=60.0,
-                          pf=0.95, count=9, first_seen=0.0, last_seen=1.0)
+        sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
         sig.hour_wh = [40.0] * 24
         sigs.append(sig)
     assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
@@ -2107,8 +2063,7 @@ def test_a_small_load_is_described_in_watts():
     read "0.0 kW on A" line after line, every row identical and none of them
     wrong (Anze, 2026-09-22)."""
     def row(watts):
-        sig = D.Signature(id=1, phases="a", power={"a": float(watts)}, duration_s=180.0,
-                          pf=0.95, count=50, first_seen=0.0, last_seen=9 * 86400.0)
+        sig = _sig(1, float(watts), 180.0, 50, pf=0.95, last_seen=9 * 86400.0)
         return sig.describe(timezone.utc)
     assert row(28).startswith("28 W on phase A")
     assert row(92).startswith("92 W on phase A")
@@ -2160,7 +2115,6 @@ def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
     2026-09-22: "that spike is a very good device signature, but it has to be
     taken into account properly to not show as separate loads")."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     t, rows = T0, []
     for _ in range(5):                                 # one pump, started five times
         for _ in range(20):
@@ -2191,7 +2145,6 @@ def test_a_number_that_drives_a_load_is_learned_against_it():
     load (Anze, 2026-09-28: "positively or negatively correlated to their
     frequency and runtime")."""
     det = D.Detector()
-    det.tz_offset_s = 0.0
     rnd = random.Random(3)
     t, rows, temps = T0, [], []
     room = 20.0
@@ -2220,8 +2173,7 @@ def test_a_number_that_drives_a_load_is_learned_against_it():
     back = D.Signature.from_dict(json.loads(json.dumps(sig.to_dict())))
     assert back.driver_effect("sensor.room")[1] > 0.8
     # and a young load is not believed yet
-    young = D.Signature(id=99, phases="a", power={"a": 80.0}, duration_s=600.0, pf=None, count=5,
-                        first_seen=T0, last_seen=T0)
+    young = _sig(99, 80.0, 600.0, first_seen=T0, last_seen=T0)
     for i in range(10):
         young.note_driver("sensor.room", "d", 15.0 + i, 600.0 * 1.04 ** i)
     assert young.strongest_driver() is None
@@ -2230,8 +2182,7 @@ def test_a_number_that_drives_a_load_is_learned_against_it():
 
 def test_what_a_switch_and_a_number_taught_follows_a_rename():
     fleet = D.Fleet()
-    sig = D.Signature(id=1, phases="c", power={"c": 635.0}, duration_s=130.0, pf=None, count=10,
-                      first_seen=T0, last_seen=T0)
+    sig = _sig(1, 635.0, 130.0, 10, phases="c", first_seen=T0, last_seen=T0)
     sig.locations = {D.SWITCH_PREFIX + "climate.t": 6, "Hiša": 10}
     sig.note_driver("sensor.floor", "d", 20.0, 130.0)
     fleet.main.signatures.append(sig)
@@ -2251,7 +2202,6 @@ def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
     is tied to the phase, and being tied is what vouches for it (Anze,
     2026-09-28: "its cycle/sub cycle sensors could help with load detection")."""
     fleet = D.Fleet()
-    fleet.main.tz_offset_s = 0.0
     rnd = random.Random(5)
     t, rows, phase = T0, [], []
     for day in range(14):
@@ -2292,14 +2242,12 @@ def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
 
 def test_loads_tied_to_one_setting_are_offered_as_one_device():
     def tied(sid, setting, value):
-        sig = D.Signature(id=sid, phases="a", power={"a": 100.0 * sid}, duration_s=60.0 * sid, pf=None,
-                          count=20, first_seen=T0, last_seen=T0)
+        sig = _sig(sid, 100.0 * sid, 60.0 * sid, 20, first_seen=T0, last_seen=T0)
         for k in range(12):
             sig.note_input(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
         return sig
     sigs = [tied(1, "sensor.phase", "Wash"), tied(2, "sensor.phase", "Spin"), tied(3, "fan.x", "33 %"),
-            D.Signature(id=4, phases="a", power={"a": 50.0}, duration_s=30.0, pf=None, count=20,
-                        first_seen=T0, last_seen=T0)]
+            _sig(4, 50.0, 30.0, 20, first_seen=T0, last_seen=T0)]
     assert D.input_groups(sigs) == [[1, 2]]
 
 
@@ -2329,7 +2277,6 @@ def _two_starts(overlap: bool, seed: int = 7):
         rows.append((t, w))
         t += DT
     det = D.Detector()
-    det.tz_offset_s = 0.0
     det.process({"a": rows}, now_ts=end)
     by_kind = {"A": set(), "B": set()}
     for t0, kind in starts:
@@ -2355,7 +2302,6 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
     apart from it, while a fridge that runs right through every wash is not
     split in two (Anze, 2026-09-29)."""
     fleet = D.Fleet()
-    fleet.main.tz_offset_s = 0.0
     rnd = random.Random(11)
     phase = []
     for day in range(14):
@@ -2394,8 +2340,7 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
 def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     """Naming a load writes its past into the statistics, so each signature
     keeps its energy per clock hour for HOURLY_KEEP_S (2026-09-29)."""
-    sig = D.Signature(id=1, phases="a", power={"a": 600.0}, duration_s=1800.0, pf=None, count=0,
-                      first_seen=T0, last_seen=T0)
+    sig = _sig(1, 600.0, 1800.0, 0, first_seen=T0, last_seen=T0)
     hour0 = int(T0 // 3600 * 3600)
     s = D.Session(phases="a", start=hour0 + 3000.0, end=hour0 + 4800.0, levels={"a": [(hour0 + 3000.0, 600.0)]})
     sig._spread(s, timezone.utc)
@@ -2431,7 +2376,6 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
     with the thermostat idle. Their edges must not share clusters, and the
     mat's story must say which input moves with it (2026-09-29)."""
     fleet = D.Fleet()
-    fleet.main.tz_offset_s = 0.0
     rows, spans, t = [], [], T0
     base = 200.0
     def hold(w, secs):
@@ -2479,10 +2423,8 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
     fleet = D.Fleet()
     sw = D.SWITCH_PREFIX + "climate.thermostat"
     fleet.switch_on = {sw: {T0: T0 + 300.0, T0 + 3600.0: None}}          # on for 5 min, and again from an hour on
-    mat = D.Signature(id=1, phases="c", power={"c": 635.0}, duration_s=200.0, pf=None, count=100,
-                      first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
-    fridge = D.Signature(id=2, phases="c", power={"c": 600.0}, duration_s=900.0, pf=None, count=100,
-                         first_seen=T0, last_seen=T0, locations={sw: 10})
+    mat = _sig(1, 635.0, 200.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
+    fridge = _sig(2, 600.0, 900.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 10})
     fleet.main.signatures = [mat, fridge]
     run = lambda a, b: D.Session(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]})
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # off throughout: not the mat
@@ -2498,8 +2440,7 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
 def test_a_signature_on_twice_at_once_counts_the_overlap_once():
     """One device never runs twice at once: Home's 635 W mat was credited
     1.96 kWh in one hour when other runs of its size overlapped its own."""
-    sig = D.Signature(id=1, phases="c", power={"c": 600.0}, duration_s=1800.0, pf=None, count=0,
-                      first_seen=T0, last_seen=T0)
+    sig = _sig(1, 600.0, 1800.0, 0, phases="c", first_seen=T0, last_seen=T0)
     hour0 = int(T0 // 3600 * 3600)
     for a, b in ((hour0, hour0 + 1800.0), (hour0 + 900.0, hour0 + 2700.0)):
         sig.runs.append((a, b))                                     # as add() does, before spreading
@@ -2565,7 +2506,6 @@ def test_a_slow_meters_silence_is_a_held_value():
         rows.append((off_at + 60.0, 0.0))            # one heartbeat, still off
         t = off_at + 144.0                           # and back on before the next
     det = D.Detector()
-    det.tz_offset_s = 0.0
     det.process({"a": sorted(rows)}, now_ts=t)
     assert det.signatures, "no run found at all"
     sig = max(det.signatures, key=lambda x: x.count)
@@ -2581,7 +2521,7 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
     det = D.Detector()
     for p in "ac":
         det.phases[p] = D.PhaseState(min_noise=10.0)
-    sig_c = D.Signature(id=1, phases="c", power={"c": 600.0}, duration_s=100.0, pf=None, count=20, first_seen=0.0, last_seen=0.0)
+    sig_c = _sig(1, 600.0, 100.0, 20, phases="c", last_seen=0.0)
     det.signatures = [sig_c]
     det.next_id = 2
     det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=650.0, count=30), D.EdgeCluster(id=2, phase="c", up=True, watts=600.0, count=30)]
@@ -2797,9 +2737,9 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     f.single = {"Hidrofor": True}
     f.subs["Hidrofor"].phases["a"].interval = 10.0
     f._pass_end = T0 + 3600.0
-    home = D.Signature(id=31, phases="c", power={"c": 900.0}, duration_s=70.0, pf=None, count=40, first_seen=T0, last_seen=T0)
+    home = _sig(31, 900.0, 70.0, 40, phases="c", first_seen=T0, last_seen=T0)
     home.locations["Hidrofor"] = 30
-    other = D.Signature(id=32, phases="c", power={"c": 1000.0}, duration_s=600.0, pf=None, count=40, first_seen=T0, last_seen=T0)
+    other = _sig(32, 1000.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0)
     f.main.signatures = [home, other]
     run = D.Session(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
     assert f._held_homes(run) == [31]                                    # the plug held: not the hidrofor
