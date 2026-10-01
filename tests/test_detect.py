@@ -2848,6 +2848,9 @@ def test_a_change_reporters_span_starts_one_cadence_before_its_first_new_reading
     assert T0 - 1.5 <= st.span_start(T0) <= T0 - 0.9                               # not a minute back
     st.gaps = poll
     assert st.span_start(T0) == T0 - 10.0                                          # one poll back
+    grid = D.PhaseState()                                                          # polled every 2 s, some jitter
+    grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.0] * 3 + [2.0] * 40, T0 - 3.8
+    assert grid.span_start(T0) == T0 - 3.8                                         # nothing unwritten: from its last reading
 
 
 def test_a_reading_followed_by_silence_held_on_any_meter():

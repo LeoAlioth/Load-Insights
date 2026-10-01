@@ -101,7 +101,20 @@ NOISE_FROM_MOVES = True
 # zero after the pump stopped and nothing written for 15 minutes - could not
 # confirm the stop, declared -253 of its -809 and carried a phantom 590 W into
 # the next start. Replaces a rule for meters slower than 20 s only.
-SUSTAIN_CADENCES = 2.0
+SUSTAIN_CADENCES = 2.0         # see below: the silence that counts as holding, in minimum cadences
+# ...but a level is CONFIRMED over SUSTAIN_PERIODS of the meter's PERIOD - its
+# usual gap. Its minimum cadence is how soon it would report a change, which
+# is what silence means; on a polled meter it is timing jitter - Kozolec's
+# Victron, polled every 5.8 s, has 1-4 s gaps, a 2.7 s cadence, and two of
+# them confirmed a level on a single new reading (recall 74 -> 45 %).
+SUSTAIN_PERIODS = 2.0
+# A span starts at the last old-level reading when the gap to the first new
+# one is at most SPAN_PERIODS of the period - nothing went unwritten; after a
+# longer silence, one minimum cadence before the first new reading. Home's
+# grid meter, polled every 2 s, read the old level last 3.8 s before the
+# kiln's new one; one 1.04 s cadence back put the span at -1.0..0 against
+# Hisa's -5.8..-0.8 and called the same switch-on a 4 % overlap.
+SPAN_PERIODS = 2.5
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -1732,7 +1745,7 @@ class PhaseState:
         # but at Home's new 2.4 s the 5 s floor bound instead and meant three
         # OR four readings on timing jitter, and at 1 s would mean six. The
         # absolute figure is only a fallback while the interval is unknown.
-        sustain = SUSTAIN_CADENCES * self.cadence() if self.cadence() else SUSTAIN_SECONDS
+        sustain = SUSTAIN_PERIODS * self.period() if self.period() else SUSTAIN_SECONDS
         need = SUSTAIN_SAMPLES
         if CORROBORATED_STOP_SAMPLES and self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
@@ -1797,6 +1810,10 @@ class PhaseState:
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
 
+    def period(self) -> float:
+        """This meter's usual gap between readings - see SUSTAIN_PERIODS."""
+        return self.interval or reading_cadence(self.gaps)
+
     def cadence(self) -> float:
         """How soon this meter reports a change - see reading_cadence; its
         interval while too few gaps are known."""
@@ -1822,8 +1839,10 @@ class PhaseState:
         had a span reaching a minute back, and chained in other loads' steps
         (the hidrofor's plug; Anze, 2026-10-01)."""
         held_until = self.steady_ts if self.steady_ts is not None else first_off
-        cadence = reading_cadence(self.gaps)
-        return max(held_until, first_off - cadence) if cadence else held_until
+        period, cadence = self.period(), reading_cadence(self.gaps)
+        if not cadence or (period and first_off - held_until <= SPAN_PERIODS * period):
+            return held_until                       # nothing unwritten between: from its last reading
+        return max(held_until, first_off - cadence)
 
     def _step_quality(self, step: float, held: list, since: float, was: float) -> float:
         """0..1 - see QUALITY_SNR_FULL."""
@@ -3834,11 +3853,11 @@ class Detector:
 
     def event_wait(self) -> float:
         """How long after a rise its event may close: the window, plus the time
-        a companion's step takes to be DECLARED after it began - SUSTAIN_CADENCES
-        of its phase's cadence - or a leg whose reading falls at the window's
+        a companion's step takes to be DECLARED after it began - SUSTAIN_PERIODS
+        of its phase's period - or a leg whose reading falls at the window's
         edge is not pending yet."""
-        cad = max((st.cadence() for st in self.phases.values()), default=0.0)
-        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_CADENCES * cad)
+        per = max((st.period() for st in self.phases.values()), default=0.0)
+        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_PERIODS * per)
 
     def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
         """Rises older than the event window (all of them when ``final``)
@@ -5002,8 +5021,7 @@ class Fleet:
             if not iv or 2.0 * iv > m.duration_s:
                 continue
             heard = max((st.last_ts or 0.0 for st in det.phases.values()), default=0.0)
-            cad = max((st.cadence() for st in det.phases.values()), default=0.0) or iv
-            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_CADENCES + 1.0) * cad
+            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_PERIODS + 1.0) * iv
             if heard < need:
                 return False
         return True
