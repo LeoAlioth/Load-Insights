@@ -33,7 +33,7 @@ from _load import load  # noqa: E402
 from export_urls import RENAMED  # noqa: E402  - ids renamed since some history was fetched
 
 D = load("insights.detect")
-DISCOVERY = load("insights.discovery")
+DISCOVERY = load("insights.phases")
 
 KIND_HINTS = (
     ("power_factor", "power_factor"), ("_pf", "power_factor"), ("_var_", "reactive_power"),

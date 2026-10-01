@@ -1,15 +1,18 @@
-"""Which of a meter device's sensors are its per-phase readings.
+"""Which of a meter device's sensors are its per-phase readings, and which
+phase each of a meter's channels carries.
 
 The fixtures are the two meters actually in use at home: a SolarEdge SE17K
-meter 1, read over Modbus, and a Shelly Pro 3EM downstream of it.
+meter 1, read over Modbus, and a Shelly Pro 3EM downstream of it - plus the
+grid meters Load Juggler meets, which carries a copy of this module.
 """
+import itertools
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import load, run_main  # noqa: E402
 
-D = load("insights.discovery")
+D = load("insights.phases")
 
 
 def e(entity_id, device_class, name):
@@ -268,6 +271,93 @@ def test_a_three_phase_shelly_is_one_device_per_phase():
     ]
     got = D.match_meter_entities(parent + children)
     assert got == {f"power_{p}": f"sensor.attic_phase_{p}_active_power" for p in "abc"}, got
+
+
+
+def test_the_grid_role_takes_net_over_gross_consumption():
+    """An Enphase gateway publishes what the house draws (never negative)
+    beside what crosses the grid connection (signed), and the shorter, gross
+    name won the grid role."""
+    gross = [f"sensor.envoy_122233334444_current_power_consumption_l{n}" for n in "123"]
+    net = [f"sensor.envoy_122233334444_current_net_power_consumption_l{n}" for n in "123"]
+    rows = [e(x, "power", "") for x in gross + net]
+    assert D.match_meter_entities(rows, "grid") == {f"power_{p}": x for p, x in zip("abc", net)}
+    # what the house draws is still the gross figure
+    assert D.match_meter_entities(rows, "load") == {f"power_{p}": x for p, x in zip("abc", gross)}
+
+
+def test_the_watts_beside_each_amps_on_the_common_grid_meters():
+    """Load Juggler finds a grid meter's three amps by pattern and takes the
+    watts on the same device where there are any (2026-10-01)."""
+    brands = [  # amps, watts, the brand's names for phases a, b, c
+        ("sensor.smart_meter_ts_65a_3_current_ac_phase_{}", "sensor.smart_meter_ts_65a_3_power_real_phase_{}", "123"),
+        ("sensor.power_meter_phase_{}_current", "sensor.power_meter_phase_{}_active_power", "abc"),
+        ("sensor.victron_grid_l{}_current", "sensor.victron_grid_l{}_power", "123"),
+    ]
+    for amps, watts, labels in brands:
+        rows = [e(amps.format(x), "current", "") for x in labels]
+        rows += [e(watts.format(x), "power", "") for x in labels]
+        rows += [e(amps.replace("current", "voltage").format(x), "voltage", "") for x in labels]
+        for p, x in zip("abc", labels):
+            assert D.beside(rows, amps.format(x), "power", p, role="grid") == watts.format(x), (amps, p)
+    # Home's own SolarEdge M1, line-to-line voltages, totals and energy counters beside it
+    for p in "abc":
+        got = D.beside(SOLAREDGE, f"sensor.solaredge_se17k_m1_ac_current_{p}", "power", p, role="grid")
+        assert got == f"sensor.solaredge_se17k_m1_ac_power_{p}", got
+    # a Deye's CTs are numbered, not phased: nothing to say which is which
+    deye = [e(f"sensor.deye_external_ct{n}_{k}", k, "") for n in "123" for k in ("current", "power")]
+    deye.append(e("sensor.deye_external_ct_total_power", "power", ""))
+    for p in "abc":
+        assert D.beside(deye, "sensor.deye_external_ct1_current", "power", p, role="grid") is None
+
+
+def test_one_line_found_on_another_phase_swaps_with_the_line_that_had_it():
+    """Load Juggler's question about a charger: its lines are configured onto
+    the site's phases, and one line's draw shows on another phase. With the
+    configuration as ``current`` the answer swaps that line with the line
+    holding its phase - never rotates all three - in every configuration,
+    line and phase found."""
+    cases = 0
+    for perm in itertools.permutations("ABC"):
+        cur = dict(zip(("l1", "l2", "l3"), perm))
+        for line in cur:
+            for found in "ABC":
+                want = dict(cur)
+                other = next(k for k, v in cur.items() if v == found)
+                want[other], want[line] = cur[line], found
+                votes = {line: {p: 20.0 if p == found else 2.0 for p in "ABC"}}
+                got = D.phase_mapping(votes, "ABC", 6.0, current=cur)
+                assert got == want, (cur, line, found, got)
+                cases += 1
+    assert cases == 54
+
+
+def test_a_tie_or_too_little_evidence_keeps_what_is_believed_now():
+    cur = {"l1": "B", "l2": "C", "l3": "A"}
+    assert D.phase_mapping({"l1": {"A": 5.0, "B": 5.0}}, "ABC", 6.0, current=cur) == cur, "tie"
+    assert D.phase_mapping({"l1": {"A": 5.0}}, "ABC", 6.0, current=cur) == cur, "too few"
+    assert D.phase_mapping({"l1": {"A": 6.0}}, "ABC", 6.0, current=cur) == {"l1": "A", "l2": "C", "l3": "B"}
+    # with no prior, each channel's own label is the belief
+    assert D.phase_mapping({"b": {"c": 3}}, min_votes=30) == {"b": "b"}
+    assert D.phase_mapping({"b": {"c": 3}}) == {"b": "c"}
+
+
+def test_support_is_the_share_of_votes_the_answer_agrees_with():
+    row = {"A": 2.0, "B": 7.0, "C": 1.0}
+    found = D.phase_mapping({"l1": row}, "ABC", current={"l1": "A", "l2": "B", "l3": "C"})
+    assert found == {"l1": "B", "l2": "A", "l3": "C"}, found
+    assert D.support({"l1": row}, found) == max(row.values()) / sum(row.values())
+    assert D.support({}, found) == 0.0
+
+
+def test_load_juggler_carries_this_module_verbatim():
+    """Load Juggler copies this module whole and keeps it in sync by hand.
+    Passes without checking where that repository is not checked out beside
+    this one, as in CI."""
+    mine = Path(D.__file__)
+    copy = Path(__file__).resolve().parents[2] / "Dynamic_OCPP_EVSE/custom_components/dynamic_ocpp_evse/phases.py"
+    if copy.exists():
+        assert copy.read_bytes() == mine.read_bytes(), f"{copy} differs from {mine}: copy it over"
 
 
 if __name__ == "__main__":

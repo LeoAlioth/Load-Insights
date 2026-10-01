@@ -1,4 +1,10 @@
-"""Which of a device's sensors are its per-phase meter readings. Pure.
+"""Which of a device's sensors are its per-phase meter readings, and which
+phase each of a meter's channels really carries. Pure, stdlib only.
+
+Canonical here in Load Insights. Load Juggler
+(``custom_components/dynamic_ocpp_evse/phases.py``) carries a verbatim copy,
+kept in sync by hand: change this file, then copy it there whole -
+tests/test_phases.py fails while the two differ.
 
 Picking a meter should be picking a DEVICE - Home Assistant already knows
 which entities belong to which meter - so this reads a device's sensors
@@ -20,8 +26,9 @@ What comes out is shown to the user for confirmation, never applied blind.
 """
 from __future__ import annotations
 
+import itertools
 import re
-from typing import Dict, Optional, Sequence
+from typing import Dict, Mapping, Optional, Sequence
 
 # device_class -> our field prefix
 KIND_BY_DEVICE_CLASS = {
@@ -74,7 +81,11 @@ BONUS = {"output": 6, "ac_out": 6, "out": 4, "load": 4, "loads": 4, "consumption
 ROLES = {
     "load": (PENALTY, BONUS),
     "grid": ({k: v for k, v in PENALTY.items() if k not in ("input", "ac_in")},
-             {"input": 6, "ac_in": 6, "grid": 6, "mains": 4, "utility": 4}),
+             # net over gross: an Enphase gateway publishes
+             # current_power_consumption_l1 (what the house draws, never
+             # negative) beside current_net_power_consumption_l1 (what crosses
+             # the grid connection, signed), and the shorter name won
+             {"input": 6, "ac_in": 6, "grid": 6, "mains": 4, "utility": 4, "net": 4}),
 }
 
 _L = re.compile(r"(?:^|[_\s])l([123])(?:$|[_\s])")
@@ -198,6 +209,63 @@ def closest_by_name(candidates: Sequence[str], reference: str) -> Optional[str]:
         return n
 
     return max(sorted(candidates), key=shared)
+
+
+def beside(rows: Sequence[dict], reference: str, kind: str, phase: str,
+           role: str = "load") -> Optional[str]:
+    """The device's ``kind`` reading on ``phase`` whose name runs alongside
+    ``reference`` - the watts that go with a meter's amps, the reactive power
+    that goes with its watts. ``rows`` are one device's, in the shape
+    match_meter_entities reads; ``kind`` is a field prefix ("power", "var")."""
+    key = f"{kind}_{phase}"
+    return closest_by_name([r["entity_id"] for r in rows
+                            if match_meter_entities([r], role).get(key)], reference)
+
+
+def phase_mapping(votes: Mapping[str, Mapping[str, float]], phases: Sequence[str] = ("a", "b", "c"),
+                  min_votes: float = 0, current: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """Which phase each of a meter's own channels carries.
+
+    ``votes[channel][phase]`` is the evidence that the channel carries that
+    phase - in Load Insights, sessions that started on that channel and on
+    that house phase at the same moment and the same size. The answer is a
+    PERMUTATION - each channel its own phase - chosen to agree with the most
+    votes, not a separate vote per channel: a two-phase load such as Home's
+    kiln steps on two house phases at once, and one channel on its own would
+    tie between them.
+
+    ``current`` is what the channels are believed to carry now (default:
+    each its own label). Only a strictly better answer replaces it: with
+    fewer than ``min_votes`` votes in all, or on a tie, ``current`` stands,
+    and between equally good answers the one relabelling fewest channels
+    wins - one line found on another phase swaps with the line that had it.
+
+    Load Juggler asks the same question about a charger's lines (Anze,
+    2026-09-23): votes {"l1": {"A": .., "B": ..}}, phases "ABC", current the
+    configured {"l1": "A", "l2": "B", "l3": "C"}."""
+    prior = {c: c for c in votes}
+    prior.update(current or {})
+    channels = sorted(prior)
+    best = tuple(prior[c] for c in channels)
+    if not channels or sum(sum(r.values()) for r in votes.values()) < min_votes:
+        return dict(zip(channels, best))
+
+    def score(perm):
+        return (sum((votes.get(c) or {}).get(p, 0) for c, p in zip(channels, perm)),
+                sum(p == prior[c] for c, p in zip(channels, perm)))
+
+    best_score = score(best)
+    for perm in itertools.permutations(sorted(set(phases) | set(prior.values())), len(channels)):
+        s = score(perm)
+        if s > best_score:
+            best, best_score = perm, s
+    return dict(zip(channels, best))
+
+
+def support(votes: Mapping[str, Mapping[str, float]], mapping: Mapping[str, str]) -> float:
+    """The share of all votes ``mapping`` agrees with, 0..1 (0 with none)."""
+    total = sum(sum(r.values()) for r in votes.values())
+    return sum((votes.get(c) or {}).get(p, 0) for c, p in mapping.items()) / total if total else 0.0
 
 
 def describe_match(found: Dict[str, str]) -> str:
