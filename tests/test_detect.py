@@ -36,17 +36,11 @@ def test_a_load_that_sags_while_it_runs_still_closes_when_it_stops():
     """Kozolec's fridge stops 14 W short of the step it started with, past the
     ~10 W tolerance, and read as stepping down to 14 W and running on: its
     runs came out 1.8 h long, three merged into one (2026-09-28)."""
-    saved = D.SAG_CLOSE
-    try:
-        for dial, want in ((1, True), (0, False)):
-            D.SAG_CLOSE = dial
-            det = D.Detector()
-            a = series(4 * 5400, _fridge(), base=60.0, noise=3.0)
-            closed = det.process({"a": a}, now_ts=T0 + 4 * 5400 + 60)
-            right = [x for x in closed if abs(x.duration_s - 1700) <= 60]
-            assert (len(right) >= 3) is want, (dial, [round(x.duration_s) for x in closed])
-    finally:
-        D.SAG_CLOSE = saved
+    det = D.Detector()
+    a = series(4 * 5400, _fridge(), base=60.0, noise=3.0)
+    closed = det.process({"a": a}, now_ts=T0 + 4 * 5400 + 60)
+    right = [x for x in closed if abs(x.duration_s - 1700) <= 60]
+    assert len(right) >= 3, [round(x.duration_s) for x in closed]
 
 def test_a_load_the_reading_cannot_be_carrying_is_closed():
     """Home's floor mat stopped in the same reading as the hob's 2 kW pulse,
@@ -64,22 +58,12 @@ def test_a_load_the_reading_cannot_be_carrying_is_closed():
     assert [o.watts for o in st.open_edges] == [400.0]
     assert st._unseen_stop(T0 + 310, 450.0) == []                        # 400 fits in 450: nothing more
     assert phase(True)._unseen_stop(T0 + 300, 950.0) == []               # it all fits
-    was = D.TOO_BIG
-    try:
-        D.TOO_BIG = "close"
-        low = phase(True)
-        closed = low._unseen_stop(T0 + 300, 100.0)                       # 900 short: no one load fits it,
-        assert len(closed) == 2 and low.open_edges == [], closed         # but neither fits in 100 W at all
-        big = phase(True)
-        big._unseen_stop(T0 + 300, 500.0)                                # 500 short of 1000: nothing fits
-        assert [o.watts for o in big.open_edges] == [400.0], big.open_edges   # the 600 W run cannot be in 500 W
-        D.TOO_BIG = "shrink"
-        big = phase(True)
-        assert big._unseen_stop(T0 + 300, 500.0) == []                   # ...or it shrank to what the reading holds
-        assert [o.watts for o in big.open_edges] == [500.0, 400.0], big.open_edges
-        assert big.open_edges[0].levels[-1] == (T0 + 300, 500.0), big.open_edges[0].levels
-    finally:
-        D.TOO_BIG = was
+    low = phase(True)
+    closed = low._unseen_stop(T0 + 300, 100.0)                           # 900 short: no one load fits it,
+    assert len(closed) == 2 and low.open_edges == [], closed             # but neither fits in 100 W at all
+    big = phase(True)
+    big._unseen_stop(T0 + 300, 500.0)                                    # 500 short of 1000: nothing fits
+    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # the 600 W run cannot be in 500 W
     assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
 
 
@@ -1036,7 +1020,6 @@ def test_the_house_is_the_sum_and_needs_no_wiring_flag():
     n = 300
     stamp = lambda i: T0 + i * DT
     loads_main = [(stamp(i), 400.0) for i in range(n)]
-    loads_backup = [(stamp(i), 900.0) for i in range(n)]
     se = [(stamp(i), 1500.0) for i in range(n)]            # a PV inverter, no input
 
     # (a) the PV inverter on the MAIN bus, a hybrid feeding a backup panel
@@ -1075,18 +1058,9 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     clock.first_seen = clock.last_seen - 59 * 840.0             # 60 starts over 13.8 h...
     clock.hour_wh = [500.0] * 24
     assert clock.regular
-    assert "a day" not in clock.row(tz), "under a day seen, a rate a day would be made up"
+    assert "a day" not in " ".join(clock.menu_row(tz)), "under a day seen, a rate a day would be made up"
     clock.first_seen = clock.last_seen - 5 * 86400.0            # ...or over five days
-    assert "12 times a day" in clock.row(tz), clock.row(tz)
-
-    # an irregular load keeps the row short - the spacing would be noise
-    erratic = _sig(2, 1800.0, 70.0, 0.96, 60)
-    erratic.interval_s, erratic.interval_mad = 840.0, 700.0
-    erratic.hour_wh = [500.0] * 24
-    assert not erratic.regular
-    assert "a day" not in erratic.row(tz), erratic.row(tz)
-    # and a menu row stays narrow either way
-    assert len(clock.row(tz)) < 72, clock.row(tz)
+    assert "12 times a day" in clock.menu_row(tz)[1], clock.menu_row(tz)
 
 
 def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
@@ -1786,16 +1760,15 @@ def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
     now = 1_000_000.0
     sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
                       count=9, first_seen=now - 86400.0, last_seen=now - 600.0)
-    assert "last ran 10 min ago" in sig.row(timezone.utc, now)
     assert "last ran 10 min ago" in sig.describe(timezone.utc, now)
-    assert "running now" in sig.row(timezone.utc, now, running=True)
-    assert "last ran" not in sig.row(timezone.utc, now, running=True)
+    assert "running now" in sig.describe(timezone.utc, now, running=True)
+    assert "last ran" not in sig.describe(timezone.utc, now, running=True)
     # a run that has only just stopped reads better as that
     sig.last_seen = now - 30.0
-    assert "just finished" in sig.row(timezone.utc, now)
+    assert "just finished" in sig.describe(timezone.utc, now)
     # and without a clock the row is exactly what it always was
-    assert "ran" not in sig.row(timezone.utc)
-    assert "running" not in sig.row(timezone.utc)
+    assert "ran" not in sig.describe(timezone.utc)
+    assert "running" not in sig.describe(timezone.utc)
 
 
 def test_running_now_names_the_signatures_that_are_on():
@@ -1868,23 +1841,6 @@ def test_a_time_is_not_claimed_on_the_strength_of_one_occasion():
     # the weekday split wants a week, or one quiet weekend decides it
     flat = [50.0] * 24
     assert D.when_phrase(flat, [10, 10, 10, 10, 10, 0, 0], 3 * 86400.0, 9) == ""
-
-
-def test_the_row_drops_the_sparkline_when_it_has_words_for_the_week():
-    """Seven characters of bars and the word "weekdays" are the same fact, and
-    a menu row is too narrow to spend on both."""
-    now = 1_700_000_000.0
-    sig = D.Signature(id=1, phases="a", power={"a": 2000.0}, duration_s=600.0, pf=0.99,
-                      count=20, first_seen=now - 20 * 86400.0, last_seen=now - 900.0)
-    sig.hour_wh = [50.0] * 24
-    sig.day_wh = [10.0] * 7
-    plain = sig.row(timezone.utc, now)
-    assert sig.when == "" and any(b in plain for b in "▁▂▃▄▅▆▇█")
-
-    sig.day_wh = [10.0, 10.0, 10.0, 10.0, 10.0, 0.0, 0.0]
-    worded = sig.row(timezone.utc, now)
-    assert "weekdays" in worded
-    assert not any(b in worded for b in "▁▂▃▄▅▆▇█"), worded
 
 
 def _lvl(id, watts, dur=100.0, pf=0.96, phases="a", count=5):
@@ -2691,31 +2647,6 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
     assert not any(c.phase == "a" and 800 <= c.watts <= 880 for c in rises), patterns   # no per-phase 840 W cluster left
     sigs = {(x.phases, round(sum(x.power.values()), -2)) for x in det.signatures if x.count >= 5}
     assert ("abc", 2500.0) in sigs and ("a", 900.0) in sigs, sigs        # one three-phase signature, one single-phase
-
-
-def test_a_pump_and_a_heater_of_one_size_are_two_kinds_of_edge_by_their_reactive_angle():
-    """Hart's plane: 900 W at 0 var and 900 W at 630 var (35 deg) share a size
-    and nothing else."""
-    import random
-    rnd = random.Random(3)
-    def run(on):
-        was = D.EDGE_ANGLE
-        D.EDGE_ANGLE = on
-        try:
-            det = D.Detector()
-            ids = {}
-            for k in range(200):
-                heater = k % 2 == 0
-                w = 900.0 + rnd.gauss(0, 8)
-                var = rnd.gauss(0, 10) if heater else 630.0 + rnd.gauss(0, 15)
-                c = det._classify_step("a", T0 + 60 * k, w, var, 0.0)
-                ids.setdefault(heater, set()).add(c.id)
-            return ids
-        finally:
-            D.EDGE_ANGLE = was
-    off, on = run(False), run(True)
-    assert off[True] & off[False], off                                 # by size alone they share a cluster
-    assert not (on[True] & on[False]), on                              # by angle they never do
 
 
 def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_meter():

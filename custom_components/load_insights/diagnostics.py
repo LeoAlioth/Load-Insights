@@ -118,8 +118,6 @@ def _detection(runner) -> dict:
         "samples_read": runner.samples_read,
         "last_pass": dict(runner.last_pass),
         "reactive_from": dict(runner.reactive_from),
-        # per phase: whether the grid reading was added to the load one
-        "layout": dict(runner.layout),
         "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
                        # the loads believed to be running, and what each
                        # is still drawing: an edge that never pairs off

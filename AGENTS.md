@@ -303,7 +303,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `SUSTAIN_AGREE_REL` | 0.15 | ...or within this share of the step they are making | ratio | 0–0.25 | swept 0 / 0.1 / 0.15 / 0.25 on the kiln: 0 lost pulses (345 full-size) because phase A's off readings wander 19 W under load; 0.1-0.25 all ~395. 0.15 is the pairing tolerance, and the best for Kozolec |
 | `SUSTAIN_AGREE_MAX_INTERVALS` | 12 | after this many intervals of readings that never agree, the old median decides - a wandering load | count | 3–∞ | swept 3 / 6 / 12 / 24 / ∞: flat from 12 up (Kozolec identical 12-∞), so it barely binds; kept as a safety net |
 | `STEP_AT_HALFWAY` | **1** | a step is dated at the first reading more than half-way to the new level, not the first that left the old one | switch | — | **shipped (gen 13).** Kiln single-leg 141 → 118, main signature x335 → x384; hidrofor held out 213 → 220; workshop boiler held out 29 → 38; Kozolec's Scala2 held out 67 → 53 (it ramps). The kiln's LENGTHS were already right (42.0 s against 42.0 s off the grid meter) || `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
-| `CORROBORATED_STOP_SAMPLES` / `_INTERVALS` | **1** / 0.0 | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
+| `CORROBORATED_STOP` | 1 reading / 0 s (inline since 2026-10-01) | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
 | `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
 | `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
 | `CORROBORATED_CLOSES_ITS_EDGE` | 1 | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward the true 42 s; did not recover the hidrofor |
@@ -365,7 +365,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `PHASE_MAP_MIN_VOTES` | 30 | shared single-phase sessions before a three-phase meter's channels are mapped onto the grid connection's phases (`phase_mapping`) | count | 10–100 | not swept; Home's attic 3EM reaches 147 in five days and maps a→B, b→C, c→A; the Hiša 3EM 1327, identity |
 | `SUB_OVERRIDE` | **1** | house sessions wait to be filed until every sub-meter fast enough to have seen them (two readings inside the run) has reported past their end; a partner then decides the signature | switch | — | **shipped (gen 14)** with the two below: Kozolec's Scala2 128 → 195 in its main signature, held out 53 → 61, purity unchanged; Home 78.6 / 80.6 → 79.1 / 80.7 %; kiln main signature x397 → x392 |
 | `SUB_METER_IDENTITY` / `SUB_DEVICE_SHARE` | **1** / 0.5 | a session whose ENERGY a one-device meter accounts for joins the house signature most of that meter's sessions went to, when it fits; one device = its own library has ≥ this share in one signature | switch / ratio | 0.4–0.8 | almost all of the gain above; share not swept (hidrofor plug 99 %, Hiša 55 %) |
-| `SAG_CLOSE` | **1** | a load running alone is followed as it sags, and a stop may close it at that size as well as at its start's | switch | — | **benched, shipped (2026-09-28).** Kozolec's fridges (the new `fridge` bench, 252 runs off the house reading): caught 125 → 216, right length (±25 %) 71 → 153; Kozolec purity 98.2 → 98.3 %, wconc 92.4 → 92.6 %; Home purity 77.4 → 77.6 %, wconc 55.5 → 54.9 % (Hidrofor 717 → 712 of ~1200); kiln full-size 410 → 412, single-leg 112 → 104, top signature x397 → x387; pump clean 831 → 830 |
+| `SAG_CLOSE` | always on (the switch removed 2026-10-01) | a load running alone is followed as it sags, and a stop may close it at that size as well as at its start's | switch | — | **benched, shipped (2026-09-28).** Kozolec's fridges (the new `fridge` bench, 252 runs off the house reading): caught 125 → 216, right length (±25 %) 71 → 153; Kozolec purity 98.2 → 98.3 %, wconc 92.4 → 92.6 %; Home purity 77.4 → 77.6 %, wconc 55.5 → 54.9 % (Hidrofor 717 → 712 of ~1200); kiln full-size 410 → 412, single-leg 112 → 104, top signature x397 → x387; pump clean 831 → 830 |
 | `METER_PHASES_MIN` | 20 | a one-device meter takes only house sessions on the phases it has been credited this many sightings of; fewer, and it takes anything | count | 10–50 | **benched, no change**: on the history to 22 Sep, on or off gave identical placements and scores at both sites (Home purity 77.4 %, wconc 55.5 %; one Blaževa Soba credit 56 → 55). The misplacements it stops - Hidrofor credited an A+B and a B load - came on 25 Sep, after that history; not swept |
 | `SWITCH_END_SHARE` | 0.25 | a switch's stop may miss the session's by this share of the run | share | — | set from the mat's edges, not swept: start 3-9 s after the heating (5-95 %), stop within 25 % for 1243 of 1335 |
 | `SWITCH_MEMORY_S` | 4 h | how long a switch's on-periods and a number's readings are kept, counted from the oldest reading a pass brings | s | — | **a fix, benched**: counted from the pass's END, a six-hour backfill slice had lost its first two hours' switch-ons before filing them - 462 of 1232 fitting mat runs uncredited, and the mat's signature short of the half that places it (762 of 1738). Counted from its start: every one credited |
@@ -407,7 +407,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
 | `PV_SHARE_MIN` / `_MAX` | 0.25 / 1.25 | share of an array's step that may explain a phase's step | ratio | — | not tested |
-| `PV_MIN_SWING_W`, `PV_MIN_SAMPLES` | 200 W, 30 | evidence needed before deciding whether a reading sees the sun | physical/count | — | not tested |
+| `PV_MIN_SAMPLES` | 30 | evidence needed before deciding whether a reading sees the sun | count | — | not tested |
 | `EXPORT_FLOOR_W`, `EXPORT_SHARE` | 50 W, 0.005 | how much export marks a reading as carrying generation | physical/ratio | — | not tested |
 | `GENERATION_MIN_SAMPLES` | 200 (= 1 / `EXPORT_SHARE`) | fewest readings `carries_generation` judges; fewer answer None, and a None keeps the last verdict (`floor_zero` is saved with the phase) | derived | — | **shipped 2026-09-25.** A one-minute live pass (~25 readings) judged alone read one dip as an export and switched `floor_zero` off every pass; one cloud edge then left Home's phase B floor at -1483 W, never corrected because the phase was never idle again. The bench did not show it: `replay.py` judges the whole series once |
 | `SOURCE_IDLE_W`, `SOURCE_IDLE_SHARE` | 25 W, 0.9 | how an AC input is told apart as utility, generator or nothing | physical/ratio | — | not tested |
@@ -597,8 +597,8 @@ agreement) gates Home's wrong energy down; Kozolec's wrong energy sits in
 runs the detector is sure of.
 
 SPLIT_BY_METERS books a house step its meters stepped with as their shares
-and the rest; TOO_BIG closes a run bigger than the whole reading, on its
-start size (its followed size carried held drops and booked a 3,346 W charge
+and the rest; TOO_BIG (`_unseen_stop`) closes a run bigger than the whole
+reading, on its start size (its followed size carried held drops and booked a 3,346 W charge
 at 4,448 W for 410 min). NOISE_FROM_MOVES re-learns noise from moves: a 65 W
 load cycling on Hisa's phase C (25-50 s) had held the house's floor at 228 W.
 EDGE_BY_METER groups a single-phase step under the innermost meter that saw
@@ -841,7 +841,9 @@ descriptions as "starts at 334 W before settling". A noise guard
 readings, most likely another load switching at the same moment, not noise.
 The classifier's final guess changed for no device either way. Not adopted.
 What would separate a motor from a coincidence is CONSISTENCY - a motor's
-surge ratio repeats, a coincidence's is random. The counters are kept.
+surge ratio repeats, a coincidence's is random. The counters
+(`inrush_seen`, `inrush_when_seen`) were never read and went in the
+2026-10-01 cleanup; build consistency, not a count, if this comes back.
 Physically checked: kiln and both boilers carry no surge under any rule.
 Kozolec's hidrofor is a Grundfos Scala2 with a built-in frequency converter,
 so it soft-starts and should NOT surge.
@@ -850,8 +852,8 @@ so it soft-starts and should NOT surge.
 and inverter with `combine()`, which emits at every input's timestamp against
 the other input's last value. When both update together - 26,310 of 26,466
 sub-second gaps are under 50 ms - the first sum is computed against a stale
-partner and corrected within 50 ms. `max_skew_s` was meant to catch this and
-must not be used on recorder data: Home Assistant only records a CHANGE, so an
+partner and corrected within 50 ms. `max_skew_s` (removed 2026-10-01) was
+meant to catch this and cannot work on recorder data: Home Assistant only records a CHANGE, so an
 inverter at 0 W all night looks hours stale and every night sample is dropped
 (the kiln fell from 347 sessions to 119). `COMBINE_SETTLE_S` keeps only the
 last reading of each burst instead, which needs no judgement about freshness.
@@ -1112,6 +1114,16 @@ Don't re-chase these; each cost real time.
   newest-bigger-load step-down guess (`STEP_DOWN_GUESS`): Anze, 2026-09-29, run
   length and frequency raise confidence, they do not group. Without them Home
   76.0 / 56.2 % against 75.9 / 53.7 with, 147 signatures against 197.
+- **Fixed dials and their dead branches, removed 2026-10-01** (pure deletion:
+  every bench identical before and after): `EDGE_BY_METER` "soft" and off,
+  and placing every step rather than starts only (`EDGE_WHERE_RISES_ONLY`) -
+  see the experiments table; `EDGE_DEVICE_SPANS` (a device spanning a plain
+  and a placed cluster: Home 69.9 / 38.6, Kozolec F0.5 80.7 %); `TOO_BIG`
+  "shrink" and off; the running-mean interval under `INTERVAL_PERCENTILE`;
+  the switches on `SAG_CLOSE`, `NOISE_FROM_MOVES`, `SPLIT_BY_METERS`.
+  `EDGE_ANGLE` (the step's reactive angle as a second clustering dimension)
+  was NOT ruled out: it was off waiting for ten days of signed var, and went
+  as code nothing ran. It is in commit 125c9dd for when that data exists.
 - **Device-level pairing rules on the edge library, removed 2026-09-30**:
   learned part-way drops as immediate step-downs (never fired at Home once the
   rise and drop had to be one learned device; 3 joint stops instead of a device

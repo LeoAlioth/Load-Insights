@@ -615,7 +615,7 @@ def switch(folder: str, dials) -> None:
     starts = sorted(((f.start, f) for f in filed), key=lambda p: p[0])
     keys = [k for k, _ in starts]
     name = D.SWITCH_PREFIX + MAT.split(":")[0]
-    found, sigs, credited_sig = 0, collections.Counter(), collections.Counter()
+    found, sigs = 0, collections.Counter()
     for a, b in truth:
         lo = bisect.bisect_left(keys, a - 15)
         near = [f for k, f in starts[lo:lo + 20] if abs(k - a) <= 15 and f.phases == "c"
@@ -679,7 +679,7 @@ def surge(site: str, folder: str, dials) -> None:
         w = sum(s.power.values())
         ratio = s.inrush_w / max(w, 1.0)
         print(f"     {name:18s} {PHYSICS.get(name, '?'):10s} {w:6.0f} W x{s.count:4d}"
-              f"  surge ratio {ratio:5.2f}  seen {s.inrush_seen:3d}x at +{s.inrush_when_seen:5.0f} W")
+              f"  surge ratio {ratio:5.2f}")
 
 
 def _pump_runs(folder: str) -> list:
@@ -701,7 +701,6 @@ def _pump_runs(folder: str) -> list:
 def pump(folder: str, dials) -> None:
     tag = _apply(dials)
     det, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
-    watts = lambda x: sum(max(v for _, v in lv) for lv in x.levels.values())  # noqa: E731
     on_a = sorted((x for x in filed if "a" in x.phases), key=lambda x: x.start)
     starts = [x.start for x in on_a]
     n, runs = collections.Counter(), _pump_runs(folder)
