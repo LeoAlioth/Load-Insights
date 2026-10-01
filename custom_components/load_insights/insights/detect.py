@@ -103,6 +103,13 @@ NOISE_FROM_MOVES = True
 # is enough. 0 is off.
 HOLD_MIN_INTERVAL_S = 20.0
 HOLD_SUSTAIN_S = 30.0
+# ...and not only on a slow meter: the recorder writes only changes, so on
+# ANY meter a reading followed by more than HOLD_GAP_CADENCES of its own
+# cadence of silence held. The hidrofor's plug, polled every 10 s, read 0 once
+# after the pump stopped and nothing for 15 minutes; one reading cannot hold
+# a level, the stop was declared as -253 of its -809, and the detector carried
+# a phantom 590 W into the next start (2026-10-01).
+HOLD_GAP_CADENCES = 1.5
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -1617,8 +1624,9 @@ class PhaseState:
         silence - see HOLD_MIN_INTERVAL_S - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
-        if (not held and HOLD_MIN_INTERVAL_S and (self.interval or 0.0) >= HOLD_MIN_INTERVAL_S
-                and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
+        if (not held and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
+                and ((HOLD_MIN_INTERVAL_S and (self.interval or 0.0) >= HOLD_MIN_INTERVAL_S)
+                     or ts - self.pending[-1][0] > HOLD_GAP_CADENCES * (reading_cadence(self.gaps) or self.interval or math.inf))
                 and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
             # the change it last reported held right up to this reading
             last = self.pending[-1]
