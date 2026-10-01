@@ -18,7 +18,6 @@ from .const import (
     DOMAIN,
     SERVICE_BACKFILL_STATISTICS,
     SERVICE_NAME_LOAD,
-    SERVICE_REFRESH,
     SERVICE_RESET_DETECTION,
 )
 from .coordinator import InsightsCoordinator
@@ -44,11 +43,6 @@ async def _async_for_each_entry(hass: HomeAssistant, fn) -> None:
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Register the services once, whatever entries come and go."""
-
-    async def _refresh(call) -> None:
-        async def go(entry_id, coordinator):
-            await coordinator.async_request_refresh()
-        await _async_for_each_entry(hass, go)
 
     async def _reset_detection(call) -> None:
         forget = bool(call.data.get("forget_names", False))
@@ -145,7 +139,6 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         hass.async_create_task(flush.async_call())
 
     hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _renamed)
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH, _refresh)
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
     hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)
     hass.services.async_register(DOMAIN, SERVICE_BACKFILL_STATISTICS, _backfill_statistics)

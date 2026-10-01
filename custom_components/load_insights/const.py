@@ -142,7 +142,6 @@ NAMING_ROWS_PER_NAME = 4
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"
 
-SERVICE_REFRESH = "refresh"
 SERVICE_RESET_DETECTION = "reset_detection"
 SERVICE_NAME_LOAD = "name_load"
 SERVICE_BACKFILL_STATISTICS = "backfill_statistics"

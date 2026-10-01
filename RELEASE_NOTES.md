@@ -42,6 +42,7 @@
 ### Removed
 
 - **The "How often to look" setting is gone.** Load detection reads the meter every minute, as it did by default: a slower pace bought only latency, never accuracy, since the same recorded steps are found either way. A value an older version stored is ignored.
+- **The `load_insights.refresh` action is gone.** The site device's *Refresh forecasts* button does the same, and in an automation `homeassistant.update_entity` on any Load Insights forecast sensor recomputes every forecast.
 
 ### Fixes
 
