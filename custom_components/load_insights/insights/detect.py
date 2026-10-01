@@ -5019,13 +5019,28 @@ class Fleet:
         """File a house session, and note on its signature which edges it
         started, stepped and stopped with - see EDGE_LAG_REACH_S."""
         found = self._edges_of(m)
-        self.main._file(m, prefer=prefer, avoid=avoid)
+        self.main._file(m, prefer=prefer, avoid=list(avoid) + self._held_homes(m))
         sig = self.main.signature_of(m)
         if sig is None:
             return
         for role, edge in found:
             used = sig.edges.setdefault(role, {})
             used[edge[1]] = used.get(edge[1], 0.0) + 1.0
+
+    def _held_homes(self, m: Session) -> List[int]:
+        """Signatures placed at a one-device meter that held its value
+        through ``m``'s start - it did not start ``m``. The switch gate's test
+        (SWITCH_GATE), with a meter's silence for the switch being off: a
+        2.3 kW load's last 1,064 W step and an unmetered start netted with the
+        pump's stop in one reading each landed in the plain cluster of 1 kW
+        phase-A starts, whose runs go to the hidrofor, while its plug showed
+        no start (2026-10-01). See Fleet._meter_held."""
+        held = {name for name in self.subs if self.holds_one_device(name)
+                and any(self._meter_held(name, ph, m.start, True) for ph in m.phases)}
+        if not held:
+            return []
+        return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
+                and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in held)]
 
     def _switched_off(self, m: Session, main_iv: float) -> List[int]:
         """Signatures placed at a switch that was off throughout ``m`` - see
