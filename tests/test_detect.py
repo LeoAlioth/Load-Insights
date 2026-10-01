@@ -2847,5 +2847,26 @@ def test_a_change_reporters_span_starts_one_cadence_before_its_first_new_reading
     st.gaps = poll
     assert st.span_start(T0) == T0 - 10.0                                          # one poll back
 
+
+def test_a_reading_followed_by_silence_held_on_any_meter():
+    """The hidrofor's plug, polled every 10 s, as the recorder keeps it: a run,
+    ONE zero after the stop, then nothing until the next start - unchanged
+    readings are not written. The stop is whole, and so is the next start."""
+    st = D.PhaseState(min_noise=5.0)
+    ts = T0
+    for w in [0.0] * 30:
+        st.process(ts, w); ts += 10.0
+    st.noise = 160.0
+    for w in [9095, 850, 913, 908, 811, 809, 0]:                     # the start's surge, the run, the stop
+        st.process(ts, w); ts += 10.0
+    ts += 900.0                                                      # fifteen minutes of unwritten zeros
+    for w in [1253, 881, 838, 824, 811, 0]:
+        st.process(ts, w); ts += 10.0
+    ts += 900.0
+    st.process(ts, 1100.0)
+    sizes = [round(w) for _, w, *_ in st.declared]
+    assert len(sizes) >= 4 and all(abs(x) > 750 for x in sizes[:4]), sizes
+
+
 if __name__ == "__main__":
     run_main(globals())
