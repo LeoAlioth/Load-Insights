@@ -46,6 +46,7 @@ from .const import (
     DOMAIN,
 )
 from .insights.detect import (
+    SAME_UPDATE_S,
     SWITCH_MEMORY_S,
     combine,
     COMBINE_SETTLE_S,
@@ -1300,12 +1301,9 @@ def _align(source: list, target_rows: list) -> Dict[float, float]:
 SIGNED_VAR_SLACK_S = 120.0
 
 
-# A meter reports its readings of one moment as separate entities, stamped
-# milliseconds apart. Read "as of" the power's stamp, a 3EM's apparent power
-# still held the reading BEFORE a kiln leg switched off - 34.5 W against
-# 3505 VA, a 3.5 kvar spike at the very step (Home, 2026-09-30). A reading
-# landing this soon after the power's is the same update.
-SAME_UPDATE_S = 1.0
+# A 3EM's apparent power read "as of" the power's stamp still held the reading
+# BEFORE a kiln leg switched off - 34.5 W against 3505 VA, a 3.5 kvar spike at
+# the very step (Home, 2026-09-30): the same update - see SAME_UPDATE_S.
 
 
 def _with_update(rows: list, ts: float, i: int) -> int:
