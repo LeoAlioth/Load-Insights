@@ -104,6 +104,10 @@ DETECTION_KINDS = ("power", "pf", "current", "voltage")
 # latency, not accuracy, since the same recorded edges are reconstructed
 # either way.
 CONF_DETECTION_INTERVAL = "interval_minutes"
+# Inside CONF_DETECTION: at most how long, in seconds, live detection waits
+# for the meters below the grid before judging its steps - see
+# METER_WAIT_CAP_S in insights/detect.py, which is its default.
+CONF_METER_WAIT = "meter_wait_s"
 # Inside CONF_DETECTION: the Energy-dashboard devices (by statistic id) whose
 # meter holds ONE device. Absent until the detection page is saved; then every
 # meter not listed holds several.

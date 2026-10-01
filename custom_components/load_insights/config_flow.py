@@ -31,6 +31,7 @@ from .const import (
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
     CONF_DETECTION_INTERVAL,
+    CONF_METER_WAIT,
     DETECTION_BACKFILL_DAYS,
     NAMING_MAX_STALE_S,
     DETECTION_INTERVAL_CHOICES,
@@ -47,7 +48,7 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import (EDGE_HELPED_SHARE, SWITCH_PREFIX, edge_story, most_specific, same_device_phrase,
+from .insights.detect import (EDGE_HELPED_SHARE, METER_WAIT_CAP_S, SWITCH_PREFIX, edge_story, most_specific, same_device_phrase,
                               input_groups, suggest_levels)
 from .overview import overview_text
 
@@ -307,6 +308,10 @@ def _interval_field(defaults: dict) -> dict:
                 options=[str(n) for n in DETECTION_INTERVAL_CHOICES],
                 translation_key=CONF_DETECTION_INTERVAL,
                 mode=selector.SelectSelectorMode.DROPDOWN))})
+    # how long the grid's steps wait for the meters below it - see METER_WAIT_CAP_S
+    out.update({vol.Optional(CONF_METER_WAIT, default=defaults.get(CONF_METER_WAIT, METER_WAIT_CAP_S)):
+            selector.NumberSelector(selector.NumberSelectorConfig(
+                min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))})
     return out
 
 
@@ -840,7 +845,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
         meters = await self._device_meters()
         if user_input is not None:
-            cfg = {**current, **{k: v for k, v in user_input.items() if v and k != CONF_SINGLE_DEVICE}}
+            # a wait of 0 is an answer - judge every step at once - not an empty field
+            cfg = {**current, **{k: v for k, v in user_input.items()
+                                 if (v or (k == CONF_METER_WAIT and v is not None)) and k != CONF_SINGLE_DEVICE}}
             if meters:
                 # kept even when empty: none ticked is an answer - every meter holds several
                 cfg[CONF_SINGLE_DEVICE] = list(user_input.get(CONF_SINGLE_DEVICE) or [])
