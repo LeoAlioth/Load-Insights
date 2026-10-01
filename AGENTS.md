@@ -553,7 +553,9 @@ charge that followed another as no one's). Ten days, SUBS=prod:
 | ... p5 of 600 gaps, 2 / 3 cadences | 73.4 / 44.1, 76.1 / 48.4 | 2.4 h, 7.8 h | 34.2 % / 9.6, 37.1 % / 12.0 | 97.3, 97.2 | 69.1 % / 25.7, 82.9 % / 18.9 |
 | moving-gap cadence (p10), 2 cadences | 73.1 / 42.3 | 2.5 h | 21.5 % / 1.5 | 97.6 | 83.1 % / 16.2 |
 | ... 3 cadences | 75.3 / 48.2 | 4.2 h | 42.5 % / 7.8 | 98.1 | 84.2 % / 17.1 |
-| + union capped by the slower meter's reach (experiments default) | 75.3 / 49.6 | 2.0 h | 42.6 % / 8.0 | 98.1 | 84.2 % / 17.1 |
+| + union capped by the slower meter's reach | 75.3 / 49.6 | 2.0 h | 42.6 % / 8.0 | 98.1 | 84.2 % / 17.1 |
+| + a meter that held its value is no unplaced step's place (deployed, generation 18) | 73.6 / 47.0 | 2.3 h | 44.0 % / 2.8 | 98.1 | 84.3 % / 18.1 |
+| ... the same ungated, as production runs; generation 17 ungated was 41.0 % / 3.6 and 82.6 % / 18.9 | - | - | 48.0 % / 3.7 | - | 84.6 % / 17.5 |
 
 The symmetric versions file the pump's runs at the wrong size 91-95 times
 (53-59 before) - open, not the span start. The hold fix took it to 47, the
