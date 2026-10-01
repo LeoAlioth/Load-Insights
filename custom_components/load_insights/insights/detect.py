@@ -5152,6 +5152,14 @@ class Fleet:
             for name, rows in self.sub_rows.items():
                 if name in phases and not set(m.phases) <= set(phases[name]):
                     continue
+                # A meter that held its value through the run's start did not
+                # start it, whatever it drew later in the window: a pump
+                # cycling every 20 minutes made up a 102 W, 47-minute run's
+                # 60 Wh while its plug read 0.5 W from half an hour before to
+                # three quarters of an hour after - and the run, and its
+                # device's next ones, were filed as the hidrofor (2026-10-01).
+                if any(self._meter_held(name, ph, m.start, True) for ph in m.phases):
+                    continue
                 got = energy_between(rows, m.start, m.end)
                 if got is None:
                     continue
