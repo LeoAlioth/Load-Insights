@@ -541,6 +541,14 @@ charge that followed another as no one's). Ten days, SUBS=prod:
 | meter window 3 x its interval | 69.2 / 37.6 | 5.9 h | 45.2 % / 11.4 | 97.1 | 78.6 % / 16.5 |
 | meter window 2 x its cadence, placement only | 70.2 / 40.1 | 13.1 h | 43.2 % / 9.7 | 97.2 | 82.7 % / 18.9 |
 | (a) with energy gated at quality 0.3 / 0.5 | - | - | 36.8 % / 2.0, 33.7 % / 1.7 | - | 82.3 % / 18.6, 81.7 % / 17.9 |
+| unified: meters' own declared steps, same direction (hard) | 72.0 / 39.9 | 5.4 h | 46.1 % / 11.5 | 97.5 | 83.2 % / 17.3 |
+| + meter vs grid over the meter's span (hard; kiln ladder 63 -> 27) | 70.0 / 38.8 | 4.7 h | 41.2 % / 5.7 | 97.4 | 83.3 % / 17.3 |
+| + symmetric union with chaining, overlap as timing (hard) | 70.3 / 37.6 | 5.5 h | 45.1 % / 9.3 | 97.7 | 81.2 % / 19.3 |
+| + span from one cadence before the first new reading, hard, gate 0.3 | 70.1 / 37.4 | 4.9 h | 38.6 % / 7.4 | 97.7 | 82.8 % / 16.7 |
+| ... soft, gate 0.3 | 70.5 / 36.0 (233 sigs) | 3.3 h | 34.5 % / 5.2 | 98.1 | 83.2 % / 16.7 |
+
+The symmetric versions file the pump's runs at the wrong size 91-95 times
+(53-59 before) - open, not the span start.
 
 Unplaced steps are a SIZE disagreement between the meter's step and the
 grid's, not timing: Hisa 36 of 168, Mansarda 44 of 186 inside the window
