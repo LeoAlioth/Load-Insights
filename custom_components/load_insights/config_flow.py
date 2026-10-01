@@ -63,6 +63,12 @@ from .insights.named import chosen_name
 SUGGESTED_CLASSES = {"binary_sensor": ("occupancy", "presence", "motion"), "sensor": ("temperature", "humidity")}
 
 
+def _entity(key: str, defaults: dict, device_class: str) -> dict:
+    """An optional sensor field of ``device_class``, suggesting what ``defaults`` has for it."""
+    return {vol.Optional(key, description={"suggested_value": defaults.get(key)}):
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class=device_class))}
+
+
 def _grid_fields(defaults: dict) -> dict:
     """The grid connection: its whole electrical set, and how it is wired.
 
@@ -78,10 +84,7 @@ def _grid_fields(defaults: dict) -> dict:
     for kind, device_class in (("power", "power"), ("voltage", "voltage"),
                                ("current", "current"), ("pf", "power_factor")):
         for p in ("a", "b", "c"):
-            key = f"{ROLE_PREFIX['grid']}{kind}_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class))
+            out.update(_entity(f"{ROLE_PREFIX['grid']}{kind}_{p}", defaults, device_class))
     # an "auto" stored before 2026-10-01 was the utility all along
     kind = defaults.get(CONF_SOURCE_KIND)
     out[vol.Optional(CONF_SOURCE_KIND,
@@ -103,23 +106,16 @@ def _inverter_fields(defaults: dict) -> dict:
            selector.DeviceSelector(selector.DeviceSelectorConfig(
                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
     for prefix in ("", CONF_INV_INPUT_PREFIX):
-        out[vol.Optional(f"{prefix}power",
-                         description={"suggested_value": defaults.get(f"{prefix}power")})] = \
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+        out.update(_entity(f"{prefix}power", defaults, "power"))
         for p in ("a", "b", "c"):
-            key = f"{prefix}power_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+            out.update(_entity(f"{prefix}power_{p}", defaults, "power"))
     # The OUTPUT side's volts and amps. Where the loads hang off an inverter -
     # Kozolec, where the MultiPlus output IS the house - this is the circuit
     # they are in, so it is the only place a power factor for them can come
     # from. The grid side's own readings live on the Grid connection page.
     for kind, device_class in (("voltage", "voltage"), ("current", "current"), ("pf", "power_factor")):
         for p in ("a", "b", "c"):
-            key = f"{kind}_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class))
+            out.update(_entity(f"{kind}_{p}", defaults, device_class))
     out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
         selector.SelectSelector(selector.SelectSelectorConfig(
             options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
@@ -333,6 +329,14 @@ def _found_line(hass, cfg: dict) -> str:
     return line
 
 
+def _grid_found(hass, cfg: dict) -> dict:
+    """The grid page's placeholders: what ``cfg``'s grid readings were matched to."""
+    prefix = ROLE_PREFIX["grid"]
+    return {"found": _found_line(hass, {
+        **{k[len(prefix):]: v for k, v in cfg.items() if k.startswith(prefix) and k != CONF_GRID_DEVICE},
+        "device": cfg.get(CONF_GRID_DEVICE)})}
+
+
 def _discover(hass, device_id: str, role: str = "load") -> dict:
     """The device's sensors, matched to per-phase fields."""
     registry = er.async_get(hass)
@@ -363,8 +367,7 @@ def _inputs_schema(defaults: dict) -> dict:
     return {
         vol.Optional(CONF_WEATHER_ENTITY, description={"suggested_value": defaults.get(CONF_WEATHER_ENTITY)}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="weather")),
-        vol.Optional(CONF_OUTDOOR_TEMPERATURE_ENTITY, description={"suggested_value": defaults.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)}):
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature")),
+        **_entity(CONF_OUTDOOR_TEMPERATURE_ENTITY, defaults, "temperature"),
         vol.Optional(CONF_CALENDAR_ENTITIES, description={"suggested_value": defaults.get(CONF_CALENDAR_ENTITIES) or []}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="calendar", multiple=True)),
         vol.Optional(CONF_INPUT_ENTITIES, description={"suggested_value": defaults.get(CONF_INPUT_ENTITIES) or []}):
@@ -462,12 +465,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 merged = {**found, **typed}
                 if device != detection.get(CONF_GRID_DEVICE) or merged != typed:
                     self._pending_grid = merged
+                    # merged holds the device: it is in what was typed
                     return self.async_show_form(
                         step_id="grid", data_schema=vol.Schema(_grid_fields(merged)),
-                        description_placeholders={"found": _found_line(self.hass, {
-                            **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in merged.items()
-                               if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
-                            "device": device})},
+                        description_placeholders=_grid_found(self.hass, merged),
                     )
             keep = {k: v for k, v in detection.items()
                     if not k.startswith(ROLE_PREFIX["grid"])
@@ -478,10 +479,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         current = dict(self._pending_grid or detection)
         return self.async_show_form(
             step_id="grid", data_schema=vol.Schema(_grid_fields(current)),
-            description_placeholders={"found": _found_line(self.hass, {
-                **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in current.items()
-                   if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
-                "device": current.get(CONF_GRID_DEVICE)})},
+            description_placeholders=_grid_found(self.hass, current),
         )
 
     async def async_step_inverters(self, user_input: dict[str, Any] | None = None):
