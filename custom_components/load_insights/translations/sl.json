@@ -247,7 +247,7 @@
                 },
                 "data_description": {
                     "grid_device": "Izberite jo in meritve po fazah se izpolnijo spodaj. Pustite prazno za ročno izbiro.",
-                    "source_kind": "Na samodejno se ugotovi iz same meritve: samo omrežje sprejme presežek, generator pa je veliko pogosteje ugasnjen kot prižgan. Ročno nastavi za generator, ki dlje časa ni tekel - tak je videti enako kot nepriključen vhod, opozorilo pa ni isto."
+                    "source_kind": "Pove, kaj pomeni primanjkljaj na priključku: energijo, kupljeno iz omrežja, generator, ki ga je treba zagnati, ali - pri otočnem sistemu - porabo, ki ostane brez napajanja. Izračun napovedi je v vseh primerih enak; to določa le, kako ga opiše pregled."
                 }
             },
             "naming_detail": {
@@ -385,7 +385,6 @@
         },
         "source_kind": {
             "options": {
-                "auto": "Ugotovi iz podatkov",
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"

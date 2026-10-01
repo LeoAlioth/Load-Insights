@@ -216,11 +216,6 @@ class DetectionRunner:
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
-        # What the AC input turned out to be, kept at the most
-        # informative verdict seen: a generator that has not run this
-        # window reads exactly like nothing connected, and falling back
-        # to that every quiet day would flap the wording for no reason.
-        self.source_kind: Optional[str] = None
         # Mean watts per NAMED load over the last stretch of data processed,
         # from the energy that stretch added. See _update_average_power.
         self.average_power: Dict[str, float] = {}

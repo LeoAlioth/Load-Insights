@@ -2,12 +2,7 @@
 
 # The pure layer owns the words for what it measures, so they have one
 # definition; the rest of the integration keeps importing from here.
-from .insights.detect import (  # noqa: F401  - one definition, re-exported
-    SOURCE_GENERATOR,
-    SOURCE_NONE,
-    SOURCE_UTILITY,
-)
-from .insights.grid import LAYOUT_PARALLEL, LAYOUT_SERIES  # noqa: F401  - likewise
+from .insights.grid import LAYOUT_PARALLEL, LAYOUT_SERIES  # noqa: F401  - one definition, re-exported
 
 DOMAIN = "load_insights"
 
@@ -74,15 +69,14 @@ LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
 # 2026-09-18). It changes nothing electrically and everything about what a
 # shortfall MEANS: energy bought at a tariff, a generator someone has to
 # start, or a load that simply goes unserved.
-# Auto is the default and the honest answer nearly always: only a utility
-# absorbs a surplus, and a generator is off far more than it is on, so the
-# reading itself says which is there. The override exists for the one case
-# the data cannot settle - a generator that has not run inside the window
-# looks exactly like nothing at all.
+# Said, not read off the data: an "auto" choice was offered until 2026-10-01
+# and never worked anything out - nothing set what it read, so it was the
+# utility, which it still is where an entry stored it (as is no choice).
 CONF_SOURCE_KIND = "source_kind"
-SOURCE_AUTO = "auto"
-SOURCE_KINDS = (SOURCE_AUTO, SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
-DEFAULT_SOURCE_KIND = SOURCE_AUTO
+SOURCE_UTILITY = "utility"
+SOURCE_GENERATOR = "generator"
+SOURCE_NONE = "none"
+SOURCE_KINDS = (SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
 # Inside CONF_DETECTION: at most how long, in seconds, live detection waits
 # for the meters below the grid before judging its steps - see
 # METER_WAIT_CAP_S in insights/detect.py, which is its default.
