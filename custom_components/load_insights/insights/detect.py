@@ -1608,7 +1608,7 @@ class PhaseState:
         return out
 
     def _process(self, ts: float, w: float, q: Optional[float] = None,
-                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
+                 pv: Optional[float] = None, held: bool = False, _no_hold: bool = False) -> List[Session]:
         """One sample: seconds, watts, reactive VAr where the meter gives
         enough to work it out, and what the array was making at the time.
         Returns the sessions this sample closed - more than one when several
@@ -1616,12 +1616,16 @@ class PhaseState:
         silence - see SUSTAIN_CADENCES - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
-        if (not held and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
+        if (not held and not _no_hold and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
                 and ts - self.pending[-1][0] > SUSTAIN_CADENCES * (self.cadence() or math.inf)
                 and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
             # the change it last reported held right up to this reading
             last = self.pending[-1]
             before = self.process(ts - 0.5, last[1], last[2], last[3], held=True)
+            if self.pending and self.pending[-1] is last:
+                # the stand-in was not taken (a glitch guard, say): go on without
+                # it rather than offer it again for ever
+                return before + self._process(ts, w, q, pv, held=False, _no_hold=True)
             return before + self.process(ts, w, q, pv)
         if held:
             pass                          # not a reading: no cadence, no quantum
