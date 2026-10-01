@@ -331,7 +331,6 @@
             }
         },
         "abort": {
-            "no_devices": "The Energy dashboard lists no individual devices.",
             "no_detection": "Load detection is not set up: choose the main meter first.",
             "nothing_to_name": "Nothing to name yet - no loads have been detected.",
             "no_inputs": "No inputs yet - add them on the Explanatory inputs page first.",
@@ -382,7 +381,6 @@
     "selector": {
         "layout": {
             "options": {
-                "auto": "Work it out from the data",
                 "parallel": "Parallel - inverter feeds the grid bus directly (AC-coupled solar, no battery)",
                 "series": "Series - all power flows through the inverter (hybrid with DC-coupled battery)"
             }

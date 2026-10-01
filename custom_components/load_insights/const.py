@@ -7,6 +7,7 @@ from .insights.detect import (  # noqa: F401  - one definition, re-exported
     SOURCE_NONE,
     SOURCE_UTILITY,
 )
+from .insights.grid import LAYOUT_PARALLEL, LAYOUT_SERIES  # noqa: F401  - likewise
 
 DOMAIN = "load_insights"
 
@@ -42,7 +43,6 @@ CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a
 # inverter makes, so the load is their sum; behind a transfer switch or off
 # grid, everything reaches the loads through the inverter and adding the
 # grid would count the pass-through twice.
-CONF_GRID_PREFIX = "grid_power_"
 CONF_GRID_DEVICE = "grid_device"
 # Each ROLE carries the whole electrical set, not just watts. Voltage and
 # current belong to the meter that publishes them, and pairing one meter's
@@ -57,20 +57,13 @@ ROLE_PREFIX = {"load": "", "grid": "grid_"}
 # single-inverter config would be a migration across every site.
 CONF_INVERTERS = "inverters"
 CONF_INV_DEVICE = "device"
-CONF_INV_ATTACH = "attach"          # which node its output feeds
 CONF_INV_TOPOLOGY = "topology"
 # An inverter's GRID-side reading, stored beside its output under this
 # prefix. What it contributes to the house is output minus input, so a
 # hybrid does not hand back the grid power it merely passed along; a PV
 # string inverter has no input and contributes its output whole.
 CONF_INV_INPUT_PREFIX = "in_"
-ATTACH_BUS = "bus"                  # the same bus as the grid/main meter
-ATTACH_LOAD_PORT = "load_port"      # behind another inverter's output
 CONF_LAYOUT = "layout"
-LAYOUT_AUTO = "auto"
-LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid
-LAYOUT_SERIES = "series"              # load = inverter output alone
-LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SERIES)
 # What was stored before the word was borrowed from Load Juggler, which
 # describes the same two wirings and had the better name for this one.
 LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
@@ -90,12 +83,6 @@ CONF_SOURCE_KIND = "source_kind"
 SOURCE_AUTO = "auto"
 SOURCE_KINDS = (SOURCE_AUTO, SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
 DEFAULT_SOURCE_KIND = SOURCE_AUTO
-# Meters BELOW the main one are not configured: the Energy dashboard already
-# lists every individually metered device and, through included_in_stat, how
-# they nest. Load Insights resolves each one to its Home Assistant device and
-# discovers that device's per-phase readings, so a load seen by both the main
-# meter and a device's own meter is located - and named - with nothing typed.
-DETECTION_KINDS = ("power", "pf", "current", "voltage")
 # How often the recorder is re-read. One minute by default since the pass
 # itself costs well under a millisecond and its overheads no longer scale
 # with it - one query rather than one per entity, and the state written

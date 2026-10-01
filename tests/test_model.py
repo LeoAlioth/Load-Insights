@@ -125,7 +125,7 @@ def test_the_dashboard_already_states_which_way_round_the_meter_is():
     site = SiteModel.from_prefs({"energy_sources": [
         {"type": "grid", "stat_energy_from": "sensor.i", "stat_rate": "sensor.p"}]})
     assert site.grid_power[0].polarity == 1
-    assert site.grid_power[0].rate_entity == "sensor.p"
+    assert site.grid_power[0].rate == "sensor.p"
 
 
 def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():

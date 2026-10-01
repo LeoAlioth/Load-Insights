@@ -18,7 +18,6 @@ of day has too few on-hours to stand alone. Same guard as every covariate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 MIN_ON_HOURS = 24          # a calendar (or title) on for less than a day in the window: no fit

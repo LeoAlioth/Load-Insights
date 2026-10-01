@@ -6,10 +6,10 @@ the battery carries the night. That is consumption minus PV, and then the
 battery in between.
 
 The battery model is deliberately the simplest one that is honest: surplus
-charges it until full, deficit discharges it until empty, both bounded by the
-pack's rated power where that is known. It does not know the site's charge
-policy, tariff arbitrage, or reserves - so it answers "if the battery simply
-follows the house", which is what most sites do most of the time. Where the
+charges it until full, deficit discharges it until empty. It does not know
+the pack's rated power, the site's charge policy, tariff arbitrage, or
+reserves - so it answers "if the battery simply follows the house", which is
+what most sites do most of the time. Where the
 pack's capacity or state of charge is unknown, no battery is simulated and
 the net is reported before it.
 
@@ -50,8 +50,9 @@ AC_CHARGE = 0.95        # AC bus into the pack, one conversion in
 AC_DISCHARGE = 0.94     # and one back out
 INVERTER = 0.94         # DC bus to AC loads, the series path's standing cost
 
-TOPOLOGY_SERIES = "series"
-TOPOLOGY_PARALLEL = "parallel"
+# Where the pack sits - one definition, const.py re-exports it
+LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid
+LAYOUT_SERIES = "series"              # load = inverter output alone
 
 
 @dataclass(frozen=True)
@@ -71,9 +72,6 @@ class GridForecast:
     battery_modelled: bool = False
     pv_hours: int = 0                  # horizon hours with a PV forecast
 
-    def slice_day(self, day, field: str) -> float:
-        return sum(getattr(h, field) for h in self.hours if h.when.date() == day)
-
     @property
     def import_kwh(self) -> float:
         return sum(max(0.0, h.net_kwh) for h in self.hours)
@@ -85,9 +83,7 @@ class GridForecast:
 
 def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None,
           soc: Optional[float] = None, capacity_kwh: Optional[float] = None,
-          max_charge_w: Optional[float] = None, max_discharge_w: Optional[float] = None,
-          soc_min: float = 0.0, soc_max: float = 100.0,
-          topology: str = TOPOLOGY_PARALLEL) -> GridForecast:
+          topology: str = LAYOUT_PARALLEL) -> GridForecast:
     """``consumption`` is the hourly forecast; ``pv`` maps hour key to forecast
     PV kWh for that hour. ``soc`` is the pack's state of charge NOW.
 
@@ -101,13 +97,11 @@ def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None
     # conversion, so it stores MORE than one kWh in the pack. Round trip
     # works out at 98% DC-coupled against 89% AC-coupled, which is right:
     # the DC path avoids a conversion the AC path cannot.
-    series = topology == TOPOLOGY_SERIES
+    series = topology == LAYOUT_SERIES
     charge_eff = (DC_CHARGE / INVERTER) if series else AC_CHARGE
     discharge_eff = DC_DISCHARGE if series else AC_DISCHARGE
     model_battery = soc is not None and capacity_kwh is not None and capacity_kwh > 0
     level = (soc / 100.0) * capacity_kwh if model_battery else 0.0
-    lo = (soc_min / 100.0) * capacity_kwh if model_battery else 0.0
-    hi = (soc_max / 100.0) * capacity_kwh if model_battery else 0.0
 
     rows: List[GridHour] = []
     seen_pv = 0
@@ -123,19 +117,15 @@ def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None
         if model_battery:
             if net_before < 0:                       # surplus: charge
                 offered = -net_before
-                if max_charge_w is not None:
-                    offered = min(offered, max_charge_w / 1000.0)
                 # what reaches the pack is less than what is offered to it
-                stored = min(offered * charge_eff, max(0.0, hi - level))
+                stored = min(offered * charge_eff, max(0.0, capacity_kwh - level))
                 level += stored
                 battery = -(stored / charge_eff if charge_eff else 0.0)
             else:                                    # deficit: discharge
                 wanted = net_before
-                if max_discharge_w is not None:
-                    wanted = min(wanted, max_discharge_w / 1000.0)
                 # and more leaves the pack than arrives at the house
                 drawn = min(wanted / discharge_eff if discharge_eff else 0.0,
-                            max(0.0, level - lo))
+                            max(0.0, level))
                 level -= drawn
                 battery = drawn * discharge_eff
         rows.append(GridHour(

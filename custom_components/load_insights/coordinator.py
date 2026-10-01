@@ -48,7 +48,7 @@ from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
 from .insights.model import LOAD_PREFIX, SiteModel
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
-from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
+from .insights.scoring import Ledger
 from .insights.series import combine, coverage, subtract_all
 from .repairs import async_check
 

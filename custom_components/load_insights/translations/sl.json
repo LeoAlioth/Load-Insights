@@ -331,7 +331,6 @@
             }
         },
         "abort": {
-            "no_devices": "Nadzorna plošča Energija ne navaja posameznih naprav.",
             "no_detection": "Zaznavanje porabnikov ni nastavljeno: najprej izberite glavni števec.",
             "nothing_to_name": "Zaenkrat ni kaj poimenovati - zaznan ni bil noben porabnik.",
             "no_inputs": "Vhodov še ni - najprej jih dodajte na strani Pojasnjevalni vhodi.",
@@ -382,7 +381,6 @@
     "selector": {
         "layout": {
             "options": {
-                "auto": "Ugotovi iz podatkov",
                 "parallel": "Vzporedno - razsmernik napaja skupno zbiralko (AC sončna elektrarna, brez baterije)",
                 "series": "Zaporedno - vsa moč teče skozi razsmernik (hibrid z DC baterijo)"
             }

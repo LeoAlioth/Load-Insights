@@ -39,7 +39,6 @@ from .const import (
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
     CONF_SIGNATURE_REVISION,
-    DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
@@ -315,13 +314,6 @@ def _interval_field(defaults: dict) -> dict:
     return out
 
 
-def _as_list_text(value) -> str:
-    """A device's state entities as the page shows them - saved as one string
-    before several were allowed, a list since."""
-    items = [value] if isinstance(value, str) else list(value or [])
-    return ", ".join(items) or "-"
-
-
 def _single_device_field(meters: list, declared) -> dict:
     """Which meters hold ONE device. Until the page is saved the box shows
     what the library's shape suggests (the Hidrofor plug: 99 % of its
@@ -439,7 +431,6 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     """The site-level inputs, a device's own state sensor, and the meters."""
 
     def __init__(self) -> None:
-        self._pending_detection: dict | None = None
         self._naming_selected: int | None = None
         self._pending_grid: dict | None = None
         self._naming_rows: list[int] = []      # menu position -> signature id
@@ -537,18 +528,6 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="inverters", data_schema=vol.Schema(_inverter_fields({})),
             description_placeholders={"found": _inverter_line(current)})
-
-    async def async_step_inverter_found(self, user_input: dict[str, Any] | None = None):
-        """Confirm what picking a device found, before it is saved."""
-        offer = dict(self._pending_inverter or {})
-        if user_input is not None:
-            self._pending_inverter = None
-            return await self.async_step_inverters(user_input)
-        return self.async_show_form(
-            step_id="inverters", data_schema=vol.Schema(_inverter_fields(offer)),
-            description_placeholders={"found": _found_line(self.hass, {
-                **{k: v for k, v in offer.items() if k not in (CONF_INV_DEVICE, CONF_INV_TOPOLOGY)},
-                "device": offer.get(CONF_INV_DEVICE)})})
 
     async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
         """Ask before forgetting: the library and every name in it go."""

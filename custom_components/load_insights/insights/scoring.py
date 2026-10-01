@@ -150,10 +150,6 @@ class Ledger:
         at the time - not the current fit re-run over its own history."""
         return {k: p for k, _, p in self.errors.get(lead, [])}
 
-    def recent(self, now: datetime, lead: int = BAND_LEAD_H, hours: int = 48) -> List[dict]:
-        since = _key(floor_hour(now)) - hours * 3600.0
-        return [{"hour_key": k, "actual": a, "predicted": p} for k, a, p in self.errors.get(lead, []) if k >= since]
-
     # ------------------------------------------------------------ storage
     def to_dict(self) -> dict:
         return {
