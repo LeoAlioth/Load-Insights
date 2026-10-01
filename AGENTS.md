@@ -533,6 +533,21 @@ charge that followed another as no one's). Ten days, SUBS=prod:
 | ... factor 3 | 71.0 / 38.5 | 5.4 h | 41.7 % / 10.2 | 97.1 | 82.4 % / 16.9 |
 | ... factor 3 + EDGE_BY_METER | 70.8 / 35.9 | 3.9 h | 47.1 % / 5.7 | 97.4 | 83.8 % / 17.6 |
 | ... + an unplaced step joins the busier located cluster (deployed, generation 17) | 71.4 / 36.0 | 3.9 h | 41.0 % / 3.6 | 97.4 | 82.6 % / 18.9 |
+| hard, starts only (a; experiments default) | 70.5 / 35.3 | 6.8 h | 45.3 % / 3.0 | 97.3 | 82.7 % / 18.9 |
+| soft, starts only | 70.9 / 37.6 (228 sigs) | 3.3 h | 43.9 % / 5.9 | 97.1 | 83.1 % / 16.7 |
+| soft, all steps | 70.8 / 37.2 | 3.7 h | 40.9 % / 8.5 | 97.1 | 82.1 % / 17.8 |
+| a device spans a plain and a placed cluster | 69.9 / 38.6 | 3.9 h | 40.4 % / 6.5 | 97.4 | 80.7 % / 25.2 |
+| placement size tolerance 30 % | 69.9 / 37.7 | 20.6 h | 41.4 % / 3.8 | 97.5 | 82.6 % / 18.9 |
+| meter window 3 x its interval | 69.2 / 37.6 | 5.9 h | 45.2 % / 11.4 | 97.1 | 78.6 % / 16.5 |
+| meter window 2 x its cadence, placement only | 70.2 / 40.1 | 13.1 h | 43.2 % / 9.7 | 97.2 | 82.7 % / 18.9 |
+| (a) with energy gated at quality 0.3 / 0.5 | - | - | 36.8 % / 2.0, 33.7 % / 1.7 | - | 82.3 % / 18.6, 81.7 % / 17.9 |
+
+Unplaced steps are a SIZE disagreement between the meter's step and the
+grid's, not timing: Hisa 36 of 168, Mansarda 44 of 186 inside the window
+(2026-10-01). Wider windows place and split wrongly. The quality score
+(step: size over noise x settling x not crowded; run: lesser end x size
+agreement) gates Home's wrong energy down; Kozolec's wrong energy sits in
+runs the detector is sure of.
 
 SPLIT_BY_METERS books a house step its meters stepped with as their shares
 and the rest; TOO_BIG closes a run bigger than the whole reading, on its
