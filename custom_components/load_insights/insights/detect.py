@@ -1759,6 +1759,7 @@ class PhaseState:
         new_q = _median(known_q) if known_q else None
         new_pv = _median(known_pv) if known_pv else None
         since = self.pending[0][0]
+        first_off = since                  # the first reading that left the old level
         half = 0.5 * abs(new_level - self.level)
         since = next((p[0] for p in self.pending if abs(p[1] - self.level) >= half), since)
         self.pending = []
@@ -1779,9 +1780,9 @@ class PhaseState:
             return []
         quality = self._step_quality(step, held, since, new_level - step)
         self.last_step_ts = since
-        # its span: from its last reading at the old level to the first it settled on
-        self.declared.append((since, step, step_q, self.steady_ts if self.steady_ts is not None else since,
-                              held[0][0] if held else since))
+        # its span: when the change can have happened - from the last moment
+        # the old level is known to have held, to the first reading it settled on
+        self.declared.append((since, step, step_q, self.span_start(first_off), held[0][0] if held else since))
         self.declared_t.append(since)
         if len(self.declared) > 4000:
             del self.declared[:1000]
@@ -1795,6 +1796,17 @@ class PhaseState:
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
+
+    def span_start(self, first_off: float) -> float:
+        """From when a change seen first at ``first_off`` can have happened:
+        one reporting cadence before it, or the last steady reading if that is
+        later. Taken from the last steady reading alone, a meter whose value
+        had held for a minute - unwritten, the recorder keeping only changes -
+        had a span reaching a minute back, and chained in other loads' steps
+        (the hidrofor's plug; Anze, 2026-10-01)."""
+        held_until = self.steady_ts if self.steady_ts is not None else first_off
+        cadence = reading_cadence(self.gaps)
+        return max(held_until, first_off - cadence) if cadence else held_until
 
     def _step_quality(self, step: float, held: list, since: float, was: float) -> float:
         """0..1 - see QUALITY_SNR_FULL."""
@@ -3252,6 +3264,19 @@ def edge_scale(watts: float, unit_w: float) -> float:
     """A step's size in measurement errors, one of them ``unit_w`` watts at
     small steps and EDGE_SCALE_REL of the step at large ones - see EDGE_BATCH."""
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
+
+
+def reading_cadence(gaps: Sequence[float]) -> float:
+    """How soon a meter reports a change: its shortest usual gap between
+    recorded readings, the tenth percentile; 0 with too few to say. One rule
+    for every meter - the recorder writes only changes, so a meter polled
+    every 10 s that holds its value looks silent exactly like one reporting
+    on change (the hidrofor's Zigbee plug: 4,586 of 6,100 gaps exactly 10 s,
+    the rest its unchanged readings, unwritten)."""
+    g = sorted(x for x in gaps if x > 0.2)          # same-instant copies are not a cadence
+    if len(g) < 10:
+        return 0.0
+    return g[int(0.1 * (len(g) - 1))]
 
 
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
