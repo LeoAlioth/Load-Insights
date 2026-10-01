@@ -32,7 +32,7 @@ from .insights.scoring import LEADS, Ledger
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
-    coordinator: InsightsCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: InsightsCoordinator = entry.runtime_data.coordinator
     # One sensor per thing forecast: the state is the prediction for the
     # coming hour, the attributes carry the rest - the horizon, the spread,
     # the recent actuals, the score. Daily totals, import and export figures
@@ -59,38 +59,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     else:
         _forget(hass, "sensor", f"{entry.entry_id}_battery_soc_forecast")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
-    detection: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
-    if detection is not None:
-        entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
-        entities += [BaseLoadSensor(detection, entry)]
-        for n in sorted(detection.detector.names()):
-            if detection.metered_device(n):
-                # named after a meter holding one device, it IS that device:
-                # the meter's readings and its forecast stand for it, and
-                # detected ones beside them only duplicate it (Anze,
-                # 2026-09-29: "i would expect that we only add forecasting")
-                _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
-                _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
-                continue
-            entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
+    detection: DetectionRunner = entry.runtime_data.runner
+    entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+    entities += [BaseLoadSensor(detection, entry)]
+    for n in sorted(detection.detector.names()):
+        if detection.metered_device(n):
+            # named after a meter holding one device, it IS that device:
+            # the meter's readings and its forecast stand for it, and
+            # detected ones beside them only duplicate it (Anze,
+            # 2026-09-29: "i would expect that we only add forecasting")
+            _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
+            _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
+            continue
+        entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
     add(entities)
-    if detection is not None:
-        known = set(detection.detector.names())
+    known = set(detection.detector.names())
 
-        @callback
-        def _follow_names() -> None:
-            """A name that lands after setup gets its entities at once. After a
-            reset the library is empty at setup and the carried names find
-            their loads only during the re-read; until 2026-09-30 every named
-            load then stayed unavailable until the next reload."""
-            new = [n for n in detection.detector.names() if n not in known]
-            if not new:
-                return
-            known.update(new)
-            add([e for n in new if not detection.metered_device(n)
-                 for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n))])
+    @callback
+    def _follow_names() -> None:
+        """A name that lands after setup gets its entities at once. After a
+        reset the library is empty at setup and the carried names find
+        their loads only during the re-read; until 2026-09-30 every named
+        load then stayed unavailable until the next reload."""
+        new = [n for n in detection.detector.names() if n not in known]
+        if not new:
+            return
+        known.update(new)
+        add([e for n in new if not detection.metered_device(n)
+             for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n))])
 
-        detection.add_listener(_follow_names)
+    detection.add_listener(_follow_names)
 
 
 def _forget(hass: HomeAssistant, domain: str, unique_id: str) -> None:
@@ -354,9 +352,9 @@ def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> 
         manufacturer="Load Insights",
         model=model,
     )
-    parent = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_site_device")
-    if parent:
-        info["via_device_id"] = parent
+    loaded = getattr(entry, "runtime_data", None)
+    if loaded is not None:
+        info["via_device_id"] = loaded.site_device_id
     return info
 
 

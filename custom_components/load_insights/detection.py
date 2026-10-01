@@ -6,8 +6,9 @@ import functools
 import logging
 import math
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
@@ -71,6 +72,9 @@ from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
 from .insights.named import metered_device, one_device_meters, plan_rewrite
 
+if TYPE_CHECKING:
+    from .coordinator import InsightsCoordinator   # which imports this module
+
 _LOGGER = logging.getLogger(__name__)
 
 # the inputs detection reads: what says when a load runs, and what a load's
@@ -92,14 +96,28 @@ def device_uid(entry_id: str, energy: str) -> str:
     return f"{entry_id}_device_{energy.replace('.', '_')}"
 
 
-def named_load_energy(hass: HomeAssistant, entry_id: str, name: str) -> Optional[str]:
+@dataclass
+class RuntimeData:
+    """What a loaded entry runs - its ConfigEntry.runtime_data."""
+    coordinator: "InsightsCoordinator"
+    runner: "DetectionRunner"
+    site_device_id: str
+
+
+def runner_of(entry: Optional[ConfigEntry]) -> Optional["DetectionRunner"]:
+    """The entry's detection runner, or None while it is not loaded."""
+    data = getattr(entry, "runtime_data", None)
+    return data.runner if data is not None else None
+
+
+def named_load_energy(hass: HomeAssistant, entry: ConfigEntry, name: str) -> Optional[str]:
     """The entity - and so the statistic - a named load's energy is under: a
     load that IS a metered device is under that device's own meter."""
-    runner = hass.data.get(DOMAIN, {}).get(f"{entry_id}_detection")
+    runner = runner_of(entry)
     meter = runner.metered_device(name) if runner is not None else None
     if meter:
         return runner.submeters[meter]["energy"]
-    return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry_id, "energy", name))
+    return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry.entry_id, "energy", name))
 STORAGE_VERSION = 1
 # The DETECTOR's generation, separate from the store's format version: when
 # the algorithm changes shape, what it learned before is not comparable with

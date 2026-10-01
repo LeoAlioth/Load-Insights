@@ -22,17 +22,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
 from .sensor import on_site
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
-    coordinator: InsightsCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: InsightsCoordinator = entry.runtime_data.coordinator
     entities: list[ButtonEntity] = [RefreshButton(hass, entry, coordinator)]
-    runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
-    if runner is not None and runner.enabled:
+    runner: DetectionRunner = entry.runtime_data.runner
+    if runner.enabled:
         entities.append(ResetDetectionButton(hass, entry, runner))
     add(entities)
 

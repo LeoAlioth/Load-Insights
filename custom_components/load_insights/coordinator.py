@@ -239,12 +239,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # site takes every input, linked or not, among its signals above;
         # those are every device's as well.
         links = opts.get(CONF_INPUT_LINKS) or {}
-        entry_id = self.config_entry.entry_id if self.config_entry else ""
         parent = {d.energy: d.included_in for d in site.devices}
 
         def within(target: str) -> List[str]:
             """The device a link names, and every device it sits inside."""
-            cur = named_load_energy(self.hass, entry_id, target[len(LOAD_PREFIX):]) if target.startswith(LOAD_PREFIX) else target
+            cur = (named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
+                   if target.startswith(LOAD_PREFIX) else target)
             out: List[str] = []
             while cur and cur not in out:
                 out.append(cur)

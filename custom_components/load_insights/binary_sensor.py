@@ -9,15 +9,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
 from .detection import DetectionRunner
 from .sensor import _child_device, _forget
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
-    runner: DetectionRunner = hass.data[DOMAIN].get(f"{entry.entry_id}_detection")
-    if runner is None:
-        return
+    runner: DetectionRunner = entry.runtime_data.runner
     entities = []
     for name in sorted(runner.detector.names()):
         if runner.metered_device(name):          # that device: see the sensor platform

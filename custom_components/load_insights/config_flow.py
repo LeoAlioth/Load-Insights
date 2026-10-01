@@ -54,7 +54,7 @@ NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carr
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
-from .detection import named_load_energy
+from .detection import named_load_energy, runner_of
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
 from .insights.named import chosen_name
 
@@ -384,9 +384,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return LoadInsightsOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
-
+        # a second entry is turned away before this runs: single_config_entry
         manager = await async_get_manager(self.hass)
         site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
@@ -433,11 +431,11 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         menu options are real labelled buttons - Refresh re-enters this step
         and rebuilds the text, Reset asks before forgetting anything."""
         try:
-            text = overview_text(self.hass, self.config_entry.entry_id)
+            text = overview_text(self.hass, self.config_entry)
         except Exception:  # noqa: BLE001 - a display page must never break
             _LOGGER.exception("Could not build the overview page")
             text = "Could not read the live data - see the Home Assistant log."
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         options = ["overview"]
         if runner is not None and runner.enabled:
             options.append("reset_detection")
@@ -513,7 +511,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                                     menu_options=["reset_confirmed", "overview"])
 
     async def async_step_reset_confirmed(self, user_input: dict[str, Any] | None = None):
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is not None:
             await runner.async_reset()
         return await self.async_step_overview()
@@ -530,7 +528,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         template is nothing but a placeholder carries whatever we put there,
         which is how each row shows its own numbers and its own day (Anze,
         2026-09-18)."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
         # Nothing is worth naming from a library that is still being built:
@@ -579,7 +577,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_naming_list(self, user_input: dict[str, Any] | None = None):
         """One meter's loads, biggest first, one clickable row each - or,
         for NAMED, every named load wherever it was seen."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
         where = self.__dict__.get("_naming_group")
@@ -680,7 +678,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
     def _picked(self):
         """The runner, and the load chosen from the list - or None for either."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is None:
             return None, None
         sid = self.__dict__.get("_naming_selected")
@@ -822,7 +820,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         """(statistic id, name, guessed to hold one device) for every meter
         detection reads besides the house - the devices of the Energy
         dashboard it could resolve a power reading for."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return []
         return [(m["energy"], name, runner.guess_one_device(name))
@@ -849,9 +847,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         dashboard, and every named load not on it (yet) - value -> label."""
         manager = await async_get_manager(self.hass)
         targets = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         for name in sorted(runner.detector.names() if runner is not None else ()):
-            if named_load_energy(self.hass, self.config_entry.entry_id, name) not in targets:
+            if named_load_energy(self.hass, self.config_entry, name) not in targets:
                 targets[LOAD_PREFIX + name] = f"{name} (detected load)"
         return targets
 
@@ -859,7 +857,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         """A link to a named load that has since been put on the dashboard
         is a link to that device."""
         if target.startswith(LOAD_PREFIX):
-            energy = named_load_energy(self.hass, self.config_entry.entry_id, target[len(LOAD_PREFIX):])
+            energy = named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
             if energy in targets:
                 return energy
         return target
@@ -923,7 +921,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             picks = [v.split(" ", 1) for v in user_input.get("suggested") or []]
             return self.async_create_entry(data=add_inputs(options, picks))
         targets = await self._link_targets()
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         meter = {}
         for sig in runner.named() if runner is not None else ():      # biggest first
             meter.setdefault(sig.name, most_specific(sig.locations, sig.count, runner.parents))

@@ -34,7 +34,6 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
 from .coordinator import InsightsCoordinator, InsightsData
 from .detection import DetectionRunner
 from .insights.detect import describe_location, edge_story, lag_window, location_confidence, most_specific
@@ -148,8 +147,9 @@ def _detection(runner) -> dict:
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """The whole picture, for a bug report or a question about a number."""
-    coordinator: InsightsCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    runner: DetectionRunner | None = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
+    loaded = getattr(entry, "runtime_data", None)
+    coordinator: InsightsCoordinator | None = loaded.coordinator if loaded is not None else None
+    runner: DetectionRunner | None = loaded.runner if loaded is not None else None
     data: InsightsData | None = coordinator.data if coordinator else None
 
     out: dict[str, Any] = {

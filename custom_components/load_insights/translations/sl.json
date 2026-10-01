@@ -22,7 +22,7 @@
         },
         "abort": {
             "no_energy_dashboard": "Nadzorna plošča Energija nima nastavljenega vira omrežja. Najprej tam nastavite vsaj omrežje; PV, baterija in posamezne naprave napoved izboljšajo.",
-            "already_configured": "Load Insights je že nastavljen."
+            "single_instance_allowed": "Load Insights je že nastavljen."
         }
     },
     "entity": {

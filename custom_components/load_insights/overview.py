@@ -10,13 +10,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DETECTION,
     CONF_SOURCE_KIND,
-    DOMAIN,
     SOURCE_GENERATOR,
     SOURCE_NONE,
 )
@@ -38,13 +38,13 @@ def _when(value: Optional[datetime]) -> str:
     return f"{delta / 86400:.0f} days ago"
 
 
-def overview_text(hass: HomeAssistant, entry_id: str) -> str:
+def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
     """Markdown for the overview page."""
-    coordinator = (hass.data.get(DOMAIN) or {}).get(entry_id)
-    runner = (hass.data.get(DOMAIN) or {}).get(f"{entry_id}_detection")
-    entry = hass.config_entries.async_get_entry(entry_id)
+    loaded = getattr(entry, "runtime_data", None)
+    coordinator = loaded.coordinator if loaded is not None else None
+    runner = loaded.runner if loaded is not None else None
     # what the grid page says is connected; unsaid (or the old "auto"), the utility
-    kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(CONF_SOURCE_KIND)
+    kind = (entry.options.get(CONF_DETECTION) or {}).get(CONF_SOURCE_KIND)
     lines: list[str] = []
 
     data = getattr(coordinator, "data", None)
