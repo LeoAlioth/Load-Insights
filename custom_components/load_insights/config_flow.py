@@ -54,7 +54,7 @@ NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carr
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
-from .detection import named_load_energy, runner_of
+from .detection import device_rows, meter_devices, named_load_energy, runner_of
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
 from .insights.named import chosen_name
 
@@ -311,7 +311,8 @@ def _disabled_readings(hass, device_id: str) -> int:
     registry = er.async_get(hass)
     wanted = set(KIND_BY_DEVICE_CLASS)
     return len([
-        e for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=True)
+        e for d in meter_devices(hass, device_id)
+        for e in er.async_entries_for_device(registry, d, include_disabled_entities=True)
         if e.disabled and e.domain == "sensor"
         and (e.device_class or e.original_device_class) in wanted
     ])
@@ -338,22 +339,8 @@ def _grid_found(hass, cfg: dict) -> dict:
 
 
 def _discover(hass, device_id: str, role: str = "load") -> dict:
-    """The device's sensors, matched to per-phase fields."""
-    registry = er.async_get(hass)
-    rows = []
-    for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
-        if e.domain != "sensor":
-            continue
-        state = hass.states.get(e.entity_id)
-        device_class = (
-            e.device_class
-            or e.original_device_class
-            or (state.attributes.get("device_class") if state else None)
-        )
-        name = e.name or e.original_name or (state.attributes.get("friendly_name") if state else "") or ""
-        rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name,
-                     "device_id": e.device_id})
-    return match_meter_entities(rows, role)
+    """The device's sensors, its sub-devices' included, matched to per-phase fields."""
+    return match_meter_entities(device_rows(hass, device_id), role)
 
 
 def _single_weather_entity(hass) -> str | None:
