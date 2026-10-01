@@ -2853,6 +2853,28 @@ def test_the_grid_waits_for_the_slowest_meter_within_the_cap():
     got, _, _, cut = f._hold_back({"c": [(T0 + 130.0, 300.0)]}, None, None, T0 + 130.0)
     assert cut == T0 + 130.0 and got["c"] == [(T0 + 130.0, 300.0)]
 
+
+def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
+    """Home's hidrofor plug read 0.5 W from half an hour before a 102 W,
+    47-minute run started; the pump then cycled inside it, 60 Wh, and the
+    energy pairing filed the run as the hidrofor. A meter that held its value
+    through a run's start did not start it."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    f.subs["Hidrofor"].phases["a"].interval = 10.0
+    rows = [(T0 - 1800.0, 0.5)]
+    for k in range(4):                                                   # four pump runs inside the run, 70 s at 800 W
+        t = T0 + 300.0 + k * 600.0
+        rows += [(t, 800.0), (t + 70.0, 0.5)]
+    rows.append((T0 + 3500.0, 0.6))
+    f.sub_rows["Hidrofor"] = rows
+    f._pass_end = T0 + 3600.0
+    run = D.Session(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
+    assert 0.65 <= D.energy_between(rows, run.start, run.end) / run.energy_wh <= 1.35   # the energies agree
+    assert not f._energy_pairs([run])                                     # but the plug held at its start
+    f.sub_rows["Hidrofor"] = [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]   # a plug that started it
+    _declare(f.subs["Hidrofor"].phases["a"], (T0 + 2.0, 84.5, None, T0 - 8.0, T0 + 2.0))
+    assert f._energy_pairs([run])
+
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
     only what else inside it changed - the pieces of a grid step do not overlap."""
