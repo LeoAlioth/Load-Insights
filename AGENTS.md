@@ -373,7 +373,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `DRIVER_MIN_RUNS` / `DRIVER_MIN_R2` | 30 / 0.25 | a number is believed about a load's run length (or gap) once the load has this many runs and the number explains this share of their spread; then only the unexplained spread counts against its tightness | count / r² | — | **benched, no change**: Kozolec 8-27 Sep with `sensor.apartma_t_h_temperature` and `sensor.weather_station_temperature` - the fridges' signatures (#1 x307, #3 x227, each holding runs of both fridges) learn r² 0.00-0.05, nowhere near believed; fridge bench and score identical (purity 98.3 %, wconc 92.6 %). Only the synthetic test shows it working (+4 %/°C, r² 1.00). Not swept |
 | `INPUT_MIN_RUNS` / `INPUT_MIN_SHARE` / `INPUT_MIN_LIFT` | 8 / 0.6 / 3 | a load runs IN one value of a setting (a washer's cycle phase, a fan's speed) once it has this many runs (time-weighted), this share of them in the value, and that share this many times the value's share of the time | runs / share / × | — | **benched, no change to the scores** (2026-09-28): Home 18-27 Sep with the Sock Eater's cycle phase, appliance state and sub-phase and the RF ceiling fan's speed - purity 71.7 %, wconc 31.1 % fed or not. Two loads tied: #413 5.8 kW A+B+C 6 s x16 (62 % of runs in Wash, 8.1× chance) and #578 127 W A+C 38 s x194 (73 % in Running, 4.1×). The washer's own parts - probably #274 1.8 kW on A (the heater), #7 48 W and #201 126 W on A (the inverter drum) - run in Wash 3-4× chance but share their signatures with look-alikes, so none reaches the share. Weighted by sighting instead of time, a 49 W load starting 285 times a day remembered eight hours - one wash - and read as tied (89 %, 4.7×): hence `INPUT_TIME_TAU_S` |
 | `INPUT_TIME_TAU_S` | 14 d | how long a value's share of the time, and a load's runs in it, are remembered | s | — | see above; not swept |
-| `INPUT_EVIDENCE` | **1** | a load tied to a value of a setting counts as tight about time (evidence's duration term raised to its share) | switch | — | **benched, no change**: scores identical on or off; evidence of the two tied loads 0.72 → 0.77 and 0.50 → 0.65, none newly over the naming bar |
+| `INPUT_EVIDENCE` | **1** | a load tied to a value of a setting counts as tight about time (evidence's duration term raised to its share) | switch | — | **benched, scores unchanged; the naming page is not**: scores identical on or off; evidence of the two tied loads 0.72 → 0.77 and 0.50 → 0.65, none newly over the naming bar (2026-09-28). On ten days with the same four inputs (2026-10-01): scores identical again (Home SUBS=prod 77.4 / 49.1 %, the mat, kiln and pump too), but eight loads tied, four of the washer's clear the bar only with it - #1542 148 W in Wash 0.54 → 0.70, #1392 25 W and #1960 22 W in Dry 0.50 → 0.70, #150 294 W in Dry 0.62 → 0.77 - and Mansarda's list clears 7 instead of 5 |
 | `INPUT_SPLIT` (`INPUT_RARE_SHARE` 0.25, `INPUT_SPLIT_MIN_TIME_S` 1 d, `INPUT_SPLIT_LIFT` 3, `INPUT_MIN_EPISODES` 3, `INPUT_MIN_COVERAGE` 0.5) | **1** | a run made while a setting holds a rare value joins only signatures born in it; one born by chance goes back into an alike twin (pair lift < 3) or turns ordinary once it has run in under half of the value's episodes since its birth (at least 3) | switch | — | **benched, shipped (2026-09-29).** Home 18-27 Sep with the Sock Eater's phase, state and sub-phase: purity 63.8 → 65.4 %, wconc 29.8 → 30.5 % (office plug 19 → 16 %); kiln and pump benches identical (no washer there). Judged by runs alone, the kiln firing through one afternoon's washing split into Wash/Rinse/Spin/Dry signatures (a burst read as 7× chance) and the floor mat grew a Delayed Start one; by episodes they go back. Tied now: 119 W A+C in Rinse, 61 W C in Dry, 98 W B in End Of Cycle. The heater (~2 kW on A, 2-60 min, in wash AND dry) scatters into one- and two-run signatures and does not tie on 13 washes |
 | `HOLD_MIN_INTERVAL_S` / `HOLD_SUSTAIN_S` | 20 s / 30 s | on a meter this slow in a steady state (a Shelly heartbeating once a minute, a Zigbee plug reporting on change), a pending change counts as having held until the next reading, and holding 30 s is enough | s | — | **benched, shipped (2026-09-29).** Kozolec's IR panel meter alone: 13 runs of 164 min → 46 of 48 min (its readings: 52 runs, mean 40 min, off 2.4 min between); the house's ~500 W signature credited to the panel 8 → 27 of 63; the Boiler meter's library 132 runs of 36 min at 937 W (pulses merged) → 1467 of 3 min at 1906 W (its element: 1546 pulses of ~1 min at 1.9 kW). Kozolec purity 98.3 %, wconc 93.9 → 94.0 %; Home 63.8/29.8 → 63.9/29.6 % (production meters 64.1/29.1 → 64.1/29.2 %); kiln, pump, fridges identical. The Shelly needs no change: it reports each switch within 1-4 s |
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour, for backfilling a newly named load's statistics | s | — | not a detector dial; sized to the 10-day backfill |
@@ -589,6 +589,25 @@ change's span can start: SUSTAIN_CADENCES (3) of the meter's cadence.
   merged the floor mat into the kiln's start (one reading at the mat's level).
 - **Confirming over the period (the median gap) instead** held Hisa's levels
   30 s, its writes being 15 s apart when little moves.
+- **Until ten moving gaps are known, the 5th percentile of the last 60 gaps**
+  (`reading_cadence`), not the interval. Without it (2026-10-01) the bench is
+  identical but for Home with production's meters (purity 75.5 -> 75.4 %,
+  energy F0.5 56.9 -> 59.1), and the IR panel's library at Kozolec too, but a
+  meter heartbeating once a minute then times itself by its 60 s median until
+  it has moved ten times: `test_a_slow_meters_silence_is_a_held_value` keeps
+  14 of its 20 cycles from cold (18 with it), and 16 after a restart (20) -
+  the moving gaps are not saved. Saving their last 60 gives the restart back
+  (20), not the cold start. Kept.
+- **The interval as the cadence** - one gap estimator, `interval` taking the
+  moving gaps' 10th percentile once ten are known (2026-10-01, without
+  `reading_cadence`, one trial, unswept): Home 77.5 / 46.5 -> 79.3 / 50.3 %,
+  with the thermostat 77.1 / 47.8 -> 78.2 / 48.9, Kozolec 99.2 / 89.8 ->
+  99.1 / 95.4 % (its Scala2 69 -> 120 of 146 in one signature), Home's energy
+  P 78.4 -> 88.1 %; but the pump's clean runs 490 -> 482 (missing 25 -> 31),
+  and `test_a_readings_interval_is_its_cadence_not_how_often_it_changes`
+  fails. The interval sizes the event window, the corroboration window and
+  the sample counts, so this moves far more than a cleanup should; not
+  shipped, a lead.
 
 Unplaced steps are a SIZE disagreement between the meter's step and the
 grid's, not timing: Hisa 36 of 168, Mansarda 44 of 186 inside the window
@@ -1151,7 +1170,17 @@ Don't re-chase these; each cost real time.
   87), `SUSTAIN_AGREE`, `STEP_AT_HALFWAY`, `PHASE_BALANCE_MIN`, the blip drop.
   Held drops and joint stops (`HELD_DROPS`) bench BETTER off (Home 77.3 / 57.5)
   but the bench has no stepped load: a washer's 2 kW -> 400 W is then one
-  1.2 kW level, 29 % over its energy. Mixed, kept: `SETTLE_SHARE` (off: kiln
+  1.2 kW level, 29 % over its energy. Re-measured on ten days (2026-10-01,
+  against 7b21e9e): off trades precision for recall, so kept. Home with the
+  thermostat 77.1 / 47.8 -> 75.4 / 48.2 % (the server UPS's runs in NASA's
+  signatures 81 -> 158, the pump's 61 -> 81), Home's energy P/R 78.4 / 27.1 ->
+  68.8 / 37.7 % (NASA's and Susilna's loose signatures crossing half; the
+  workshop boiler 92 -> 87 % precise), fridges at the right length 65 -> 62;
+  Kozolec's energy recall 81.7 -> 95.1 % - the pond EVSE 76 -> 96 %, and that
+  is the joint stops: dropping only the held drops' lift of the followed size
+  leaves it at 76 and costs the workshop boiler 92 -> 80 %. Joint stops fire
+  1,224 times in Home's ten days (205 of them closing a run a device meter
+  accounts for), 33 at Kozolec. Mixed, kept: `SETTLE_SHARE` (off: kiln
   single-leg 175 -> 147, but pump -20 and the mat +7 h), `HOLD_MIN_INTERVAL_S`
   (Kozolec wconc -1.1, Home +1.5). `ENERGY_MATCH_LO` cannot be ablated - the
   score's labels use it too.
