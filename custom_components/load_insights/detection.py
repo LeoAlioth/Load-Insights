@@ -24,11 +24,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_GRID_PREFIX,
-    CONF_LAYOUT,
-    LAYOUT_ALIASES,
     ROLE_PREFIX,
-    SOURCE_NONE,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
     CONF_INPUT_ENTITIES,
@@ -61,14 +57,11 @@ from .insights.detect import (
     without_window_start,
     names_in_store,
     carries_load,
-    classify_source,
-    site_topology,
     unit_scale,
     exports_positive,
     drop_stale_load_override,
     mean_power,
     most_specific,
-    measure_quantum,
     quantum_of_steps,
     clears_for_naming,
     offer_for_naming,
@@ -218,13 +211,14 @@ class DetectionRunner:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.submeters = {}
+        # Meters below the main one come from the Energy dashboard, resolved once
+        # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
+        self.submeters: Dict[str, dict] = {}
         self.fleet: Fleet = Fleet()
         # V x dI per phase: the apparent power one quantum of the amps
         # behind this role's power factor is worth. Measured, never set.
         self.q_quantum: Dict[str, float] = {}
         self._amp_steps: Dict[str, List[float]] = {}
-        self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
@@ -232,9 +226,6 @@ class DetectionRunner:
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
-        # how the grid reading relates to the load one, per phase, worked out
-        # from the data unless the user says otherwise
-        self.layout: Dict[str, str] = {}
         # What the AC input turned out to be, kept at the most
         # informative verdict seen: a generator that has not run this
         # window reads exactly like nothing connected, and falling back
@@ -256,7 +247,6 @@ class DetectionRunner:
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
-        self.sessions_today = 0
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         self._unsub = None
         self._listeners: List = []
@@ -270,10 +260,6 @@ class DetectionRunner:
         # by an older version that nobody re-saves. See
         # drop_stale_load_override for what it removes and why.
         return drop_stale_load_override(dict(self.entry.options.get(CONF_DETECTION) or {}))
-
-    # Meters below the main one come from the Energy dashboard, resolved once
-    # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
-    submeters: Dict[str, dict] = {}
 
     async def _resolve_submeters(self) -> Dict[str, dict]:
         """Every individually metered device the Energy dashboard lists, with
@@ -519,14 +505,6 @@ class DetectionRunner:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
 
-    def _input_entities(self) -> List[str]:
-        """Every input the forecast is given, whatever it is linked to.
-        Detection reads the same list (Anze, 2026-09-28: add the thermostat
-        to the inputs first, and move it to the device once the load it
-        helped find is named): what switches says WHEN a load runs, a number
-        is learned against how long and how often."""
-        return list(self.entry.options.get(CONF_INPUT_ENTITIES) or [])
-
     async def _read_inputs(self, start: datetime, end: datetime):
         """The pass's inputs, with SWITCH_MEMORY_S before it so a run that
         started a slice ago still has its start. A switch as its on-periods,
@@ -540,7 +518,10 @@ class DetectionRunner:
         numbers: Dict[str, list] = {}
         inputs: Dict[str, list] = {}
         since = start - timedelta(seconds=SWITCH_MEMORY_S)
-        for eid in self._input_entities():
+        # every input the forecast is given, whatever it is linked to (Anze,
+        # 2026-09-28: add the thermostat to the inputs first, and move it to
+        # the device once the load it helped find is named)
+        for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
                 continue
@@ -823,19 +804,6 @@ class DetectionRunner:
         return max(0.0, (dt_util.utcnow() - self.last_processed).total_seconds())
 
     @property
-    def declared_layout(self) -> Optional[str]:
-        """The wiring the user stated, from the Inverters page.
-
-        It lived on the grid page as a site-wide dropdown, which was the
-        wrong place: the topology is a fact about where an INVERTER sits, not
-        about the grid - Anze said so and I agreed and then left both in
-        place, one of them reading nothing (2026-09-18). The stored value is
-        still honoured so a site that set it before keeps its answer."""
-        stored = self.config.get(CONF_LAYOUT)
-        stored = LAYOUT_ALIASES.get(stored, stored)
-        return site_topology(self.entry.options.get(CONF_INVERTERS) or [], stored)
-
-    @property
     def interval_minutes(self) -> int:
         """How often to re-read the recorder, as configured or defaulted."""
         try:
@@ -1032,7 +1000,7 @@ class DetectionRunner:
             self.fleet.wait_cap_s = self.meter_wait_s
             await self.hass.async_add_executor_job(
                 self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
-                dict(self.q_quantum), dict(self.sub_q_quantum), single, switches or None, numbers or None,
+                dict(self.q_quantum), single, switches or None, numbers or None,
                 inputs or None,
             )
             self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
@@ -1261,7 +1229,7 @@ class DetectionRunner:
             return
         self.average_power = mean_power(previous, energy, processed_to - since)
 
-    async def _read(self, start: datetime, end: datetime, cfg: dict, derive_q: bool = True):
+    async def _read(self, start: datetime, end: datetime, cfg: dict):
         """(watts per phase, reactive VAr per phase) over the window.
 
         The VAr here is only ever derived from readings that sit on one
@@ -1272,15 +1240,14 @@ class DetectionRunner:
         if not samples:
             return {}, {}
         q: Dict[str, Dict[float, float]] = {}
-        if derive_q:
-            for p in samples:
-                if self._coherent_triple(cfg, p) is None:
-                    continue          # different meters; not this power's VAr
-                var = _reactive(samples[p], series.get(("voltage", p)),
-                                series.get(("current", p)), series.get(("pf", p)),
-                                series.get(("var", p)), series.get(("va", p)))
-                if var:
-                    q[p] = var
+        for p in samples:
+            if self._coherent_triple(cfg, p) is None:
+                continue          # different meters; not this power's VAr
+            var = _reactive(samples[p], series.get(("voltage", p)),
+                            series.get(("current", p)), series.get(("pf", p)),
+                            series.get(("var", p)), series.get(("va", p)))
+            if var:
+                q[p] = var
         return samples, q
 
 

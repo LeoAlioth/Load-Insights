@@ -532,7 +532,7 @@ def main() -> int:
                   f"noise {state.noise:.0f} W, {len(state.open_edges)} still open")
     print()
     for sig in sorted(detector.signatures, key=lambda s: -s.energy_wh)[:args.top]:
-        print(f"  {sig.row(timezone.utc)}")
+        print(f"  {sig.describe(timezone.utc)}")
     return 0
 
 
