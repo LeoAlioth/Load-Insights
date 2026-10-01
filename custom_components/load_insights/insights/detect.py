@@ -1093,6 +1093,72 @@ def _as_of(rows: Sequence[Tuple[float, float]], ts: float, i: int) -> int:
     return i
 
 
+def _align(source: list, target_rows: list) -> Dict[float, float]:
+    """``source`` read as of each of ``target_rows``' moments."""
+    out: Dict[float, float] = {}
+    i = 0
+    for ts, _ in target_rows:
+        i = _as_of(source, ts, i)
+        if i >= 0:
+            out[ts] = source[i][1]
+    return out
+
+
+# How far into a window the meter's own reactive power may start and still be
+# taken for all of it: history reaches back past its first recorded day.
+SIGNED_VAR_SLACK_S = 120.0
+
+
+# A 3EM's apparent power read "as of" the power's stamp still held the reading
+# BEFORE a kiln leg switched off - 34.5 W against 3505 VA, a 3.5 kvar spike at
+# the very step (Home, 2026-09-30): the same update - see SAME_UPDATE_S.
+
+
+def _with_update(rows: list, ts: float, i: int) -> int:
+    """``i`` (as of ``ts``), or the next row when it is part of the same update."""
+    if i + 1 < len(rows) and rows[i + 1][0] - ts <= SAME_UPDATE_S:
+        return i + 1
+    return i
+
+
+def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
+              pfs: Optional[list], signed: Optional[list] = None,
+              vas: Optional[list] = None) -> Dict[float, float]:
+    """Reactive VAr at each power sample.
+
+    Every entity updates at its own moment, so the other readings are taken
+    as of the power sample's time - sample and hold - rather than looked up
+    at the same instant, which almost never matches.
+
+    The meter's own reactive power, where it publishes one and it covers the
+    window, is taken as it is: signed, so a step's change is the load's own.
+    The root of (V x I) squared minus P squared has no sign, and a load whose
+    reactive power runs against the floor's reads the wrong size (Anze,
+    2026-09-30). Else the meter's own apparent power, then V x I, then the
+    power factor: finest first. Each paired with the power reading of the
+    same update - see SAME_UPDATE_S."""
+    if signed and power_rows and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S:
+        return _align(signed, power_rows)
+    volts, amps, pfs, vas = volts or [], amps or [], pfs or [], vas or []
+    out: Dict[float, float] = {}
+    vi = ai = fi = si = 0
+    for ts, p in power_rows:
+        vi, ai, fi, si = _as_of(volts, ts, vi), _as_of(amps, ts, ai), _as_of(pfs, ts, fi), _as_of(vas, ts, si)
+        v, a, f, s = (_with_update(volts, ts, vi), _with_update(amps, ts, ai),
+                      _with_update(pfs, ts, fi), _with_update(vas, ts, si))
+        apparent = None
+        if s >= 0:
+            apparent = vas[s][1]
+        elif v >= 0 and a >= 0:
+            apparent = volts[v][1] * amps[a][1]
+        elif f >= 0 and pfs[f][1]:
+            apparent = abs(p) / abs(pfs[f][1])
+        if apparent is None:
+            continue
+        out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
+    return out
+
+
 UNIT_SCALE = {
     # to watts
     "W": 1.0, "kW": 1000.0, "MW": 1_000_000.0, "mW": 0.001,
