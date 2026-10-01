@@ -45,7 +45,7 @@ def setup(weeks=10, seed=1):
 
 def test_the_relationship_is_recovered_lead_by_lead_with_its_sign():
     hist, temps, samples = setup()
-    fc = P.forecast(samples, NOW, state_history=temps, state_now=30.0)
+    fc = P.forecast(samples, NOW, state_history=[temps], state_now=[30.0])
     nc = fc.nowcast
     assert nc.engaged, nc
     assert math.isclose(nc.coefficients[1], -0.01, rel_tol=0.2), nc.coefficients
@@ -56,9 +56,9 @@ def test_the_relationship_is_recovered_lead_by_lead_with_its_sign():
 
 def test_a_cold_tank_lifts_the_next_hours_and_a_hot_one_lowers_them_and_nothing_beyond():
     hist, temps, samples = setup()
-    cold = P.forecast(samples, NOW, state_history=temps, state_now=30.0)
-    hot = P.forecast(samples, NOW, state_history=temps, state_now=60.0)
-    none = P.forecast(samples, NOW, state_history=temps, state_now=None)
+    cold = P.forecast(samples, NOW, state_history=[temps], state_now=[30.0])
+    hot = P.forecast(samples, NOW, state_history=[temps], state_now=[60.0])
+    none = P.forecast(samples, NOW, state_history=[temps], state_now=None)
     for i in (1, 2):
         assert cold.hourly[i][1] > none.hourly[i][1] > hot.hourly[i][1], i
     for i in range(N.LEADS, N.LEADS + 24):
@@ -69,7 +69,7 @@ def test_a_cold_tank_lifts_the_next_hours_and_a_hot_one_lowers_them_and_nothing_
 
 def test_the_band_narrows_where_the_state_explains_the_hour():
     hist, temps, samples = setup()
-    fc = P.forecast(samples, NOW, state_history=temps, state_now=45.0)
+    fc = P.forecast(samples, NOW, state_history=[temps], state_now=[45.0])
     plain = P.forecast(samples, NOW)
     for i in (1, 2):
         w_fc = fc.bands[i][1] - fc.bands[i][0]
@@ -83,13 +83,13 @@ def test_noise_does_not_engage():
     hist = P.hour_buckets(start, 8 * 168)
     temps = {t.timestamp(): rnd.uniform(30, 60) for t in hist}
     samples = [(t, boiler(t) + rnd.uniform(-0.01, 0.01)) for t in hist]
-    assert not P.forecast(samples, NOW, state_history=temps, state_now=40.0).nowcast.engaged
+    assert not P.forecast(samples, NOW, state_history=[temps], state_now=[40.0]).nowcast.engaged
 
 
 def test_too_little_state_history_means_no_fit():
     hist, temps, samples = setup()
     few = dict(list(temps.items())[-200:])
-    assert not P.forecast(samples, NOW, state_history=few, state_now=40.0).nowcast.engaged
+    assert not P.forecast(samples, NOW, state_history=[few], state_now=[40.0]).nowcast.engaged
 
 
 
@@ -139,14 +139,6 @@ def test_a_second_reading_of_the_same_thing_is_not_added():
     lead1 = nc.matrix[1][0]
     assert math.isclose(lead1, -0.01, rel_tol=0.25), lead1   # not +5 and -5
 
-
-def test_one_state_given_as_a_list_fits_as_it_did_alone():
-    hist, temps, samples = setup()
-    alone = P.forecast(samples, NOW, state_history=temps, state_now=30.0).nowcast
-    listed = P.forecast(samples, NOW, state_history=[temps], state_now=[30.0]).nowcast
-    assert listed.engaged and listed.used == (0,)
-    for h in range(N.LEADS):
-        assert math.isclose(listed.coefficients[h], alone.coefficients[h], rel_tol=0.01, abs_tol=1e-5), h
 
 if __name__ == "__main__":
     run_main(globals())

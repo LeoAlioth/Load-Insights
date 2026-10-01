@@ -34,25 +34,23 @@ class Nowcast:
     state_mean: float = 0.0
     hours: int = 0
     engaged: bool = False
-    # With SEVERAL states (fit_joint): which of them were kept, each one's
-    # mean, and LEADS rows of one coefficient per kept state. Empty for one.
+    # which of the states given were kept, each one's mean, and LEADS rows of
+    # one coefficient per kept state (``coefficients`` / ``state_mean`` are
+    # the first kept state's)
     used: tuple = ()
     means: tuple = ()
     matrix: tuple = ()
 
     def deltas(self, current_state) -> List[float]:
-        """``current_state`` is the live value - or, for a joint fit, the live
-        value of every state it was given, in the order given."""
+        """``current_state`` is the live value of every state the fit was
+        given, in the order given."""
         if not self.engaged or current_state is None:
             return [0.0] * LEADS
-        if self.matrix:
-            live = [current_state[i] if i < len(current_state) else None for i in self.used]
-            if any(v is None for v in live):
-                return [0.0] * LEADS
-            xs = [v - m for v, m in zip(live, self.means)]
-            return [sum(c * x for c, x in zip(row, xs)) for row in self.matrix]
-        x = current_state - self.state_mean
-        return [c * x for c in self.coefficients]
+        live = [current_state[i] if i < len(current_state) else None for i in self.used]
+        if any(v is None for v in live):
+            return [0.0] * LEADS
+        xs = [v - m for v, m in zip(live, self.means)]
+        return [sum(c * x for c, x in zip(row, xs)) for row in self.matrix]
 
     def band_shrink(self, lead: int) -> float:
         """Factor for the band's half-width at this lead: sqrt(1 - explained)."""
@@ -62,56 +60,6 @@ class Nowcast:
 
 
 NONE = Nowcast()
-
-
-def fit_nowcast(rows: Sequence[Tuple[float, float, Sequence[Optional[float]]]]) -> Nowcast:
-    """``rows`` are (weight, state_at_t, residuals) with residuals[h] the
-    device's actual-minus-expected h hours after t, None where unknown."""
-    rows = [(w, x, r) for w, x, r in rows if w > 0 and x is not None]
-    if len(rows) < MIN_HOURS:
-        return NONE
-    W = sum(w for w, _, _ in rows)
-    mean = sum(w * x for w, x, _ in rows) / W
-    coeffs: List[float] = []
-    expl: List[float] = []
-    for h in range(LEADS):
-        sub = [(w, x - mean, r[h]) for w, x, r in rows if h < len(r) and r[h] is not None]
-        if len(sub) < MIN_HOURS:
-            coeffs.append(0.0)
-            expl.append(0.0)
-            continue
-        sxx = sum(w * x * x for w, x, _ in sub)
-        sxr = sum(w * x * r for w, x, r in sub)
-        srr = sum(w * r * r for w, _, r in sub)
-        w_total = sum(w for w, _, _ in sub)
-        if sxx <= 1e-12 or srr <= 0 or srr < MIN_RESIDUAL_MS * w_total:
-            coeffs.append(0.0)
-            expl.append(0.0)
-            continue
-        c = sxr / sxx
-        ssr = sum(w * (r - c * x) ** 2 for w, x, r in sub)
-        coeffs.append(c)
-        expl.append(max(0.0, 1.0 - ssr / srr))
-    # Judged on the BEST lead, not the first: a state's effect is delayed by
-    # nature (the tank's temperature now decides the boiler's NEXT hour), so
-    # lead 0 explaining nothing is the normal case, not a failed fit.
-    if not coeffs or max(expl) < MIN_EXPLAINED:
-        return NONE
-    return Nowcast(coefficients=tuple(coeffs), explained=tuple(expl), state_mean=mean, hours=len(rows), engaged=True)
-
-
-def build_rows(state_hist: Dict[float, float], residual_by_key: Dict[float, float],
-               weight_by_key: Dict[float, float]) -> List[Tuple[float, float, List[Optional[float]]]]:
-    """Line the state at hour t up with the residuals at t..t+LEADS-1."""
-    rows = []
-    for k, x in state_hist.items():
-        if k not in weight_by_key:
-            continue
-        res = [residual_by_key.get(k + h * 3600.0) for h in range(LEADS)]
-        if res[0] is None:
-            continue
-        rows.append((weight_by_key[k], x, res))
-    return rows
 
 
 def _solve(a: List[List[float]], b: List[float]) -> Optional[List[float]]:
@@ -161,8 +109,8 @@ def _fit_lead_joint(rows, idx: Sequence[int], means: Sequence[float], h: int):
 
 
 def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Optional[float]]]]) -> Nowcast:
-    """Several states for one device at once: ``rows`` are (weight, states at t,
-    residuals), states in a fixed order.
+    """A device's states, one or several: ``rows`` are (weight, states at t,
+    residuals h hours after t, None where unknown), states in a fixed order.
 
     Forward, one at a time (Anze, 2026-09-28: a floor mat's thermostat reads
     the room AND the floor): the state that explains the most on its own goes
@@ -203,8 +151,8 @@ def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Op
 
 def build_rows_joint(state_hists: Sequence[Dict[float, float]], residual_by_key: Dict[float, float],
                      weight_by_key: Dict[float, float]) -> List[Tuple[float, List[Optional[float]], List[Optional[float]]]]:
-    """build_rows for several states: the hour's value of each (None where a
-    state has none), lined up with the residuals at t..t+LEADS-1."""
+    """Line each state's value at hour t (None where a state has none) up
+    with the residuals at t..t+LEADS-1."""
     keys = set().union(*[set(h) for h in state_hists]) if state_hists else set()
     rows = []
     for k in keys:

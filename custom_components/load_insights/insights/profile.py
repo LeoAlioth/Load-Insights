@@ -25,8 +25,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .calendars import CalendarModel, CalendarSignals, fit_calendar
 from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
-from .nowcast import (LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows,
-                      build_rows_joint, fit_joint, fit_nowcast)
+from .nowcast import LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows_joint, fit_joint
 
 Sample = Tuple[datetime, float]
 
@@ -299,18 +298,18 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
              temps_history: Optional[Dict[float, float]] = None,
              temps_forecast: Optional[Dict[float, float]] = None,
              calendars: Optional[Sequence[CalendarSignals]] = None,
-             state_history: Optional[Dict[float, float]] = None,
-             state_now: Optional[float] = None) -> Forecast:
+             state_history: Optional[Sequence[Dict[float, float]]] = None,
+             state_now: Optional[Sequence[Optional[float]]] = None) -> Forecast:
     """``temps_history`` / ``temps_forecast`` map hour keys (epoch seconds of
     the period start) to outdoor temperature in C. Absent, the profile stands
     alone; present, a temperature response is fitted on the residuals and
     applied to the horizon hours that have a forecast temperature.
     ``calendars`` carry each linked calendar's on-hours over history and
     horizon; each is fitted on this series and applied where it engaged.
-    ``state_history`` / ``state_now`` are a device's own state sensor (hour
-    key -> hourly mean, and the live value): a nowcast is fitted on the
-    residuals and shifts the first few horizon hours. Lists of both give
-    several states, fitted jointly (``fit_joint``).
+    ``state_history`` / ``state_now`` are a device's own state sensors, in
+    one order (each hour key -> hourly mean, and each live value): a nowcast
+    is fitted on the residuals (``fit_joint``) and shifts the first few
+    horizon hours.
 
     Order, fit and predict alike: slot -> + temperature -> x calendars ->
     x level. The level is judged against the fully adjusted expectation."""
@@ -361,11 +360,7 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             e = max(0.0, e + response.delta((temps_history or {}).get(k))) * hist_mult.get(k, 1.0) * level
             resid[k] = v - e
             weights[k] = w
-        if isinstance(state_history, (list, tuple)):
-            # several states at once - see fit_joint; state_now is then a list too
-            nowcast = fit_joint(build_rows_joint(state_history, resid, weights))
-        else:
-            nowcast = fit_nowcast(build_rows(state_history, resid, weights))
+        nowcast = fit_joint(build_rows_joint(state_history, resid, weights))
     deltas = nowcast.deltas(state_now)
 
     base = profile.predict(now, horizon_hours)
