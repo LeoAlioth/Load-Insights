@@ -47,6 +47,8 @@
 
 ### Fixes
 
+- **The Grid connection page sees a Shelly Pro 3EM's phases.** A Pro 3EM is a device for its totals with a device for each phase hanging off it, and picking it on the Grid connection page read only the totals: it proposed no per-phase readings, where load detection, reading the phases' devices too, found all three. The page now reads them as detection does and proposes each phase's power, current, voltage and power factor; a disabled reading on a phase's device is counted in its note.
+
 - **The grid meter's net readings are suggested over its gross ones.** An Enphase gateway publishes what the house draws (`current_power_consumption_l1`, never negative) beside what crosses the grid connection (`current_net_power_consumption_l1`, signed), and the Grid connection page filled in the first, whose name is shorter. It now suggests the net one, and the house's own page still takes the gross; nothing already set up changes.
 
 - **A sub-meter's power factors are read at the moment of the step, and from its apparent power.** A meter publishes its readings of one moment as separate entities, milliseconds apart, and taking the others "as of" the power's reading paired a switched-off kiln leg's 34 W with the 3.5 kVA from before - a phantom reactive spike at the very step. Readings from the same update are now paired, and where a meter publishes its apparent power (a Shelly Pro 3EM does, to 0.1 VA) the reactive part comes from that rather than from its two-decimal power factor. The kiln's legs on Home's Hiša meter now read 0.866, as a phase-to-phase element must, for 86-98 % of their steps (36-62 % before).

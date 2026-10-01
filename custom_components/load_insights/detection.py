@@ -211,6 +211,44 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
     return SiteModel.from_prefs(prefs, ignore=own)
 
 
+def meter_devices(hass: HomeAssistant, device_id: str) -> List[str]:
+    """The device and the devices that hang off it (via_device_id) - see
+    device_rows."""
+    ids = [device_id]
+    try:
+        ids += [d.id for d in dr.async_get(hass).devices.values() if d.via_device_id == device_id]
+    except Exception:                        # a registry we cannot read is not fatal
+        pass
+    return ids
+
+
+def device_rows(hass: HomeAssistant, device_id: str) -> list:
+    """A device's sensors in the shape the meter matcher reads, INCLUDING
+    those of the devices that hang off it.
+
+    A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
+    totals, each phase pointing at the parent with via_device_id. The
+    Energy dashboard names the parent - that is where the energy
+    statistic lives - so reading only the parent's own entities found a
+    single total and nothing else, and a three-phase meter was taken for
+    a one-phase one. It is the commonest three-phase meter there is
+    (Anze's attic and grid meters are both this, 2026-09-22). The grid
+    page reads a device through this too."""
+    registry = er.async_get(hass)
+    rows = []
+    for e in [x for i in meter_devices(hass, device_id)
+              for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
+        if e.domain != "sensor":
+            continue
+        st = hass.states.get(e.entity_id)
+        rows.append({
+            "entity_id": e.entity_id,
+            "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
+            "name": e.name or e.original_name or "",
+        })
+    return rows
+
+
 class DetectionRunner(DataUpdateCoordinator[None]):
     """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
@@ -298,7 +336,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
-                fields = match_meter_entities(self._device_rows(registry, entry.device_id))
+                fields = match_meter_entities(device_rows(self.hass, entry.device_id))
             phases = [p for p in PHASES if fields.get(f"power_{p}")]
             agnostic = False
             if len(phases) < 2:
@@ -315,36 +353,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                               # None: not declared, the library's shape decides
                               "single": None if declared is None else dev.energy in declared}
         return out
-
-    def _device_rows(self, registry, device_id: str) -> list:
-        """A device's sensors in the shape the meter matcher reads, INCLUDING
-        those of the devices that hang off it.
-
-        A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
-        totals, each phase pointing at the parent with via_device_id. The
-        Energy dashboard names the parent - that is where the energy
-        statistic lives - so reading only the parent's own entities found a
-        single total and nothing else, and a three-phase meter was taken for
-        a one-phase one. It is the commonest three-phase meter there is
-        (Anze's attic and grid meters are both this, 2026-09-22)."""
-        ids = [device_id]
-        try:
-            dev_reg = dr.async_get(self.hass)
-            ids += [d.id for d in dev_reg.devices.values() if d.via_device_id == device_id]
-        except Exception:                        # a registry we cannot read is not fatal
-            pass
-        rows = []
-        for e in [x for i in ids
-                  for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
-            if e.domain != "sensor":
-                continue
-            st = self.hass.states.get(e.entity_id)
-            rows.append({
-                "entity_id": e.entity_id,
-                "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
-                "name": e.name or e.original_name or "",
-            })
-        return rows
 
     async def _inverter_terms(self, start: datetime, end: datetime) -> List[tuple]:
         """Each inverter as (rows, sign) per phase: its output, less its input.
@@ -499,7 +507,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             found: Dict[str, str] = {}
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
-                matched = match_meter_entities(self._device_rows(registry, entry.device_id))
+                matched = match_meter_entities(device_rows(self.hass, entry.device_id))
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
@@ -1041,7 +1049,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         uses it without being set up again."""
         if device is None:
             return None
-        return beside(self._device_rows(er.async_get(self.hass), device), reference, "var", phase)
+        return beside(device_rows(self.hass, device), reference, "var", phase)
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -1062,7 +1070,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         device = self._device_of(amps)
         if device is None or device != self._device_of(volts):
             return None
-        power = beside(self._device_rows(er.async_get(self.hass), device), amps, "power", phase)
+        power = beside(device_rows(self.hass, device), amps, "power", phase)
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,
