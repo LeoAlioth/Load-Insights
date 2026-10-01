@@ -25,6 +25,7 @@ INHERITED = {
     "hass", "config_entry", "data", "async_write_ha_state", "coordinator", "entity_id",
     "async_on_remove", "platform", "logger", "name", "available", "async_request_refresh",
     "last_update_success", "update_interval", "async_set_updated_data", "async_added_to_hass",
+    "async_refresh", "async_shutdown", "async_update_listeners",
     "async_update_ha_state", "registry_entry", "device_entry", "should_poll",
     "async_abort", "async_create_entry", "async_show_form", "async_show_menu",
     "async_set_unique_id", "_abort_if_unique_id_configured",
