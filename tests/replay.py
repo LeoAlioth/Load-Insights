@@ -339,6 +339,11 @@ def main() -> int:
     parser.add_argument("--slice-hours", type=float, default=0.0,
                         help="feed the detector in slices this long, as production's "
                              "backfill does (6); 0 feeds everything in one call")
+    parser.add_argument("--live-days", type=float, default=0.0,
+                        help="feed the last this many days in --live-pass-s passes, as a site runs "
+                             "once it has caught up; the days before in --slice-hours slices, as its backfill")
+    parser.add_argument("--live-pass-s", type=float, default=60.0,
+                        help="how long each live pass is (production's default: one minute)")
     parser.add_argument("--keep-coarse", action="store_true",
                         help="do not drop hourly statistics rows")
     parser.add_argument("--no-q", action="store_true",
@@ -497,8 +502,12 @@ def main() -> int:
         return part
     t = first
     fleet.parents = dict(p.split("=", 1) for p in args.parent)
+    live_from = latest - args.live_days * 86400.0 if args.live_days else math.inf
     while t <= latest:
-        e = min(t + step, latest + 1e-6)
+        if t < live_from:
+            e = min(t + step, live_from, latest + 1e-6)          # the backfill's slices, up to where live begins
+        else:
+            e = min(t + args.live_pass_s, latest + 1e-6)         # then pass by pass, as a caught-up site
         # sliced the way the recorder answers, then cleaned the way production
         # cleans it, so both paths are the same code
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
