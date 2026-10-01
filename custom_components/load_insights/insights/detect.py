@@ -3811,6 +3811,8 @@ class Detector:
             self._kinds = {}
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up, c.where), []).append(c)
+        if EDGE_BY_METER and not where and len(ph) == 1:
+            where = self._likely_home(ph, watts > 0, size)
         kind = self._kinds.setdefault((ph, watts > 0, where), [])
         angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
         cluster, keys = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
@@ -3893,6 +3895,28 @@ class Detector:
                      if lo <= ab <= hi), (ab, ab))
         return [c for c in members if c.angle is not None
                 and band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
+
+    def _likely_home(self, ph: str, up: bool, size: float) -> str:
+        """Where a step no meter placed most likely happened: the meter whose
+        cluster at this size has seen more steps than the plain one there, or
+        nowhere. A meter misses a step now and then - a late report, a reading
+        at the window's edge - and each miss founded a plain cluster beside the
+        located one: Home went from 241 signatures to 279 (2026-10-01). A load
+        no meter watches stays plain wherever the plain cluster is the bigger."""
+        def busiest(where: str) -> float:
+            g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
+            unit, segs = self.edge_unit.get(g), self._segs.get(g)
+            if not unit or not segs:
+                return 0.0
+            b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
+            seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
+            if seg is None:
+                return 0.0
+            return max((c.count for c in self._kinds.get((ph, up, where), [])
+                        if seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]), default=0.0)
+        plain = busiest("")
+        best = max(((busiest(w), w) for (p, u, w) in self._kinds if p == ph and u == up and w), default=(0.0, ""))
+        return best[1] if best[0] > plain else ""
 
     def _keyed_above_chance(self, hk: Dict[int, float], h: Dict[int, float], lo: int, hi: int,
                             keyed: Dict[str, str]) -> bool:
