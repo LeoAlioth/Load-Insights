@@ -366,6 +366,10 @@ EDGE_WHERE_RISES_ONLY = True   # only a start is placed: a device is its start c
 # phase, direction and size: a meter that missed some of a load's starts
 # otherwise made the load two devices
 EDGE_DEVICE_SPANS = False
+# how far a meter's step may differ from the grid's and still be all of it:
+# unplaced steps were mostly ones whose sizes disagreed by more than the
+# pairing's 15 % (Hisa 36 of 168, Mansarda 44 of 186, inside the window)
+WHERE_TOL_REL = 0.15
 TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
@@ -4988,7 +4992,7 @@ class Fleet:
         the one none of the others hangs under."""
         main = self.main
         window = main.event_window()
-        least = max(main.phases[ph].noise_at() if ph in main.phases else MIN_NOISE_W, MATCH_EDGE_REL * size)
+        least = max(main.phases[ph].noise_at() if ph in main.phases else MIN_NOISE_W, WHERE_TOL_REL * size)
         took = {n: d for n, d in self._meter_totals(ph, since, window).items()
                 if (d > 0) == up and abs(abs(d) - size) <= least}
 
