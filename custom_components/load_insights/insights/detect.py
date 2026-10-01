@@ -117,8 +117,11 @@ SUSTAIN_CADENCES = 2.0
 # inverter's write 28 ms before the meter's showed the old level, and a kiln-
 # sized step got a span of -0.0..0 - a 1 % overlap with Mansarda's own. A
 # reading this close to another is the same update: not evidence the old
-# level held, nor a gap between readings.
-SAME_UPDATE_S = 1.0
+# level held, nor a gap between readings. Those pairs are all under 0.2 s
+# (140,270 of Home's within 50 ms); real readings come 0.8-1.0 s apart -
+# Home's grid meter 3,064 times, the Victron's refresh 607 times between 0.5
+# and 1.0 s - and nothing between (Anze: some meters do update every second).
+SAME_UPDATE_S = 0.5
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -226,13 +229,24 @@ CORROBORATE_BALANCE = 0.7
 #   Kozolec  identical, as a single-phase site must be
 # ^ CORROBORATED_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 INTERVAL_GAPS = 60
-# The cadence - a LOW percentile - over a longer history than the interval's:
-# of 60 gaps the 5th percentile is the third shortest, and Kozolec's Victron
-# (polled every 5.3 s, plus a refresh of every entity once a minute landing
-# anywhere in the poll) had it anywhere from 1.0 to 5.3 s - a 2.9 s sustain
-# that confirmed the boiler's half-caught start, whose stop then closed the
-# EVSE's charge (27.09 11:37). 600 gaps put it at 5.0.
+# A meter's cadence is how often it writes WHILE ITS VALUE MOVES: the gaps
+# after a reading that moved by more than its noise, over the last
+# CADENCE_GAPS of them, at MOVING_PERCENTILE. One rule for a polled meter and
+# one reporting on change. Of ALL gaps, a low percentile took Kozolec's
+# Victron - polled every 5.3 s, plus a refresh of every entity once a minute
+# landing anywhere in the poll - at 2.3 s while the EVSE charged: a normal
+# poll then counted as silence, a 2.9 s sustain confirmed the boiler's
+# half-caught start, and its stop closed the EVSE's charge (27.09 11:37). A
+# high one took the IR panel and Susilna - 60 s heartbeats that report a
+# change within 5-12 s - at 60 s. After a move, ten days of history, p5 / p10 / p25:
+#   Victron 2.3 / 5.1 / 5.2      grid meter (Home) 1.1 / 1.6 / 1.9
+#   hidrofor 9.9 / 9.9 / 9.9     EVSE 10.0 / 10.0 / 10.1
+#   IR panel 3.0 / 4.9 / 5.1     Susilna 11.3 / 28.3 / 60
+#   Hisa A 4.1 / 5.0 / 6.0       Mansarda C 4.1 / 4.1 / 4.9
+# The 10th is the lowest that skips the Victron's refresh (at most 9.3 % of
+# its post-move gaps in any 600; past 10 % it drifts to ~4 s, not 2.3).
 CADENCE_GAPS = 600
+MOVING_PERCENTILE = 0.10
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
@@ -1555,8 +1569,9 @@ class PhaseState:
     step_diffs: List[float] = field(default_factory=list)
     gaps: List[float] = field(default_factory=list)       # recent sample gaps, see INTERVAL_PERCENTILE
     _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False)   # the same, in order
-    _long_gaps: List[float] = field(default_factory=list, repr=False, compare=False)     # see CADENCE_GAPS
-    _long_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
+    _moving_gaps: List[float] = field(default_factory=list, repr=False, compare=False)   # see CADENCE_GAPS
+    _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
+    _moved: bool = field(default=False, repr=False, compare=False)   # the last reading moved past the noise
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
     # limits any power factor derived here. Supplied by whoever read the
@@ -1670,16 +1685,20 @@ class PhaseState:
                         old = self.gaps.pop(0)
                         del self._gaps_sorted[bisect.bisect_left(self._gaps_sorted, old)]
                     ordered = self._gaps_sorted
-                    self._long_gaps.append(gap)
-                    bisect.insort(self._long_sorted, gap)
-                    if len(self._long_gaps) > CADENCE_GAPS:
-                        old = self._long_gaps.pop(0)
-                        del self._long_sorted[bisect.bisect_left(self._long_sorted, old)]
+                    if self._moved:
+                        self._moving_gaps.append(gap)
+                        bisect.insort(self._moving_sorted, gap)
+                        if len(self._moving_gaps) > CADENCE_GAPS:
+                            old = self._moving_gaps.pop(0)
+                            del self._moving_sorted[bisect.bisect_left(self._moving_sorted, old)]
                     self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
                 else:
                     self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
         prev_w = self.last_w             # the reading before this one - see NOISE_FROM_MOVES
         if not held:
+            moved = prev_w is not None and abs(w - prev_w) >= self.noise_at(prev_w)
+            same = self.last_ts is not None and ts - self.last_ts <= SAME_UPDATE_S
+            self._moved = moved or (same and self._moved)
             self.last_ts = ts
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
@@ -1837,9 +1856,13 @@ class PhaseState:
         return SUSTAIN_CADENCES * cad if cad else SUSTAIN_SECONDS
 
     def cadence(self) -> float:
-        """How soon this meter reports a change - see reading_cadence; its
-        interval while too few gaps are known."""
-        return reading_cadence(self._long_sorted or self.gaps) or (self.interval or 0.0)
+        """How often this meter writes while its value moves - see
+        CADENCE_GAPS; until ten such gaps are known, reading_cadence of the
+        recent gaps, then the interval."""
+        m = self._moving_sorted
+        if len(m) >= 10:
+            return m[int(MOVING_PERCENTILE * (len(m) - 1))]
+        return reading_cadence(self.gaps) or (self.interval or 0.0)
 
     def confirm_silence(self, now: float) -> List[Session]:
         """At the end of a pass: a change pending longer than SUSTAIN_CADENCES
@@ -3330,7 +3353,8 @@ def edge_scale(watts: float, unit_w: float) -> float:
 
 def reading_cadence(gaps: Sequence[float]) -> float:
     """How soon a meter reports a change: its shortest usual gap between
-    recorded readings; 0 with too few to say. One rule
+    recorded readings; 0 with too few to say - PhaseState.cadence's fallback
+    until it has seen its value move (see CADENCE_GAPS). One rule
     for every meter - the recorder writes only changes, so a meter polled
     every 10 s that holds its value looks silent exactly like one reporting
     on change (the hidrofor's Zigbee plug: 4,586 of 6,100 gaps exactly 10 s,
@@ -3341,8 +3365,8 @@ def reading_cadence(gaps: Sequence[float]) -> float:
     # its shortest usual gap - the 5th percentile. Not the 10th: a Shelly
     # heartbeating once a minute reports a change within ~5 s, and its 60 s
     # heartbeats filled the tenth percentile (Kozolec's IR panel, 31 s; 6.5 at
-    # the 5th). Not the 2nd: Kozolec's Victron, polled every 5.5 s, has 2 % of
-    # its gaps at 1.6-2.3 s from timing jitter - 5.0 s at the 5th.
+    # the 5th). Not the 2nd: Kozolec's Victron, polled every 5.3 s, has 2 % of
+    # its gaps at 1.6-2.3 s from its once-a-minute refresh - 5.0 s at the 5th.
     return g[int(0.05 * (len(g) - 1))]
 
 

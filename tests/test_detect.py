@@ -2852,9 +2852,39 @@ def test_a_change_reporters_span_starts_two_cadences_before_its_first_new_readin
     st.gaps = poll
     assert st.span_start(T0) == T0 - 20.0                                          # two polls back
     grid = D.PhaseState()                                                          # polled every 2 s, some jitter
-    grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.0] * 3 + [2.0] * 40, T0 - 3.8
+    grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.9] * 3 + [2.0] * 40, T0 - 3.8
     assert grid.span_start(T0) == T0 - 3.8                                         # nothing unwritten: from its last reading
 
+
+
+def test_a_meters_cadence_is_how_often_it_writes_while_its_value_moves():
+    """Kozolec's Victron: polled every 5.3 s, plus a refresh of every entity
+    once a minute landing anywhere in the poll - its shortest gaps are that
+    refresh, not how soon it reports. The IR panel: a 60 s heartbeat, a
+    change reported within 5 s. Both read by the gaps after a reading that
+    moved: 5.3 and 5 s."""
+    import random
+    rnd = random.Random(7)
+    victron, ts, w = D.PhaseState(min_noise=10.0), T0, 3000.0
+    for k in range(4000):
+        if k % 8 == 0:
+            w += rnd.choice([-1, 1]) * 500.0 if w > 1000 else 500.0       # a load switching
+        victron.process(ts, w + rnd.uniform(-3, 3))
+        if k % 12 == 5:                                                    # the minute's refresh
+            victron.process(ts + rnd.uniform(0.6, 4.7), w + rnd.uniform(-3, 3))
+        ts += 5.3
+    assert 5.0 <= victron.cadence() <= 5.4, victron.cadence()
+    panel, ts = D.PhaseState(min_noise=10.0), T0
+    for cycle in range(30):
+        for k in range(10):                                                # idle, a heartbeat a minute
+            panel.process(ts, 0.4 + 0.2 * (k % 2)); ts += 60.0
+        for w in (900.0, 905.0, 903.0):                                    # on: reported within 5 s, then settles
+            panel.process(ts, w); ts += 5.0
+        for k in range(5):
+            panel.process(ts, 902.0 + k % 2); ts += 60.0
+        for w in (0.5, 0.4):                                               # off
+            panel.process(ts, w); ts += 5.0
+    assert 4.9 <= panel.cadence() <= 5.1, panel.cadence()
 
 def test_a_reading_of_the_changes_own_update_is_not_the_old_level_holding():
     """Home's grid is two writes per update - the inverter's, then the meter's
