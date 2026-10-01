@@ -226,6 +226,13 @@ CORROBORATE_BALANCE = 0.7
 #   Kozolec  identical, as a single-phase site must be
 # ^ CORROBORATED_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 INTERVAL_GAPS = 60
+# The cadence - a LOW percentile - over a longer history than the interval's:
+# of 60 gaps the 5th percentile is the third shortest, and Kozolec's Victron
+# (polled every 5.3 s, plus a refresh of every entity once a minute landing
+# anywhere in the poll) had it anywhere from 1.0 to 5.3 s - a 2.9 s sustain
+# that confirmed the boiler's half-caught start, whose stop then closed the
+# EVSE's charge (27.09 11:37). 600 gaps put it at 5.0.
+CADENCE_GAPS = 600
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
@@ -1548,6 +1555,8 @@ class PhaseState:
     step_diffs: List[float] = field(default_factory=list)
     gaps: List[float] = field(default_factory=list)       # recent sample gaps, see INTERVAL_PERCENTILE
     _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False)   # the same, in order
+    _long_gaps: List[float] = field(default_factory=list, repr=False, compare=False)     # see CADENCE_GAPS
+    _long_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
     # limits any power factor derived here. Supplied by whoever read the
@@ -1661,6 +1670,11 @@ class PhaseState:
                         old = self.gaps.pop(0)
                         del self._gaps_sorted[bisect.bisect_left(self._gaps_sorted, old)]
                     ordered = self._gaps_sorted
+                    self._long_gaps.append(gap)
+                    bisect.insort(self._long_sorted, gap)
+                    if len(self._long_gaps) > CADENCE_GAPS:
+                        old = self._long_gaps.pop(0)
+                        del self._long_sorted[bisect.bisect_left(self._long_sorted, old)]
                     self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
                 else:
                     self.interval = gap if not self.interval else self.interval + 0.05 * (gap - self.interval)
@@ -1825,7 +1839,7 @@ class PhaseState:
     def cadence(self) -> float:
         """How soon this meter reports a change - see reading_cadence; its
         interval while too few gaps are known."""
-        return reading_cadence(self.gaps) or (self.interval or 0.0)
+        return reading_cadence(self._long_sorted or self.gaps) or (self.interval or 0.0)
 
     def confirm_silence(self, now: float) -> List[Session]:
         """At the end of a pass: a change pending longer than SUSTAIN_CADENCES
