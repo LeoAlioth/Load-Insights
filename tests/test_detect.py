@@ -2724,11 +2724,11 @@ def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_mete
     for ph in "a":
         det.phases[ph] = D.PhaseState()
         det.phases[ph].noise, det.phases[ph].level, det.phases[ph].interval = 20.0, 300.0, 5.0
-    det.meter_steps = lambda ph, since, window: [("Boiler", 1900.0)]
+    det.meter_steps = lambda ph, since, window, up=None: [("Boiler", 1900.0)]
     assert det.metered_parts("a", T0, 5300.0) == [1900.0, 3400.0]
     assert det.metered_parts("a", T0, 1910.0) == [1910.0]              # all of it is the boiler's
     assert det.metered_parts("a", T0, -5300.0) == [-5300.0]            # the boiler rose: not this fall's
-    det.meter_steps = lambda ph, since, window: []
+    det.meter_steps = lambda ph, since, window, up=None: []
     assert det.metered_parts("a", T0, 5300.0) == [5300.0]
 
 
@@ -2800,6 +2800,8 @@ def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
     assert f._step_home("c", T0, 65.0, True) == "Hiša"
     assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
     assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
+    f.subs["Hiša"].phases["a"].declared.insert(0, (T0 - 3.0, -65.0, None))   # its last pulse ending just before
+    assert f._step_home("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
 
 
 def test_a_meter_learns_its_gain_against_the_grid():
