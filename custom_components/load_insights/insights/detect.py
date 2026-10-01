@@ -351,7 +351,12 @@ SPLIT_BY_METERS = True
 # part of what kind of edge it is: Home's 65 W load cycling inside Hisa and
 # the NASA strip's small loads under Mansarda share a size on phase C and
 # nothing else (Anze, 2026-10-01: "detect it fully").
-EDGE_BY_METER = True
+EDGE_BY_METER = "soft"         # "hard": a step's place keys its group; "soft": only where above chance; "" off
+# a meter's step is looked for over EVENT_WINDOW_INTERVALS of the SLOWER of
+# the grid meter's and its own reading intervals (Anze, 2026-10-01: "the
+# combination of both meters - the less frequent one for the spread")
+WHERE_WINDOW_FROM_METER = True
+EDGE_WHERE_RISES_ONLY = True   # only a start is placed: a device is its start cluster
 TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
@@ -3342,6 +3347,8 @@ class Detector:
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE
     edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
+    # where -> size bin -> weight, per phase pattern and direction - see EDGE_BY_METER "soft"
+    edge_hist_where: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
@@ -3805,17 +3812,17 @@ class Detector:
             if i >= 0:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in self._learned}
-        where = (self.step_home(ph, since, size, watts > 0) or "") if (
-            EDGE_BY_METER and self.step_home is not None and len(ph) == 1) else ""
+        placed = bool(EDGE_BY_METER) and len(ph) == 1 and (watts > 0 or not EDGE_WHERE_RISES_ONLY)
+        where = (self.step_home(ph, since, size, watts > 0) or "") if placed and self.step_home is not None else ""
         if self._kinds is None:
             self._kinds = {}
             for c in self.edges:
-                self._kinds.setdefault((c.phase, c.up, c.where), []).append(c)
-        if EDGE_BY_METER and not where and len(ph) == 1:
+                self._kinds.setdefault((c.phase, c.up), []).append(c)
+        kind = self._kinds.setdefault((ph, watts > 0), [])
+        if EDGE_BY_METER == "hard" and placed and not where:
             where = self._likely_home(ph, watts > 0, size)
-        kind = self._kinds.setdefault((ph, watts > 0, where), [])
         angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
-        cluster, keys = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
+        cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, where=where)
             self.next_edge_id += 1
@@ -3835,7 +3842,7 @@ class Detector:
         above chance - the floor mat's +630 W with its thermostat, beside a
         look-alike's +630 W with nothing - and otherwise the segment's plain
         one. See EDGE_BATCH."""
-        g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
+        g = f"{ph}|{int(up)}" + (f"|{where}" if where and EDGE_BY_METER == "hard" else "")
         key = ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
         if g not in self.edge_unit:
             noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in ph)   # a pattern: its phases' noise together
@@ -3845,12 +3852,13 @@ class Detector:
         h = self.edge_hist.setdefault(g, {})
         hk = self.edge_hist_keys.setdefault(g, {})
         ha = self.edge_hist_angle.setdefault(g, {})
+        hw = self.edge_hist_where.setdefault(g, {}) if EDGE_BY_METER == "soft" else {}
         at = self.edge_hist_at.get(g)
         if at is None:
             self.edge_hist_at[g] = since
         elif since - at > 3600.0:
             fade = math.exp(-(since - at) / EDGE_TAU_S)
-            for hist in [h, ha] + list(hk.values()):
+            for hist in [h, ha] + list(hk.values()) + list(hw.values()):
                 for k in list(hist):
                     hist[k] *= fade
                     if hist[k] < 1e-3:
@@ -3863,6 +3871,9 @@ class Detector:
         if angle is not None:
             ab = int(math.floor(angle / EDGE_ANGLE_BIN))
             ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
+        if where and EDGE_BY_METER == "soft":
+            row = hw.setdefault(where, {})
+            row[b] = row.get(b, 0.0) + 1.0
         segs = self._segs.get(g)
         if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
             segs = self._segs[g] = valley_segments(h)
@@ -3871,15 +3882,32 @@ class Detector:
         plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
         if seg is None:
-            return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain)
-        members = [c for c in kind if seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+            return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain), (
+                where if EDGE_BY_METER == "hard" else "")
+        if where and EDGE_BY_METER == "soft" and not self._where_above_chance(hw, h, where, seg):
+            where = ""                  # not a place this size piles up in: the plain cluster
+        members = [c for c in kind if c.where == where
+                   and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
         if angle is not None:
             members = self._same_angle(ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
             mine = [c for c in members if c.same_signals(keyed)]
-            return (max(mine, key=lambda c: c.count) if mine else None), keyed
+            return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
-        return (max(mine, key=lambda c: c.count) if mine else None), plain
+        return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _where_above_chance(self, hw: Dict[str, Dict[int, float]], h: Dict[int, float], where: str,
+                            seg: Tuple[int, int]) -> bool:
+        """Do the steps placed under ``where`` pile up in this size segment far
+        above that place's share of all this phase's steps - see EDGE_BY_METER
+        "soft". A device whose meter misses a step now and then stays one
+        cluster; only a size that IS a place's splits off."""
+        row = hw.get(where) or {}
+        n = sum(w for b, w in row.items() if seg[0] <= b <= seg[1])
+        if n < PAIR_MIN_RUNS:
+            return False
+        share = sum(row.values()) / (sum(h.values()) or 1.0)
+        return above_chance(n, share * sum(w for b, w in h.items() if seg[0] <= b <= seg[1]))
 
     def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
                     members: List["EdgeCluster"]) -> List["EdgeCluster"]:
@@ -3912,10 +3940,10 @@ class Detector:
             seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
             if seg is None:
                 return 0.0
-            return max((c.count for c in self._kinds.get((ph, up, where), [])
-                        if seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]), default=0.0)
+            return max((c.count for c in self._kinds.get((ph, up), []) if c.where == where
+                        and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]), default=0.0)
         plain = busiest("")
-        best = max(((busiest(w), w) for (p, u, w) in self._kinds if p == ph and u == up and w), default=(0.0, ""))
+        best = max(((busiest(w), w) for w in {c.where for c in self._kinds.get((ph, up), [])} if w), default=(0.0, ""))
         return best[1] if best[0] > plain else ""
 
     def _keyed_above_chance(self, hk: Dict[int, float], h: Dict[int, float], lo: int, hi: int,
@@ -4394,6 +4422,8 @@ class Detector:
                 "edge_hist_keys": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
                 "edge_hist_angle": {g: {k: round(w, 3) for k, w in h.items() if w >= 0.01} for g, h in self.edge_hist_angle.items()},
+                "edge_hist_where": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
+                                    for g, rows in self.edge_hist_where.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -4421,6 +4451,8 @@ class Detector:
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
         det.edge_hist_angle = {g: {k: float(w) for k, w in h.items()} for g, h in (d.get("edge_hist_angle") or {}).items()}
+        det.edge_hist_where = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
+                               for g, rows in (d.get("edge_hist_where") or {}).items()}
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
@@ -4964,10 +4996,13 @@ class Fleet:
                 continue
             by_ch = self.sub_channel_rows.get(name) or {}
             series = [by_ch[c] for c in chans if c in by_ch] if len(by_ch) > 1 else [rows]
+            w = window
+            if WHERE_WINDOW_FROM_METER and name in self.subs:
+                w = max(window, EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.subs[name].phases.values()))
             d = 0.0
             for rs in series:
                 times = [r[0] for r in rs]
-                i, j = bisect.bisect_right(times, since - window) - 1, bisect.bisect_right(times, since + window) - 1
+                i, j = bisect.bisect_right(times, since - w) - 1, bisect.bisect_right(times, since + w) - 1
                 if i >= 0 and j > i:
                     d += rs[j][1] - rs[i][1]
             steps[name] = d
