@@ -2759,5 +2759,22 @@ def test_a_load_cycling_inside_the_noise_band_does_not_hold_the_band_open():
         st.process(T0 + 5.0 * i, 410.0 + (65.0 if on else 0.0) + rnd.gauss(0, 1.5))
     assert st.noise < 65.0, st.noise
 
+
+def test_a_step_belongs_to_the_innermost_meter_that_saw_all_of_it():
+    """The cycler inside Hisa is Hisa's; Blaz PC's step, which Hisa saw too,
+    is Blaz PC's."""
+    f = D.Fleet()
+    f.main.phases["c"] = D.PhaseState()
+    f.main.phases["c"].noise, f.main.phases["c"].interval = 10.0, 2.0
+    rows = lambda before, after: [(T0 - 10, before), (T0 + 1, after)]
+    f.parents = {"Blaž PC": "Hiša"}
+    f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in ("Hiša", "Blaž PC")}
+    f.sub_rows = {"Hiša": rows(500, 800), "Blaž PC": rows(100, 400)}
+    assert f._step_home("c", T0, 300.0, True) == "Blaž PC"
+    f.sub_rows = {"Hiša": rows(410, 475), "Blaž PC": rows(100, 100)}
+    assert f._step_home("c", T0, 65.0, True) == "Hiša"
+    assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
+    assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
+
 if __name__ == "__main__":
     run_main(globals())
