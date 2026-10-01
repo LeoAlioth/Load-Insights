@@ -2764,6 +2764,12 @@ def test_a_step_and_a_run_carry_how_sure_the_detector_is_of_them():
     assert st._close(o, T0 + 60, 700.0, None).quality == 0.0                               # 30 % apart in size
 
 
+def _declare(st, *entries):
+    """Steps a phase declared, (since, watts, var, span start, span end), kept in time order."""
+    st.declared[:] = sorted(st.declared + list(entries))
+    st.declared_t[:] = [e[0] for e in st.declared]
+
+
 def _fleet_with_meters(steps, parents=None):
     """A fleet whose meters each declared ``steps[name]`` on their channel a at
     T0, every one measured to carry grid phase c."""
@@ -2775,7 +2781,7 @@ def _fleet_with_meters(steps, parents=None):
         det.phases["a"] = D.PhaseState()
         det.phases["a"].noise = 5.0
         if w:
-            det.phases["a"].declared.append((T0 + 0.5, w, None, T0 - 1.0, T0 + 2.0))
+            _declare(det.phases["a"], (T0 + 0.5, w, None, T0 - 1.0, T0 + 2.0))
         f.subs[name] = det
     f.parents = dict(parents or {})
     f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in steps}
@@ -2800,13 +2806,14 @@ def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
     assert f._step_home("c", T0, 65.0, True) == "Hiša"
     assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
     assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
-    f.subs["Hiša"].phases["a"].declared.insert(0, (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before
+    _declare(f.subs["Hiša"].phases["a"], (T0 - 3.0, -65.0, None, T0 - 5.0, T0 - 2.0))   # its last pulse ending just before
     assert f._step_home("c", T0, 65.0, True) == "Hiša"                   # is not summed into this start
 
 
 def test_a_meter_learns_its_gain_against_the_grid():
     """A plug reading 4 % low is matched in the grid's terms once learned."""
     f = _fleet_with_meters({"Plug": 960.0})
+    _declare(f.main.phases["c"], (T0, 1000.0, None, T0 - 1.0, T0 + 2.0))   # the grid's own step
     for _ in range(D.METER_GAIN_MIN):
         assert f._step_home("c", T0, 1000.0, True) == "Plug"
     assert abs(f.gain("Plug") - 1000.0 / 960.0) < 1e-6, f.gain("Plug")
@@ -2818,12 +2825,12 @@ def test_a_meter_reading_less_often_is_compared_over_its_own_span():
     -580 on the grid, read every 2 s; +2,240 on Hisa, which read only then.
     Over Hisa's span the grid's net is its step: the rise is Hisa's, whole."""
     f = _fleet_with_meters({"Hiša": 0.0})
-    f.subs["Hiša"].phases["a"].declared.append((T0 + 0.3, 2240.0, None, T0 - 1.0, T0 + 7.0))
+    _declare(f.subs["Hiša"].phases["a"], (T0 + 0.3, 2240.0, None, T0 - 1.0, T0 + 7.0))
     g = f.main.phases["c"]
-    g.declared += [(T0, 2800.0, None, T0 - 2.0, T0 + 2.0), (T0 + 6.0, -580.0, None, T0 + 4.0, T0 + 8.0)]
+    _declare(g, (T0, 2800.0, None, T0 - 2.0, T0 + 2.0), (T0 + 6.0, -580.0, None, T0 + 4.0, T0 + 8.0))
     assert f._step_home("c", T0, 2800.0, True) == "Hiša"
     assert dict(f._meter_steps("c", T0, 6.0, True, 2800.0)) == {"Hiša": 2800.0}   # all of it: no phantom
-    g.declared.pop()                                                            # without the -580 ...
+    g.declared.pop(); g.declared_t.pop()                                        # without the -580 ...
     assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
 if __name__ == "__main__":

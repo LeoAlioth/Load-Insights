@@ -369,6 +369,11 @@ EDGE_DEVICE_SPANS = False
 METER_CAL_SLACK = 0.05
 METER_GAIN_MIN = 10
 METER_GAIN_BOUND = 0.25       # a learned gain stays within this of one either way
+# The two meters' spans of one change overlap - that it is one change, and how
+# much is a timing confidence - and are compared over their UNION, grown by
+# every step either declared whose span reaches into it, up to this many of
+# the grid's event windows: each meter's net change there (Anze, 2026-10-01).
+UNION_CAP_WINDOWS = 4.0
 TOO_BIG = "close"
 # How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
 # step's size against the noise at its level (full at QUALITY_SNR_FULL times
@@ -1553,6 +1558,7 @@ class PhaseState:
     # every step this phase declared, (since, watts, var), newest last - what a
     # meter's step IS when the grid's is compared with it (METER_CAL_SLACK)
     declared: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    declared_t: List[float] = field(default_factory=list, repr=False, compare=False)   # their times, for bisect
     steady_ts: Optional[float] = field(default=None, repr=False, compare=False)   # its last reading at the held level
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
@@ -1776,8 +1782,10 @@ class PhaseState:
         # its span: from its last reading at the old level to the first it settled on
         self.declared.append((since, step, step_q, self.steady_ts if self.steady_ts is not None else since,
                               held[0][0] if held else since))
+        self.declared_t.append(since)
         if len(self.declared) > 4000:
             del self.declared[:1000]
+            del self.declared_t[:1000]
         # a fall is split at once; a rise when its event forms (see
         # Detector._form_event), when the grid's steps across a meter's span
         # are all declared
@@ -3409,6 +3417,7 @@ class Detector:
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
     step_home: Optional[object] = field(default=None, repr=False, compare=False)
+    placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
@@ -3824,8 +3833,11 @@ class Detector:
         cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
                                       sum(vars_) if all(v is not None for v in vars_) else None,
                                       max(m["surge"] for m in members))
+        conf, self.placement_conf = self.placement_conf, None
         for m in members:
             m["open"].cluster = cluster.id
+            if cluster.where and conf is not None:
+                m["open"].q *= 0.5 + 0.5 * conf     # how well the meters' timings agreed
             self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
         return cluster, members
 
@@ -5042,12 +5054,6 @@ class Fleet:
                         pairs.append((_match_cost(m, s, agnostic, tol), mi, name, si))
         return pairs
 
-    def _span_net(self, ph: str, span: Tuple[float, float]) -> float:
-        """The grid's net declared change on ``ph`` across a meter step's span."""
-        st = self.main.phases[ph]
-        slack = st.interval or 1.0
-        return sum(w for t, w, *_ in st.declared[-200:] if span[0] - slack <= t <= span[1] + slack)
-
     def _meter_steps(self, ph: str, since: float, window: float, up: Optional[bool] = None,
                      size: Optional[float] = None) -> List[Tuple[str, float]]:
         """The pieces of a grid step on phase ``ph`` at ``since`` that the
@@ -5069,11 +5075,11 @@ class Fleet:
             return None
         noise = main.phases[ph].noise_at()
         took = {}
-        for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window(), up).items():
-            if d is None:                   # all of the grid's step across the meter's span
-                took[n] = (size if up else -size, None, None, noise_m)
-            elif (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
-                took[n] = (d, raw, raw_q, noise_m)
+        for n, (d, raw, raw_q, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
+            if d is None:                   # all of the grid's step over the union of both spans
+                took[n] = (size if up else -size, None, None, noise_m, conf)
+            elif d and (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
+                took[n] = (d, raw, raw_q, noise_m, conf)
 
         def under(n: str, anc: str) -> bool:
             seen = set()
@@ -5087,7 +5093,8 @@ class Fleet:
         if not inner:
             return None
         home = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
-        _, raw, raw_q, noise_m = took[home]
+        _, raw, raw_q, noise_m, conf = took[home]
+        main.placement_conf = conf
         if raw is not None and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(home, "p", size, raw)
             if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
@@ -5108,14 +5115,27 @@ class Fleet:
             return 1.0
         return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
 
+    @staticmethod
+    def _near(st: "PhaseState", a: float, b: float, reach: float) -> List[tuple]:
+        """``st``'s declared steps whose spans reach into [a, b]."""
+        lo = bisect.bisect_left(st.declared_t, a - reach)
+        hi = bisect.bisect_right(st.declared_t, b + reach)
+        return [e for e in st.declared[lo:hi] if e[3] <= b and e[4] >= a]
+
     def _meter_totals(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> Dict[str, tuple]:
-        """Per meter measured to carry grid phase ``ph``: (its declared steps
-        within ``since`` +- ``window`` in the grid's terms, the same raw, their
-        reactive part raw, its noise) - see METER_CAL_SLACK. Only steps the
-        same way as the grid's, ``up``: the kiln's previous pulse ending a few
-        seconds before this one began summed to a sliver, and the split cut
-        every pulse in two (ladder 31 -> 66)."""
+        """Per meter measured to carry grid phase ``ph``: (its share of the grid
+        step at ``since``, in the grid's terms - None when it is all of it -,
+        the meter's own step raw where one clean step faces one, its reactive
+        part, its noise, the timing confidence 0..1) - see UNION_CAP_WINDOWS."""
         out: Dict[str, tuple] = {}
+        if ph not in self.main.phases:
+            return out
+        grid = self.main.phases[ph]
+        k = bisect.bisect_left(grid.declared_t, since - 0.01)
+        mine = grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
+        g_span = (mine[3], mine[4]) if mine else (since - window, since + window)
+        cap = UNION_CAP_WINDOWS * self.main.event_window()
+        noise_g = grid.noise_at()
         for name, det in self.subs.items():
             votes = self.phase_votes.get(name) or {}
             if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
@@ -5123,33 +5143,32 @@ class Fleet:
             chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
             if not chans:
                 continue
-            raw, raw_q, have_q, noise, span = 0.0, 0.0, False, 0.0, None
-            for c in chans:
-                st = det.phases[c]
-                noise = max(noise, st.noise_at())
-                for t, w, q, a, b in reversed(st.declared):
-                    if t < since - window:
-                        break
-                    if t <= since + window and (up is None or (w > 0) == up):
-                        raw += w
-                        span = (min(a, span[0]), max(b, span[1])) if span else (a, b)
-                        if q is not None:
-                            raw_q += q
-                            have_q = True
-            d = raw * self.gain(name, "p")
-            # Over the meter's own span, the grid may have declared several
-            # steps where the meter, reading less often, declared one: the
-            # kiln's element on and a 580 W load off six seconds later were
-            # +2,800 and -580 on the grid, +2,240 on Hisa. Compared with the
-            # grid's net change across that span, the meter's step is all of
-            # the grid's there, and so all of this one (Anze, 2026-10-01: "the
-            # same span on both sensors").
-            if span is not None and ph in self.main.phases and raw:
-                net = self._span_net(ph, span)
-                noise_g = self.main.phases[ph].noise_at()
-                if net and (net > 0) == (raw > 0) and abs(d - net) <= math.hypot(noise, noise_g) + METER_CAL_SLACK * abs(net):
-                    d = None            # all of the grid's step - its own size, filled in by the caller
-            out[name] = (d, raw, raw_q if have_q else None, noise)
+            noise = max(det.phases[c].noise_at() for c in chans)
+            a, b = g_span
+            for _ in range(8):                       # the union, grown until it holds still
+                ms = [e for c in chans for e in self._near(det.phases[c], a, b, cap)]
+                gs = self._near(grid, a, b, cap)
+                na, nb = min([a] + [e[3] for e in ms + gs]), max([b] + [e[4] for e in ms + gs])
+                if (na, nb) == (a, b) or nb - na > cap:
+                    break
+                a, b = na, nb
+            gain = self.gain(name, "p")
+            own = [e for e in ms if (up is None or (e[1] > 0) == up) and e[3] <= g_span[1] and e[4] >= g_span[0]]
+            if not own:
+                out[name] = (0.0, None, None, noise, 0.0)
+                continue
+            # timing: how much the grid step's span and the meter's overlap, of both together
+            oa, ob = max(g_span[0], min(e[3] for e in own)), min(g_span[1], max(e[4] for e in own))
+            ua, ub = min(g_span[0], min(e[3] for e in own)), max(g_span[1], max(e[4] for e in own))
+            conf = max(0.0, ob - oa) / (ub - ua) if ub > ua else 1.0
+            net_m, net_g = sum(e[1] for e in ms) * gain, sum(e[1] for e in gs)
+            share = sum(e[1] for e in own) * gain
+            if (net_g and (net_g > 0) == (share > 0) and abs(net_m - net_g) <= math.hypot(noise, noise_g) + METER_CAL_SLACK * abs(net_g)
+                    and len(gs) > 1):
+                share = None                         # over the union, the meter's net is the grid's: all of it
+            clean = len(ms) == 1 and len(gs) == 1
+            q = own[0][2] if clean else None
+            out[name] = (share, own[0][1] if clean else None, q, noise, conf)
         return out
 
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
