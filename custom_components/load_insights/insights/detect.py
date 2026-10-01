@@ -352,36 +352,23 @@ SPLIT_BY_METERS = True
 # the NASA strip's small loads under Mansarda share a size on phase C and
 # nothing else (Anze, 2026-10-01: "detect it fully").
 EDGE_BY_METER = "hard"         # "hard": a step's place keys its group; "soft": only where above chance; "" off
-# a meter's step is looked for over EVENT_WINDOW_INTERVALS of the SLOWER of
-# the grid meter's and its own reading intervals (Anze, 2026-10-01: "the
-# combination of both meters - the less frequent one for the spread")
-# Off: a meter's reading interval is its heartbeat when steady, not how soon
-# it reports a change - Hisa 11 s, Kozolec's boiler 28 s - and windows of
-# three of them read the kiln's neighbouring pulses (ladder 31 -> 108) and
-# cut Kozolec's recall 79 -> 64 %; unplaced steps were inside the window
-# anyway, their sizes disagreeing instead (2026-10-01).
-WHERE_WINDOW_FROM_METER = False
 EDGE_WHERE_RISES_ONLY = True   # only a start is placed: a device is its start cluster
 # a plain start cluster is the same device as the busiest placed one of its
 # phase, direction and size: a meter that missed some of a load's starts
 # otherwise made the load two devices
 EDGE_DEVICE_SPANS = False
-# how far a meter's step may differ from the grid's and still be all of it:
-# unplaced steps were mostly ones whose sizes disagreed by more than the
-# pairing's 15 % (Hisa 36 of 168, Mansarda 44 of 186, inside the window)
-WHERE_TOL_REL = 0.15
-# A meter's step is looked for over METER_WINDOW_CADENCES of its reading
-# CADENCE, or the grid's event window if that is wider (Anze, 2026-10-01).
-# The cadence is the meter's fixed period if it reports on one, else - it
-# reports on change - its shortest usual gap: a Shelly a couple of seconds,
-# the Zigbee hidrofor plug about ten. Its median gap is neither: a change
-# reporter idling at its heartbeat read as 28-60 s and the windows reached
-# the kiln's neighbouring pulses (see WHERE_WINDOW_FROM_METER).
-# Off: benched for placing a step only, it placed steps under the wrong meter
-# - Home's floor mat 13.1 h outside its heating (6.8 without), 9.7 kWh
-# wrongly placed (3.0); with the split as well, the kiln's ladder 31 -> 63.
-METER_CADENCE_WINDOW = False
-METER_WINDOW_CADENCES = 2.0
+# A meter's step is the step its OWN detector declared - held until settled,
+# the median of what it held - exactly as the grid's is measured, never two
+# raw readings either side of a window: one measure, no second method (Anze,
+# 2026-10-01). A meter's step is all of the grid's within both meters' noise
+# together plus METER_CAL_SLACK of the step, once each meter's own gain
+# against the grid is learned (METER_GAIN_MIN steps both saw clearly, for its
+# power and for its reactive part alike). Wider windows were tried and placed
+# and split wrongly: a reading interval is a meter's heartbeat when steady,
+# not how soon it reports a change (kiln ladder 31 -> 108; mat 13.1 h).
+METER_CAL_SLACK = 0.05
+METER_GAIN_MIN = 10
+METER_GAIN_BOUND = 0.25       # a learned gain stays within this of one either way
 TOO_BIG = "close"
 # How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
 # step's size against the noise at its level (full at QUALITY_SNR_FULL times
@@ -1563,6 +1550,9 @@ class PhaseState:
     stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
     stop_q: Optional[float] = field(default=None, repr=False, compare=False)    # the stop being paired's quality
     last_step_ts: Optional[float] = field(default=None, repr=False, compare=False)
+    # every step this phase declared, (since, watts, var), newest last - what a
+    # meter's step IS when the grid's is compared with it (METER_CAL_SLACK)
+    declared: List[tuple] = field(default_factory=list, repr=False, compare=False)
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the measured share of the running level that is noise, and the samples
     # it is measured from
@@ -1781,6 +1771,9 @@ class PhaseState:
             return []
         quality = self._step_quality(step, held, since, new_level - step)
         self.last_step_ts = since
+        self.declared.append((since, step, step_q))
+        if len(self.declared) > 4000:
+            del self.declared[:1000]
         parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None else [step]
         closed: List[Session] = []
         for k, part in enumerate(parts):
@@ -3246,19 +3239,6 @@ def edge_scale(watts: float, unit_w: float) -> float:
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
 
 
-def reading_cadence(gaps: Sequence[float]) -> float:
-    """How soon a meter reports: its period if the gaps sit at one value
-    (four in five within 15 % of the median), else its shortest usual gap,
-    the tenth percentile - a reading sent on change. 0 with too few gaps."""
-    g = sorted(x for x in gaps if x > 0.2)          # same-instant copies are not a cadence
-    if len(g) < 10:
-        return 0.0
-    med = g[len(g) // 2]
-    if sum(1 for x in g if abs(x - med) <= 0.15 * med) >= 0.8 * len(g):
-        return med
-    return g[int(0.1 * (len(g) - 1))]
-
-
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
     smoothed density: (first bin, last bin) of each, where anything is.
@@ -3420,7 +3400,7 @@ class Detector:
     edge_hist_where: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
-    # (phase, since, size, up) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
+    # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
     step_home: Optional[object] = field(default=None, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
@@ -3883,7 +3863,7 @@ class Detector:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in self._learned}
         placed = bool(EDGE_BY_METER) and len(ph) == 1 and (watts > 0 or not EDGE_WHERE_RISES_ONLY)
-        where = (self.step_home(ph, since, size, watts > 0) or "") if placed and self.step_home is not None else ""
+        where = (self.step_home(ph, since, size, watts > 0, var) or "") if placed and self.step_home is not None else ""
         if self._kinds is None:
             self._kinds = {}
             for c in self.edges:
@@ -4559,8 +4539,9 @@ class Fleet:
     # session of its own can still answer that.
     sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
-    # ...and each channel's own, for a meter with several - see _meter_steps. Never persisted.
-    sub_channel_rows: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict)
+    # meter -> "p" (power) / "q" (reactive) -> [mean log of grid's step over the
+    # meter's, steps] - see METER_GAIN_MIN
+    meter_gain: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict)
     # switch -> {on moment: off moment, or None while on}, as the runner last
@@ -4640,24 +4621,22 @@ class Fleet:
             oldest = min((r[0] for r in merged), default=latest_seen)
             cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
             self.sub_rows[name] = [r for r in kept if r[0] >= cut]
-            if len(rows_by_phase) > 1:
-                chans = self.sub_channel_rows.setdefault(name, {})
-                for ch, series in rows_by_phase.items():
-                    chans[ch] = sorted(r for r in chans.get(ch, []) + list(series) if r[0] >= cut)
             q = measure_quantum([v for _, v in self.sub_rows[name]])
             if q:
                 self.sub_quantum[name] = q
         events, numbers = self._signal_events()
         self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
-        self.main.meter_steps = self._meter_steps     # the sub-meters' rows are in; see SPLIT_BY_METERS
-        self.main.step_home = self._step_home
-        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
+        # the meters below first: their declared steps are what the grid's are
+        # compared with (see METER_CAL_SLACK)
         closed_sub = {}
         for name, samples in sub_samples.items():
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
             closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts,
                                            None, (sub_q_quantum or {}).get(name))
+        self.main.meter_steps = self._meter_steps
+        self.main.step_home = self._step_home
+        closed_main = self.main.process(main_samples, main_q, now_ts, pv, main_q_quantum, file=False)
         self._file_waiting(closed_main, closed_sub, latest)
         self._locate([], {}, latest)
 
@@ -5034,24 +5013,28 @@ class Fleet:
         return pairs
 
     def _meter_steps(self, ph: str, since: float, window: float) -> List[Tuple[str, float]]:
-        """The pieces of a house step on phase ``ph`` at ``since`` that the
+        """The pieces of a grid step on phase ``ph`` at ``since`` that the
         meters below it explain - see SPLIT_BY_METERS. Each meter measured to
-        carry that phase gives its own step across ``since`` +- ``window``, less
-        what its own sub-meters stepped: Blaž PC's step counts once, and Hiša
-        adds only what else inside it changed. The pieces do not overlap."""
-        steps = self._meter_totals(ph, since, window)
+        carry that phase gives its own declared step there, in the grid's
+        terms (its gain), less what its own sub-meters stepped: Blaž PC's step
+        counts once, and Hiša adds only what else inside it changed. The
+        pieces do not overlap."""
+        steps = {n: m[0] for n, m in self._meter_totals(ph, since, window).items()}
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
-    def _step_home(self, ph: str, since: float, size: float, up: bool) -> Optional[str]:
-        """The innermost meter that took all of a house step on ``ph`` - see
-        EDGE_BY_METER. All of it by the pairing's own measure; of several,
-        the one none of the others hangs under."""
+    def _step_home(self, ph: str, since: float, size: float, up: bool, var: Optional[float] = None) -> Optional[str]:
+        """The innermost meter whose own declared step was all of a grid step
+        on ``ph`` - within both meters' noise and METER_CAL_SLACK; of several,
+        the one none of the others hangs under. Teaches the meter its gains."""
         main = self.main
-        window = main.event_window()
-        least = max(main.phases[ph].noise_at() if ph in main.phases else MIN_NOISE_W, WHERE_TOL_REL * size)
-        took = {n: d for n, d in self._meter_totals(ph, since, window, by_cadence=True).items()
-                if (d > 0) == up and abs(abs(d) - size) <= least}
+        if ph not in main.phases:
+            return None
+        noise = main.phases[ph].noise_at()
+        took = {}
+        for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window()).items():
+            if (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
+                took[n] = (d, raw, raw_q, noise_m)
 
         def under(n: str, anc: str) -> bool:
             seen = set()
@@ -5062,39 +5045,56 @@ class Fleet:
                     return True
             return False
         inner = [n for n in took if not any(under(o, n) for o in took if o != n)]
-        return min(inner, key=lambda n: abs(abs(took[n]) - size)) if inner else None
+        if not inner:
+            return None
+        home = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
+        _, raw, raw_q, noise_m = took[home]
+        if size >= 10.0 * math.hypot(noise, noise_m):          # a step both saw clearly teaches the gains
+            self._learn_gain(home, "p", size, raw)
+            if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
+                self._learn_gain(home, "q", var, raw_q)
+        return home
 
-    def _meter_totals(self, ph: str, since: float, window: float, by_cadence: bool = False) -> Dict[str, float]:
-        """What each meter measured to carry house phase ``ph`` stepped by
-        across ``since`` +- ``window`` - or, ``by_cadence``, the meter's own
-        window where that is wider (METER_CADENCE_WINDOW): for placing a step,
-        never for splitting one, whose window must stay narrow enough to be
-        one step (a 60 s poll's two minutes split the kiln's pulses, ladder
-        31 -> 63)."""
-        steps: Dict[str, float] = {}
-        for name, rows in self.sub_rows.items():
+    def _learn_gain(self, name: str, kind: str, grid: float, meter: float) -> None:
+        if not grid or not meter:
+            return
+        acc = self.meter_gain.setdefault(name, {}).setdefault(kind, [0.0, 0.0])
+        acc[1] += 1.0
+        acc[0] += (math.log(abs(grid) / abs(meter)) - acc[0]) / min(acc[1], 200.0)
+
+    def gain(self, name: str, kind: str = "p") -> float:
+        """What a meter's step is worth in the grid's terms - 1 until learned."""
+        mean, n = (self.meter_gain.get(name) or {}).get(kind, [0.0, 0.0])
+        if n < METER_GAIN_MIN:
+            return 1.0
+        return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
+
+    def _meter_totals(self, ph: str, since: float, window: float) -> Dict[str, tuple]:
+        """Per meter measured to carry grid phase ``ph``: (its declared step
+        within ``since`` +- ``window`` in the grid's terms, the same raw, its
+        reactive part raw, its noise) - see METER_CAL_SLACK."""
+        out: Dict[str, tuple] = {}
+        for name, det in self.subs.items():
             votes = self.phase_votes.get(name) or {}
             if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
                 continue
-            chans = [c for c, h in self.phase_map(name).items() if h == ph]
+            chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
             if not chans:
                 continue
-            by_ch = self.sub_channel_rows.get(name) or {}
-            series = [by_ch[c] for c in chans if c in by_ch] if len(by_ch) > 1 else [rows]
-            w = window
-            if WHERE_WINDOW_FROM_METER and name in self.subs:
-                w = max(window, EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.subs[name].phases.values()))
-            elif by_cadence and METER_CADENCE_WINDOW and name in self.subs:
-                w = max(window, METER_WINDOW_CADENCES * max((reading_cadence(st.gaps) for st in self.subs[name].phases.values()),
-                                                            default=0.0))
-            d = 0.0
-            for rs in series:
-                times = [r[0] for r in rs]
-                i, j = bisect.bisect_right(times, since - w) - 1, bisect.bisect_right(times, since + w) - 1
-                if i >= 0 and j > i:
-                    d += rs[j][1] - rs[i][1]
-            steps[name] = d
-        return steps
+            raw, raw_q, have_q, noise = 0.0, 0.0, False, 0.0
+            for c in chans:
+                st = det.phases[c]
+                noise = max(noise, st.noise_at())
+                for t, w, q in reversed(st.declared):
+                    if t < since - window:
+                        break
+                    if t <= since + window:
+                        raw += w
+                        if q is not None:
+                            raw_q += q
+                            have_q = True
+            out[name] = (raw * self.gain(name, "p"), raw, raw_q if have_q else None, noise)
+        return out
 
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
                      pool: Optional[List[Session]] = None) -> None:
@@ -5176,7 +5176,8 @@ class Fleet:
                 "pending_main": [s.to_dict() for s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
                 "agnostic": self.agnostic, "phase_votes": self.phase_votes,
-                "unfiled": [s.to_dict() for s in self.unfiled], "identity": self.identity}
+                "unfiled": [s.to_dict() for s in self.unfiled], "identity": self.identity,
+                "meter_gain": self.meter_gain}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Fleet":
@@ -5192,6 +5193,7 @@ class Fleet:
                          for n, v in (d.get("phase_votes") or {}).items()}
         f.unfiled = [Session.from_dict(x) for x in d.get("unfiled") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
+        f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
         return f
 
 

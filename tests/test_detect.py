@@ -2732,19 +2732,6 @@ def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_mete
     assert det.metered_parts("a", T0, 5300.0) == [5300.0]
 
 
-def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
-    """Blaž PC inside Hiša: the PC's step counts once, and Hiša adds only what
-    else inside it changed - the pieces of the house step do not overlap."""
-    f = D.Fleet()
-    rows = lambda before, after: [(T0 - 10, before), (T0 + 1, after)]
-    f.sub_rows = {"Hiša": rows(500, 2700), "Blaž PC": rows(100, 400), "Bojler": rows(0, 0)}
-    f.parents = {"Blaž PC": "Hiša"}
-    f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in f.sub_rows}
-    got = dict(f._meter_steps("c", T0, 5.0))
-    assert got == {"Hiša": 1900.0, "Blaž PC": 300.0, "Bojler": 0.0}, got
-    assert f._meter_steps("a", T0, 5.0) == []                          # none of them is on phase A
-
-
 def test_a_load_cycling_inside_the_noise_band_does_not_hold_the_band_open():
     """Hiša's phase C: a 65 W load toggling every few readings, inside a floor
     learned at 128 W. Measured from the level it sat 30 W out and kept the
@@ -2758,32 +2745,6 @@ def test_a_load_cycling_inside_the_noise_band_does_not_hold_the_band_open():
         on = (i // 5) % 2 == 1
         st.process(T0 + 5.0 * i, 410.0 + (65.0 if on else 0.0) + rnd.gauss(0, 1.5))
     assert st.noise < 65.0, st.noise
-
-
-def test_a_step_belongs_to_the_innermost_meter_that_saw_all_of_it():
-    """The cycler inside Hisa is Hisa's; Blaz PC's step, which Hisa saw too,
-    is Blaz PC's."""
-    f = D.Fleet()
-    f.main.phases["c"] = D.PhaseState()
-    f.main.phases["c"].noise, f.main.phases["c"].interval = 10.0, 2.0
-    rows = lambda before, after: [(T0 - 10, before), (T0 + 1, after)]
-    f.parents = {"Blaž PC": "Hiša"}
-    f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in ("Hiša", "Blaž PC")}
-    f.sub_rows = {"Hiša": rows(500, 800), "Blaž PC": rows(100, 400)}
-    assert f._step_home("c", T0, 300.0, True) == "Blaž PC"
-    f.sub_rows = {"Hiša": rows(410, 475), "Blaž PC": rows(100, 100)}
-    assert f._step_home("c", T0, 65.0, True) == "Hiša"
-    assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
-    assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
-
-
-def test_a_meter_reporting_on_change_is_timed_by_its_shortest_gaps():
-    """A periodic meter's cadence is its period; one that reports on change
-    is as quick as its shortest usual gap, not its idle heartbeat."""
-    assert abs(D.reading_cadence([10.0, 10.2, 9.9, 10.1] * 5) - 10.0) < 0.2   # a 10 s poll
-    change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
-    assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
-    assert D.reading_cadence([5.0, 6.0]) == 0.0                           # too few to say
 
 
 def test_a_step_and_a_run_carry_how_sure_the_detector_is_of_them():
@@ -2801,6 +2762,53 @@ def test_a_step_and_a_run_carry_how_sure_the_detector_is_of_them():
     st.stop_q = 0.8
     assert abs(st._close(o, T0 + 60, 1000.0, None).quality - 0.8) < 1e-9                   # the lesser end
     assert st._close(o, T0 + 60, 700.0, None).quality == 0.0                               # 30 % apart in size
+
+
+def _fleet_with_meters(steps, parents=None):
+    """A fleet whose meters each declared ``steps[name]`` on their channel a at
+    T0, every one measured to carry grid phase c."""
+    f = D.Fleet()
+    f.main.phases["c"] = D.PhaseState()
+    f.main.phases["c"].noise, f.main.phases["c"].interval = 10.0, 2.0
+    for name, w in steps.items():
+        det = D.Detector()
+        det.phases["a"] = D.PhaseState()
+        det.phases["a"].noise = 5.0
+        if w:
+            det.phases["a"].declared.append((T0 + 0.5, w, None))
+        f.subs[name] = det
+    f.parents = dict(parents or {})
+    f.phase_votes = {n: {"a": {"c": D.PHASE_MAP_MIN_VOTES}} for n in steps}
+    return f
+
+
+def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
+    """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
+    only what else inside it changed - the pieces of a grid step do not overlap."""
+    f = _fleet_with_meters({"Hiša": 2200.0, "Blaž PC": 300.0, "Bojler": 0.0}, {"Blaž PC": "Hiša"})
+    got = dict(f._meter_steps("c", T0, 5.0))
+    assert got == {"Hiša": 1900.0, "Blaž PC": 300.0, "Bojler": 0.0}, got
+    assert f._meter_steps("a", T0, 5.0) == []                          # none of them is on phase A
+
+
+def test_a_step_belongs_to_the_innermost_meter_whose_own_step_was_all_of_it():
+    """The cycler inside Hisa is Hisa's; Blaz PC's step, which Hisa saw too,
+    is Blaz PC's. Each compared by the step its own detector declared."""
+    f = _fleet_with_meters({"Hiša": 300.0, "Blaž PC": 300.0}, {"Blaž PC": "Hiša"})
+    assert f._step_home("c", T0, 300.0, True) == "Blaž PC"
+    f = _fleet_with_meters({"Hiša": 65.0, "Blaž PC": 0.0}, {"Blaž PC": "Hiša"})
+    assert f._step_home("c", T0, 65.0, True) == "Hiša"
+    assert f._step_home("c", T0, 65.0, False) is None                  # it rose; this step fell
+    assert f._step_home("c", T0, 900.0, True) is None                  # nothing saw all of it
+
+
+def test_a_meter_learns_its_gain_against_the_grid():
+    """A plug reading 4 % low is matched in the grid's terms once learned."""
+    f = _fleet_with_meters({"Plug": 960.0})
+    for _ in range(D.METER_GAIN_MIN):
+        assert f._step_home("c", T0, 1000.0, True) == "Plug"
+    assert abs(f.gain("Plug") - 1000.0 / 960.0) < 1e-6, f.gain("Plug")
+    assert abs(f._meter_totals("c", T0, 5.0)["Plug"][0] - 1000.0) < 1e-6
 
 if __name__ == "__main__":
     run_main(globals())
