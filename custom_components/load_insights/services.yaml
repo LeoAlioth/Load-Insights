@@ -16,9 +16,6 @@ reset_detection:
     and handed back to whatever the backfill finds that looks like them -
     so where the site really has changed, and nothing matches, a name
     simply does not return - unless you ask for the names to go too.
-  target:
-    entity:
-      integration: load_insights
   fields:
     forget_names:
       name: Forget the names too

@@ -38,12 +38,11 @@ weekly profile cannot see: a price that moves day to day, occupancy, a mode.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 MAX_LABELS = 8          # more distinct values than this and it is treated as numeric
 BANDS = 4               # quantile bands for a numeric input
 MIN_HOURS = 168         # an input seen for less than a week cannot be fitted
-HOURS_PER_WEEK = 168
 CONSISTENCY = 0.8       # a slot must agree with itself this often to be projected
 HOLD_HOURS = 6          # how far an unprojectable input's current label is carried
 

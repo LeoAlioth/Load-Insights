@@ -1,11 +1,13 @@
-"""strings.json and every translation must parse and carry the same keys.
+"""Every translation must parse and carry the same keys.
 
 A translation file that does not parse makes Home Assistant fall back to raw
 keys for every label in the integration, and nothing in the pure tier would
 have noticed - which is exactly how 0.1.0-dev.20260916.0749 shipped with a
 stray literal after the closing brace. Parity is checked as the full key
 tree, not just the top level, so a label added in one language cannot be
-missed in another.
+missed in another. There is no strings.json: Home Assistant reads only
+translations/ for a custom integration, and the copy only had to be kept
+identical to en.json.
 """
 import json
 import sys
@@ -15,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import run_main  # noqa: E402
 
 BASE = Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
-FILES = ("strings.json", "translations/en.json", "translations/sl.json")
+FILES = ("translations/en.json", "translations/sl.json")
 
 
 def _load(name):
@@ -37,12 +39,8 @@ def test_every_translation_file_parses():
         _load(name)
 
 
-def test_strings_and_en_are_identical():
-    assert (BASE / "strings.json").read_text(encoding="utf-8") == (BASE / "translations/en.json").read_text(encoding="utf-8")
-
-
 def test_every_language_has_the_same_keys():
-    ref = _keys(_load("strings.json"))
+    ref = _keys(_load(FILES[0]))
     for name in FILES[1:]:
         assert _keys(_load(name)) == ref, (name, _keys(_load(name)) ^ ref)
 
@@ -62,8 +60,8 @@ def test_every_sensor_translation_key_in_code_has_a_name():
     src = (BASE / "sensor.py").read_text(encoding="utf-8")
     import re
     used = set(re.findall(r'"(consumption_forecast|remainder_forecast|device_forecast|detected_loads|unknown_load_power|grid_forecast|battery_soc_forecast|base_load|named_load_power|named_load_running)"', src))
-    names = set(_load("strings.json")["entity"]["sensor"])
-    names |= set(_load("strings.json")["entity"].get("binary_sensor") or {})
+    names = set(_load(FILES[0])["entity"]["sensor"])
+    names |= set(_load(FILES[0])["entity"].get("binary_sensor") or {})
     assert used <= names, used - names
 
 

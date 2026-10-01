@@ -21,7 +21,7 @@ What comes out is shown to the user for confirmation, never applied blind.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 # device_class -> our field prefix
 KIND_BY_DEVICE_CLASS = {

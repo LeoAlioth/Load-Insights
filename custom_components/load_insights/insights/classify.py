@@ -52,7 +52,6 @@ SHORT = {HEATER: "heater", MOTOR: "motor", MOTOR_3P: "3-phase motor", SUPPLY: "e
 # How far a reading may wander inside one run before it is not holding a
 # level any more, as a fraction of the level itself. A heating element is
 # flat; a variable-speed drive glides by a third or more.
-RIPPLE_STEADY = 0.12
 RIPPLE_VARIES = 0.3
 MIN_SCORE = 0.2            # below this the evidence says nothing
 CLOSE = 0.15               # two families this close are both named
@@ -408,7 +407,6 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
         middle, low, high = None, None, None
     ripple = None if not middle or middle <= 0 else max(0.0, (high - low) / middle)
     glides = ripple is not None and ripple >= RIPPLE_VARIES
-    holds = ripple is None or ripple <= RIPPLE_STEADY
     steady = (1.0 if levels < 1.5 else 0.3) * (0.25 if glides else 1.0)
     stepped = 1.0 if (levels >= 1.5 or glides) else 0.25
     # A start that towers over the run is an induction motor coming up to

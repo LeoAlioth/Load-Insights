@@ -58,11 +58,6 @@ class PowerSpec:
             return 1
         return None
 
-    @property
-    def rate_entity(self) -> Optional[str]:
-        """The single signed sensor, whichever way up it was declared."""
-        return self.rate or self.rate_inverted or None
-
     @classmethod
     def from_source(cls, src: dict) -> Optional["PowerSpec"]:
         pc = src.get("power_config") or {}

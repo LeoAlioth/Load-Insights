@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
@@ -27,7 +27,7 @@ from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confide
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import Forecast
-from .insights.scoring import BAND_LEAD_H, LEADS, LEADS_H, Ledger
+from .insights.scoring import LEADS, Ledger
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
