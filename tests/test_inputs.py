@@ -12,7 +12,6 @@ CAL = load("insights.calendars")
 P = load("insights.profile")
 TZ = ZoneInfo("Europe/Ljubljana")
 NOW = datetime(2026, 9, 16, 10, 30, tzinfo=TZ)
-OFFSET = 7200.0          # Europe/Ljubljana in September
 
 
 def keys(hours):
@@ -42,23 +41,38 @@ def test_free_text_with_many_values_is_unusable_rather_than_guessed_at():
     assert I.label_history({}) == ({}, "empty")
 
 
+def _tariff(t):
+    if t.weekday() >= 5:
+        return "3"
+    return "2" if 7 <= t.hour < 14 or 16 <= t.hour < 20 else "3"
+
+
+def _projected_tariff(now):
+    start = P.floor_hour(now) - timedelta(weeks=8)
+    labels = {h.timestamp(): _tariff(h) for h in P.hour_buckets(start, 8 * 168)}
+    horizon = P.hour_buckets(P.floor_hour(now), 168)
+    return horizon, I.project(labels, keys(horizon), TZ)
+
+
 def test_a_weekday_and_hour_schedule_projects_perfectly():
     """A tariff is a function of weekday and hour, so its future is knowable
     from its past - the point of projecting by hour-of-week slot."""
-    start = P.floor_hour(NOW) - timedelta(weeks=4)
-    hist = P.hour_buckets(start, 4 * 168)
-
-    def tariff(t):
-        if t.weekday() >= 5:
-            return "3"
-        return "2" if 7 <= t.hour < 14 or 16 <= t.hour < 20 else "3"
-
-    labels = {h.timestamp(): tariff(h) for h in hist}
-    horizon = P.hour_buckets(P.floor_hour(NOW), 168)
-    out = I.project(labels, keys(horizon), OFFSET)
+    horizon, out = _projected_tariff(NOW)
     assert len(out) == 168
-    wrong = [(h, out[h.timestamp()], tariff(h)) for h in horizon if out[h.timestamp()] != tariff(h)]
+    wrong = [(h, out[h.timestamp()], _tariff(h)) for h in horizon if out[h.timestamp()] != _tariff(h)]
     assert not wrong, wrong[:4]
+
+
+def test_a_schedule_projects_across_a_clock_change():
+    """Slots are local hours either side of a clock change: the 25 Oct 2026
+    change inside the horizon (22 Oct) or the history (20 Nov), the 29 Mar
+    one in the history (8 Apr). Read at the offset of 'now' alone, the hours
+    across the change landed an hour off: 155, 148 and 148 of 168 right."""
+    for now in (datetime(2026, 10, 22, 10, 30, tzinfo=TZ), datetime(2026, 11, 20, 23, 59, tzinfo=TZ),
+                datetime(2026, 4, 8, 0, 10, tzinfo=TZ)):
+        horizon, out = _projected_tariff(now)
+        right = sum(out.get(h.timestamp()) == _tariff(h) for h in horizon)
+        assert right == 168, (now, right)
 
 
 def test_an_unprojectable_input_is_held_briefly_and_then_absent():
@@ -68,10 +82,10 @@ def test_an_unprojectable_input_is_held_briefly_and_then_absent():
     hist = P.hour_buckets(start, 8 * 168)
     labels = {h.timestamp(): ("high" if h.isocalendar()[1] % 2 == 0 else "low") for h in hist}
     horizon = P.hour_buckets(P.floor_hour(NOW), 168)
-    out = I.project(labels, keys(horizon), OFFSET, current="high")
+    out = I.project(labels, keys(horizon), TZ, current="high")
     assert len(out) == I.HOLD_HOURS, len(out)
     assert set(out.values()) == {"high"}
-    assert I.project(labels, keys(horizon), OFFSET) == {}, "nothing to hold, nothing projected"
+    assert I.project(labels, keys(horizon), TZ) == {}, "nothing to hold, nothing projected"
 
 
 def test_too_little_history_is_refused():
