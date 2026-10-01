@@ -377,7 +377,10 @@ WHERE_TOL_REL = 0.15
 # the Zigbee hidrofor plug about ten. Its median gap is neither: a change
 # reporter idling at its heartbeat read as 28-60 s and the windows reached
 # the kiln's neighbouring pulses (see WHERE_WINDOW_FROM_METER).
-METER_CADENCE_WINDOW = True
+# Off: benched for placing a step only, it placed steps under the wrong meter
+# - Home's floor mat 13.1 h outside its heating (6.8 without), 9.7 kWh
+# wrongly placed (3.0); with the split as well, the kiln's ladder 31 -> 63.
+METER_CADENCE_WINDOW = False
 METER_WINDOW_CADENCES = 2.0
 TOO_BIG = "close"
 # How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
