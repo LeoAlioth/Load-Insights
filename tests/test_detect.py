@@ -2775,13 +2775,13 @@ def test_the_grid_waits_for_the_slowest_meter_within_the_cap():
     q = {"c": {T0 + k * 2.0: 20.0 for k in range(31)}}
     got, got_q, _, cut = f._hold_back(rows, q, None, T0 + 60.0)
     assert cut == T0 + 30.0                                                  # 3 x 10 s; the UPS's 180 s is past the cap
-    assert got["c"][-1][0] == T0 + 30.0 and max(got_q["c"]) == T0 + 30.0
+    assert got["c"][-1][0] == T0 + 30.0 and all(got_q["c"][t] == 20.0 for t, _ in got["c"])
     f = D.Fleet.from_dict(f.to_dict())                                      # kept across a restart
     f.subs["Workshop boiler"].phases["a"].interval, f.subs["Workshop boiler"].phases["a"].last_ts = 10.0, T0
     f.wait_cap_s = 45.0
     got, got_q, _, cut = f._hold_back({"c": [(T0 + 62.0, 310.0)]}, {"c": {T0 + 62.0: 21.0}}, None, T0 + 120.0)
     assert [r[0] for r in got["c"]] == [T0 + 30.0 + 2.0 * k for k in range(1, 16)] + [T0 + 62.0]
-    assert sorted(got_q["c"]) == [r[0] for r in got["c"]]                    # the reactive values came along
+    assert [got_q["c"].get(t) for t, _ in got["c"]] == [20.0] * 15 + [21.0]   # the reactive values came along
     f.wait_cap_s = 0.0                                                       # 0: judged at once
     got, _, _, cut = f._hold_back({"c": [(T0 + 130.0, 300.0)]}, None, None, T0 + 130.0)
     assert cut == T0 + 130.0 and got["c"] == [(T0 + 130.0, 300.0)]

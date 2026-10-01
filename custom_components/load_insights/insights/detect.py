@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import math
 import statistics
+from collections import ChainMap
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -3572,14 +3573,19 @@ class Detector:
 
         From the session itself. Reading it back out of ``recent`` worked only
         while a pass filed fewer sessions than that list keeps."""
-        sid = s.signature_id
-        if sid is None:
+        if s.signature_id is None:
             return None
+        sid = self._current(s.signature_id)
+        return next((x for x in self.signatures if x.id == sid), None)
+
+    def _current(self, sid: int) -> int:
+        """The signature ``sid`` is now: the one each merge since moved it
+        into, followed until it stops."""
         seen = set()
         while sid in self._moved and sid not in seen:
             seen.add(sid)
             sid = self._moved[sid]
-        return next((x for x in self.signatures if x.id == sid), None)
+        return sid
 
     @staticmethod
     def _combine(g: List[Session]) -> Session:
@@ -3623,10 +3629,7 @@ class Detector:
         best = None
         device = self.device_of(s)
         if prefer is not None:
-            seen = set()
-            while prefer in self._moved and prefer not in seen:
-                seen.add(prefer)
-                prefer = self._moved[prefer]
+            prefer = self._current(prefer)
         found = self._input_context(s)
         context, episode = found if found else (None, None)
         if prefer is not None:
@@ -4019,11 +4022,7 @@ class Detector:
                     pooled[sid] = pooled.get(sid, 0.0) + n
         cands = []
         for sid, n in (self._device_home.get(device) or {}).items():
-            seen = set()
-            while sid in self._moved and sid not in seen:
-                seen.add(sid)
-                sid = self._moved[sid]
-            sig = self._sig(sid)
+            sig = self._sig(self._current(sid))
             if sig is not None and sig.id not in avoid and sig.files_in(context) and sig.phases == phases:
                 cands.append((n, sig.id, sig))
         return max(cands)[2] if cands else None
@@ -4042,11 +4041,7 @@ class Detector:
         for k, home in self.start_home.items():
             d = int(k)
             for sid, n in home.items():
-                seen = set()
-                while sid in self._moved and sid not in seen:
-                    seen.add(sid)
-                    sid = self._moved[sid]
-                row = votes.setdefault(sid, {})
+                row = votes.setdefault(self._current(sid), {})
                 row[d] = row.get(d, 0.0) + n
         by_dev: Dict[int, List["Signature"]] = {}
         for sig in self.signatures:
@@ -4650,17 +4645,11 @@ class Fleet:
                 by_energy[mi] = name
         for mi, m in enumerate(ready):
             name = by_energy.get(mi)
-            switch = self._switch_for(m, main_iv) if self.switch_on else None
             if name is None:
-                self._file_main(m, avoid=self._switched_off(m, main_iv))
-                self._credit_switch(m, switch)
+                self._place(m, None, None)
                 self.pending_main.append(m)          # placed later, as ever
-                continue
-            self._file_main(m, prefer=self._meter_home(name), avoid=self._switched_off(m, main_iv))
-            sig = self.main.signature_of(m)
-            if sig is not None:
-                sig.locations[name] = sig.locations.get(name, 0) + 1
-            self._credit_switch(m, switch)
+            else:
+                self._place(m, name, self._meter_home(name))
 
     def _count_input_time(self, name: str, now_ts: Optional[float]) -> None:
         """Add the time since it was last counted to each value's share of
@@ -4834,10 +4823,20 @@ class Fleet:
         return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
                 and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in off)]
 
-    def _credit_switch(self, m: Session, name: Optional[str]) -> None:
+    def _place(self, m: Session, name: Optional[str], prefer: Optional[int]) -> Optional["Signature"]:
+        """File a house session - ``prefer`` the signature a meter's word
+        says it joins - and credit it to the meter ``name`` that saw it, if
+        any, and to the switch whose on-period it is. The switch is read
+        before filing: filing moves the locations it is read from."""
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        switch = self._switch_for(m, main_iv) if self.switch_on else None
+        self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
         sig = self.main.signature_of(m)
-        if name is not None and sig is not None:
-            sig.locations[name] = sig.locations.get(name, 0) + 1
+        if sig is not None:
+            for where in (name, switch):
+                if where is not None:
+                    sig.locations[where] = sig.locations.get(where, 0) + 1
+        return sig
 
     def holds_one_device(self, name: str) -> bool:
         """Does this meter hold ONE device, as the user answered - or, where
@@ -4914,15 +4913,9 @@ class Fleet:
         prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
         if not self._one_device(name):  # a circuit meter holds many loads: its sessions do not decide
             prefer = None
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
-        switch = self._switch_for(m, main_iv) if self.switch_on else None
-        self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
-        sig = self.main.signature_of(m)
-        if sig is not None:
-            sig.locations[name] = sig.locations.get(name, 0) + 1
-            if sub_sig is not None:
-                self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
-        self._credit_switch(m, switch)
+        sig = self._place(m, name, prefer)
+        if sig is not None and sub_sig is not None:
+            self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
 
     def _energy_pairs(self, mains: List[Session]) -> list:
         """(cost, main index, meter, None) for every house session whose energy
@@ -5026,7 +5019,13 @@ class Fleet:
         """The grid's readings up to ``end`` minus the wait - SUSTAIN_CADENCES
         of the slowest meter not over wait_cap_s - with the last pass's held
         ones in front; the newer ones, and their reactive and PV values, are
-        kept for the next pass. See METER_WAIT_CAP_S."""
+        kept for the next pass. See METER_WAIT_CAP_S.
+
+        The reactive and PV values go on as they came, the held ones behind
+        them: the detector only looks them up at the readings it is handed,
+        which are all at or before the cut. Copying both dicts every pass
+        cost the replay, which hands over all ten days each time, five times
+        its run on the live days."""
         wait = max([0.0] + [x for det in self.subs.values() for st in det.phases.values() if st.last_ts is not None
                             for x in (st.sustain(),) if x <= self.wait_cap_s])
         cut = end - wait
@@ -5040,11 +5039,9 @@ class Fleet:
         def split(new, old):
             if not new and not old:
                 return new, {}
-            out, keep = {}, {}
-            for ph in set(new or {}) | set(old or {}):
-                both = {**(old or {}).get(ph, {}), **(new or {}).get(ph, {})}
-                out[ph] = {t: v for t, v in both.items() if t <= cut}
-                keep[ph] = {t: v for t, v in both.items() if t > cut}
+            out = {ph: ChainMap((new or {}).get(ph) or {}, (old or {}).get(ph) or {})
+                   for ph in set(new or {}) | set(old or {})}
+            keep = {ph: {t: m[t] for t, _ in keep_rows.get(ph, ()) if t in m} for ph, m in out.items()}
             return out, keep
         out_q, keep_q = split(q, held.get("q"))
         out_pv, keep_pv = split(pv, held.get("pv"))
@@ -5654,14 +5651,9 @@ HISTOGRAM_ROWS = 5
 HISTOGRAM_COL = 2              # characters per hour, so the day is 48 wide
 
 
-def hour_histogram(counts: Sequence[int], rows: int = HISTOGRAM_ROWS,
-                   width: int = HISTOGRAM_COL) -> List[str]:
-    """The day as a block chart, for a form that renders markdown.
-
-    A config flow cannot draw a graph. It can print one: 24 columns two
-    characters wide, five rows tall, half-blocks for the halves - which says
-    a good deal more than one line of sparkline did.
-    """
+def _blocks(counts: Sequence[float], rows: int, width: int) -> List[str]:
+    """``counts`` as columns of blocks ``rows`` tall and ``width`` wide,
+    half-blocks for the halves, over an axis - nothing when all are zero."""
     top = max(counts) if counts else 0
     if top <= 0:
         return []
@@ -5673,6 +5665,20 @@ def hour_histogram(counts: Sequence[int], rows: int = HISTOGRAM_ROWS,
             line.append(("█" if level >= r else "▄" if level >= r - 0.5 else " ") * width)
         out.append("|" + "".join(line))
     out.append("+" + "-" * (len(counts) * width))
+    return out
+
+
+def hour_histogram(counts: Sequence[int], rows: int = HISTOGRAM_ROWS,
+                   width: int = HISTOGRAM_COL) -> List[str]:
+    """The day as a block chart, for a form that renders markdown.
+
+    A config flow cannot draw a graph. It can print one: 24 columns two
+    characters wide, five rows tall, half-blocks for the halves - which says
+    a good deal more than one line of sparkline did.
+    """
+    out = _blocks(counts, rows, width)
+    if not out:
+        return out
     ruler = [" "] * (len(counts) * width)
     for h in range(0, len(counts), 3):
         for i, ch in enumerate(str(h)):
@@ -5691,18 +5697,9 @@ def day_histogram(counts: Sequence[int], rows: int = 3, width: int = 3) -> List[
     Which DAYS a load runs on separates a washing machine from a dishwasher
     far better than the hour does, and the hour histogram alone could not
     show it (Anze, 2026-09-17)."""
-    top = max(counts) if counts else 0
-    if top <= 0:
-        return []
-    out = []
-    for r in range(rows, 0, -1):
-        line = []
-        for c in counts:
-            level = (c / top) * rows
-            line.append(("█" if level >= r else "▄" if level >= r - 0.5 else " ") * width)
-        out.append("|" + "".join(line))
-    out.append("+" + "-" * (len(counts) * width))
-    out.append(" " + "".join(name[:width].ljust(width) for name in DAY_NAMES[:len(counts)]))
+    out = _blocks(counts, rows, width)
+    if out:
+        out.append(" " + "".join(name[:width].ljust(width) for name in DAY_NAMES[:len(counts)]))
     return out
 
 
