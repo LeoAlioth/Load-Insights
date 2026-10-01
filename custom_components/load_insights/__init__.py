@@ -20,6 +20,7 @@ from .const import (
     SERVICE_NAME_LOAD,
     SERVICE_RESET_DETECTION,
 )
+from .config_flow import _area_id
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner
 from .insights.model import SiteModel, follow_renames, migrate_inputs, relink
@@ -189,21 +190,12 @@ def _area_of_the_meter(hass: HomeAssistant, site: SiteModel) -> str | None:
     rather than the first refresh, which setup no longer waits for."""
     from homeassistant.helpers import area_registry as ar
 
-    entities = er.async_get(hass)
-    devices = dr.async_get(hass)
     areas = ar.async_get(hass)
     for stat_id in site.grid_import:
-        reg = entities.async_get(stat_id)
-        if reg is None:
-            continue
-        area_id = reg.area_id
-        if not area_id and reg.device_id:
-            device = devices.async_get(reg.device_id)
-            area_id = device.area_id if device else None
-        if area_id:
-            area = areas.async_get_area(area_id)
-            if area:
-                return area.name
+        area_id = _area_id(hass, stat_id)
+        area = areas.async_get_area(area_id) if area_id else None
+        if area:
+            return area.name
     return None
 
 
