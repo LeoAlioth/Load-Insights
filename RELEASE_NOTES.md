@@ -47,6 +47,8 @@
 
 ### Fixes
 
+- **The grid meter's net readings are suggested over its gross ones.** An Enphase gateway publishes what the house draws (`current_power_consumption_l1`, never negative) beside what crosses the grid connection (`current_net_power_consumption_l1`, signed), and the Grid connection page filled in the first, whose name is shorter. It now suggests the net one, and the house's own page still takes the gross; nothing already set up changes.
+
 - **A sub-meter's power factors are read at the moment of the step, and from its apparent power.** A meter publishes its readings of one moment as separate entities, milliseconds apart, and taking the others "as of" the power's reading paired a switched-off kiln leg's 34 W with the 3.5 kVA from before - a phantom reactive spike at the very step. Readings from the same update are now paired, and where a meter publishes its apparent power (a Shelly Pro 3EM does, to 0.1 VA) the reactive part comes from that rather than from its two-decimal power factor. The kiln's legs on Home's Hiša meter now read 0.866, as a phase-to-phase element must, for 86-98 % of their steps (36-62 % before).
 
 - **A named load on the Energy dashboard is no longer read as a meter.** Detection learns from every device the dashboard lists, and that included Load Insights' own named-load sensors: a load's estimate was read back as its own truth, and naming a load again after a reset made it "that metered device", with no sensors of its own. Its own sensors, and dashboard entries whose sensor no longer exists, are now left out.
