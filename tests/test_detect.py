@@ -2812,5 +2812,17 @@ def test_a_meter_learns_its_gain_against_the_grid():
     assert abs(f.gain("Plug") - 1000.0 / 960.0) < 1e-6, f.gain("Plug")
     assert abs(f._meter_totals("c", T0, 5.0)["Plug"][0] - 1000.0) < 1e-6
 
+
+def test_a_load_on_two_of_a_meters_channels_is_not_split_phase_by_phase():
+    """The kiln between A and C: Hisa reads its C leg at 2,300 W where the grid
+    reads 2,900 - the per-phase share is each meter's angle, not a second load."""
+    f = _fleet_with_meters({"Hiša": 2300.0})
+    f.subs["Hiša"].phases["b"] = D.PhaseState()
+    f.subs["Hiša"].phases["b"].noise = 5.0
+    f.subs["Hiša"].phases["b"].declared.append((T0 + 0.4, 3500.0, None))   # its other leg, same moment
+    assert f._meter_steps("c", T0, 5.0, True) == []                  # whole: no 600 W phantom
+    f.subs["Hiša"].phases["b"].declared.clear()
+    assert dict(f._meter_steps("c", T0, 5.0, True)) == {"Hiša": 2300.0}   # one leg alone does split
+
 if __name__ == "__main__":
     run_main(globals())

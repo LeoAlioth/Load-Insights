@@ -5019,7 +5019,16 @@ class Fleet:
         terms (its gain), less what its own sub-meters stepped: Blaž PC's step
         counts once, and Hiša adds only what else inside it changed. The
         pieces do not overlap."""
-        steps = {n: m[0] for n, m in self._meter_totals(ph, since, window, up).items()}
+        totals = self._meter_totals(ph, since, window, up)
+        # A meter that stepped on another of its channels at the same moment
+        # holds a multi-phase load, and how such a load's power divides between
+        # its phases depends on each meter's angle: Hisa read the kiln's C leg
+        # at 2,300 W where the grid read 2,900, A agreeing, and every pulse was
+        # cut into the kiln and a 600 W phantom (ladder 31 -> 63). Its share is
+        # not measured phase by phase - the step stays whole.
+        if any(m[4] for m in totals.values()):
+            return []
+        steps = {n: m[0] for n, m in totals.items()}
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
@@ -5032,7 +5041,7 @@ class Fleet:
             return None
         noise = main.phases[ph].noise_at()
         took = {}
-        for n, (d, raw, raw_q, noise_m) in self._meter_totals(ph, since, main.event_window(), up).items():
+        for n, (d, raw, raw_q, noise_m, _) in self._meter_totals(ph, since, main.event_window(), up).items():
             if (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
                 took[n] = (d, raw, raw_q, noise_m)
 
@@ -5072,7 +5081,8 @@ class Fleet:
     def _meter_totals(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> Dict[str, tuple]:
         """Per meter measured to carry grid phase ``ph``: (its declared steps
         within ``since`` +- ``window`` in the grid's terms, the same raw, their
-        reactive part raw, its noise) - see METER_CAL_SLACK. Only steps the
+        reactive part raw, its noise, whether it stepped the same way on
+        another of its channels then too) - see METER_CAL_SLACK. Only steps the
         same way as the grid's, ``up``: the kiln's previous pulse ending a few
         seconds before this one began summed to a sliver, and the split cut
         every pulse in two (ladder 31 -> 66)."""
@@ -5096,7 +5106,10 @@ class Fleet:
                         if q is not None:
                             raw_q += q
                             have_q = True
-            out[name] = (raw * self.gain(name, "p"), raw, raw_q if have_q else None, noise)
+            other = any(abs(w) >= noise and (up is None or (w > 0) == up)
+                        for c, st in det.phases.items() if c not in chans
+                        for t, w, _ in reversed(st.declared[-20:]) if abs(t - since) <= window)
+            out[name] = (raw * self.gain(name, "p"), raw, raw_q if have_q else None, noise, other)
         return out
 
     def _vote_phases(self, closed_sub: Dict[str, List[Session]], main_iv: float,
