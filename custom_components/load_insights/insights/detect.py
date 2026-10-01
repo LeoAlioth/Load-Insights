@@ -5047,7 +5047,7 @@ class Fleet:
         main = self.main
         window = main.event_window()
         least = max(main.phases[ph].noise_at() if ph in main.phases else MIN_NOISE_W, WHERE_TOL_REL * size)
-        took = {n: d for n, d in self._meter_totals(ph, since, window).items()
+        took = {n: d for n, d in self._meter_totals(ph, since, window, by_cadence=True).items()
                 if (d > 0) == up and abs(abs(d) - size) <= least}
 
         def under(n: str, anc: str) -> bool:
@@ -5061,9 +5061,13 @@ class Fleet:
         inner = [n for n in took if not any(under(o, n) for o in took if o != n)]
         return min(inner, key=lambda n: abs(abs(took[n]) - size)) if inner else None
 
-    def _meter_totals(self, ph: str, since: float, window: float) -> Dict[str, float]:
+    def _meter_totals(self, ph: str, since: float, window: float, by_cadence: bool = False) -> Dict[str, float]:
         """What each meter measured to carry house phase ``ph`` stepped by
-        across ``since`` +- ``window``."""
+        across ``since`` +- ``window`` - or, ``by_cadence``, the meter's own
+        window where that is wider (METER_CADENCE_WINDOW): for placing a step,
+        never for splitting one, whose window must stay narrow enough to be
+        one step (a 60 s poll's two minutes split the kiln's pulses, ladder
+        31 -> 63)."""
         steps: Dict[str, float] = {}
         for name, rows in self.sub_rows.items():
             votes = self.phase_votes.get(name) or {}
@@ -5077,7 +5081,7 @@ class Fleet:
             w = window
             if WHERE_WINDOW_FROM_METER and name in self.subs:
                 w = max(window, EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.subs[name].phases.values()))
-            elif METER_CADENCE_WINDOW and name in self.subs:
+            elif by_cadence and METER_CADENCE_WINDOW and name in self.subs:
                 w = max(window, METER_WINDOW_CADENCES * max((reading_cadence(st.gaps) for st in self.subs[name].phases.values()),
                                                             default=0.0))
             d = 0.0
