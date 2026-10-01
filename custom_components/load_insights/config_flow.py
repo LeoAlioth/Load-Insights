@@ -30,12 +30,9 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
-    CONF_DETECTION_INTERVAL,
     CONF_METER_WAIT,
     DETECTION_BACKFILL_DAYS,
     NAMING_MAX_STALE_S,
-    DETECTION_INTERVAL_CHOICES,
-    DETECTION_INTERVAL_MINUTES,
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
     CONF_SIGNATURE_REVISION,
@@ -278,31 +275,21 @@ def _since(when: float) -> str:
     return f"for {days:.0f} days" if days < 60 else f"since {datetime.fromtimestamp(when, dt_util.DEFAULT_TIME_ZONE):%-d %b %Y}"
 
 
-def _interval_field(defaults: dict) -> dict:
-    """How often the recorder is re-read. Its cost no longer scales with it -
-    one query per pass rather than one per entity, and the state written
-    hourly rather than every pass - so the default is a minute and slowing it
-    down is for a large site or slow storage, not for a quiet one.
+def _meter_wait_field(defaults: dict) -> dict:
+    """How long the grid's steps wait for the meters below it - see
+    METER_WAIT_CAP_S.
 
-    It is the only thing left here. "How sure before offering a load" and
-    "smallest change to notice" were removed (Anze, 2026-09-23): the first
-    only filtered the naming page, which already lengthens as loads are named
-    and never runs dry, and nobody can say what an evidence of 0.7 should be;
-    the second is a floor under each phase's MEASURED noise that 1 to 10 W
-    left the scored loads alone at both sites. Both are fixed values now -
-    DEFAULT_MIN_EVIDENCE and MIN_NOISE_W - and a stored choice is ignored."""
-    out = {}
-    out.update({vol.Optional(CONF_DETECTION_INTERVAL,
-                         default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
-            selector.SelectSelector(selector.SelectSelectorConfig(
-                options=[str(n) for n in DETECTION_INTERVAL_CHOICES],
-                translation_key=CONF_DETECTION_INTERVAL,
-                mode=selector.SelectSelectorMode.DROPDOWN))})
-    # how long the grid's steps wait for the meters below it - see METER_WAIT_CAP_S
-    out.update({vol.Optional(CONF_METER_WAIT, default=defaults.get(CONF_METER_WAIT, METER_WAIT_CAP_S)):
+    The rest of what was here is fixed now, and a stored choice is ignored.
+    "How sure before offering a load" and "smallest change to notice" went
+    first (Anze, 2026-09-23): the first only filtered the naming page, which
+    already lengthens as loads are named and never runs dry, and nobody can
+    say what an evidence of 0.7 should be; the second is a floor under each
+    phase's MEASURED noise that 1 to 10 W left the scored loads alone at both
+    sites - DEFAULT_MIN_EVIDENCE and MIN_NOISE_W. How often the recorder is
+    re-read followed (2026-10-01): DETECTION_INTERVAL_MINUTES."""
+    return {vol.Optional(CONF_METER_WAIT, default=defaults.get(CONF_METER_WAIT, METER_WAIT_CAP_S)):
             selector.NumberSelector(selector.NumberSelectorConfig(
-                min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))})
-    return out
+                min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))}
 
 
 def _single_device_field(meters: list, declared) -> dict:
@@ -822,7 +809,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 # kept even when empty: none ticked is an answer - every meter holds several
                 cfg[CONF_SINGLE_DEVICE] = list(user_input.get(CONF_SINGLE_DEVICE) or [])
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
-        fields = _interval_field(current)
+        fields = _meter_wait_field(current)
         if meters:
             fields.update(_single_device_field(meters, current.get(CONF_SINGLE_DEVICE)))
         return self.async_show_form(

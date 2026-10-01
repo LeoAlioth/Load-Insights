@@ -35,7 +35,6 @@ from .const import (
     NAMING_ROWS_PER_NAME,
     NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
-    CONF_DETECTION_INTERVAL,
     CONF_METER_WAIT,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
@@ -193,7 +192,7 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
 
 
 class DetectionRunner:
-    """Every interval_minutes, read what the meter has recorded since
+    """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and signatures persist in
@@ -798,15 +797,6 @@ class DetectionRunner:
         return max(0.0, (dt_util.utcnow() - self.last_processed).total_seconds())
 
     @property
-    def interval_minutes(self) -> int:
-        """How often to re-read the recorder, as configured or defaulted."""
-        try:
-            value = int(self.config.get(CONF_DETECTION_INTERVAL) or DETECTION_INTERVAL_MINUTES)
-        except (TypeError, ValueError):
-            return DETECTION_INTERVAL_MINUTES
-        return value if value > 0 else DETECTION_INTERVAL_MINUTES
-
-    @property
     def meter_wait_s(self) -> float:
         """At most how long the grid's steps wait for the meters below it -
         see METER_WAIT_CAP_S; as configured or defaulted, never negative."""
@@ -863,7 +853,7 @@ class DetectionRunner:
         self.refiling = bool(raw.get("refiling")) or self.last_processed is None
         if not self.enabled:
             return
-        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
+        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=DETECTION_INTERVAL_MINUTES))
         self.hass.async_create_task(self._run())
 
     async def async_reset(self, forget_names: bool = False) -> None:
@@ -960,7 +950,7 @@ class DetectionRunner:
                     pv[p] = _align(generation[p], target)
             for p, rows in samples.items():
                 if p in self.fleet.main.phases:
-                    # a fixed floor since 2026-09-23 - see _interval_field in
+                    # a fixed floor since 2026-09-23 - see _meter_wait_field in
                     # config_flow; a value stored by an older version is not read
                     self.fleet.main.phases[p].min_noise = MIN_NOISE_W
                     # a reading that never exports is the house alone, and

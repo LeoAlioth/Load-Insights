@@ -108,12 +108,10 @@
                 "title": "Nastavitve zaznavanja",
                 "description": "Kako deluje zaznavanje bremen. Kaj opazuje, se tu ne nastavlja več: iz omrežnega priklopa in razsmernikov se poraba hiše izračuna, ne izbere.\n\n{found}",
                 "data": {
-                    "interval_minutes": "Kako pogosto pogleda",
                     "meter_wait_s": "Pocakaj na pocasnejse merilnike, najvec",
                     "single_device": "Števci z eno samo napravo"
                 },
                 "data_description": {
-                    "interval_minutes": "Iste zabelezene stopnice najde tako ali tako - to vpliva na to, kako hitro se breme pokaze, ne na natancnost. Na veliki instalaciji ali pocasnem disku ga upocasni.",
                     "meter_wait_s": "Sprotno zaznavanje presodi vsako stopnico na prikljucku sele, ko so merilniki pod njim imeli cas, da jo sporocijo - trikrat njihov interval porocanja - tako da stopnico pripise merilniku, ki jo je zaznal, in nikoli takemu, ki se ni spremenil. Na merilnik, pocasnejsi od tega, ne caka. Sprotne meritve poimenovanih bremen zamujajo za ta cas; 0 presodi vsako stopnico takoj.",
                     "single_device": "Označi števec, katerega meritve so ena naprava - vtičnica, na kateri je samo črpalka, števec bojlerja. Njegove meritve so ta naprava, zato v njem ni ničesar za poimenovanje, in sprejme le bremena na fazah, ki jih ta naprava uporablja. Števcev tokokrogov ne označi - 3EM na podrazdelilniku, hišni tokokrog: v njih se bremena zaznavajo. Dokler tega ne shraniš, so označeni števci, katerih bremena so skoraj vsa eno."
                 }
@@ -391,16 +389,6 @@
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"
-            }
-        },
-        "interval_minutes": {
-            "options": {
-                "1": "Vsako minuto",
-                "2": "Vsakih 2 minut",
-                "5": "Vsakih 5 minut",
-                "10": "Vsakih 10 minut",
-                "15": "Vsakih 15 minut",
-                "30": "Vsakih 30 minut"
             }
         }
     },
