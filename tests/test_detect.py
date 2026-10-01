@@ -2622,6 +2622,7 @@ def test_a_slow_meters_silence_is_a_held_value():
     rows, t = [], T0
     for k in range(20):
         on_at = t
+        rows.append((on_at + 5.0, 523.0))           # a Shelly reports the element settling within seconds
         while t < on_at + 900.0:                     # on: the change at once, then a heartbeat a minute
             rows.append((t, 520.0 if t == on_at else 521.0)); t += 60.0
         off_at = on_at + 900.0
@@ -2841,6 +2842,7 @@ def test_a_change_reporters_span_starts_one_cadence_before_its_first_new_reading
     assert D.reading_cadence(poll) == 10.0
     change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
     assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
+    assert D.reading_cadence([60.0] * 40 + [5.0]) == 5.0                           # heartbeats do not hide a quick report
     st = D.PhaseState()
     st.steady_ts, st.gaps = T0 - 60.0, list(change)
     assert T0 - 1.5 <= st.span_start(T0) <= T0 - 0.9                               # not a minute back

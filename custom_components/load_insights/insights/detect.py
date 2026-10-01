@@ -93,23 +93,15 @@ NOISE_MAD_FACTOR = 3.0              # under test with EDGE_BY_METER: Anze wants 
 # inside it for good: 1,616 of its steps on 28.09 counted from a start on the
 # 19th, none from a start on the 21st. A held level moves by nothing.
 NOISE_FROM_MOVES = True
-# A meter this slow in a steady state - a Shelly plug heartbeating once a
-# minute, a Zigbee plug reporting on change - says a value HELD by staying
-# quiet: it reports a change within seconds and nothing until the next one.
-# Read as a slow sampler, its thermostat-cycled load merged into hours: the
-# IR panel at Kozolec, off 2.4 minutes between runs, was 13 runs of 164 min
-# against 52 of 15 (2026-09-29). So on such a meter a pending change counts
-# as having held until the next reading arrives, and holding HOLD_SUSTAIN_S
-# is enough. 0 is off.
-HOLD_MIN_INTERVAL_S = 20.0
-HOLD_SUSTAIN_S = 30.0
-# ...and not only on a slow meter: the recorder writes only changes, so on
-# ANY meter a reading followed by more than HOLD_GAP_CADENCES of its own
-# cadence of silence held. The hidrofor's plug, polled every 10 s, read 0 once
-# after the pump stopped and nothing for 15 minutes; one reading cannot hold
-# a level, the stop was declared as -253 of its -809, and the detector carried
-# a phantom 590 W into the next start (2026-10-01).
-HOLD_GAP_CADENCES = 1.5
+# A new level is confirmed by TIME, SUSTAIN_CADENCES of the meter's own
+# reading cadence (its shortest usual gap), never by a count of readings: the
+# recorder writes only changes, so a meter that says nothing for that long has
+# HELD its value, and its silence confirms the level as a reading would (Anze,
+# 2026-10-01). Counting readings, the hidrofor's plug - polled every 10 s, one
+# zero after the pump stopped and nothing written for 15 minutes - could not
+# confirm the stop, declared -253 of its -809 and carried a phantom 590 W into
+# the next start. Replaces a rule for meters slower than 20 s only.
+SUSTAIN_CADENCES = 2.0
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
 # ...and at least this many of the reading's OWN measured sample intervals,
@@ -126,7 +118,7 @@ SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own inter
 # it. The cost is on loads that WANDER rather than switch - Home's NASA
 # station (computers) lost ground, since it rarely holds a level for three
 # readings - which ALIKE_MAD_SHARE largely gives back (2026-09-23).
-SUSTAIN_INTERVALS = 1.5
+# SUSTAIN_INTERVALS (1.5 reading intervals) is replaced by SUSTAIN_CADENCES of the cadence
 # A level HOLDS when its readings agree with each other, not merely when every
 # one of them is away from the old level. The guard above only asked the
 # second, so a run of readings that were each "not the old level" founded a
@@ -1621,12 +1613,11 @@ class PhaseState:
         enough to work it out, and what the array was making at the time.
         Returns the sessions this sample closed - more than one when several
         loads stopped together. ``held`` marks a stand-in for a slow meter's
-        silence - see HOLD_MIN_INTERVAL_S - which teaches nothing about it."""
+        silence - see SUSTAIN_CADENCES - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
         if (not held and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
-                and ((HOLD_MIN_INTERVAL_S and (self.interval or 0.0) >= HOLD_MIN_INTERVAL_S)
-                     or ts - self.pending[-1][0] > HOLD_GAP_CADENCES * (reading_cadence(self.gaps) or self.interval or math.inf))
+                and ts - self.pending[-1][0] > SUSTAIN_CADENCES * (self.cadence() or math.inf)
                 and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
             # the change it last reported held right up to this reading
             last = self.pending[-1]
@@ -1737,10 +1728,7 @@ class PhaseState:
         # but at Home's new 2.4 s the 5 s floor bound instead and meant three
         # OR four readings on timing jitter, and at 1 s would mean six. The
         # absolute figure is only a fallback while the interval is unknown.
-        sustain = (SUSTAIN_INTERVALS * self.interval if self.interval
-                   else SUSTAIN_SECONDS)
-        if HOLD_MIN_INTERVAL_S and self.interval and self.interval >= HOLD_MIN_INTERVAL_S:
-            sustain = min(sustain, HOLD_SUSTAIN_S)
+        sustain = SUSTAIN_CADENCES * self.cadence() if self.cadence() else SUSTAIN_SECONDS
         need = SUSTAIN_SAMPLES
         if CORROBORATED_STOP_SAMPLES and self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
@@ -1804,6 +1792,23 @@ class PhaseState:
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
+
+    def cadence(self) -> float:
+        """How soon this meter reports a change - see reading_cadence; its
+        interval while too few gaps are known."""
+        return reading_cadence(self.gaps) or (self.interval or 0.0)
+
+    def confirm_silence(self, now: float) -> List[Session]:
+        """At the end of a pass: a change pending longer than SUSTAIN_CADENCES
+        of the cadence with no reading since held - the recorder writes only
+        changes - and is confirmed now, not when the next change arrives."""
+        cad = self.cadence()
+        if not self.pending or self.level is None or not cad:
+            return []
+        last = self.pending[-1]
+        if now - last[0] <= SUSTAIN_CADENCES * cad:
+            return []
+        return self.process(now - 0.001, last[1], last[2], last[3], held=True)
 
     def span_start(self, first_off: float) -> float:
         """From when a change seen first at ``first_off`` can have happened:
@@ -3276,15 +3281,18 @@ def edge_scale(watts: float, unit_w: float) -> float:
 
 def reading_cadence(gaps: Sequence[float]) -> float:
     """How soon a meter reports a change: its shortest usual gap between
-    recorded readings, the tenth percentile; 0 with too few to say. One rule
+    recorded readings; 0 with too few to say. One rule
     for every meter - the recorder writes only changes, so a meter polled
     every 10 s that holds its value looks silent exactly like one reporting
     on change (the hidrofor's Zigbee plug: 4,586 of 6,100 gaps exactly 10 s,
     the rest its unchanged readings, unwritten)."""
-    g = sorted(x for x in gaps if x > 0.2)          # same-instant copies are not a cadence
+    g = sorted(x for x in gaps if x >= 1.0)         # same-instant copies are not a cadence
     if len(g) < 10:
         return 0.0
-    return g[int(0.1 * (len(g) - 1))]
+    # its shortest usual gap - the 2nd percentile, not the 10th: a Shelly
+    # heartbeating once a minute reports a change within ~5 s, and its 60 s
+    # heartbeats filled the tenth percentile (Kozolec's IR panel, 59.6 s)
+    return g[int(0.02 * (len(g) - 1))]
 
 
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
@@ -3501,6 +3509,11 @@ class Detector:
             for fph, s in self._flush_events(ts):
                 s.phases = fph
                 s.levels = {fph: s.levels.pop("")}
+                closed.append(s)
+        for ph, st in self.phases.items():          # a change the meter has been silent since held
+            for s in st.confirm_silence(now_ts or latest):
+                s.phases = ph
+                s.levels = {ph: s.levels.pop("")}
                 closed.append(s)
         for fph, s in self._flush_events(latest, final=True):   # the batch is over: nothing more will rise beside them
             s.phases = fph
@@ -3817,11 +3830,11 @@ class Detector:
 
     def event_wait(self) -> float:
         """How long after a rise its event may close: the window, plus the time
-        a companion's step takes to be DECLARED after it began - the sustain
-        rule holds it SUSTAIN_SAMPLES samples and SUSTAIN_INTERVALS intervals -
-        or a leg whose reading falls at the window's edge is not pending yet."""
-        iv = max((st.interval or 0.0) for st in self.phases.values()) if self.phases else 0.0
-        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_INTERVALS * iv, SUSTAIN_SAMPLES * iv)
+        a companion's step takes to be DECLARED after it began - SUSTAIN_CADENCES
+        of its phase's cadence - or a leg whose reading falls at the window's
+        edge is not pending yet."""
+        cad = max((st.cadence() for st in self.phases.values()), default=0.0)
+        return self.event_window() + max(SUSTAIN_SECONDS, SUSTAIN_CADENCES * cad)
 
     def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
         """Rises older than the event window (all of them when ``final``)
@@ -4985,7 +4998,8 @@ class Fleet:
             if not iv or 2.0 * iv > m.duration_s:
                 continue
             heard = max((st.last_ts or 0.0 for st in det.phases.values()), default=0.0)
-            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_INTERVALS + 1.0) * iv
+            cad = max((st.cadence() for st in det.phases.values()), default=0.0) or iv
+            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + (SUSTAIN_CADENCES + 1.0) * cad
             if heard < need:
                 return False
         return True
