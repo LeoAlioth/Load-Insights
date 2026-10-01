@@ -83,14 +83,6 @@ CONF_SOURCE_KIND = "source_kind"
 SOURCE_AUTO = "auto"
 SOURCE_KINDS = (SOURCE_AUTO, SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
 DEFAULT_SOURCE_KIND = SOURCE_AUTO
-# How often the recorder is re-read. One minute by default since the pass
-# itself costs well under a millisecond and its overheads no longer scale
-# with it - one query rather than one per entity, and the state written
-# hourly rather than every pass (Anze, 2026-09-18). Configurable because a
-# large site, or one on slow storage, may still want it slower; it buys
-# latency, not accuracy, since the same recorded edges are reconstructed
-# either way.
-CONF_DETECTION_INTERVAL = "interval_minutes"
 # Inside CONF_DETECTION: at most how long, in seconds, live detection waits
 # for the meters below the grid before judging its steps - see
 # METER_WAIT_CAP_S in insights/detect.py, which is its default.
@@ -99,8 +91,13 @@ CONF_METER_WAIT = "meter_wait_s"
 # meter holds ONE device. Absent until the detection page is saved; then every
 # meter not listed holds several.
 CONF_SINGLE_DEVICE = "single_device"
+# How often the recorder is re-read: every minute. The pass itself costs well
+# under a millisecond and its overheads no longer scale with it - one query
+# rather than one per entity, and the state written hourly rather than every
+# pass (Anze, 2026-09-18). It was a setting until 2026-10-01, for a large site
+# or slow storage; a slower one bought latency, not accuracy, and an entry
+# that stored one keeps it unread.
 DETECTION_INTERVAL_MINUTES = 1
-DETECTION_INTERVAL_CHOICES = (1, 2, 5, 10, 15, 30)
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
 # How long the detector's state may sit in memory unwritten. The snapshot is
