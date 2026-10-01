@@ -2833,5 +2833,19 @@ def test_a_meter_reading_less_often_is_compared_over_its_own_span():
     g.declared.pop(); g.declared_t.pop()                                        # without the -580 ...
     assert f._step_home("c", T0, 2800.0, True) is None                          # ... 2,240 is not all of 2,800
 
+
+def test_a_change_reporters_span_starts_one_cadence_before_its_first_new_reading():
+    """The recorder keeps only changes, so a meter's silence is a held value:
+    the change is within one cadence before its first new reading."""
+    poll = [10.0] * 15 + [20.0, 30.0, 60.0, 10.0, 40.0]                            # a 10 s poll, unchanged ones unwritten
+    assert D.reading_cadence(poll) == 10.0
+    change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
+    assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
+    st = D.PhaseState()
+    st.steady_ts, st.gaps = T0 - 60.0, list(change)
+    assert T0 - 1.5 <= st.span_start(T0) <= T0 - 0.9                               # not a minute back
+    st.gaps = poll
+    assert st.span_start(T0) == T0 - 10.0                                          # one poll back
+
 if __name__ == "__main__":
     run_main(globals())
