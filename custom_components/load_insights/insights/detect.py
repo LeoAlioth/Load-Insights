@@ -351,12 +351,21 @@ SPLIT_BY_METERS = True
 # part of what kind of edge it is: Home's 65 W load cycling inside Hisa and
 # the NASA strip's small loads under Mansarda share a size on phase C and
 # nothing else (Anze, 2026-10-01: "detect it fully").
-EDGE_BY_METER = "soft"         # "hard": a step's place keys its group; "soft": only where above chance; "" off
+EDGE_BY_METER = "hard"         # "hard": a step's place keys its group; "soft": only where above chance; "" off
 # a meter's step is looked for over EVENT_WINDOW_INTERVALS of the SLOWER of
 # the grid meter's and its own reading intervals (Anze, 2026-10-01: "the
 # combination of both meters - the less frequent one for the spread")
-WHERE_WINDOW_FROM_METER = True
+# Off: a meter's reading interval is its heartbeat when steady, not how soon
+# it reports a change - Hisa 11 s, Kozolec's boiler 28 s - and windows of
+# three of them read the kiln's neighbouring pulses (ladder 31 -> 108) and
+# cut Kozolec's recall 79 -> 64 %; unplaced steps were inside the window
+# anyway, their sizes disagreeing instead (2026-10-01).
+WHERE_WINDOW_FROM_METER = False
 EDGE_WHERE_RISES_ONLY = True   # only a start is placed: a device is its start cluster
+# a plain start cluster is the same device as the busiest placed one of its
+# phase, direction and size: a meter that missed some of a load's starts
+# otherwise made the load two devices
+EDGE_DEVICE_SPANS = False
 TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
@@ -4055,9 +4064,20 @@ class Detector:
         return len(moved)
 
     def device_of(self, s: "Session") -> Optional[int]:
-        """The start cluster of the run, or of its first leg: its device."""
-        return next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
-                     if pair and pair[0] is not None), None)
+        """The start cluster of the run, or of its first leg: its device - or,
+        for a plain one, the placed cluster it is the same load as (see
+        EDGE_DEVICE_SPANS)."""
+        cid = next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
+                    if pair and pair[0] is not None), None)
+        if not EDGE_DEVICE_SPANS or cid is None:
+            return cid
+        c = next((e for e in self.edges if e.id == cid), None)
+        if c is None or c.where:
+            return cid
+        tol = max(MIN_NOISE_W, MATCH_EDGE_REL * c.watts)
+        twin = max((e for e in self.edges if e.where and e.phase == c.phase and e.up == c.up
+                    and abs(e.watts - c.watts) <= tol), key=lambda e: (e.count, -e.id), default=None)
+        return twin.id if twin is not None else cid
 
     def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
         if start is None or stop is None or start_w <= 0 or stop_w <= 0:
