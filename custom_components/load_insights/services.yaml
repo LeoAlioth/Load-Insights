@@ -1,12 +1,3 @@
-refresh:
-  name: Refresh
-  description: >-
-    Recompute every forecast now instead of waiting for the top of the hour.
-    Useful straight after changing an input, to see whether it engaged.
-  target:
-    entity:
-      integration: load_insights
-
 reset_detection:
   name: Reset load detection
   description: >-
