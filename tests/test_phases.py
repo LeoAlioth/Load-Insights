@@ -299,16 +299,16 @@ def test_the_watts_beside_each_amps_on_the_common_grid_meters():
         rows += [e(watts.format(x), "power", "") for x in labels]
         rows += [e(amps.replace("current", "voltage").format(x), "voltage", "") for x in labels]
         for p, x in zip("abc", labels):
-            assert D.beside(rows, amps.format(x), "power", p, role="grid") == watts.format(x), (amps, p)
+            assert D.beside(rows, amps.format(x), "power", p) == watts.format(x), (amps, p)
     # Home's own SolarEdge M1, line-to-line voltages, totals and energy counters beside it
     for p in "abc":
-        got = D.beside(SOLAREDGE, f"sensor.solaredge_se17k_m1_ac_current_{p}", "power", p, role="grid")
+        got = D.beside(SOLAREDGE, f"sensor.solaredge_se17k_m1_ac_current_{p}", "power", p)
         assert got == f"sensor.solaredge_se17k_m1_ac_power_{p}", got
     # a Deye's CTs are numbered, not phased: nothing to say which is which
     deye = [e(f"sensor.deye_external_ct{n}_{k}", k, "") for n in "123" for k in ("current", "power")]
     deye.append(e("sensor.deye_external_ct_total_power", "power", ""))
     for p in "abc":
-        assert D.beside(deye, "sensor.deye_external_ct1_current", "power", p, role="grid") is None
+        assert D.beside(deye, "sensor.deye_external_ct1_current", "power", p) is None
 
 
 def test_one_line_found_on_another_phase_swaps_with_the_line_that_had_it():

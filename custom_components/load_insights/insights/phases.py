@@ -27,6 +27,7 @@ What comes out is shown to the user for confirmation, never applied blind.
 from __future__ import annotations
 
 import itertools
+import os
 import re
 from typing import Dict, Mapping, Optional, Sequence
 
@@ -199,27 +200,19 @@ def closest_by_name(candidates: Sequence[str], reference: str) -> Optional[str]:
     "output" is the word that matters (Anze, 2026-09-18)."""
     if not candidates:
         return None
-
-    def shared(eid: str) -> int:
-        n = 0
-        for a, b in zip(eid, reference):
-            if a != b:
-                break
-            n += 1
-        return n
-
-    return max(sorted(candidates), key=shared)
+    return max(sorted(candidates), key=lambda eid: len(os.path.commonprefix([eid, reference])))
 
 
-def beside(rows: Sequence[dict], reference: str, kind: str, phase: str,
-           role: str = "load") -> Optional[str]:
+def beside(rows: Sequence[dict], reference: str, kind: str, phase: str) -> Optional[str]:
     """The device's ``kind`` reading on ``phase`` whose name runs alongside
     ``reference`` - the watts that go with a meter's amps, the reactive power
     that goes with its watts. ``rows`` are one device's, in the shape
-    match_meter_entities reads; ``kind`` is a field prefix ("power", "var")."""
+    match_meter_entities reads; ``kind`` is a field prefix ("power", "var").
+    Each row is matched on its own, so only REJECT can turn one away: a role
+    weighs candidates against each other and there is only the one."""
     key = f"{kind}_{phase}"
     return closest_by_name([r["entity_id"] for r in rows
-                            if match_meter_entities([r], role).get(key)], reference)
+                            if match_meter_entities([r]).get(key)], reference)
 
 
 def phase_mapping(votes: Mapping[str, Mapping[str, float]], phases: Sequence[str] = ("a", "b", "c"),
