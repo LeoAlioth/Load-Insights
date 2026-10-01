@@ -415,7 +415,10 @@ METER_GAIN_BOUND = 0.25       # a learned gain stays within this of one either w
 # The two meters' spans of one change overlap - that it is one change, and how
 # much is a timing confidence - and are compared over their UNION, grown by
 # every step either declared whose span reaches into it, up to this many of
-# the grid's event windows: each meter's net change there (Anze, 2026-10-01).
+# the SLOWER meter's reach - the grid's event window, or the sub-meter's own
+# sustain, as far back as its span can start: each meter's net change there
+# (Anze, 2026-10-01). Of the grid's window alone, Home's cap was 24 s and a
+# 10 s plug's span, three cadences, 30 s.
 UNION_CAP_WINDOWS = 4.0
 TOO_BIG = "close"
 # How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
@@ -5260,7 +5263,6 @@ class Fleet:
         k = bisect.bisect_left(grid.declared_t, since - 0.01)
         mine = grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
         g_span = (mine[3], mine[4]) if mine else (since - window, since + window)
-        cap = UNION_CAP_WINDOWS * self.main.event_window()
         noise_g = grid.noise_at()
         for name, det in self.subs.items():
             votes = self.phase_votes.get(name) or {}
@@ -5270,6 +5272,7 @@ class Fleet:
             if not chans:
                 continue
             noise = max(det.phases[c].noise_at() for c in chans)
+            cap = UNION_CAP_WINDOWS * max([self.main.event_window()] + [det.phases[c].sustain() for c in chans])
             a, b = g_span
             for _ in range(8):                       # the union, grown until it holds still
                 ms = [e for c in chans for e in self._near(det.phases[c], a, b, cap)]

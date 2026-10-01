@@ -2790,6 +2790,20 @@ def _fleet_with_meters(steps, parents=None):
     return f
 
 
+
+def test_the_union_reaches_as_far_as_the_slower_meters_span():
+    """A 10 s plug's span reaches three cadences back, 30 s; the grid, polled
+    every 2 s, saw the same change as two steps 23 s apart. The union is
+    capped by the slower meter's reach, not the grid's 24 s alone, so it
+    holds both steps and the plug is all of them."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    f.subs["Hidrofor"].phases["a"].interval = 10.0                       # sustain 3 x 10 s
+    _declare(f.subs["Hidrofor"].phases["a"], (T0, 850.0, None, T0 - 30.0, T0 + 1.0))
+    _declare(f.main.phases["c"], (T0 - 25.0, 400.0, None, T0 - 27.0, T0 - 25.0), (T0, 450.0, None, T0 - 2.0, T0))
+    assert D.UNION_CAP_WINDOWS * f.main.event_window() < 31.0            # the grid's window alone: 24 s
+    share = f._meter_totals("c", T0, f.main.event_window(), True)["Hidrofor"][0]
+    assert share is None, share
+
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
     only what else inside it changed - the pieces of a grid step do not overlap."""
