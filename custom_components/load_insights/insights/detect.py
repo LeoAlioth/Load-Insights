@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, classify
+from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
 from .phases import phase_mapping
 
 PHASES = ("a", "b", "c")
@@ -2939,16 +2939,6 @@ def _uncovered(start: float, end: float, taken: Sequence[Tuple[float, float]]) -
     return out
 
 
-def _fmt_w(x: float) -> str:
-    """Watts below a kilowatt, kilowatts above.
-
-    Everything was printed as kilowatts to one decimal, which is fine for a
-    kettle and useless for everything a submeter sees: a whole library of a
-    computer, a UPS and an office plug read "0.0 kW on A" line after line,
-    every row identical and none of them wrong (Anze, 2026-09-22)."""
-    return f"{x:.0f} W" if abs(x) < 1000 else f"{x / 1000:.1f} kW"
-
-
 def _fmt_wh(x: float) -> str:
     return f"{x:.0f} Wh" if x < 1000 else f"{x / 1000:.1f} kWh"
 
@@ -2963,18 +2953,6 @@ def _fmt_per_day(rate: float) -> str:
     if week >= 1.5:
         return f"{week:.0f} times a week"
     return "about once a week" if week >= 0.75 else "less than once a week"
-
-
-def _fmt_s(x: Optional[float]) -> str:
-    if x is None:
-        return "?"
-    if x < 90:
-        return f"{x:.0f} s"
-    if x < 5400:
-        return f"{x / 60:.0f} min"
-    if x < 172800:                      # past two days, hours stop being readable
-        return f"{x / 3600:.1f} h"
-    return f"{x / 86400:.1f} days"
 
 
 # Parts of the day, by the hour they start. Deliberately coarse: a load that

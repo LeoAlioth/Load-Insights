@@ -55,6 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
 NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
+from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import named_load_energy
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
@@ -268,16 +269,6 @@ def _behind(seconds: Optional[float]) -> str:
     if seconds < 172800:
         return f"{seconds / 3600:.0f} hours behind"
     return f"{seconds / 86400:.1f} days behind"
-
-
-def _w(value: float) -> str:
-    return f"{value:.0f} W" if abs(value) < 1000 else f"{value / 1000:.1f} kW"
-
-
-def _secs(value: float) -> str:
-    if value < 90:
-        return f"{value:.0f} s"
-    return f"{value / 60:.0f} min" if value < 5400 else f"{value / 3600:.1f} h"
 
 
 def _since(when: float) -> str:
@@ -735,8 +726,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             options.append("naming_adopt")
             quiet = _since(was.last_seen)
             detail = (f"**{was.name}** has not run {quiet}, and this looks like what it became "
-                      f"- it was {_w(was.watts)} over {_secs(was.duration_s)}, this is "
-                      f"{_w(sig.watts)} over {_secs(sig.duration_s)}, on the same phases.\n\n"
+                      f"- it was {_fmt_w(was.watts)} over {_fmt_s(was.duration_s)}, this is "
+                      f"{_fmt_w(sig.watts)} over {_fmt_s(sig.duration_s)}, on the same phases.\n\n"
                       f"{detail}")
         if sig.name:
             options.append("naming_forget")
