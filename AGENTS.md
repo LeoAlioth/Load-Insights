@@ -140,7 +140,6 @@ python3 tests/run_all.py                                  # 16 files, all must p
 python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
-python3 tests/bench.py score home FOLDER HOUSE=residual   # the house less its sub-meters
 python3 tests/bench.py score SITE FOLDER SUBS=prod        # feed production's meters to the Fleet
 python3 tests/bench.py attrib SITE FOLDER                 # where each device's sessions are placed
 python3 tests/bench.py pump FOLDER HOUSE=prod             # every hidrofor run, run by run
@@ -788,10 +787,11 @@ and 112 of the hidrofor's 361 sit in signatures placed at the main meter -
 sessions the house split so differently that the meter's own signature does
 not fit them, which the override will not force.
 
-Measured 2026-09-23, before building it (`bench.py` `HOUSE=residual` and
-`HOUSE=<circuit>`): the sub-meters are quieter but SLOWER - Home's Shellys
-report every 8-11 s against the house's 6 s (2 s since the polling change),
-Kozolec's boiler Shelly every 52 s. That decides both halves:
+Measured 2026-09-23, before building it (the bench's `HOUSE=residual` and
+`HOUSE=<circuit>`, removed 2026-10-01 once this was settled): the sub-meters
+are quieter but SLOWER - Home's Shellys report every 8-11 s against the
+house's 6 s (2 s since the polling change), Kozolec's boiler Shelly every 52 s.
+That decides both halves:
 - *Subtracting* them from the house before detecting leaves a phantom pulse
   wherever the two meters see a step at different moments. Home held out:
   the whole house 80.6 % purity; less its sub-meters 64.3 %, with 106 sessions
@@ -802,9 +802,9 @@ Kozolec's boiler Shelly every 52 s. That decides both halves:
   onto the house's readings gave 64.2 % and 92 phantoms; resampling everything
   to 1 s gave 57.9 % and 409, since the house's own steps become ramps. A
   slower meter never recorded WHEN inside its gap a step happened, and a line
-  drawn across the gap only smears it. (Measured with the house PINNED - see
-  `bench.py`: a first run let the replay swap two phases for the attic 3EM's
-  own channels, and the 22 Sep test ran on a mis-configured house.)
+  drawn across the gap only smears it. (Measured with the house pinned to
+  the built series: a first run let the replay swap two phases for the attic
+  3EM's own channels, and the 22 Sep test ran on a mis-configured house.)
 - *Detecting on the circuit* loses what the slower meter cannot see: the kiln
   on the Hiša 3EM gave 236 full-size sessions against 409 on the house.
 So the override has to keep the HOUSE meter's timing and take the sub-meter's
