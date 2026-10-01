@@ -129,14 +129,20 @@ def _held_at(rows: list, times: list, t: float) -> float:
 
 
 def _started_with(rows: list, times: list, s) -> bool:
-    """Did the device's meter switch on with the run - rise, from just before
-    its start to a minute after, by at least half of what the run started at?
-    Only then is the run the device's. Energy drawn DURING it is not enough:
-    that credits every long run a device merely ran beside, and each of the
-    overlapping ones again - Susilna scored 86 kWh right of 63 (2026-10-01)."""
+    """Did the device's meter switch on with the run - rise, at any moment
+    from just before its start to a minute after, by at least half of what the
+    run started at? Only then is the run the device's. Energy drawn DURING it
+    is not enough: that credits every long run a device merely ran beside, and
+    each of the overlapping ones again - Susilna scored 86 kWh right of 63
+    (2026-10-01). And the peak, not the reading a minute on: a pump runs 60-70
+    s, was off again by then, and a third of its own runs scored as nobody's -
+    its group under half its own, and all of it "not found" (2026-10-01)."""
+    import bisect
     first = sum(rows_[0][1] for rows_ in s.levels.values() if rows_)
-    rise = _held_at(rows, times, s.start + 60.0) - _held_at(rows, times, s.start - 10.0)
-    return first > 0 and rise >= 0.5 * first
+    before = _held_at(rows, times, s.start - 10.0)
+    i, j = bisect.bisect_right(times, s.start - 10.0), bisect.bisect_right(times, s.start + 60.0)
+    peak = max([before] + [r[1] for r in rows[i:j]])
+    return first > 0 and peak - before >= 0.5 * first
 
 
 def _overlap(ivs: list, a: float, b: float) -> float:
@@ -259,6 +265,9 @@ def check() -> None:
     assert _started_with(rows, t, S)
     S.start = 150.0                                                   # a run beside it, started later
     assert not _started_with(rows, t, S)
+    pump = [(0.0, 0.5), (100.0, 1100.0), (110.0, 880.0), (150.0, 0.5)]  # on 50 s: off again a minute on
+    S.start, S.levels = 101.0, {"a": [(101.0, 900.0)]}
+    assert _started_with(pump, [r[0] for r in pump], S)
     print("ok")
 
 
