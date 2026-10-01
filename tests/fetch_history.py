@@ -26,17 +26,132 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from export_urls import SITES  # noqa: E402  - one place for the entity lists
-
 ROOT = Path(__file__).resolve().parents[1]
+
+# Each site's base URL, zone, and the entities fetched for it, a CSV per day
+# per group; add a site by copying one.
+HOME = {
+    "base": "https://ha.alpacasbarn.com",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        # the SolarEdge meter and inverter, plus the template phase sensors
+        # detection is configured against, plus the single-phase device
+        # meters - all of them poll, so a day of these is modest
+        "meters-and-devices": (
+            [f"sensor.solaredge_se17k_m1_ac_{k}" for k in
+             ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
+              "voltage_an", "voltage_bn", "voltage_cn",
+              # recorded from 2026-09-30: the meter's own, signed reactive power
+              "var_a", "var_b", "var_c", "va_a", "va_b", "va_c", "pf_a", "pf_b", "pf_c")]
+            + ["sensor.solaredge_se17k_i1_ac_power"]
+            + [f"sensor.solaredge_se17k_i1_ac_{k}" for k in
+               ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]
+            + [f"sensor.se17k_home_power_phase_{p}" for p in "abc"]
+            + ["sensor.blaz_pc_power", "sensor.attic_office_power",
+               "sensor.evbox_elvi_power_active_import", "sensor.hidrofor_power",
+               "sensor.workshop_boiler_power", "sensor.attic_ac_power",
+               "sensor.server_ups_power", "sensor.shellypmminig3_susilna_power",
+               "sensor.workshop_charger_power"]),
+        # the two three-phase Shellys, which report every second
+        "shellys": (
+            [f"sensor.hisa_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.hisa_total_active_power"]
+            + [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.mansarda_total_active_power"]),
+        # ...and their power factors and apparent power per phase, so the
+        # replay can give their steps a reactive power the way production
+        # does (their steps sat at "no power factor" on the graphs, 2026-09-30)
+        "shellys-pf": (
+            [f"sensor.{m}_phase_{p}_{k}" for m in ("hisa", "mansarda") for p in "abc"
+             for k in ("power_factor", "apparent_power")]),
+    },
+}
+
+# Kozolec is a second Home Assistant, so it needs its own base URL and its
+# own token - a long-lived token is issued by one instance for one user and
+# means nothing to another (Anze, 2026-09-18). Its LOAD side is the
+# MultiPlus AC OUT, whose entity names are still to be confirmed; the AC IN
+# it is currently pointed at reads zero, the site being off grid.
+KOZOLEC = {
+    "base": "https://ha.kozolec.hlevcek.com",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        # The LOAD side, and it is fully instrumented: power, current AND
+        # voltage on the MultiPlus output, which is a coherent triple on the
+        # very reading the loads hang off - the one thing home does not have.
+        # The AC INPUT is a generator port, real but idle almost always, so
+        # it comes along to show what "off" looks like rather than to detect
+        # on (Anze, 2026-09-18).
+        "inverter": [
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_0_line_l2_output_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_voltage_l1",
+            "sensor.gx_device_consumption_power_l1",
+            "sensor.gx_device_consumption_current_l1",
+            "sensor.gx_device_critical_loads_on_l1",
+        ],
+        # DC: the arrays charge the battery directly, so none of this ever
+        # reaches the AC side as generation - which is why the load signal
+        # here is clean and home's is not.
+        "dc": [
+            "sensor.mppt_150_70_pv_yield_power",
+            "sensor.mppt_150_85_pv_yield_power",
+            "sensor.gx_device_pv_power",
+            "sensor.gx_device_dc_battery_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_dc_power",
+            "sensor.jk_bms_id_512_charge",
+        ],
+        "devices": [
+            "sensor.power_strip_power",      # Car charger
+            "sensor.boiler_power",      # Boiler
+            "sensor.washing_machine_power",      # Washing Machine
+            "sensor.well_pump_power",
+            "sensor.kozolec_hidrofor_power",                   # Water Pump
+            "sensor.pond_filter_power",               # Pond
+            "sensor.pond_evse_power",
+            "sensor.pastir_staja_power",
+            "sensor.bug_lamp_power",
+            "sensor.bathroom_ir_panel_switch_0_power",       # Bathroom IR Panel
+        ],
+    },
+}
+
+SITES = {"home": HOME, "kozolec": KOZOLEC}
+
+# Entities renamed on 2026-09-28 (HA_Configs/<site>/rename-plan-2026-09-28*.json).
+# History fetched before then is under the old id and after under the new;
+# the recorder moved the old days to the new id too, so a fetch by the old id
+# came back empty from 23 Sep on - Home's house and attic meters, the office
+# plug, Kozolec's well pump and boiler all missing from the bench for those
+# days. replay.read_csv reads an old id as its new one.
+RENAMED = {
+    "sensor.attic_phase_a_active_power": "sensor.mansarda_phase_a_active_power",
+    "sensor.attic_phase_b_active_power": "sensor.mansarda_phase_b_active_power",
+    "sensor.attic_phase_c_active_power": "sensor.mansarda_phase_c_active_power",
+    "sensor.attic_total_active_power": "sensor.mansarda_total_active_power",
+    "sensor.kotlovnica_well_pump_power": "sensor.well_pump_power",
+    "sensor.nasa_station_power": "sensor.attic_office_power",
+    "sensor.shelly_pond_switch_0_power": "sensor.pond_filter_power",
+    "sensor.shellypmminig3_84fce63c6654_power": "sensor.blaz_pc_power",
+    "sensor.shellypmminig3_ecda3bc6b054_power": "sensor.workshop_charger_power",
+    "sensor.shellypro3em_34987a459ae0_phase_a_active_power": "sensor.hisa_phase_a_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_b_active_power": "sensor.hisa_phase_b_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_c_active_power": "sensor.hisa_phase_c_active_power",
+    "sensor.shellypro3em_34987a459ae0_total_active_power": "sensor.hisa_total_active_power",
+    "sensor.shellypro4pm_kozolec_switch_0_power": "sensor.power_strip_power",
+    "sensor.shellypro4pm_kozolec_switch_1_power": "sensor.boiler_power",
+    "sensor.shellypro4pm_kozolec_switch_3_power": "sensor.washing_machine_power",
+}
 
 
 def read_token(path: Path) -> str:
@@ -95,14 +210,10 @@ def main() -> int:
     tz = site["tz"]
     out = Path(args.out) if args.out else ROOT / "data" / "history" / args.site
     out.mkdir(parents=True, exist_ok=True)
-    given = Path(args.token) if args.token else None
-    if given is not None:
-        token_path = given if given.is_absolute() else ROOT / given
+    if args.token:
+        token_path = Path(args.token) if Path(args.token).is_absolute() else ROOT / args.token
     else:
-        host = urllib.parse.urlsplit(site["base"]).hostname or args.site
-        candidates = [ROOT / "data" / host, ROOT / "data" / f"ha_token_{args.site}",
-                      ROOT / "data" / "ha_token"]
-        token_path = next((p for p in candidates if p.exists()), candidates[0])
+        token_path = ROOT / "data" / urllib.parse.urlsplit(site["base"]).hostname
     token = "" if args.dry_run else read_token(token_path)
 
     last = (datetime.strptime(args.ending, "%Y-%m-%d").replace(tzinfo=tz) if args.ending

@@ -16,8 +16,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `custom_components/load_insights/config_flow.py` | setup and the naming pages |
 | `custom_components/load_insights/sensor.py` | entities and the diagnostic attributes |
 | `tests/replay.py` | run the detector over exported CSVs, no HA |
-| `tests/cluster_lab.py` | ground-truth scoring, and each site's device-meter list |
-| `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does |
+| `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does; ground-truth scoring and each site's device-meter list (`SITES`) |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything
@@ -154,8 +153,8 @@ site is one folder of per-day CSVs exported from the History panel.
 
 For anything touching clustering or attribution, score it against **sub-meter
 ground truth** rather than counting signatures — fewer signatures is also what
-over-merging looks like. `tests/cluster_lab.py` holds each site's device-meter
-entity list and the two metrics:
+over-merging looks like. `tests/bench.py` holds each site's device-meter
+entity list (`SITES`) and the two metrics:
 
 - **purity** — does one signature hold one device
 - **concentration** — does one device land mostly in one signature
@@ -183,7 +182,7 @@ each `--sub-phases` meter's reactive power from the power factor found beside
 its power (same pseudo-device) and hands it to the Fleet as `sub_q`. Device
 meters fed with `--sub` still get none: their Shellys publish no factor.
 The bench now PINS the house power roles to the site's configured entities
-(`cluster_lab.SITES[site]["main"]`) instead of letting the replay guess: with
+(`bench.SITES[site]["main"]`) instead of letting the replay guess: with
 the 3EMs' factors in the history the guess took Hiša's power for the house's
 and every count halved (caught in the recapture, 2026-09-30).
 
