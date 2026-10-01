@@ -27,6 +27,8 @@ bench's own:
     HOUSE=Hiša   one CIRCUITS meter read as though it were the house
     SLICE=6      feed the replay in slices this many hours long, as
                  production's backfill does (the default); 0 for one call
+    LIVE=5       ...but the last this many days in one-minute passes, as a
+                 site runs once it has caught up (0, the default: none)
 
 score   purity (does one signature hold one device) and concentration (does
         one device land in one signature), per device with the ABSOLUTE size
@@ -113,6 +115,7 @@ STAGES: list = []                      # STAGE=entity dials, fed as --stage
 PINNED: list = []                      # --role pins for a house built by _house_as
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE_HOURS = 6.0                      # production's backfill slice; SLICE=0 for one call
+LIVE_DAYS = 0.0                        # the last days in one-minute passes - LIVE=
 NO_Q = False                           # NOQ=1: the replay ignores reactive power (--no-q)
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
@@ -259,6 +262,10 @@ def _apply(dials) -> str:
             global SLICE_HOURS
             SLICE_HOURS = float(v)
             continue
+        if k == "LIVE":
+            global LIVE_DAYS
+            LIVE_DAYS = float(v)
+            continue
         if k == "NOQ":
             global NO_Q
             NO_Q = bool(float(v))
@@ -319,6 +326,8 @@ def _replay(folder: str, site: str | None):
 
     D.Detector._file, D.Fleet.process = spy_file, spy_proc
     argv = ["replay.py", folder, "--slice-hours", str(SLICE_HOURS)] + ([] if START_STATE else ["--no-start-state"])
+    if LIVE_DAYS:
+        argv += ["--live-days", str(LIVE_DAYS)]
     if NO_Q:
         argv.append("--no-q")
     # the house roles pinned to what production reads, never guessed: with the
