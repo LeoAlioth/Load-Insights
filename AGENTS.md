@@ -546,9 +546,46 @@ charge that followed another as no one's). Ten days, SUBS=prod:
 | + symmetric union with chaining, overlap as timing (hard) | 70.3 / 37.6 | 5.5 h | 45.1 % / 9.3 | 97.7 | 81.2 % / 19.3 |
 | + span from one cadence before the first new reading, hard, gate 0.3 | 70.1 / 37.4 | 4.9 h | 38.6 % / 7.4 | 97.7 | 82.8 % / 16.7 |
 | ... soft, gate 0.3 | 70.5 / 36.0 (233 sigs) | 3.3 h | 34.5 % / 5.2 | 98.1 | 83.2 % / 16.7 |
+| + a reading followed by silence held, on any meter (hold fix; hard, gate 0.3 from here) | 69.9 / 39.5 | 5.8 h | 34.9 % / 6.6 | 97.6 | 81.6 % / 19.9 |
+| level confirmed over time, p2 of 60 gaps, 2 / 3 cadences | 72.9 / 43.9, 76.4 / 48.5 | 14.1 h, 6.9 h | 36.3 % / 2.8, 36.9 % / 8.2 | 94.9, 95.7 | 66.2 % / 25.3, 57.0 % / 45.2 |
+| confirmed over 1.5 / 2 periods, silence by the cadence | 70.0 / 38.2, 71.3 / 47.3 | 5.3 h, 25.0 h | 35.3 % / 4.0, 24.0 % / 1.7 | 96.0, 97.6 | 79.4 % / 21.5, 65.6 % / 1.5 |
+| one cadence rule, p5 of 60 gaps, 2 / 3 cadences | 73.5 / 41.5, 72.6 / 43.9 | 2.2 h, 2.2 h | 34.7 % / 10.0, 37.6 % / 9.2 | 92.6, 96.7 | 53.8 % / 40.2, 80.3 % / 23.7 |
+| ... p5 of 600 gaps, 2 / 3 cadences | 73.4 / 44.1, 76.1 / 48.4 | 2.4 h, 7.8 h | 34.2 % / 9.6, 37.1 % / 12.0 | 97.3, 97.2 | 69.1 % / 25.7, 82.9 % / 18.9 |
+| moving-gap cadence (p10), 2 cadences | 73.1 / 42.3 | 2.5 h | 21.5 % / 1.5 | 97.6 | 83.1 % / 16.2 |
+| ... 3 cadences | 75.3 / 48.2 | 4.2 h | 42.5 % / 7.8 | 98.1 | 84.2 % / 17.1 |
+| + union capped by the slower meter's reach (experiments default) | 75.3 / 49.6 | 2.0 h | 42.6 % / 8.0 | 98.1 | 84.2 % / 17.1 |
 
 The symmetric versions file the pump's runs at the wrong size 91-95 times
-(53-59 before) - open, not the span start.
+(53-59 before) - open, not the span start. The hold fix took it to 47, the
+moving-gap cadence at three to 43-44 (505-506 clean of 665); the kiln's ladder
+from 41 to 30, and 24 with the union capped by the slower meter.
+
+**A meter's cadence (2026-10-01).** One number sets how long a new level
+must hold, how long a silence means the value held, and how far back a
+change's span can start: SUSTAIN_CADENCES (3) of the meter's cadence.
+- **Measured from all gaps, a low percentile misreads a polled meter.**
+  Kozolec's Victron is polled every 5.3 s, and once a minute its integration
+  refreshes every entity anywhere in the poll. While the EVSE charged, the
+  5th percentile read 2.3 s, even over 600 gaps. A normal poll then counted as
+  silence, a held stand-in confirmed the boiler's half-caught start, and its
+  stop closed the EVSE's charge (27.09 11:37).
+- **A high percentile misreads a heartbeat meter.** The IR panel and Susilna
+  write every 60 s but report a change within 5-12 s.
+- **The gaps after a reading that moved past the noise read both** - how
+  often the meter writes while its value changes. At their 10th percentile:
+  Victron 5.1 s, grid meter (Home) 1.1 s in the detector (1.6 for the meter
+  alone), hidrofor 9.9, EVSE 10.1, IR panel 5.0, Hisa 4.8-6.0, Mansarda
+  4.1-4.8. The 10th is the lowest that skips the Victron's refresh: at most
+  9.3 % of its post-move gaps in any 600.
+- **One update is readings under 0.5 s apart** (SAME_UPDATE_S). Pairs are
+  all under 0.2 s - Home's grid meter and inverter, a 3EM's power and
+  apparent power. Real readings come from 0.8 s: the grid meter 3,064 times
+  0.8-1.0 s apart in ten days, which the old 1 s limit dropped.
+- **The 3EMs write a phase no faster than about every 4 s**, as recorded:
+  Hisa A 49 gaps of 1-2 s against 6,864 of 4-5 s. Hisa's 8-16 s writes
+  merged the floor mat into the kiln's start (one reading at the mat's level).
+- **Confirming over the period (the median gap) instead** held Hisa's levels
+  30 s, its writes being 15 s apart when little moves.
 
 Unplaced steps are a SIZE disagreement between the meter's step and the
 grid's, not timing: Hisa 36 of 168, Mansarda 44 of 186 inside the window
