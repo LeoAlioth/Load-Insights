@@ -370,6 +370,15 @@ EDGE_DEVICE_SPANS = False
 # unplaced steps were mostly ones whose sizes disagreed by more than the
 # pairing's 15 % (Hisa 36 of 168, Mansarda 44 of 186, inside the window)
 WHERE_TOL_REL = 0.15
+# A meter's step is looked for over METER_WINDOW_CADENCES of its reading
+# CADENCE, or the grid's event window if that is wider (Anze, 2026-10-01).
+# The cadence is the meter's fixed period if it reports on one, else - it
+# reports on change - its shortest usual gap: a Shelly a couple of seconds,
+# the Zigbee hidrofor plug about ten. Its median gap is neither: a change
+# reporter idling at its heartbeat read as 28-60 s and the windows reached
+# the kiln's neighbouring pulses (see WHERE_WINDOW_FROM_METER).
+METER_CADENCE_WINDOW = True
+METER_WINDOW_CADENCES = 2.0
 TOO_BIG = "close"             # bench: "close", "shrink" or "off" - a run bigger than the whole reading; see _unseen_stop
 EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came with this share of a load's edges
 # B1 - edge PAIRS: the rise that starts a run and the fall that ends it, one
@@ -3203,6 +3212,19 @@ def edge_scale(watts: float, unit_w: float) -> float:
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
 
 
+def reading_cadence(gaps: Sequence[float]) -> float:
+    """How soon a meter reports: its period if the gaps sit at one value
+    (four in five within 15 % of the median), else its shortest usual gap,
+    the tenth percentile - a reading sent on change. 0 with too few gaps."""
+    g = sorted(x for x in gaps if x > 0.2)          # same-instant copies are not a cadence
+    if len(g) < 10:
+        return 0.0
+    med = g[len(g) // 2]
+    if sum(1 for x in g if abs(x - med) <= 0.15 * med) >= 0.8 * len(g):
+        return med
+    return g[int(0.1 * (len(g) - 1))]
+
+
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
     smoothed density: (first bin, last bin) of each, where anything is.
@@ -5023,6 +5045,9 @@ class Fleet:
             w = window
             if WHERE_WINDOW_FROM_METER and name in self.subs:
                 w = max(window, EVENT_WINDOW_INTERVALS * max((st.interval or 0.0) for st in self.subs[name].phases.values()))
+            elif METER_CADENCE_WINDOW and name in self.subs:
+                w = max(window, METER_WINDOW_CADENCES * max((reading_cadence(st.gaps) for st in self.subs[name].phases.values()),
+                                                            default=0.0))
             d = 0.0
             for rs in series:
                 times = [r[0] for r in rs]
