@@ -17,11 +17,11 @@ from homeassistant.components.recorder.db_schema import Statistics, StatisticsSh
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -189,6 +189,8 @@ NAMING_MIN_WH = 50.0
 # what it can resolve. A pass covers one minute, so the evidence has to be
 # gathered across them or it is never gathered at all.
 AMP_STEP_MEMORY = 600
+# How soon the next pass follows one that is not caught up - a backfill slice
+CATCH_UP_PASS_S = 2.0
 
 
 def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
@@ -209,15 +211,22 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
     return SiteModel.from_prefs(prefs, ignore=own)
 
 
-class DetectionRunner:
+class DetectionRunner(DataUpdateCoordinator[None]):
     """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and signatures persist in
-    .storage so a restart resumes where it stopped."""
+    .storage so a restart resumes where it stopped.
+
+    A coordinator for its schedule and its listeners, never for data: a pass
+    tells the entities itself (async_update_listeners) at the moment it has
+    something to say - before a finished re-read stops being one, which the
+    named loads' energy reads - and always_update=False keeps the
+    coordinator from telling them again after every refresh."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        self.hass = hass
+        super().__init__(hass, _LOGGER, config_entry=entry, name=f"{DOMAIN} detection",
+                         update_method=self._run, always_update=False)
         self.entry = entry
         # Meters below the main one come from the Energy dashboard, resolved once
         # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
@@ -251,8 +260,6 @@ class DetectionRunner:
         self.last_pass: Dict[str, float] = {}
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
-        self._unsub = None
-        self._listeners: List = []
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
@@ -747,8 +754,7 @@ class DetectionRunner:
         if name is None:
             return None
         await self._persist(force=True)
-        for cb in self._listeners:
-            cb()
+        self.async_update_listeners()
         return name
 
     async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
@@ -757,8 +763,7 @@ class DetectionRunner:
         if not self.detector.rename(signature_id, name):
             return False
         await self._persist(force=True)          # a user action, written at once
-        for cb in self._listeners:
-            cb()
+        self.async_update_listeners()
         return True
 
     async def _persist(self, force: bool = False) -> None:
@@ -825,9 +830,6 @@ class DetectionRunner:
         return any(inv.get("power") or any(inv.get(f"power_{p}") for p in PHASES)
                    for inv in (self.entry.options.get(CONF_INVERTERS) or []))
 
-    def add_listener(self, cb) -> None:
-        self._listeners.append(cb)
-
     async def async_start(self) -> None:
         raw = await self._store.async_load() or {}
         orphans: list = []
@@ -861,8 +863,8 @@ class DetectionRunner:
         self.refiling = bool(raw.get("refiling")) or self.last_processed is None
         if not self.enabled:
             return
-        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=DETECTION_INTERVAL_MINUTES))
-        self.hass.async_create_task(self._run())
+        self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+        self.hass.async_create_task(self.async_refresh())
 
     async def async_reset(self, forget_names: bool = False) -> None:
         """Forget everything learned and start the backfill again.
@@ -891,14 +893,11 @@ class DetectionRunner:
             self.samples_read = 0
             self._saved_at = None
             await self._persist(force=True)          # a reset must survive a crash
-        for cb in self._listeners:
-            cb()
-        self.hass.async_create_task(self._run())
+        self.async_update_listeners()
+        self.hass.async_create_task(self.async_refresh())
 
     async def async_stop(self) -> None:
-        if self._unsub:
-            self._unsub()
-            self._unsub = None
+        await self.async_shutdown()              # no pass starts after this
         # A reload - every options change is one - used to drop whatever was
         # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
         # the pending delayed write then landed after the next runner's own.
@@ -913,15 +912,12 @@ class DetectionRunner:
             self.fleet.rename_entities(renames)
             await self._persist(force=True)
 
-    @callback
-    def _tick(self, _now) -> None:
-        self.hass.async_create_task(self._run())
-
     async def _run(self) -> None:
         if self._lock.locked() or not self.enabled:
             return
         async with self._lock:
             try:
+                self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
                 began = time.monotonic()
                 now = dt_util.utcnow()
                 start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
@@ -990,16 +986,15 @@ class DetectionRunner:
                 self.caught_up = end >= now - timedelta(minutes=1)
                 self.last_run = now
                 await self._persist()
-                for cb in self._listeners:
-                    cb()
+                self.async_update_listeners()
                 if self.caught_up and self.refiling:
                     self.refiling = False
                     # the ten days re-read are the named loads' history now
                     self.entry.async_create_background_task(
                         self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
                 if not self.caught_up:
-                    # keep slicing without waiting for the next tick
-                    async_call_later(self.hass, 2, self._tick)
+                    # keep slicing without waiting the minute
+                    self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection run failed")
 

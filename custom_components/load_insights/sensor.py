@@ -88,7 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         add([e for n in new if not detection.metered_device(n)
              for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n))])
 
-    detection.add_listener(_follow_names)
+    entry.async_on_unload(detection.async_add_listener(_follow_names))
 
 
 def _forget(hass: HomeAssistant, domain: str, unique_id: str) -> None:
@@ -358,18 +358,14 @@ def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> 
     return info
 
 
-class _DetectionBase(SensorEntity):
-    """Fed by the detection runner rather than the coordinator: its cadence is
-    the meter's, not the statistics'."""
-
-    _attr_should_poll = False
+class _DetectionBase(CoordinatorEntity, SensorEntity):
+    """Fed by the detection runner rather than the forecast's coordinator: its
+    cadence is the meter's, not the statistics'."""
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, key: str) -> None:
+        super().__init__(runner)
         self._runner = runner
         on_site(self, entry, key)
-
-    async def async_added_to_hass(self) -> None:
-        self._runner.add_listener(self.async_write_ha_state)
 
     @property
     def available(self) -> bool:
@@ -663,7 +659,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0
 
     @callback
-    def _detected(self) -> None:
+    def _handle_coordinator_update(self) -> None:
         self._reading, self._seen = carry_reading(self._reading, self._seen, self._total(),
                                                   not self._runner.refiling)
         self.async_write_ha_state()
@@ -686,7 +682,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         # the library as stored, so what the first pass adds - the time Home
         # Assistant was down - counts
         self._reading, self._seen = carry_reading(self._reading, None, self._total(), False)
-        self._runner.add_listener(self._detected)
+        await super().async_added_to_hass()      # each pass's update from here on
         self._runner.entry.async_create_background_task(
             self.hass, self._backfill_when_new(), f"{DOMAIN} backfill {self.entity_id}")
 

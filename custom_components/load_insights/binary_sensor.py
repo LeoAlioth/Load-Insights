@@ -7,6 +7,7 @@ from homeassistant.components.binary_sensor import BinarySensorDeviceClass, Bina
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .detection import DetectionRunner
@@ -28,23 +29,20 @@ def _running_uid(entry_id: str, name: str) -> str:
     return f"{entry_id}_load_{name.lower().replace(' ', '_')}"
 
 
-class NamedLoadRunning(BinarySensorEntity):
+class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     """On while any signature filed under this name is running. Signatures
     that share a name are one device, so the entity is per NAME."""
 
     _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
+        super().__init__(runner)
         self._runner = runner
         self._name = name
         self._attr_translation_key = "named_load_running"
         self._attr_unique_id = _running_uid(entry.entry_id, name)
         self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
-
-    async def async_added_to_hass(self) -> None:
-        self._runner.add_listener(self.async_write_ha_state)
 
     @property
     def is_on(self) -> bool:
