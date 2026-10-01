@@ -22,7 +22,7 @@ from .const import (
 )
 from .config_flow import _area_id
 from .coordinator import InsightsCoordinator
-from .detection import DetectionRunner
+from .detection import DetectionRunner, RuntimeData
 from .insights.model import SiteModel, follow_renames, migrate_inputs, relink
 from .repairs import async_dashboard_renamed
 
@@ -34,25 +34,18 @@ RENAME_SETTLE_S = 5.0
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 
-async def _async_for_each_entry(hass: HomeAssistant, fn) -> None:
-    """Run ``fn`` for every Load Insights entry - these services act on the
-    integration rather than on one entity, and a site has exactly one."""
-    for entry_id, obj in list(hass.data.get(DOMAIN, {}).items()):
-        if isinstance(obj, InsightsCoordinator):
-            await fn(entry_id, obj)
+def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
+    """The loaded entry these services act on - the integration rather than
+    one entity, and a site has exactly one (single_config_entry)."""
+    return next(iter(hass.config_entries.async_loaded_entries(DOMAIN)), None)
 
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Register the services once, whatever entries come and go."""
 
     async def _reset_detection(call) -> None:
-        forget = bool(call.data.get("forget_names", False))
-
-        async def go(entry_id, _coordinator):
-            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
-            if runner is not None:
-                await runner.async_reset(forget_names=forget)
-        await _async_for_each_entry(hass, go)
+        if (entry := _loaded(hass)) is not None:
+            await entry.runtime_data.runner.async_reset(forget_names=bool(call.data.get("forget_names", False)))
 
     async def _name_load(call) -> None:
         """Name a load by its id, for one the naming page does not offer yet -
@@ -60,24 +53,16 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         the page's bar (Anze, 2026-09-28). An empty name clears it."""
         load_id = int(call.data["load_id"])
         name = (call.data.get("name") or "").strip() or None
-        found = False
-
-        async def go(entry_id, _coordinator):
-            nonlocal found
-            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
-            was = next((s.name for s in runner.detector.signatures if s.id == load_id), None) if runner else None
-            if runner is None or not await runner.async_rename(load_id, name):
-                return
-            found = True
-            # what the naming page's Done does: the entities follow the names,
-            # and so do the inputs linked to the load
-            entry = hass.config_entries.async_get_entry(entry_id)
-            rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-            hass.config_entries.async_update_entry(
-                entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
-        await _async_for_each_entry(hass, go)
-        if not found:
+        entry = _loaded(hass)
+        runner = entry.runtime_data.runner if entry is not None else None
+        was = next((s.name for s in runner.detector.signatures if s.id == load_id), None) if runner else None
+        if runner is None or not await runner.async_rename(load_id, name):
             raise ServiceValidationError(f"No detected load has id {load_id}")
+        # what the naming page's Done does: the entities follow the names,
+        # and so do the inputs linked to the load
+        rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+        hass.config_entries.async_update_entry(
+            entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
 
     async def _backfill_statistics(call) -> None:
         """Write the hours detection saw of a named load over its energy
@@ -85,21 +70,15 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         and after a reset (2026-09-29). Every named load when no name is
         given; running it again writes the same."""
         wanted = (call.data.get("name") or "").strip().casefold()
-        found = False
-
-        async def go(entry_id, _coordinator):
-            nonlocal found
-            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
-            for name in sorted(runner.detector.names()) if runner is not None else ():
-                if wanted and name.casefold() != wanted:
-                    continue
-                found = True
-                if await runner.async_backfill_statistics(name) is None:
-                    _LOGGER.info("Not backfilling %s yet: its energy meter has no hour of its own; "
-                                 "it is filled once it has", name)
-        await _async_for_each_entry(hass, go)
-        if wanted and not found:
+        entry = _loaded(hass)
+        runner = entry.runtime_data.runner if entry is not None else None
+        names = [n for n in sorted(runner.detector.names()) if not wanted or n.casefold() == wanted] if runner else []
+        if wanted and not names:
             raise ServiceValidationError(f"No load is named {call.data.get('name')}")
+        for name in names:
+            if await runner.async_backfill_statistics(name) is None:
+                _LOGGER.info("Not backfilling %s yet: its energy meter has no hour of its own; "
+                             "it is filled once it has", name)
 
     # Renamed entities: gathered for a few seconds - a rename tool changes
     # dozens at once - then followed in one options change per entry, which
@@ -111,12 +90,10 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         renames = dict(pending)
         pending.clear()
         for entry in hass.config_entries.async_entries(DOMAIN):
-            detection: DetectionRunner | None = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
-            if detection is not None:
-                await detection.async_follow_renames(renames)
-            coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-            if isinstance(coordinator, InsightsCoordinator):
-                await coordinator.async_follow_renames(renames)
+            loaded: RuntimeData | None = getattr(entry, "runtime_data", None)
+            if loaded is not None:
+                await loaded.runner.async_follow_renames(renames)
+                await loaded.coordinator.async_follow_renames(renames)
             data, options = follow_renames(dict(entry.data), renames), follow_renames(dict(entry.options), renames)
             if data != dict(entry.data) or options != dict(entry.options):
                 _LOGGER.info("Following renamed entities in %s: %s", entry.title, renames)
@@ -167,9 +144,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # wherever the grid meter lives, rather than floating unassigned
         suggested_area=_area_of_the_meter(hass, SiteModel.from_prefs((await async_get_manager(hass)).data)),
     )
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    hass.data[DOMAIN][f"{entry.entry_id}_detection"] = detection
-    hass.data[DOMAIN][f"{entry.entry_id}_site_device"] = site_device.id
+    entry.runtime_data = RuntimeData(coordinator, detection, site_device.id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_changed))
     _prune_empty_devices(hass, entry)
@@ -234,10 +209,6 @@ async def _async_options_changed(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
-        coordinator: InsightsCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        await coordinator.async_shutdown()
-        hass.data[DOMAIN].pop(f"{entry.entry_id}_site_device", None)
-        detection: DetectionRunner = hass.data[DOMAIN].pop(f"{entry.entry_id}_detection", None)
-        if detection:
-            await detection.async_stop()
+        await entry.runtime_data.coordinator.async_shutdown()
+        await entry.runtime_data.runner.async_stop()
     return ok

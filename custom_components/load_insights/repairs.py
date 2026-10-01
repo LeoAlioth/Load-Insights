@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 
 from .const import DOMAIN
-from .detection import device_uid
+from .detection import device_uid, runner_of
 from .insights.detect import implausible_baseline
 from .insights.model import dashboard_renames
 
@@ -73,7 +73,7 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # same and only the reactive part separates them. Kozolec has this on two
     # of its three phases (Anze, 2026-09-17), and it is invisible until you
     # notice that every guess there is missing.
-    runner = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
+    runner = runner_of(entry)
     cfg = (getattr(runner, "config", None) or {}) if getattr(runner, "enabled", False) else {}
     blind = [p.upper() for p in ("a", "b", "c")
              if cfg.get(f"power_{p}") and not cfg.get(f"pf_{p}")

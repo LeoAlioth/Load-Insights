@@ -17,5 +17,6 @@
   "version": "0.4.1",
   "after_dependencies": [
     "workday"
-  ]
+  ],
+  "single_config_entry": true
 }

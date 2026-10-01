@@ -22,7 +22,7 @@
         },
         "abort": {
             "no_energy_dashboard": "The Energy dashboard has no grid source configured. Set up at least the grid there first; PV, battery and individual devices improve the forecast.",
-            "already_configured": "Load Insights is already set up."
+            "single_instance_allowed": "Load Insights is already set up."
         }
     },
     "entity": {
