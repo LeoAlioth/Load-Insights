@@ -3672,5 +3672,114 @@ def test_a_meters_stop_ends_its_run_only_through_a_fall_that_accounts_for_it():
     assert any(abs(g[0] - (b_on - e_on)) <= 10 and 15 <= g[1] <= 35 for g in got), got          # the blip, its own run
 
 
+def _crowded_phase():
+    """Home 09-25 in outline: a plug's dehumidifier (271 W, 20 hours from
+    18:00) and, two minutes apart, MAX_OPEN_EDGES more loads of distinct
+    sizes switching on on the same phase and staying on - the thirteenth
+    makes the phase one run over the cap. (grid rows, plug rows, on, off,
+    the small loads' (start, watts), end)."""
+    rnd = random.Random(3)
+    on, off = T0 + 18 * 3600.0, T0 + 38 * 3600.0
+    sizes = [40.0, 52.0, 68.0, 88.0, 115.0, 150.0, 195.0, 340.0, 440.0, 570.0, 740.0, 960.0]
+    small = [(on + 120.0 * (k + 1), sizes[k % len(sizes)] * (1.0 + k // len(sizes))) for k in range(D.MAX_OPEN_EDGES)]
+    plug, grid = [], []
+    t = T0 + 17 * 3600.0 + 2.0
+    while t < T0 + 40 * 3600.0:
+        plug.append((t, round((271.0 + rnd.uniform(-3, 3)) if on <= t < off else 0.0, 1)))
+        t += 6.0
+    t = T0 + 17 * 3600.0
+    while t < T0 + 40 * 3600.0:
+        w = 100.0 + rnd.uniform(-3, 3) + (271.0 if on <= t < off else 0.0) + sum(x for s, x in small if t >= s)
+        grid.append((t, round(w, 1)))
+        t += 5.0
+    return {"a": grid}, plug, on, off, small, T0 + 40 * 3600.0
+
+
+def _crowded_fleet():
+    rows, plug, on, off, small, end = _crowded_phase()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Plug"] = [[2.0, 30.0]] * D.LAG_MIN_SAMPLES
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    cuts = [T0 + 6 * 3600.0 * k for k in range(4, 7)]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+    return filed, fleet, on, off, small
+
+
+def test_a_thirteenth_run_on_a_phase_drops_the_oldest_unowned_not_the_meters():
+    """Home 09-25 21:40: the dehumidifier's 271 W run (Susilna's plug, 20
+    hours, 5.4 kWh) was the oldest of twelve open runs on phase a when a +851
+    W rise opened the thirteenth, and MAX_OPEN_EDGES popped it silently - no
+    session at all, though the plug read it on all night. The oldest run no
+    meter holds on goes instead: the plug's 20 hours are a session, the plug's."""
+    filed, fleet, on, off, small = _crowded_fleet()
+    runs = [s for s in filed if abs(s.start - on) < 60 and s.duration_s > 3600.0]
+    assert len(runs) == 1 and abs(runs[0].end - off) < 120 and abs(runs[0].energy_wh - 271.0 * 20.0) < 300, [
+        (round(s.start - on), round(s.duration_s / 3600, 2), round(s.energy_wh)) for s in filed if s.duration_s > 600]
+    sig = fleet.main.signature_of(runs[0])
+    assert sig is not None and sig.locations.get("Plug"), sig.locations if sig else None
+
+
+def test_a_run_the_cap_drops_is_a_session_at_its_last_level():
+    """The run the cap drops - the first small load, on since two minutes
+    after the plug - is closed where it stood, at its last level, when the
+    thirteenth opens: a session from its start to that moment, not nothing."""
+    filed, fleet, on, off, small = _crowded_fleet()
+    first_on, first_w = small[0]
+    at = small[-1][0]                                        # the thirteenth run's start
+    got = [s for s in filed if abs(s.start - first_on) < 15 and abs(s.end - at) < 15]
+    assert len(got) == 1 and abs(got[0].energy_wh / (got[0].duration_s / 3600.0) - first_w) < 0.2 * first_w, [
+        (round(s.start - first_on), round(s.end - at), round(s.energy_wh)) for s in filed if abs(s.start - first_on) < 600]
+
+
+def test_a_meter_owns_a_start_only_where_its_own_rise_is_half_of_it():
+    """Home 09-24 00:54 UTC, step for step: the grid rose +2995 (a 3EM's kiln
+    pulse) at T0-31, +942 at T0 (the hidrofor's pump), and the kiln's -2995
+    stop was netted into the pump's rise as a split step at T0, so the rise
+    to place was 3937 W. The hidrofor's plug declared +942 at T0 with a span
+    reaching 30 s back (silent at 0 W, its latency): over the union of both
+    meters' spans the grid's net is the plug's, "all of it" - and the plug
+    owned a 3937 W run its 942 W fall, less than half, could never release:
+    15 hours, 60 kWh. A meter owns a start only where its own rise is at least
+    half of it; the 942 W rise alone is the plug's as before."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
+    plug.interval, plug.lag = 10.0, 30.0
+    _declare(plug, (T0, 942.0, None, T0 - 30.0, T0 + 1.0))
+    _declare(grid, (T0 - 31.0, 2995.0, None, T0 - 33.0, T0 - 26.0), (T0, 942.0, None, T0 - 3.0, T0 + 2.0),
+             (T0, -2995.0, None, T0 - 3.0, T0 + 2.0))
+    assert f._meter_totals("c", T0, 6.0, True)["Hidrofor"][0] is None          # "all of it", as on the day
+    assert f._step_meter("c", T0, 3937.0, True) is None                       # ...but not of a start four times its rise
+    assert f._step_meter("c", T0, 942.0, True) == "Hidrofor"                  # the rise alone is its
+
+
+def test_a_meter_stop_the_grid_has_not_read_to_is_not_netted_into_a_rise_before_it():
+    """Home 09-24 00:54 UTC: the grid's +942 rise at 00:54:19 (span :17-:22);
+    the 3EM's -2996 kiln stop at 00:54:31, its span a 14 s silence back to
+    00:54:17; read ahead of the grid by the horizon, it was there when the
+    rise's event formed, while the grid had read to 00:54:25 - and was netted
+    into the rise, which grew to 3980 W, while the grid's own -3000 fall was
+    six seconds from being read. A meter step the other way is netted only
+    once the grid has read to the end of its span; a stop the grid has read
+    past and shown no step of its own for is netted as before."""
+    f = _fleet_with_meters({"Hiša": 0.0})
+    f.main.meter_steps = f._meter_steps
+    grid, hisa = f.main.phases["c"], f.subs["Hiša"].phases["a"]
+    hisa.interval, grid.interval = 5.0, 5.0
+    _declare(grid, (T0, 942.0, None, T0 - 2.0, T0 + 3.0))
+    _declare(hisa, (T0 + 12.0, -2996.0, None, T0 - 2.0, T0 + 12.0))
+    grid.last_ts = T0 + 6.0
+    assert f.main.metered_parts("c", T0, 942.0) == [942.0]                   # the grid has not read to the stop
+    grid.last_ts = T0 + 12.0
+    parts = f.main.metered_parts("c", T0, 942.0)
+    assert len(parts) == 2 and abs(parts[0] + 2996.0) < 1.0, parts           # read to it, no step of its own: netted
+
+
 if __name__ == "__main__":
     run_main(globals())
