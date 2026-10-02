@@ -646,6 +646,22 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     assert D.ESTABLISHED_HORIZON_S > 365 * day, "a yearly load must survive its own year"
 
 
+def test_a_signature_evicted_is_not_where_its_device_files_next():
+    """_prune left the signature lookup holding what it had just evicted, so
+    a device whose home it was filed its next run into a signature no longer
+    in the library - one signature_of then finds nowhere (the pass audit,
+    2026-10-02)."""
+    hour = 3600.0
+    cap = D.MAX_SIGNATURES
+    det = D.Detector()
+    det.signatures = [_sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour) for i in range(cap + 5)]
+    det.start_home = {"7": {2: 5.0}}                 # cluster 7's runs went to signature 2, the stalest
+    assert det._device_signature(7, None, (), "a").id == 2
+    det._prune(now=(cap + 4) * hour)
+    assert all(s.id != 2 for s in det.signatures)
+    assert det._device_signature(7, None, (), "a") is None
+
+
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
     """Physics, not statistics. I tried correlating the two series' changes
     first and Anze's own data threw it out: on a day when the grid meter

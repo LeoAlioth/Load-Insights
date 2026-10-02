@@ -4323,6 +4323,7 @@ class Detector:
         tiers[3].sort(key=lambda x: (x.evidence, x.count, x.last_seen))
         keep += tiers[3][-room:] if room > 0 else []
         self.signatures = keep
+        self._by_sig = None          # or _sig hands back one just evicted, and a run filed there is no one's
 
     # ------------------------------------------------ query
     def active(self, now_ts: float) -> List[dict]:
