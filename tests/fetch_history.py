@@ -70,6 +70,15 @@ HOME = {
         "shellys-pf": (
             [f"sensor.{m}_phase_{p}_{k}" for m in ("hisa", "mansarda") for p in "abc"
              for k in ("power_factor", "apparent_power")]),
+        # small loads energy_bench's worth scores (2026-10-02): the bathroom
+        # fan's Shelly (behind Mansarda, from 22 Sep 12:58 UTC), the RF ceiling
+        # fan's assumed speed, and the blinds' Shelly 2PMs - West on the grid
+        # connection, North and East behind Mansarda. Their first days were
+        # fetched into data/history/home-extra.
+        "fans": ["sensor.bathroom_fan_switch_0_power", "switch.bathroom_fan_switch_0",
+                 "sensor.living_room_ceiling_fan_speed", "fan.ceiling_fan"],
+        "blinds": ["sensor.west_blinds_power", "sensor.north_blinds_power",
+                   "sensor.living_room_east_blinds_power"],
     },
 }
 
