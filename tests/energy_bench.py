@@ -37,14 +37,17 @@ two 3EMs) and fed (SUBS=prod - every meter production reads). The meters are
 the truth in every mode, read from the history.
 
 card        every site (default home, kozolec and the circuits home-hisa and
-            home-mansarda) in every mode at SLICE=0, 6 and LIVE=1, PARALLEL
-            replays at once: one figure where the slicings agree, each one's
-            (0|6|L1) where they do not; the slicing invariance, and how runs
-            were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json.
-invariance  SLICE=0 - one call, the reference - against 6 and LIVE=1, fed
-            unless a SUBS= dial says otherwise: every filed session that
-            differs, with how far it lies from the nearest pass boundary;
-            also written to data/scorecard/invariance-<site>-<mode>-<commit>-<utc>.txt.
+            home-mansarda) in every mode at SLICE=0, 6 and 1 and LIVE=1,
+            PARALLEL replays at once: one figure where the slicings agree, each
+            one's (0|6|1|L1) where they do not; the slicing invariance, and how
+            runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json.
+invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
+            otherwise: every filed session one files and the other does not, or
+            files differently, with how far it lies from the nearest pass
+            boundary; also written to data/scorecard/invariance-<site>-<mode>-<commit>-<utc>.txt.
+            None of them is the truth: one call (SLICE=0) is today the most
+            distorted - sub-meters run over everything before the grid, nothing
+            is filed until the end - and should agree once the detector streams.
 diff        two card files, capture and impurity load by load.
 
 PLANT=set1 plants three loads at Home: 1.2 kW for 8 min every 5 h on A,
@@ -78,7 +81,8 @@ GRID = "sensor.solaredge_se17k_m1_ac_"
 SETS = {"set1": ["1200:480:18000:a", "150:1200:10800:b", "40:2700:7200:b"]}
 REST = {"home": "Delavnica", "kozolec": "Rest"}    # what the main meter reads and no meter below it
 MODES = {"hidden": "SUBS=none", "circuits": "SUBS=circuits", "fed": "SUBS=prod"}
-SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "L1": ["LIVE=1"]}
+SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"]}
+PAIRS = [("6", "1"), ("6", "L1"), ("0", "6")]     # the slicings invariance compares, two by two
 PARALLEL = 8               # replays at once: each is one core and ~0.1 GB
 MOVED_S = 60.0             # a run starting this near one of the other slicing's, same phases, is that run moved
 # what closed a run, by the function that closed it - see _instrument
@@ -519,19 +523,19 @@ def _near(t: float, bounds: list):
     return min((t - b for b in bounds[max(i - 1, 0):i + 1]), key=abs, default=None)
 
 
-def compare(ref: list, other: list, bounds: list) -> list:
-    """Every session (phases, start, end, Wh, signature, its owner) of ``ref``
-    - the reference, one call - and of ``other``, a slicing of the same
-    history, that differs: missing from other, extra in it, or matched by its
-    start (the same, or within MOVED_S on the same phases) with another start,
-    end, size or signature. A signature of ``ref`` is "the same" as the one of
-    ``other`` most of its matched sessions went to. Biggest first, each with
-    how far it lies from the nearest of ``other``'s pass boundaries."""
+def compare(a: list, b: list, bounds: list) -> list:
+    """Every session (phases, start, end, Wh, signature, its owner) that two
+    slicings of the same history, ``a`` and ``b``, file differently: only in
+    A, only in B, or matched by its start (the same, or within MOVED_S on the
+    same phases) with another start, end, size or signature. A signature of A
+    is "the same" as the one of B most of its matched sessions went to.
+    Biggest first, each with how far it lies from the nearest pass boundary
+    in ``bounds``."""
     by_key = collections.defaultdict(list)
-    for y in other:
+    for y in b:
         by_key[(y[0], y[1])].append(y)
     pairs, missing = [], []
-    for x in ref:
+    for x in a:
         got = by_key.get((x[0], x[1]))
         if got:
             pairs.append((x, got.pop(0)))
@@ -558,7 +562,7 @@ def compare(ref: list, other: list, bounds: list) -> list:
     def diff(x, y, what):
         ts = [t for s in (x, y) if s for t in (s[1], s[2])]
         near = min((d for d in (_near(t, bounds) for t in ts) if d is not None), key=abs, default=None)
-        return {"kind": what[0][0], "what": "; ".join(w for _, w in what), "ref": x, "other": y,
+        return {"kind": what[0][0], "what": "; ".join(w for _, w in what), "a": x, "b": y,
                 "kwh": max(s[3] for s in (x, y) if s) / 1000.0, "near_s": near}
     out = []
     for x, y in pairs:
@@ -573,25 +577,30 @@ def compare(ref: list, other: list, bounds: list) -> list:
             what.append(("signature", f"signature -> #{y[4]} ({y[5] or '-'}), where most of #{x[4]}'s went to #{twin[x[4]]}"))
         if what:
             out.append(diff(x, y, what))
-    out += [diff(x, None, [("missing", "")]) for x in still]
-    out += [diff(None, y, [("extra", "")]) for ys in pool.values() for y in ys]
+    out += [diff(x, None, [("only A", "")]) for x in still]
+    out += [diff(None, y, [("only B", "")]) for ys in pool.values() for y in ys]
     return sorted(out, key=lambda d: -d["kwh"])
 
 
-def _summary(diffs: list, n: int) -> dict:
+def _pair_diff(a: dict, b: dict) -> list:
+    """compare() two replays' results, against both one's pass boundaries."""
+    return compare(a["sessions"], b["sessions"], sorted(a["bounds"] + b["bounds"]))
+
+
+def _summary(diffs: list, n: tuple) -> dict:
     kinds = collections.Counter(d["kind"] for d in diffs)
-    return {"sessions": n, "differ": len(diffs), "kwh": sum(d["kwh"] for d in diffs),
+    return {"sessions": list(n), "differ": len(diffs), "kwh": sum(d["kwh"] for d in diffs),
             "kinds": {k: [c, sum(d["kwh"] for d in diffs if d["kind"] == k)] for k, c in kinds.most_common()}}
 
 
-def _worklist(title: str, diffs: list, n: int) -> list:
+def _worklist(title: str, diffs: list, n: tuple) -> list:
     sm = _summary(diffs, n)
-    out = [f"{title}: {sm['differ']} of {n} sessions differ, {sm['kwh']:.2f} kWh",
+    out = [f"{title}: {sm['differ']} sessions differ, of {n[0]} / {n[1]}, {sm['kwh']:.2f} kWh",
            "   " + ", ".join(f"{k} {c} ({e:.2f} kWh)" for k, (c, e) in sm["kinds"].items()),
            f"   {'kind':9s} {'start (local)':14s} {'ph':3s} {'kWh':>7s} {'W':>6s} {'min':>6s}  "
            f"{'signature (owner)':26s} {'pass boundary':>13s}  what differs"]
     for d in diffs:
-        s = d["ref"] or d["other"]
+        s = d["a"] or d["b"]
         when = datetime.fromtimestamp(s[1]).strftime("%m-%d %H:%M:%S")
         dur = s[2] - s[1]
         sig = f"#{s[4]}" + (f" ({s[5]})" if s[5] else "")
@@ -636,7 +645,7 @@ def _site_dials(site: str) -> list:
 
 
 def _fig(vals: list, signed: bool = False) -> str:
-    """One figure where the slicings agree, each one's (0|6|L1) where not."""
+    """One figure where the slicings agree, each one's (0|6|1|L1) where not."""
     s = [_pct(v, signed) for v in vals]
     return s[0] if len(set(s)) == 1 else "|".join(s)
 
@@ -654,19 +663,19 @@ def card(args: list) -> None:
     commit, utc = _stamp()
     inv: dict = {}
     for site, mode, sl in keys:
-        if sl != "0":
-            ref, res = got[(site, mode, "0")], got[(site, mode, sl)]
-            inv.setdefault(f"{site}|{mode}", {})[sl] = _summary(compare(ref["sessions"], res["sessions"], res["bounds"]),
-                                                               len(ref["sessions"]))
+        if sl == "0":
+            inv[f"{site}|{mode}"] = {f"{x}~{y}": _summary(_pair_diff(got[(site, mode, x)], got[(site, mode, y)]),
+                                                          (len(got[(site, mode, x)]["sessions"]), len(got[(site, mode, y)]["sessions"])))
+                                     for x, y in PAIRS}
     lines = [f"scorecard {commit} {utc}  {' '.join(dials) or 'defaults'}  - {len(keys)} replays in {took:.0f} s",
-             "capture / impurity %, one figure where SLICE=0, 6 and LIVE=1 agree, each one's (0|6|L1) where not"]
+             "capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not"]
     for site in sites:
         modes = [m for m in MODES if (site, m, "0") in got]
         first = got[(site, modes[0], "0")]
         for tname in first["tables"]:
             names = sorted(first["tables"][tname]["loads"], key=lambda n: -first["tables"][tname]["loads"][n]["truth_kwh"])
             lines.append("")
-            lines.append(f"{site} - {tname} (truth, floor kWh)".ljust(48) + "".join(f" {m + ' capture':>17s} {'impurity':>15s}" for m in modes))
+            lines.append(f"{site} - {tname} (truth, floor kWh)".ljust(48) + "".join(f" {m + ' capture':>20s} {'impurity':>20s}" for m in modes))
             for name in names + ["all"]:
                 t = first["tables"][tname]["loads"].get(name)
                 row = (f"  {name:20s} {(t or first['tables'][tname])['truth_kwh']:7.2f} kWh"
@@ -677,15 +686,14 @@ def card(args: list) -> None:
                         v = [(got[(site, m, sl)]["tables"][tname]["loads"].get(name) or {}).get(metric)
                              if t else got[(site, m, sl)]["tables"][tname][metric] for sl in SLICINGS]
                         vals.append(_fig(v))
-                    row += f" {vals[0]:>17s} {vals[1]:>15s}"
+                    row += f" {vals[0]:>20s} {vals[1]:>20s}"
                 lines.append(row)
         if first["rest"]:
             r = first["rest"]
             lines.append(f"  {REST[site]} = main {r['main_kwh']:.2f} - meters {r['meters_kwh']:.2f} = "
                          f"{r['main_kwh'] - r['meters_kwh']:.2f} kWh; its series integrates to {r['rest_kwh']:.2f} kWh")
-        lines.append("  invariance (sessions / kWh differing from SLICE=0): " + "   ".join(
-            f"{m}: " + ", ".join(f"{sl} {inv[f'{site}|{m}'][sl]['differ']}/{inv[f'{site}|{m}'][sl]['kwh']:.1f}"
-                                 for sl in SLICINGS if sl != "0") for m in modes))
+        lines.append("  invariance, sessions / kWh two slicings file differently: " + "   ".join(
+            f"{m}: " + ", ".join(f"{k} {v['differ']}/{v['kwh']:.1f}" for k, v in inv[f"{site}|{m}"].items()) for m in modes))
         lines.append("  pairing at SLICE=6 - closes, observed stops within 10/20 % of their start, median off; never closed / closed nothing, % of steps")
         for m in modes:
             p = got[(site, m, "6")]["pairing"]
@@ -712,15 +720,15 @@ def invariance(site: str, folder: str, dials: list) -> None:
     mode = next((m for m, d in MODES.items() if d == subs), subs)
     rest = [d for d in dials if not d.startswith("SUBS=")]
     t0 = time.time()
-    runs = _parallel([(site, folder, [subs] + SLICINGS[sl] + _site_dials(site) + rest) for sl in SLICINGS])
+    runs = dict(zip(SLICINGS, _parallel([(site, folder, [subs] + SLICINGS[sl] + _site_dials(site) + rest)
+                                         for sl in SLICINGS])))
     commit, utc = _stamp()
-    ref = runs[0]
     lines = [f"invariance {site} {mode} {commit} {utc}  {' '.join(dials) or 'defaults'}  - {time.time() - t0:.0f} s; "
-             "pass boundary = the session's start or end less the nearest of the slicing's pass ends"]
-    for sl, res in zip(list(SLICINGS)[1:], runs[1:]):
+             "pass boundary = the session's start or end less the nearest pass end of either slicing"]
+    for x, y in PAIRS:
         lines.append("")
-        lines += _worklist(f"SLICE=0 (one call, the reference) vs {' '.join(SLICINGS[sl])}",
-                           compare(ref["sessions"], res["sessions"], res["bounds"]), len(ref["sessions"]))
+        lines += _worklist(f"A = {' '.join(SLICINGS[x])} vs B = {' '.join(SLICINGS[y])}", _pair_diff(runs[x], runs[y]),
+                           (len(runs[x]["sessions"]), len(runs[y]["sessions"])))
     print("\n".join(lines))
     out = ROOT / "data" / "scorecard" / f"invariance-{site}-{mode}-{commit}-{utc}.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -731,7 +739,7 @@ def invariance(site: str, folder: str, dials: list) -> None:
 def diff(a_path: str, b_path: str) -> None:
     """Capture and impurity load by load, A -> B and the change."""
     A, Bj = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (a_path, b_path))
-    print(f"{A['commit']} {A['utc']} -> {Bj['commit']} {Bj['utc']}   capture / impurity %, (0|6|L1) where the slicings differ")
+    print(f"{A['commit']} {A['utc']} -> {Bj['commit']} {Bj['utc']}   capture / impurity %, (0|6|1|L1) where the slicings differ")
     groups = sorted({k.rsplit("|", 1)[0] for k in A["runs"]} & {k.rsplit("|", 1)[0] for k in Bj["runs"]})
     for g in groups:
         sls = [sl for sl in SLICINGS if f"{g}|{sl}" in A["runs"] and f"{g}|{sl}" in Bj["runs"]]
@@ -793,7 +801,7 @@ def check() -> None:
     oth = [["a", 0.0, 60.0, 10.0, 7, None], ["a", 100.0, 166.0, 10.0, 7, None], ["a", 306.0, 360.0, 10.0, 7, None],
            ["c", 400.0, 460.0, 3.0, 8, None]]
     got = {d["kind"]: d for d in compare(ref, oth, [110.0])}
-    assert set(got) == {"end", "missing", "start", "extra"} and got["end"]["near_s"] == -10.0
+    assert set(got) == {"end", "only A", "start", "only B"} and got["end"]["near_s"] == -10.0
     print("ok")
 
 
