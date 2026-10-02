@@ -79,6 +79,12 @@ HOME = {
                  "sensor.living_room_ceiling_fan_speed", "fan.ceiling_fan"],
         "blinds": ["sensor.west_blinds_power", "sensor.north_blinds_power",
                    "sensor.living_room_east_blinds_power"],
+        # The Sušilna plug feeds a Klarstein dehumidifier on Tuya Local (Anze,
+        # 2026-10-02: its state should help - it runs 20 h a day at ~300 W,
+        # 20:00 to 16:00, and the grid detector loses its run within hours).
+        "susilna": ["switch.susilna_dehumidifier_power", "select.susilna_dehumidifier_mode",
+                    "sensor.susilna_dehumidifier_humidity", "sensor.susilna_dehumidifier_temperature",
+                    "number.susilna_dehumidifier_humidity_setpoint"],
     },
 }
 
@@ -213,6 +219,8 @@ def main() -> int:
                         help="split each day, for entities that report every second")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--dry-run", action="store_true", help="say what it would fetch")
+    parser.add_argument("--group", action="append",
+                        help="only this group (repeatable); default every group of the site")
     args = parser.parse_args()
 
     site = SITES[args.site]
@@ -232,6 +240,8 @@ def main() -> int:
     total = 0
     for day in days:
         for group, entities in site["groups"].items():
+            if args.group and group not in args.group:
+                continue
             target = out / f"{day:%Y-%m-%d}_{group}.csv"
             if target.exists():
                 print(f"  {target.name}: already here")
