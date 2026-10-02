@@ -222,16 +222,20 @@ the truth in all three, read from the history. And two circuit sites,
 `home-hisa` and `home-mansarda`: a 3EM as the main meter, scored on the device
 inside it (replayed without reactive power: the 3EMs publish no volts or amps).
 
-`card` replays every site in every mode at SLICE=0, 6 and LIVE=1, eight at a
-time, prints one figure where the slicings agree and each one's (0|6|L1) where
-they do not, the invariance count and how runs were closed (the pairing:
+`card` replays every site in every mode at SLICE=0, 6 and 1 and LIVE=1, eight
+at a time, prints one figure where the slicings agree and each one's
+(0|6|1|L1) where they do not, the invariance count and how runs were closed (the pairing:
 share closed by an observed stop vs each inferred kind, how near an observed
 stop comes to its start's size, starts never closed and stops that closed
 nothing), and writes `data/scorecard/<commit>-<utc>.json`; `diff A B` compares
-two. `invariance SITE FOLDER` lists every session SLICE=6 and LIVE=1 file
-differently from one call - missing, extra, moved, another end, size or
-signature - with its distance to the nearest pass boundary, and saves the list
-to `data/scorecard/`. `energy_bench.py SITE FOLDER [DIALS]` is one replay with
+two. `invariance SITE FOLDER` compares the slicings two by two - 6 vs 1, 6 vs
+LIVE=1, and 0 vs 6 on a line of its own - and lists every session one files
+and the other does not, or files with another start, end, size or signature,
+with its distance to the nearest pass boundary; the list is saved to
+`data/scorecard/`. None of the slicings is the truth: one call is today the
+most distorted (sub-meters run over everything before the grid, nothing is
+filed until the end, so no phase votes or meter splits); it should agree with
+the others once the detector truly streams. `energy_bench.py SITE FOLDER [DIALS]` is one replay with
 the full per-load detail; `PLANT=watts:on_s:every_s:phase` (or `PLANT=set1`)
 adds a square-wave load to the house reading and the grid meter to score a
 load no meter watches.
