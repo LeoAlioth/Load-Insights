@@ -165,8 +165,11 @@ def read_states(paths, entity_id):
 
 def read_switch(paths, entity_id):
     """An entity's on-periods [(on, off)] from the exports' TEXT states - on,
-    or a thermostat's heating (its hvac_action exported as its own series)."""
-    rows = sorted((ts, state.lower() in ON_STATES) for _, ts, state in _rows(paths, entity_id))
+    or a thermostat's heating (its hvac_action exported as its own series).
+    A drop-out is not an off: Tuya Local's dehumidifier switch went
+    unavailable ~60 times in ten days, for under a second each."""
+    rows = sorted((ts, state.lower() in ON_STATES) for _, ts, state in _rows(paths, entity_id)
+                  if state not in ("unknown", "unavailable"))
     spans, on = [], None
     for t, is_on in rows:
         if is_on and on is None:
