@@ -40,7 +40,8 @@ card        every site (default home, kozolec and the circuits home-hisa and
             home-mansarda) in every mode at SLICE=0, 6 and 1 and LIVE=1,
             PARALLEL replays at once: one figure where the slicings agree, each
             one's (0|6|1|L1) where they do not; the slicing invariance, and how
-            runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json.
+            runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json,
+            with invariance's worklist for every site and mode beside it.
 invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
             otherwise: every filed session one files and the other does not, or
             files differently, with how far it lies from the nearest pass
@@ -537,8 +538,10 @@ def compare(a: list, b: list, bounds: list) -> list:
     pairs, missing = [], []
     for x in a:
         got = by_key.get((x[0], x[1]))
-        if got:
-            pairs.append((x, got.pop(0)))
+        if got:                                      # two runs may start together: the nearer end
+            y = min(got, key=lambda y: abs(y[2] - x[2]))
+            got.remove(y)
+            pairs.append((x, y))
         else:
             missing.append(x)
     pool = collections.defaultdict(list)
@@ -591,6 +594,22 @@ def _summary(diffs: list, n: tuple) -> dict:
     kinds = collections.Counter(d["kind"] for d in diffs)
     return {"sessions": list(n), "differ": len(diffs), "kwh": sum(d["kwh"] for d in diffs),
             "kinds": {k: [c, sum(d["kwh"] for d in diffs if d["kind"] == k)] for k, c in kinds.most_common()}}
+
+
+def _worklists(site: str, mode: str, runs: dict, stamp: tuple, head: str) -> tuple:
+    """Every PAIR's worklist for one site and mode, written to
+    data/scorecard/invariance-<site>-<mode>-<commit>-<utc>.txt: (its lines,
+    each pair's summary, the file)."""
+    lines, sums = [f"invariance {site} {mode} {stamp[0]} {stamp[1]}  {head}; pass boundary = the session's "
+                   "start or end less the nearest pass end of either slicing"], {}
+    for x, y in PAIRS:
+        diffs, n = _pair_diff(runs[x], runs[y]), (len(runs[x]["sessions"]), len(runs[y]["sessions"]))
+        sums[f"{x}~{y}"] = _summary(diffs, n)
+        lines += [""] + _worklist(f"A = {' '.join(SLICINGS[x])} vs B = {' '.join(SLICINGS[y])}", diffs, n)
+    out = ROOT / "data" / "scorecard" / f"invariance-{site}-{mode}-{stamp[0]}-{stamp[1]}.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return lines, sums, out
 
 
 def _worklist(title: str, diffs: list, n: tuple) -> list:
@@ -661,12 +680,12 @@ def card(args: list) -> None:
                                     for site, mode, sl in keys])))
     took = time.time() - t0
     commit, utc = _stamp()
-    inv: dict = {}
+    inv, files = {}, []
     for site, mode, sl in keys:
         if sl == "0":
-            inv[f"{site}|{mode}"] = {f"{x}~{y}": _summary(_pair_diff(got[(site, mode, x)], got[(site, mode, y)]),
-                                                          (len(got[(site, mode, x)]["sessions"]), len(got[(site, mode, y)]["sessions"])))
-                                     for x, y in PAIRS}
+            _, inv[f"{site}|{mode}"], f = _worklists(site, mode, {s: got[(site, mode, s)] for s in SLICINGS},
+                                                    (commit, utc), " ".join(dials) or "defaults")
+            files.append(f)
     lines = [f"scorecard {commit} {utc}  {' '.join(dials) or 'defaults'}  - {len(keys)} replays in {took:.0f} s",
              "capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not"]
     for site in sites:
@@ -712,7 +731,7 @@ def card(args: list) -> None:
             for (s, m, sl), r in got.items()}
     out.write_text(json.dumps({"commit": commit, "utc": utc, "dials": dials, "seconds": took,
                                "runs": keep, "invariance": inv}, indent=1), encoding="utf-8")
-    print(f"\nwritten {out}")
+    print(f"\nwritten {out}\n" + "\n".join(f"        {f}" for f in files))
 
 
 def invariance(site: str, folder: str, dials: list) -> None:
@@ -722,18 +741,8 @@ def invariance(site: str, folder: str, dials: list) -> None:
     t0 = time.time()
     runs = dict(zip(SLICINGS, _parallel([(site, folder, [subs] + SLICINGS[sl] + _site_dials(site) + rest)
                                          for sl in SLICINGS])))
-    commit, utc = _stamp()
-    lines = [f"invariance {site} {mode} {commit} {utc}  {' '.join(dials) or 'defaults'}  - {time.time() - t0:.0f} s; "
-             "pass boundary = the session's start or end less the nearest pass end of either slicing"]
-    for x, y in PAIRS:
-        lines.append("")
-        lines += _worklist(f"A = {' '.join(SLICINGS[x])} vs B = {' '.join(SLICINGS[y])}", _pair_diff(runs[x], runs[y]),
-                           (len(runs[x]["sessions"]), len(runs[y]["sessions"])))
-    print("\n".join(lines))
-    out = ROOT / "data" / "scorecard" / f"invariance-{site}-{mode}-{commit}-{utc}.txt"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"\nwritten {out}")
+    lines, _, out = _worklists(site, mode, runs, _stamp(), f"{' '.join(dials) or 'defaults'} - {time.time() - t0:.0f} s")
+    print("\n".join(lines) + f"\n\nwritten {out}")
 
 
 def diff(a_path: str, b_path: str) -> None:
@@ -802,6 +811,8 @@ def check() -> None:
            ["c", 400.0, 460.0, 3.0, 8, None]]
     got = {d["kind"]: d for d in compare(ref, oth, [110.0])}
     assert set(got) == {"end", "only A", "start", "only B"} and got["end"]["near_s"] == -10.0
+    two = [["a", 0.0, 60.0, 10.0, 1, None], ["a", 0.0, 600.0, 50.0, 2, None]]     # two runs starting together
+    assert compare(two, two[::-1], []) == []
     print("ok")
 
 
