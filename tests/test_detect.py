@@ -260,12 +260,13 @@ def test_a_rise_still_in_its_event_window_waits_across_a_restart():
     assert legs[0] == legs[1] and det.cluster(legs[0]).phase == "ac", [(c.id, c.phase) for c in det.edges]
 
 
-def _plug_day(busy: bool):
-    """A plug's one load: +300 W (a 15 W wobble) for 20 hours, read every
+def _plug_day(busy: bool, fan: float = 0.0, watts: float = 300.0):
+    """A plug's one load: +``watts`` (a 15 W wobble) for 20 hours, read every
     60 s, two seconds after the grid's 5 s readings; the grid's phase B with
     it, alone or with four other loads cycling on it - 150 W ten minutes in
-    thirty, 1.2 kW three minutes an hour, a 60 W cycler and 2 kW for 90 s
-    every 90 minutes, none switching with the plug."""
+    thirty, 1.2 kW three minutes an hour, a 95 W cycler and 2 kW for 90 s
+    every 90 minutes, none switching with the plug - and, with ``fan``, a
+    load of that size switching on with the plug and off three hours later."""
     rnd = random.Random(3)
     on, off = T0 + 3600.0, T0 + 21 * 3600.0
     end = off + 2 * 3600.0
@@ -273,17 +274,18 @@ def _plug_day(busy: bool):
     plug, grid = [], []
     t = T0
     while t < end:
-        w = 300.0 + rnd.uniform(-15, 15) if on <= t < off else (100.0 if warm[0] <= t < warm[1] else 0.0)
+        w = watts + rnd.uniform(-15, 15) if on <= t < off else (100.0 if warm[0] <= t < warm[1] else 0.0)
         plug.append((t + 2.0, round(w, 1)))
         t += 60.0
     t = T0
     while t < end:
-        w = 400.0 + rnd.uniform(-5, 5) + (300.0 if on <= t < off else 0.0) + (100.0 if warm[0] <= t < warm[1] else 0.0)
+        w = 400.0 + rnd.uniform(-5, 5) + (watts if on <= t < off else 0.0) + (100.0 if warm[0] <= t < warm[1] else 0.0)
+        w += fan if on <= t < on + 3 * 3600.0 else 0.0
         if busy:
             s = t - T0
             w += 150.0 if (s + 737.0) % 1800.0 < 600.0 else 0.0
             w += 1200.0 if (s + 1313.0) % 3600.0 < 180.0 else 0.0
-            w += 60.0 if (s + 101.0) % 420.0 < 200.0 else 0.0
+            w += 95.0 if (s + 101.0) % 420.0 < 200.0 else 0.0
             w += 2000.0 if (s + 2411.0) % 5400.0 < 90.0 else 0.0
         grid.append((t, round(w, 1)))
         t += 5.0
@@ -304,18 +306,7 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
     (PhaseState.owned, the converse of Fleet._meter_stop). With the phase
     quiet it always was."""
     for busy in (False, True):
-        rows, plug, on, off, end = _plug_day(busy)
-        fleet = D.Fleet()
-        fleet.wait_cap_s = D.METER_WAIT_CAP_S
-        filed, file = [], fleet.main._file
-
-        def keep(s, *a, **kw):
-            file(s, *a, **kw)
-            filed.append(s)
-        fleet.main._file = keep
-        for (part, e), (sub, _) in zip(_passes(rows, [T0 + 6 * 3600.0 * k for k in range(1, 4)], end),
-                                      _passes({"a": plug}, [T0 + 6 * 3600.0 * k for k in range(1, 4)], end)):
-            fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True})
+        filed, fleet, on, off = _plug_fleet(busy)
         own = [s for s in fleet.subs["Plug"].recent if s["end"] - s["start"] > 10 * 3600]
         assert len(own) == 1 and abs(own[0]["kwh"] - 6.0) < 0.1, own          # the plug's own detector: one 20 h run
         run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
@@ -324,6 +315,50 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
         sig = fleet.main.signature_of(run)
         assert abs(run.end - off) < 120 and abs(run.energy_wh - 6000.0) < 300 and sig is not None and sig.locations.get("Plug"), (
             "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+
+
+def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0):
+    """_plug_day through a Fleet in 6-hour passes: (the house's filed
+    sessions, the fleet, on, off). The plug's lag against the grid counts as
+    learned - a plug's is after a day - or, alone below the grid, it would
+    set no horizon and the grid would be judged before it had reported."""
+    rows, plug, on, off, end = _plug_day(busy, fan, watts)
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Plug"] = [[2.0, 185.0]] * D.LAG_MIN_SAMPLES
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    cuts = [T0 + 6 * 3600.0 * k for k in range(1, 4)]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True})
+    return filed, fleet, on, off
+
+
+def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
+    """Susilna's plug (265 W) switching on in the same reading as a 48 W fan
+    (Home 09-21 and 09-24 18:00: a +313 W start the plug neither owned nor
+    matched, cut with the fan's stop; Anze: "a separate fan in all
+    likelihood"). The plug's rise inside the bigger start takes its part - a
+    20-hour run at 265 W, the plug's - and the rest is the fan's own run,
+    closed by its stop three hours on. On the busy phase the fan, unmetered,
+    is the detector's as ever: a 54 W rise two hours in reads as a start of
+    its kind and ends it there (end_older) - its size right, its end early."""
+    for busy in (False, True):
+        filed, fleet, on, off = _plug_fleet(busy, fan=48.0, watts=265.0)
+        at_start = sorted((s for s in filed if abs(s.start - on) < 60 and "b" in s.phases), key=lambda s: -s.duration_s)
+        assert len(at_start) >= 2, ("busy" if busy else "quiet", [(round(s.duration_s / 3600, 2), round(s.energy_wh)) for s in at_start])
+        run, fan = at_start[0], at_start[1]
+        sig = fleet.main.signature_of(run)
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and sig is not None and sig.locations.get("Plug"), (
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+        assert abs(fan.energy_wh / (fan.duration_s / 3600.0) - 48.0) < 12 and fan.duration_s >= 2 * 3600.0, (
+            "busy" if busy else "quiet", round(fan.duration_s / 3600, 2), round(fan.energy_wh))
+        if not busy:
+            assert abs(fan.end - (on + 3 * 3600.0)) < 120 and abs(fan.energy_wh - 48.0 * 3.0) < 40, (round(fan.duration_s / 3600, 2), round(fan.energy_wh))
 
 
 def test_state_round_trips_through_json_mid_session():
@@ -2951,27 +2986,48 @@ def test_a_meter_that_held_its_value_did_not_take_the_step():
 
 def test_the_grid_is_read_as_far_behind_as_its_slowest_meter_needs():
     """The horizon: how long a meter takes to declare a step it shares with
-    the grid, learned from those steps (its latency twice over until it is),
-    the slowest meter's, capped at five minutes (Anze, 2026-10-02) - a meter
-    left out on the settings page does not set it. With an input fed, at
-    least the reach its changes are looked for in."""
+    the grid, learned from those steps, the slowest meter's, capped at five
+    minutes (Anze, 2026-10-02) - and only a meter that has shared a step sets
+    it, twice its latency until its lag is believed: one that never shares a
+    step has nothing the grid waits for. A meter left out on the settings
+    page does not set it. With an input fed, at least the reach its changes
+    are looked for in."""
     f = D.Fleet()
     f.wait_cap_s = D.METER_WAIT_CAP_S
     for name, cad in (("Hidrofor", 10.0), ("Hisa", 5.0), ("Workshop boiler", 146.0)):
         f.subs[name] = D.Detector()
         f.subs[name].phases["a"].interval = cad
-    assert f._horizon() == D.METER_WAIT_CAP_S                      # the boiler, until it is learned: past the cap
-    f.horizon_skip = {"Workshop boiler"}
-    assert f._horizon() == 60.0                                     # the hidrofor: twice three of its 10 s
+    assert f._horizon() == 0.0                                      # no step shared yet: nothing to wait for
     f.meter_lag["Hidrofor"] = [[2.0, 14.0]] * 18 + [[4.0, 35.0]]          # 19 steps shared
-    assert f._horizon() == 60.0                                     # not yet believed
+    assert f._horizon() == 60.0                                     # it shares: twice its latency until believed
     f.meter_lag["Hidrofor"].append([4.0, 35.0])                            # 20: its 95th, 35 s
+    assert f._horizon() == 35.0
+    f.meter_lag["Workshop boiler"] = [[3.0, 400.0]] * D.LAG_MIN_SAMPLES     # slow, learned: the cap
+    assert f._horizon() == D.METER_WAIT_CAP_S
+    f.horizon_skip = {"Workshop boiler"}
     assert f._horizon() == 35.0
     f.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0: None}
     assert f._horizon() == D.EDGE_LAG_REACH_S
-    f.horizon_skip = set()
     f.wait_cap_s = 0.0
     assert f._horizon() == 0.0
+
+
+def test_a_meter_that_never_shares_a_step_does_not_set_the_horizon():
+    """Home's Server UPS: a 60 s heartbeat that never shows a step the grid
+    shows, so no lag can be learned. Its fallback - twice its latency, 360 s
+    - held Home's horizon at the 300 s cap; it has nothing the grid waits
+    for, and the horizon is the 3EMs' (Anze, 2026-10-02)."""
+    f = D.Fleet()
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    for name, cad in (("Server UPS", 60.0), ("Hisa", 5.0), ("Mansarda", 4.9)):
+        f.subs[name] = D.Detector()
+        f.subs[name].phases["a"].interval = cad
+    f.meter_lag["Hisa"] = [[1.0, 28.5]] * D.LAG_MIN_SAMPLES
+    f.meter_lag["Mansarda"] = [[1.0, 26.7]] * D.LAG_MIN_SAMPLES
+    assert f._horizon() == 28.5
+    assert f._declare_lag("Server UPS") == 360.0                    # what a session waits for it, not the grid
+    f.meter_lag["Server UPS"] = [[2.0, 70.0]]                         # one step shared: it does take part, at its fallback
+    assert f._horizon() == D.METER_WAIT_CAP_S
 
 
 def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
