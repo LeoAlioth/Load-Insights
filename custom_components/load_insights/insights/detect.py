@@ -2002,7 +2002,18 @@ class PhaseState:
             if self.lib is not None:
                 self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_INTERVALS
             if len(self.open_edges) > MAX_OPEN_EDGES:
-                self.open_edges.pop(0)
+                # the oldest run no meter holds on makes room, closed where it
+                # stood, at its last level - popped silently, the dehumidifier's
+                # 271 W run (Susilna's plug, 20 hours) was the oldest of twelve
+                # when a thirteenth opened and left no session at all; eleven
+                # of the eighteen runs dropped so in ten days at Home were a
+                # meter's and still on (09-25 21:40, 2026-10-02). All twelve a
+                # meter's, the thirteenth joins them
+                old = next((x for x in self.open_edges if not self.owned(x)), None)
+                if old is not None:
+                    self.open_edges.remove(old)
+                    self._remember_close(old, since)
+                    ended.append(self._close(old, since, old.now or old.watts, None))
             return ended
         self.stop_cluster, self.stop_q = cid, quality
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
@@ -5961,6 +5972,8 @@ class Fleet:
         took = {}
         for n, (d, raw, raw_q, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
             if d is None:                   # all of the grid's step over the union of both spans
+                if not self._meter_stepped(n, ph, since, 0.5 * size, up):
+                    continue                # ...but its own steps are not half of it: not its
                 took[n] = (size if up else -size, None, None, noise_m, conf)
             elif d and (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
                 took[n] = (d, raw, raw_q, noise_m, conf)
@@ -5984,6 +5997,32 @@ class Fleet:
             if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
                 self._learn_gain(meter, "q", var, raw_q)
         return meter
+
+    def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
+        """Do the meter's own declared steps the way of a grid step at
+        ``since`` - within its latency of it, on its channels carrying ``ph``
+        (every channel of a meter not mapped yet) - add up to ``least``, in the
+        grid's terms? Asked of the "all of it" word of _meter_totals (the
+        meter's net over the union of both spans is the grid's) with half the
+        step: the hidrofor's plug rose 924 W as the grid rose 942, a 3EM's kiln
+        stop was netted into the rise, which grew to 3980 W, and over the union
+        the nets agreed - the plug owned a run its 924 W fall, less than half,
+        could never release; 15 hours, 60 kWh (Home 09-24 00:54, 2026-10-02).
+        Half, since a meter's stop frees its run at half the run's size
+        (_meter_on), and Hiša's +2,240 is rightly all of a +2,800 start with a
+        580 W load off in the same span."""
+        det = self.subs.get(name)
+        if det is None:
+            return False
+        gain = self.gain(name, "p")
+        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
+            [c for c, st in det.phases.items() if st.last_ts is not None]
+        total = 0.0
+        for c in chans:
+            st = det.phases[c]
+            reach = st.latency()
+            total += sum(e[1] for e in self._near(st, since - reach, since + reach, reach) if (e[1] > 0) == up) * gain
+        return abs(total) >= least
 
     def _learn_gain(self, name: str, kind: str, grid: float, meter: float) -> None:
         if not grid or not meter:
@@ -6051,9 +6090,15 @@ class Fleet:
             # ahead of the grid by the horizon - was carved out of an earlier
             # rise (Kozolec 09-22 11:33: closing its run at 26 s and opening a
             # phantom 2 kW start)
+            # ...and one the grid has read to the end of: read ahead of the
+            # grid by the horizon, a kiln stop whose span (a 3EM's 14 s
+            # silence) covered a rise 12 s earlier was netted into the rise
+            # while the grid's own fall for it was six seconds from being
+            # read; the rise grew to 3980 W (Home 09-24 00:54, 2026-10-02)
+            read = grid.last_ts if grid.last_ts is not None else float("inf")
             own = [e for e in ms if e[3] <= g_span[1] and e[4] >= g_span[0]
                    and (up is None or (e[1] > 0) == up
-                        or (e[3] < g_span[1] and e[4] > g_span[0]
+                        or (e[3] < g_span[1] and e[4] > g_span[0] and e[4] <= read
                             and not self._grid_took(grid, e, gain, noise_g, noise, cap)))]
             if not own:
                 out[name] = (0.0, None, None, noise, 0.0)
