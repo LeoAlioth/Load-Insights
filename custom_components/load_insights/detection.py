@@ -767,11 +767,18 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
         """Name a signature (or clear it) and persist at once - the caller
-        bumps the entry so the entities follow."""
+        bumps the entry so the entities follow.
+
+        Without telling the entities: the bump's reload is what makes the
+        name's sensors. Told here, the sensor platform added them too, and
+        name_load's reload began while that add was still running; an add
+        that finished after the unload left a live twin the new platform
+        refused ("ID ..._load_energy_kiln already exists"), frozen on the
+        old runner (37 % of name_load calls in a scratch HA test,
+        2026-10-02)."""
         if not self.detector.rename(signature_id, name):
             return False
         await self._persist(force=True)          # a user action, written at once
-        self.async_update_listeners()
         return True
 
     async def _persist(self, force: bool = False) -> None:
