@@ -260,13 +260,15 @@ def test_a_rise_still_in_its_event_window_waits_across_a_restart():
     assert legs[0] == legs[1] and det.cluster(legs[0]).phase == "ac", [(c.id, c.phase) for c in det.edges]
 
 
-def _plug_day(busy: bool, fan: float = 0.0, watts: float = 300.0):
+def _plug_day(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float = 0.0, leg: float = 0.0):
     """A plug's one load: +``watts`` (a 15 W wobble) for 20 hours, read every
     60 s, two seconds after the grid's 5 s readings; the grid's phase B with
     it, alone or with four other loads cycling on it - 150 W ten minutes in
     thirty, 1.2 kW three minutes an hour, a 95 W cycler and 2 kW for 90 s
     every 90 minutes, none switching with the plug - and, with ``fan``, a
-    load of that size switching on with the plug and off three hours later."""
+    load of that size switching on with the plug and off three hours later;
+    with ``blip``, one switching on with the plug and off 50 s later; with
+    ``leg``, a rise of that size on phase C with the plug, two hours long."""
     rnd = random.Random(3)
     on, off = T0 + 3600.0, T0 + 21 * 3600.0
     end = off + 2 * 3600.0
@@ -281,6 +283,7 @@ def _plug_day(busy: bool, fan: float = 0.0, watts: float = 300.0):
     while t < end:
         w = 400.0 + rnd.uniform(-5, 5) + (watts if on <= t < off else 0.0) + (100.0 if warm[0] <= t < warm[1] else 0.0)
         w += fan if on <= t < on + 3 * 3600.0 else 0.0
+        w += blip if on <= t < on + 50.0 else 0.0
         if busy:
             s = t - T0
             w += 150.0 if (s + 737.0) % 1800.0 < 600.0 else 0.0
@@ -289,7 +292,10 @@ def _plug_day(busy: bool, fan: float = 0.0, watts: float = 300.0):
             w += 2000.0 if (s + 2411.0) % 5400.0 < 90.0 else 0.0
         grid.append((t, round(w, 1)))
         t += 5.0
-    return {"b": grid}, plug, on, off, end
+    rows = {"b": grid}
+    if leg:
+        rows["c"] = [(t, round(300.0 + rnd.uniform(-5, 5) + (leg if on <= t < on + 2 * 3600.0 else 0.0), 1)) for t, _ in grid]
+    return rows, plug, on, off, end
 
 
 def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
@@ -317,12 +323,12 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
             "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
 
 
-def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0):
+def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float = 0.0, leg: float = 0.0):
     """_plug_day through a Fleet in 6-hour passes: (the house's filed
     sessions, the fleet, on, off). The plug's lag against the grid counts as
     learned - a plug's is after a day - or, alone below the grid, it would
     set no horizon and the grid would be judged before it had reported."""
-    rows, plug, on, off, end = _plug_day(busy, fan, watts)
+    rows, plug, on, off, end = _plug_day(busy, fan, watts, blip, leg)
     fleet = D.Fleet()
     fleet.wait_cap_s = D.METER_WAIT_CAP_S
     fleet.meter_lag["Plug"] = [[2.0, 185.0]] * D.LAG_MIN_SAMPLES
@@ -3435,6 +3441,235 @@ def test_a_meters_run_is_that_meters_until_the_meter_shows_it_stopped():
     assert len(grid._pair(T0 + 905.0, 268.0, None, 100.0)) == 1 and not grid.open_edges
     back = D._Open.of(o.as_list())
     assert back.meter == "Plug"
+
+
+def test_a_lag_is_learned_only_within_the_two_meters_latencies():
+    """Home's office plug, a computer: a step of its own 150 s after a grid
+    step of the same size read as that step's late report, and its 95th
+    report lag came to 109 s, its declaring lag 190 s - Home's horizon. A
+    meter that reports within its latency cannot be 150 s late: a shared
+    step teaches a lag only within the two meters' latencies and the merge
+    tolerance; a true 20 s lag still does."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    plug, grid = f.subs["Plug"].phases["a"], f.main.phases["c"]
+    plug.interval, grid.interval, grid.noise = 10.0, 2.0, 10.0                    # latencies 30 and 6 s
+    for k in range(30):
+        t = T0 + 700.0 * k
+        _declare(grid, (t, 900.0, None, t - 1.0, t))
+        _declare(plug, (t + 150.0, 880.0, None, t + 140.0, t + 150.0, t + 160.0))  # a step of its own, 150 s on
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f._learn_lags(T0 + 700.0 * 30 + D.LAG_REACH_S + 1.0)
+    assert not f.meter_lag.get("Plug"), f.meter_lag.get("Plug")[:3]
+    for k in range(31, 61):                                                            # after the first window
+        t = T0 + 700.0 * k
+        _declare(grid, (t, 900.0, None, t - 1.0, t))
+        _declare(plug, (t + 20.0, 880.0, None, t + 10.0, t + 20.0, t + 30.0))     # a late report, 20 s on
+    f._learn_lags(T0 + 700.0 * 61 + D.LAG_REACH_S + 1.0)
+    rows = f.meter_lag["Plug"]
+    assert len(rows) == 30 and all(r == [20.0, 30.0] for r in rows), rows[:3]
+
+
+def test_a_run_that_settles_to_its_meters_size_is_that_meters():
+    """Susilna 09-24 18:00: the plug's 265 W and a 30-60 W load switching on in
+    one reading with a rise on another phase - a leg of a two-phase event,
+    too much for the plug to own - and the load gone within the minute:
+    stepped down to the plug's size, the run is the plug's (the _pair settle
+    path asks again), and lasts its 20 hours."""
+    for busy in (False, True):
+        filed, fleet, on, off = _plug_fleet(busy, watts=265.0, blip=60.0, leg=500.0)
+        run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
+        assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
+        run = max(run, key=lambda s: s.duration_s)
+        sig = fleet.main.signature_of(run)
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and sig is not None and sig.locations.get("Plug"), (
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+
+
+def _charger_day():
+    """Kozolec's car charger as its plug read it on 09-20 (local times): on
+    14:34:40 at ~2.1 kW; a pause at 16:22:18 read 3, 7, 67 W over 14 s and on
+    again at 16:22:38; off 16:23:08 (3, 6, 24 W), on 16:23:27; a pause at
+    17:02:33, on 17:02:52; off 17:57:39 - the plug's readings every 6 s
+    otherwise, the grid's (400 W besides) every 5 s."""
+    rnd = random.Random(5)
+    h = lambda hh, mm, ss: T0 + hh * 3600.0 + mm * 60.0 + ss            # noqa: E731
+    on, p1, r1, off1, on2, p2, r2, off = (h(14, 34, 40), h(16, 22, 18), h(16, 22, 38), h(16, 23, 8), h(16, 23, 27),
+                                          h(17, 2, 33), h(17, 2, 52), h(17, 57, 39))
+    pauses = {p1: [(0.0, 2.7), (8.0, 6.7), (14.0, 67.0), (20.0, 2031.7), (25.0, 2197.6)],   # as the plug read them
+              off1: [(0.0, 2.7), (7.0, 5.8), (13.0, 24.1), (19.0, 2039.5), (25.0, 2201.0)],
+              p2: [(0.0, 2.7), (7.0, 5.8), (13.0, 24.1), (19.0, 2039.5), (25.0, 2201.0)]}
+
+    def drawing(t):
+        return on <= t < p1 or r1 <= t < off1 or on2 <= t < p2 or r2 <= t < off
+
+    def draw(t):
+        if drawing(t):
+            return 2100.0 + rnd.uniform(-20, 20)
+        for start, rows in pauses.items():
+            if start <= t < start + 20.0:
+                return [w for d, w in rows if d <= t - start][-1]
+        return 0.0
+    plug, grid = [], []
+    t = T0 + 13 * 3600.0
+    while t < T0 + 19 * 3600.0:
+        pause = next((p for p in pauses if p <= t < p + 30.0), None)
+        if pause is not None:
+            plug.extend((pause + d, w) for d, w in pauses[pause])
+            t = pause + 30.0
+            continue
+        plug.append((t, round(draw(t), 1)))
+        t += 6.0
+    t = T0 + 13 * 3600.0
+    while t < T0 + 19 * 3600.0:
+        grid.append((t, round(400.0 + rnd.uniform(-5, 5) + draw(t), 1)))
+        t += 5.0
+    return {"a": grid}, plug, (on, p1, r1, off1, on2, p2, r2, off)
+
+
+def test_a_pause_the_plug_read_plainly_ends_its_run_and_the_restart_is_a_new_one():
+    """Kozolec 09-20: two 20-s pauses of the car charger that neither the plug
+    nor the grid declared - three readings below 70 W, the fourth back at
+    2 kW - so the 14:34 run ran on to 17:57 and closed, with the 16:23 run,
+    on the one 2.2 kW fall there (Anze: one session end was missed). A
+    plateau the next reading leaves is a level once it held for the latency,
+    and a total-only plug's declared fall ends its run though the map does
+    not place it: four runs, each the plug's."""
+    rows, plug, (on, p1, r1, off1, on2, p2, r2, off) = _charger_day()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Plug"] = [[2.0, 40.0]] * D.LAG_MIN_SAMPLES
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    end = T0 + 19 * 3600.0
+    cuts = [T0 + 15 * 3600.0, T0 + 17 * 3600.0]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+    want = [(on, p1), (r1, off1), (on2, p2), (r2, off)]                                 # the plug's own four runs
+    own = sorted((s["start"], s["end"]) for s in fleet.subs["Plug"].recent if s["kwh"] > 0.005)
+    assert len(own) == 4 and all(abs(a - wa) <= 10 and abs(b - wb) <= 10 for (a, b), (wa, wb) in zip(own, want)), own
+    big = sorted((s for s in filed if s.energy_wh > 10.0), key=lambda s: s.start)
+    got = [(s.start, s.start + s.duration_s, fleet.main.signature_of(s).locations.get("Plug", 0) if fleet.main.signature_of(s) else 0) for s in big]
+    assert len(got) == 4 and all(abs(a - wa) <= 15 and abs(b - wb) <= 15 for (a, b, _), (wa, wb) in zip(got, want)), got
+    assert all(g[2] for g in got), got                                                # each at the plug
+
+
+def _boiler_gap_day():
+    """Kozolec 09-20 10:23 UTC in outline: a boiler (1921 W on its own Shelly,
+    which reports on change - a 35 s silence while it ran, then one 1885 W
+    reading, then 0) and an EVSE starting at 3.6 kW 39 s after the boiler, 21 s
+    before the boiler stops; the grid every 5 s. (grid rows, boiler rows,
+    boiler on, EVSE on, boiler off, EVSE off)."""
+    rnd = random.Random(7)
+    h = lambda s: T0 + 10 * 3600.0 + s                      # noqa: E731
+    b_on, e_on, b_off, e_off = h(0.0), h(39.0), h(60.0), h(39.0 + 2 * 3600.0)
+    boiler = []
+    t = h(-1800.0)
+    while t < b_on:
+        boiler.append((t, 0.0))
+        t += 7.0
+    boiler += [(b_on + 0.5 + d, 1921.0 + rnd.uniform(-3, 3)) for d in (0.0, 7.0, 14.0, 20.0)]
+    boiler += [(b_on + 55.5, 1885.0), (b_on + 61.5, 0.0)]  # the droop, then off
+    t = b_on + 68.5
+    while t < h(3 * 3600.0):
+        boiler.append((t, 0.0))
+        t += 7.0
+    grid = []
+    t = h(-1800.0) + 1.0
+    while t < h(3 * 3600.0):
+        w = 114.0 + rnd.uniform(-4, 4) + (1826.0 if b_on <= t < b_off else 0.0) + (3603.0 if e_on <= t < e_off else 0.0)
+        grid.append((t, round(w, 1)))
+        t += 5.0
+    return {"a": grid}, boiler, b_on, e_on, b_off, e_off
+
+
+def test_a_meter_stop_read_after_a_silence_is_not_netted_into_a_start_inside_the_silence():
+    """Kozolec 09-20 10:23 UTC: the boiler's Shelly reported 1921 W, nothing for
+    35 s, 1885 W, then 0. Spanned from the 1921 reading its stop reached 41 s
+    back, over the EVSE's 3.6 kW start 18 s before it, and was netted into the
+    start - the grid's own fall for the stop was 11 s from being declared when
+    the start's event formed. The start grew to 5.5 kW, the fall closed it at
+    21 s, and 10.4 kWh of charging was never a session. A step's span begins
+    at the last reading still on its old side - 1885 W is the boiler on - so
+    the stop lies after the start: the boiler's minute and the EVSE's two
+    hours are two sessions. (Here, without it, the netting ends the boiler's
+    run at the EVSE's start, 40 s not 60, and opens the start at 5.5 kW; the
+    grid's fall then settles it rather than closing it as on the day.)"""
+    rows, boiler, b_on, e_on, b_off, e_off = _boiler_gap_day()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Boiler"] = [[2.0, 25.0]] * D.LAG_MIN_SAMPLES
+    fleet.phase_votes["Boiler"] = {"a": {"a": D.PHASE_MAP_MIN_VOTES}}     # placed on phase a, as after a day
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    end = T0 + 13 * 3600.0
+    cuts = [T0 + 11 * 3600.0]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": boiler}, cuts, end)):
+        fleet.process(part, {"Boiler": sub}, now_ts=e, single={"Boiler": True})
+    big = sorted((s for s in filed if s.energy_wh > 10.0), key=lambda s: s.start)
+    got = [(round(s.start - b_on), round(s.duration_s), round(s.energy_wh / (s.duration_s / 3600.0))) for s in big]
+    evse = [g for g in got if abs(g[0] - 39) <= 10]
+    assert len(evse) == 1 and abs(evse[0][1] - 7200) <= 60 and abs(evse[0][2] - 3603) <= 200, got
+    assert any(abs(g[0]) <= 10 and abs(g[1] - 60) <= 15 and abs(g[2] - 1826) <= 200 for g in got), got
+
+
+def _blip_before_stop_day():
+    """Kozolec 09-28 13:53 UTC in outline: an EVSE at 3588 W on its plug for
+    23 minutes; a 263 W load of nobody's on for 24 s, off 20 s before the EVSE
+    stops; the plug (every 10 s) silent for 40 s around the EVSE's stop, so
+    its fall's span reaches back over the small fall's. (grid rows, plug rows,
+    EVSE on, blip on, blip off, EVSE off)."""
+    rnd = random.Random(11)
+    h = lambda s: T0 + 10 * 3600.0 + s                      # noqa: E731
+    e_on, e_off = h(0.0), h(23 * 60.0)
+    b_on, b_off = e_off - 44.0, e_off - 20.0
+    plug, grid = [], []
+    t = h(-1800.0) + 4.0
+    while t < h(3600.0):
+        if not (e_off - 40.0 <= t < e_off + 2.0):
+            plug.append((t, round((3588.0 + rnd.uniform(-4, 4)) if e_on <= t < e_off else 0.0, 1)))
+        t += 10.0
+    t = h(-1800.0)
+    while t < h(3600.0):
+        w = 100.0 + rnd.uniform(-3, 3) + (3588.0 if e_on <= t < e_off else 0.0) + (263.0 if b_on <= t < b_off else 0.0)
+        grid.append((t, round(w, 1)))
+        t += 5.0
+    return {"a": grid}, plug, e_on, b_on, b_off, e_off
+
+
+def test_a_meters_stop_ends_its_run_only_through_a_fall_that_accounts_for_it():
+    """Kozolec 09-28 13:53 UTC: a 263 W blip ended a second before the EVSE's
+    3.6 kW fall; the EVSE plug's own fall lay within reach of the small fall's
+    span, _meter_stop handed the small fall the EVSE's run - a meter's stop
+    ends the run it started whatever the sizes - and the run was booked at 257
+    W: 23 minutes, 1.4 kWh, as 98 Wh. One fall ends only runs whose sizes it
+    accounts for: the grid's fall must be at least half the meter's. The
+    EVSE's 23 minutes at 3.6 kW stay its own; the blip is a run of its own."""
+    rows, plug, e_on, b_on, b_off, e_off = _blip_before_stop_day()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Plug"] = [[2.0, 60.0]] * D.LAG_MIN_SAMPLES     # the horizon reaches past the plug's latency
+    fleet.phase_votes["Plug"] = {"a": {"a": D.PHASE_MAP_MIN_VOTES}}  # placed on phase a, as after a day
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    end = T0 + 11 * 3600.0
+    for (part, e), (sub, _) in zip(_passes(rows, [], end), _passes({"a": plug}, [], end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+    got = sorted(((round(s.start - e_on), round(s.duration_s), round(s.energy_wh)) for s in filed if s.duration_s > 5), key=lambda g: g[0])
+    evse = [g for g in got if abs(g[0]) <= 10 and abs(g[1] - 23 * 60) <= 30]
+    assert len(evse) == 1 and abs(evse[0][2] - 3588.0 * evse[0][1] / 3600.0) <= 100, got      # 23 min at 3.6 kW, not at 263 W
+    assert any(abs(g[0] - (b_on - e_on)) <= 10 and 15 <= g[1] <= 35 for g in got), got          # the blip, its own run
 
 
 if __name__ == "__main__":
