@@ -155,6 +155,111 @@ def test_processing_in_slices_equals_processing_at_once():
     assert whole.signatures[0].count == sliced.signatures[0].count, (whole.signatures[0].count, sliced.signatures[0].count)
 
 
+def _passes(rows_by_phase, cuts, end):
+    """``rows_by_phase`` read the way a runner reads the recorder: in passes
+    ending at each of ``cuts`` and then ``end``, each [start, end)."""
+    t0 = -float("inf")
+    for e in list(cuts) + [end]:
+        yield {p: [r for r in rows if t0 <= r[0] < e] for p, rows in rows_by_phase.items()}, e
+        t0 = e
+
+
+def _as_filed(sessions):
+    return [(s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 6), s.signature_id) for s in sessions]
+
+
+def _sliced_history(hours=6.0):
+    """Three phases read together every 5 s: a two-phase pulser on A and C
+    whose legs settle a reading apart, and on B a 900 W load read as a plug
+    reports - on change, and once a minute otherwise - so a change is
+    confirmed by the meter's silence."""
+    secs = hours * 3600.0
+    a = series(secs, kiln(period=300.0, on=50.0), seed=1)
+    c = [(t + (5.0 if (t - T0) % 300.0 < 5.0 else 0.0), w) for t, w in series(secs, kiln(period=300.0, on=50.0), seed=2)]
+    c = sorted({t: w for t, w in c}.items())
+    b, last, t = [], None, T0
+    while t < T0 + secs:
+        w = 300.0 + (900.0 if (t - T0) % 1700.0 < 400.0 else 0.0)
+        if w != last or not b or t - b[-1][0] >= 60.0:
+            b.append((t, w))
+            last = w
+        t += 5.0
+    return {"a": a, "b": b, "c": c}, T0 + secs + 600.0
+
+
+def test_a_pass_is_only_a_pause():
+    """The same history read in one call, in passes of an hour or ten
+    minutes, or a minute or 37 s at a time, files the same sessions into the
+    same signatures (2026-10-02). Before, a pass's end confirmed every pending
+    change, formed every rise still in its event window alone, filed every
+    run that had waited out its tail and none that had not, and the library a
+    one-call replay consulted stayed empty until the end."""
+    rows, end = _sliced_history()
+    whole = _as_filed(D.Detector().process(rows, now_ts=end))
+    assert len(whole) > 60 and any(p == "ac" for p, *_ in whole) and any(p == "b" for p, *_ in whole), whole[:5]
+    for step in (3600.0, 600.0, 60.0, 37.0):
+        det, got = D.Detector(), []
+        for part, e in _passes(rows, [T0 + k * step for k in range(1, int(6 * 3600 / step) + 1)], end):
+            got += det.process(part, now_ts=e)
+        assert _as_filed(got) == whole, (step, [x for x in _as_filed(got) if x not in whole][:3])
+
+
+def _fleet_filed(rows, plug, cuts, end, wait):
+    """A fleet fed the grid ``rows`` and one plug in passes; every house
+    session it filed, and where each signature stands at the end."""
+    fleet = D.Fleet()
+    fleet.wait_cap_s = wait
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+    where = sorted((x.id, sorted(x.locations.items())) for x in fleet.main.signatures)
+    return _as_filed(filed), where
+
+
+def test_every_meter_is_read_on_one_clock():
+    """A plug under B reports its load two seconds after the grid, on change
+    and once a minute. Read in one call, by the hour or a minute at a time,
+    the fleet files the same house sessions into the same signatures, placed
+    at the same meters (2026-10-02). Before, the meters were read a whole
+    pass ahead of the grid and the fleet filed once a pass: in one call no
+    meter had voted on its phase until the end, so none was ever asked."""
+    rows, end = _sliced_history()
+    plug, last = [], None
+    for t, w in rows["b"]:
+        v = w - 300.0
+        if v != last or not plug or t - plug[-1][0] >= 60.0:
+            plug.append((t + 2.0, v))
+            last = v
+    whole, where = _fleet_filed(rows, plug, [], end, D.METER_WAIT_CAP_S)
+    assert len(whole) > 60 and any(dict(w).get("Plug") for _, w in where), where
+    for step in (3600.0, 60.0, 37.0):
+        got, at = _fleet_filed(rows, plug, [T0 + k * step for k in range(1, int(6 * 3600 / step) + 1)], end,
+                               D.METER_WAIT_CAP_S)
+        assert got == whole, (step, [x for x in got if x not in whole][:3])
+        assert at == where, step
+
+
+def test_a_rise_still_in_its_event_window_waits_across_a_restart():
+    """A pass's end no longer forms the rises waiting in their event window,
+    so they are stored: a two-phase start whose second leg is declared after
+    the pass ended - and after a restart - is still one A+C event."""
+    a = [(T0 + 5.0 * k, 300.0 + (3000.0 if k >= 120 else 0.0)) for k in range(200)]
+    c = [(t + 2.5, w) for t, w in a]
+    cut = T0 + 616.0                                   # A's rise declared, C's not yet
+    det = D.Detector()
+    det.process({"a": [r for r in a if r[0] < cut], "c": [r for r in c if r[0] < cut]}, now_ts=cut)
+    assert det._pending and det.phases["a"].open_edges and not det.phases["c"].open_edges
+    det = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    det.process({"a": [r for r in a if r[0] >= cut], "c": [r for r in c if r[0] >= cut]}, now_ts=T0 + 1000.0)
+    legs = [st.open_edges[0].cluster for st in (det.phases["a"], det.phases["c"])]
+    assert legs[0] == legs[1] and det.cluster(legs[0]).phase == "ac", [(c.id, c.phase) for c in det.edges]
+
+
 def test_state_round_trips_through_json_mid_session():
     a = series(400, lambda s: 3000.0 if s >= 100 else 0.0)     # still on at the end
     det = D.Detector(); det.process({"a": a}, now_ts=T0 + 400)
@@ -255,6 +360,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     sig = _sig(1, 640.0, 120.0, 1, phases="c", first_seen=T0, last_seen=T0)
     fleet.main.signatures.append(sig)
     fleet.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0 + 1000: T0 + 1120, T0 + 5000: None}
+    fleet._now = T0 + 6000.0                                                  # the clock is past the off
 
     def session(start, end, phase="c"):
         s = D.Session(phase, start, end, {phase: [(start, 640.0)]})
@@ -266,6 +372,9 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     assert fleet._switch_for(session(T0 + 5003, T0 + 5130), 6.0) == name     # still on: the start decides
     assert fleet._switch_for(session(T0 + 1060, T0 + 1180), 6.0) is None     # started a minute late
     assert fleet._switch_for(session(T0 + 1002, T0 + 2400), 6.0) is None     # ran on long after the off
+    fleet._now = T0 + 1100.0                                                  # ...an off the clock has not reached
+    assert fleet._switch_for(session(T0 + 1002, T0 + 2400), 6.0) == name     # is not known yet, whatever a pass read
+    fleet._now = T0 + 6000.0
     # once it has shown its phase, a load on another one is not its own
     sig.locations[name] = D.METER_PHASES_MIN
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "a"), 6.0) is None
@@ -644,6 +753,41 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     det3._prune(now=500 * day + cap)
     assert not any(s.id == 0 for s in det3.signatures)
     assert D.ESTABLISHED_HORIZON_S > 365 * day, "a yearly load must survive its own year"
+
+
+def test_a_signature_evicted_is_not_where_its_device_files_next():
+    """_prune left the signature lookup holding what it had just evicted, so
+    a device whose home it was filed its next run into a signature no longer
+    in the library - one signature_of then finds nowhere (the pass audit,
+    2026-10-02)."""
+    hour = 3600.0
+    cap = D.MAX_SIGNATURES
+    det = D.Detector()
+    det.signatures = [_sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour) for i in range(cap + 5)]
+    det.start_home = {"7": {2: 5.0}}                 # cluster 7's runs went to signature 2, the stalest
+    assert det._device_signature(7, None, (), "a").id == 2
+    det._prune(now=(cap + 4) * hour)
+    assert all(s.id != 2 for s in det.signatures)
+    assert det._device_signature(7, None, (), "a") is None
+
+
+def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
+    """Kozolec 09-28 17:05: a 1 kW run of the well pump's start cluster while
+    the pump's plug held at 0 W was kept out of the pump's signature (the plug
+    did not start it) and founded one of its own - which the device merge,
+    now after every filing, folded straight back in: the pump's signature
+    fell under half its own and its 1.5 kWh went unowned. A signature born of
+    a run kept out of others is never merged into them."""
+    det = D.Detector()
+    det.signatures = [_sig(1, 1000.0, 300.0, 12, first_seen=T0, last_seen=T0)]
+    det.next_id = 2
+    det.start_home = {"7": {1: 12.0}}
+    run = D.Session(phases="a", start=T0 + 3600.0, end=T0 + 4560.0, levels={"a": [(T0 + 3600.0, 1000.0)]}, pair=(7, None))
+    det._file(run, avoid=[1])
+    assert run.signature_id == 2 and det._sig(2).apart == [1]
+    assert det._merge_devices() == 0 and len(det.signatures) == 2
+    back = D.Signature.from_dict(json.loads(json.dumps(det._sig(2).to_dict())))
+    assert back.apart == [1]
 
 
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
@@ -1405,19 +1549,26 @@ def test_a_sub_meter_decides_which_signature_a_session_joins():
 def test_a_session_waits_only_for_meters_that_could_have_seen_it():
     """Filing waits for a sub-meter partner - but only from a meter that reads
     at least twice inside the run. Home's workshop boiler meter reports every
-    seven minutes and can partner no one-minute pump run."""
+    seven minutes and can partner no one-minute pump run. The wait is on the
+    one clock every meter is read on: the plug's tolerance, its sustain, a
+    reading and its own wait for a partner leg past the run's end - never
+    past the patience."""
     fleet = D.Fleet()
     fast, slow = D.Detector(), D.Detector()
     fast.phases["a"].interval, slow.phases["a"].interval = 10.0, 420.0
-    slow.phases["a"].last_ts = 0.0
     fleet.subs = {"plug": fast, "workshop": slow}
     run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
-    fast.phases["a"].last_ts = 90.0
-    assert not fleet._heard_from_all(run, 6.0, 90.0), "the plug has not reported far enough yet"
-    fast.phases["a"].last_ts = 120.0                                 # past its own sustain: 3 x 10 s
-    assert fleet._heard_from_all(run, 6.0, 120.0), "and the slow meter is not waited for"
-    fast.phases["a"].last_ts = 0.0
-    assert fleet._heard_from_all(run, 6.0, 60.0 + D.MATCH_PATIENCE_S), "never past the patience"
+    # the two meters' tolerance (the grid's 6 s and the plug's latency, three
+    # of its 10 s), the plug's declaring lag - its latency twice until one is
+    # learned - and its wait for a partner leg
+    assert fleet._ready_at(run, 6.0) == 60.0 + 36.0 + 60.0 + D.HELD_TAIL_S   # the slow meter not waited for
+    fleet.meter_lag["plug"] = [[3.0, 12.0]] * D.LAG_MIN_SAMPLES                 # learned: declared 12 s after the grid
+    assert fleet._ready_at(run, 6.0) == 60.0 + 36.0 + 12.0 + D.HELD_TAIL_S
+    fast.phases["a"].interval = 50.0                                 # a plug as slow as the run: not waited for either
+    assert fleet._ready_at(run, 6.0) == 60.0
+    long_run = D.Session(phases="a", start=0.0, end=3000.0, levels={"a": [(0.0, 900.0)]})
+    slow.phases["a"].interval = 1400.0
+    assert fleet._ready_at(long_run, 6.0) == 3000.0 + D.MATCH_PATIENCE_S, "never past the patience"
 
 
 def test_energy_between_is_watt_hours_by_sample_and_hold():
@@ -2460,6 +2611,25 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
 
 
 
+def test_a_pair_is_believed_from_the_run_that_makes_it():
+    """The accepted pairs were worked out once a pass: a six-hour slice paired
+    with models six hours old, a minute's pass with a minute's, and one call
+    with none. They are kept as each run is learned, and come back with the
+    library."""
+    det = D.Detector()
+    det.edges = [D.EdgeCluster(id=i, phase="a", up=up, watts=w)
+                 for i, up, w in ((1, True, 900.0), (2, False, 880.0), (3, True, 200.0), (4, False, 200.0))]
+    for _ in range(50):
+        det.note_pair(3, 4, 200.0, 200.0, 60.0)          # the phase's other closes
+    for _ in range(D.PAIR_MIN_RUNS - 1):
+        det.note_pair(1, 2, 900.0, 880.0, 60.0)
+    assert 1 not in det.partners(2)
+    det.note_pair(1, 2, 900.0, 880.0, 60.0)
+    assert abs(det.partners(2)[1][0] - 880.0 / 900.0) < 1e-9 and abs(det.usual_length(1) - 60.0) < 1e-6
+    back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    assert back.partners(2).keys() == det.partners(2).keys() == {1}
+
+
 def test_a_pair_is_accepted_when_it_is_far_above_chance():
     """A switch-on closing 40 runs and a switch-off closing 30 of 1000 on the
     phase meet 1.2 times by chance: 20 is a pair, 3 is not (2026-09-30)."""
@@ -2699,12 +2869,12 @@ def test_a_meter_that_held_its_value_did_not_take_the_step():
     f = _fleet_with_meters({"Workshop boiler": 0.0})
     boiler = f.subs["Workshop boiler"].phases["a"]
     boiler.interval = 10.0                                               # sustain 3 x 10 s
-    f._pass_end = T0 + 3600.0
+    f._now = T0 + 3600.0
     assert f._meter_held("Workshop boiler", "c", T0, True)               # silent all along: held
     assert not f._meter_held("Workshop boiler", "a", T0, True)           # not measured on A: cannot say
-    f._pass_end = T0 + 20.0
+    f._now = T0 + 20.0
     assert not f._meter_held("Workshop boiler", "c", T0, True)           # too soon to tell
-    f._pass_end = T0 + 3600.0
+    f._now = T0 + 3600.0
     boiler.pending = [(T0 + 4.0, 2100.0, None, None)]
     assert not f._meter_held("Workshop boiler", "c", T0, True)           # changing
     boiler.pending = []
@@ -2713,30 +2883,70 @@ def test_a_meter_that_held_its_value_did_not_take_the_step():
     assert f._meter_held("Workshop boiler", "c", T0, False)              # ...but not the other way
 
 
-def test_the_grid_waits_for_the_slowest_meter_within_the_cap():
-    """A live pass reads up to now; the workshop boiler's meter, every 10 s,
-    has its say on a change 30 s later. So the grid is judged only up to now
-    minus three of its cadences, and the newer readings - reactive power too -
-    wait for the next pass, kept across a restart. A 60 s plug is past the cap
-    and not waited for."""
-    f = _fleet_with_meters({"Workshop boiler": 0.0, "Server UPS": 0.0})
-    f.subs["Workshop boiler"].phases["a"].interval, f.subs["Workshop boiler"].phases["a"].last_ts = 10.0, T0
-    f.subs["Server UPS"].phases["a"].interval, f.subs["Server UPS"].phases["a"].last_ts = 60.0, T0
+def test_the_grid_is_read_as_far_behind_as_its_slowest_meter_needs():
+    """The horizon: how long a meter takes to declare a step it shares with
+    the grid, learned from those steps (its latency twice over until it is),
+    the slowest meter's, capped at five minutes (Anze, 2026-10-02) - a meter
+    left out on the settings page does not set it. With an input fed, at
+    least the reach its changes are looked for in."""
+    f = D.Fleet()
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    for name, cad in (("Hidrofor", 10.0), ("Hisa", 5.0), ("Workshop boiler", 146.0)):
+        f.subs[name] = D.Detector()
+        f.subs[name].phases["a"].interval = cad
+    assert f._horizon() == D.METER_WAIT_CAP_S                      # the boiler, until it is learned: past the cap
+    f.horizon_skip = {"Workshop boiler"}
+    assert f._horizon() == 60.0                                     # the hidrofor: twice three of its 10 s
+    f.meter_lag["Hidrofor"] = [[2.0, 14.0]] * 18 + [[4.0, 35.0]]          # 19 steps shared
+    assert f._horizon() == 60.0                                     # not yet believed
+    f.meter_lag["Hidrofor"].append([4.0, 35.0])                            # 20: its 95th, 35 s
+    assert f._horizon() == 35.0
+    f.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0: None}
+    assert f._horizon() == D.EDGE_LAG_REACH_S
+    f.horizon_skip = set()
+    f.wait_cap_s = 0.0
+    assert f._horizon() == 0.0
+
+
+def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
+    """A plug declaring the grid's steps 1.5 s after they happened, and its
+    own a reading's latency later: learned once each grid step is LAG_REACH_S
+    old on the clock - the same whatever the slicing - it sets the plug's
+    latency and the grid's horizon. A step the plug has two of nearby is not
+    learned from."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
+    plug.interval, grid.noise = 10.0, 10.0
+    for k in range(30):
+        t = T0 + 600.0 * k
+        _declare(grid, (t, 900.0, None, t - 1.0, t))
+        _declare(plug, (t + 1.5, 880.0, None, t - 10.0, t + 1.5, t + 12.0))
+    _declare(grid, (T0 + 600.0 * 30, -900.0, None, T0, T0))
+    _declare(plug, (T0 + 600.0 * 30 + 2.0, -880.0, None, T0, T0, T0), (T0 + 600.0 * 30 + 9.0, -880.0, None, T0, T0, T0))
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f._learn_lags(T0 + 600.0 * 30 + D.LAG_REACH_S + 1.0)
+    rows = f.meter_lag["Hidrofor"]
+    assert len(rows) == 30 and all(r == [1.5, 12.0] for r in rows), rows[:3]
+    assert plug.lag == 1.5 and plug.latency() == 30.0              # never under three of its repeat intervals
+    assert f._horizon() == 12.0
+
+
+def test_the_grid_readings_newer_than_the_horizon_wait_for_the_next_pass():
+    """A live pass reads up to now and the grid is read behind its meters:
+    its readings newer than that, reactive power too, wait for the next pass,
+    kept across a restart."""
+    f = D.Fleet()
     f.wait_cap_s = 45.0
     rows = {"c": [(T0 + k * 2.0, 300.0) for k in range(31)]}                 # T0 .. T0+60
     q = {"c": {T0 + k * 2.0: 20.0 for k in range(31)}}
-    got, got_q, _, cut = f._hold_back(rows, q, None, T0 + 60.0)
-    assert cut == T0 + 30.0                                                  # 3 x 10 s; the UPS's 180 s is past the cap
-    assert got["c"][-1][0] == T0 + 30.0 and all(got_q["c"][t] == 20.0 for t, _ in got["c"])
+    got, got_q, _ = f._hold_back(rows, q, None, T0 + 60.0 - f.wait_cap_s)
+    assert got["c"][-1][0] == T0 + 14.0 and all(got_q["c"][t] == 20.0 for t, _ in got["c"])
     f = D.Fleet.from_dict(f.to_dict())                                      # kept across a restart
-    f.subs["Workshop boiler"].phases["a"].interval, f.subs["Workshop boiler"].phases["a"].last_ts = 10.0, T0
-    f.wait_cap_s = 45.0
-    got, got_q, _, cut = f._hold_back({"c": [(T0 + 62.0, 310.0)]}, {"c": {T0 + 62.0: 21.0}}, None, T0 + 120.0)
-    assert [r[0] for r in got["c"]] == [T0 + 30.0 + 2.0 * k for k in range(1, 16)] + [T0 + 62.0]
-    assert [got_q["c"].get(t) for t, _ in got["c"]] == [20.0] * 15 + [21.0]   # the reactive values came along
-    f.wait_cap_s = 0.0                                                       # 0: judged at once
-    got, _, _, cut = f._hold_back({"c": [(T0 + 130.0, 300.0)]}, None, None, T0 + 130.0)
-    assert cut == T0 + 130.0 and got["c"] == [(T0 + 130.0, 300.0)]
+    got, got_q, _ = f._hold_back({"c": [(T0 + 62.0, 310.0)]}, {"c": {T0 + 62.0: 21.0}}, None, T0 + 120.0 - 45.0)
+    assert [r[0] for r in got["c"]] == [T0 + 16.0 + 2.0 * k for k in range(23)] + [T0 + 62.0]
+    assert [got_q["c"].get(t) for t, _ in got["c"]] == [20.0] * 23 + [21.0]   # the reactive values came along
+    got, _, _ = f._hold_back({"c": [(T0 + 130.0, 300.0)]}, None, None, T0 + 130.0)   # a cap of 0: judged at once
+    assert got["c"] == [(T0 + 130.0, 300.0)]
 
 
 def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
@@ -2752,7 +2962,7 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
         rows += [(t, 800.0), (t + 70.0, 0.5)]
     rows.append((T0 + 3500.0, 0.6))
     f.sub_rows["Hidrofor"] = rows
-    f._pass_end = T0 + 3600.0
+    f._now = T0 + 3600.0
     run = D.Session(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
     assert 0.65 <= D.energy_between(rows, run.start, run.end) / run.energy_wh <= 1.35   # the energies agree
     assert not f._energy_pairs([run])                                     # but the plug held at its start
@@ -2770,7 +2980,7 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     f = _fleet_with_meters({"Hidrofor": 0.0})
     f.single = {"Hidrofor": True}
     f.subs["Hidrofor"].phases["a"].interval = 10.0
-    f._pass_end = T0 + 3600.0
+    f._now = T0 + 3600.0
     home = _sig(31, 900.0, 70.0, 40, phases="c", first_seen=T0, last_seen=T0)
     home.locations["Hidrofor"] = 30
     other = _sig(32, 1000.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0)

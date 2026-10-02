@@ -30,6 +30,8 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
+    CONF_IGNORE_METERS,
+    CONF_HORIZON_SKIP,
     CONF_METER_WAIT,
     DETECTION_BACKFILL_DAYS,
     NAMING_MAX_STALE_S,
@@ -292,6 +294,15 @@ def _single_device_field(meters: list, declared) -> dict:
     sightings are one load); saved, the answer is the user's."""
     default = list(declared) if declared is not None else [stat for stat, _, guess in meters if guess]
     return {vol.Optional(CONF_SINGLE_DEVICE, default=default): selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
+            multiple=True, mode=selector.SelectSelectorMode.LIST))}
+
+
+def _meters_field(key: str, meters: list, chosen) -> dict:
+    """A multi-select of the meters detection could read, by statistic id
+    as _single_device_field keys them - none chosen until the page is saved."""
+    return {vol.Optional(key, default=list(chosen or [])): selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
             multiple=True, mode=selector.SelectSelectorMode.LIST))}
@@ -784,15 +795,20 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         meters = await self._device_meters()
         if user_input is not None:
             # a wait of 0 is an answer - judge every step at once - not an empty field
+            lists = (CONF_SINGLE_DEVICE, CONF_IGNORE_METERS, CONF_HORIZON_SKIP)
             cfg = {**current, **{k: v for k, v in user_input.items()
-                                 if (v or (k == CONF_METER_WAIT and v is not None)) and k != CONF_SINGLE_DEVICE}}
+                                 if (v or (k == CONF_METER_WAIT and v is not None)) and k not in lists}}
             if meters:
-                # kept even when empty: none ticked is an answer - every meter holds several
-                cfg[CONF_SINGLE_DEVICE] = list(user_input.get(CONF_SINGLE_DEVICE) or [])
+                # kept even when empty: none ticked is an answer - every meter
+                # holds several, is read, sets the horizon
+                for key in lists:
+                    cfg[key] = list(user_input.get(key) or [])
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         fields = _meter_wait_field(current)
         if meters:
             fields.update(_single_device_field(meters, current.get(CONF_SINGLE_DEVICE)))
+            fields.update(_meters_field(CONF_HORIZON_SKIP, meters, current.get(CONF_HORIZON_SKIP)))
+            fields.update(_meters_field(CONF_IGNORE_METERS, meters, current.get(CONF_IGNORE_METERS)))
         return self.async_show_form(
             step_id="detection",
             data_schema=vol.Schema(fields),
@@ -807,7 +823,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is None or not runner.enabled:
             return []
         return [(m["energy"], name, runner.guess_one_device(name))
-                for name, m in runner.submeters.items() if m.get("energy")]
+                for name, m in runner.all_submeters.items() if m.get("energy")]
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

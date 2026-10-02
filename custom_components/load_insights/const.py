@@ -85,6 +85,12 @@ CONF_METER_WAIT = "meter_wait_s"
 # meter holds ONE device. Absent until the detection page is saved; then every
 # meter not listed holds several.
 CONF_SINGLE_DEVICE = "single_device"
+# Inside CONF_DETECTION, keyed the same way: meters left out of detection
+# altogether - not read, as if not on the Energy dashboard - and meters still
+# read whose lag does not set how far behind its meters the grid is read (a
+# slow polled one not worth waiting for; see Fleet._horizon).
+CONF_IGNORE_METERS = "ignore_meters"
+CONF_HORIZON_SKIP = "horizon_skip"
 # How often the recorder is re-read: every minute. The pass itself costs well
 # under a millisecond and its overheads no longer scale with it - one query
 # rather than one per entity, and the state written hourly rather than every
