@@ -368,6 +368,17 @@ EDGE_RECUT = 32                # steps into a group before its segments are cut 
 # does for inputs, is the upgrade if coincidences prove costly.
 EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
+# bench: a second clustering dimension - the step's reactive angle,
+# atan2(dQ, dP) in degrees, signed where the meter's VAr is. Within a size
+# segment, steps are cut again at the valleys of their angle density: a pump
+# (~35 deg) and a heater (0 deg) of one size are two kinds of edge (Hart 1992;
+# Barsim & Yang 2014 cluster dP and dQ together). Off until it can be
+# measured: Home's grid meter signs its var only from 2026-09-30 07:57, so
+# ten days of it exist from about 2026-10-10; Kozolec's Victron and every
+# 3EM give V x I or sqrt(S^2 - P^2), unsigned.
+EDGE_ANGLE = False
+EDGE_ANGLE_BIN = 3.0           # degrees
+EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
 # A house step that meters below it stepped with at the same moment is
 # several steps: each meter's own share (less its sub-meters', see
 # _meter_steps), and the rest. Kozolec's boiler pulses 1.9 kW about
@@ -3130,7 +3141,9 @@ class EdgeCluster:
     # look-alike's +630 W with nothing are two kinds of edge. Only half of the
     # +630 W steps on Home's phase C came with the thermostat (2026-09-29).
     keys: Dict[str, str] = field(default_factory=dict)
+    angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE
     where: str = ""                           # the meter its steps happened under - see EDGE_BY_METER
+    angle_n: float = 0.0
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -3138,8 +3151,13 @@ class EdgeCluster:
         return all(k == self.keys.get(n, "") for n, k in kinds.items())
 
     def absorb(self, ts: float, watts: float, pf: Optional[float], surge: float,
-               kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float]) -> None:
+               kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float],
+               angle: Optional[float] = None) -> None:
         n = min(self.count, ABSORB_WINDOW)
+        if angle is not None:
+            m = min(self.angle_n, ABSORB_WINDOW)
+            self.angle = angle if self.angle is None else (self.angle * m + angle) / (m + 1)
+            self.angle_n += 1.0
         self.watts_mad = (self.watts_mad * n + abs(watts - self.watts)) / (n + 1) if self.count else 0.0
         self.watts = (self.watts * n + watts) / (n + 1) if self.count else watts
         if pf is not None:
@@ -3193,7 +3211,8 @@ class EdgeCluster:
                 "signals": {n: {k: _trim(v, 2) for k, v in row.items()} for n, row in self.signals.items()},
                 "lags": {k: [_trim(x, 2) for x in v] for k, v in self.lags.items()},
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
-                "keys": dict(self.keys), "where": self.where}
+                "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
+                "where": self.where}
 
     @classmethod
     def from_dict(cls, d: dict) -> "EdgeCluster":
@@ -3204,7 +3223,8 @@ class EdgeCluster:
                    signals={n: dict(row) for n, row in (d.get("signals") or {}).items()},
                    lags={k: list(v) for k, v in (d.get("lags") or {}).items()},
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
-                   keys=dict(d.get("keys") or {}), where=d.get("where") or "")
+                   keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
+                   where=d.get("where") or "")
 
 
 def above_chance(n: float, expected: float, odds: float = ABOVE_CHANCE_ODDS) -> bool:
@@ -3240,12 +3260,13 @@ def reading_cadence(gaps: Sequence[float]) -> float:
     return g[int(0.05 * (len(g) - 1))]
 
 
-def valley_segments(hist: Dict[int, float]) -> List[Tuple[int, int]]:
+def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
-    smoothed density: (first bin, last bin) of each, where anything is."""
+    smoothed density: (first bin, last bin) of each, where anything is.
+    ``sd`` is the smoothing in bins - the size histogram's by default."""
     if not hist:
         return []
-    sd = EDGE_KERNEL / EDGE_BIN
+    sd = sd or EDGE_KERNEL / EDGE_BIN
     reach = int(4 * sd) + 1
     kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
     total = sum(kernel)
@@ -3396,6 +3417,8 @@ class Detector:
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
+    # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE
+    edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
@@ -3908,17 +3931,18 @@ class Detector:
         kind = self._kinds.setdefault((ph, watts > 0), [])
         if placed and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
-        cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, where)
+        angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
+        cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, where=where)
             self.next_edge_id += 1
             self.edges.append(cluster)
             kind.append(cluster)
-        cluster.absorb(since, size, pf, surge, kinds, lags, values)
+        cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
-                    kind: List["EdgeCluster"], where: str = ""):
+                    kind: List["EdgeCluster"], angle: Optional[float] = None, where: str = ""):
         """(the cluster whose segment of this phase and direction's size density
         the step falls in, or None for a new one; the keys a new one gets).
 
@@ -3937,12 +3961,13 @@ class Detector:
         b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
         h = self.edge_hist.setdefault(g, {})
         hk = self.edge_hist_keys.setdefault(g, {})
+        ha = self.edge_hist_angle.setdefault(g, {})
         at = self.edge_hist_at.get(g)
         if at is None:
             self.edge_hist_at[g] = since
         elif since - at > 3600.0:
             fade = math.exp(-(since - at) / EDGE_TAU_S)
-            for hist in [h] + list(hk.values()):
+            for hist in [h, ha] + list(hk.values()):
                 for k in list(hist):
                     hist[k] *= fade
                     if hist[k] < 1e-3:
@@ -3952,6 +3977,9 @@ class Detector:
         if key:
             row = hk.setdefault(key, {})
             row[b] = row.get(b, 0.0) + 1.0
+        if angle is not None:
+            ab = int(math.floor(angle / EDGE_ANGLE_BIN))
+            ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
         segs = self._segs.get(g)
         if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
             segs = self._segs[g] = valley_segments(h)
@@ -3963,11 +3991,28 @@ class Detector:
             return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain), where
         members = [c for c in kind if c.where == where
                    and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+        if angle is not None:
+            members = self._same_angle(ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
             mine = [c for c in members if c.same_signals(keyed)]
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
+                    members: List["EdgeCluster"]) -> List["EdgeCluster"]:
+        """The size segment's clusters whose reactive angle lies in the step's
+        own band of the segment's angle density - see EDGE_ANGLE."""
+        col: Dict[int, float] = {}
+        for k, w in ha.items():
+            sb, ab = k.split(":")
+            if seg[0] <= int(sb) <= seg[1]:
+                col[int(ab)] = col.get(int(ab), 0.0) + w
+        ab = int(math.floor(angle / EDGE_ANGLE_BIN))
+        band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
+                     if lo <= ab <= hi), (ab, ab))
+        return [c for c in members if c.angle is not None
+                and band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
     def _likely_meter(self, ph: str, up: bool, size: float, since: Optional[float] = None) -> str:
         """Where a step no meter placed most likely happened: the meter whose
@@ -4464,6 +4509,7 @@ class Detector:
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "edge_hist_keys": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
+                "edge_hist_angle": {g: {k: round(w, 3) for k, w in h.items() if w >= 0.01} for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -4490,6 +4536,7 @@ class Detector:
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
+        det.edge_hist_angle = {g: {k: float(w) for k, w in h.items()} for g, h in (d.get("edge_hist_angle") or {}).items()}
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}

@@ -2567,6 +2567,31 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
     assert ("abc", 2500.0) in sigs and ("a", 900.0) in sigs, sigs        # one three-phase signature, one single-phase
 
 
+def test_a_pump_and_a_heater_of_one_size_are_two_kinds_of_edge_by_their_reactive_angle():
+    """Hart's plane: 900 W at 0 var and 900 W at 630 var (35 deg) share a size
+    and nothing else - with EDGE_ANGLE on, as it will be once ten days of
+    Home's signed var can measure it."""
+    rnd = random.Random(3)
+    def run(on):
+        was = D.EDGE_ANGLE
+        D.EDGE_ANGLE = on
+        try:
+            det = D.Detector()
+            ids = {}
+            for k in range(200):
+                heater = k % 2 == 0
+                w = 900.0 + rnd.gauss(0, 8)
+                var = rnd.gauss(0, 10) if heater else 630.0 + rnd.gauss(0, 15)
+                c = det._classify_step("a", T0 + 60 * k, w, var, 0.0)
+                ids.setdefault(heater, set()).add(c.id)
+            return ids
+        finally:
+            D.EDGE_ANGLE = was
+    off, on = run(False), run(True)
+    assert off[True] & off[False], off                                 # by size alone they share a cluster
+    assert not (on[True] & on[False]), on                              # by angle they never do
+
+
 def test_a_start_that_shares_a_reading_with_a_metered_pulse_is_split_by_the_meter():
     """Kozolec 27.09 10:17: the charger's 3.4 kW start and the boiler's 1.9 kW
     pulse in one reading. The boiler's meter knows its share, so the house
