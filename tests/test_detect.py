@@ -2923,5 +2923,23 @@ def test_a_reading_followed_by_silence_held_on_any_meter():
     assert len(sizes) >= 4 and all(abs(x) > 750 for x in sizes[:4]), sizes
 
 
+
+def test_a_load_left_running_after_a_multi_close_is_not_a_new_start():
+    """Home 09-26 05:31: a fall closed a phase's last two open runs at once -
+    700 and 500 W - while the phase still read 700 W above its floor, a load
+    whose run had gone with another's. The level then snapped to the floor
+    under it and the 700 W came back as a new start. With nothing open, the
+    level is the floor only where the reading is."""
+    st = D.PhaseState(min_noise=10.0)
+    st.baseline, st.level, st.noise, st.interval = 200.0, 2100.0, 10.0, 2.0
+    st.open_edges = [D._Open(since=T0 - 600.0, watts=700.0, var=None, levels=[(T0 - 600.0, 700.0)]),
+                     D._Open(since=T0 - 300.0, watts=500.0, var=None, levels=[(T0 - 300.0, 500.0)])]
+    closed, ts = [], T0
+    for w in [2100.0, 2102.0] + [900.0, 902.0, 898.0, 901.0] + [903.0, 899.0, 900.0, 902.0] * 10:
+        closed += st.process(ts, w); ts += 2.0
+    assert len(closed) == 2, closed                                       # the multi-close
+    assert not st.open_edges, [o.watts for o in st.open_edges]            # and no phantom 700 W start
+    assert abs(st.level - 900.0) < 20.0, st.level
+
 if __name__ == "__main__":
     run_main(globals())
