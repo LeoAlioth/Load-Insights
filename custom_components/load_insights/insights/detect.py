@@ -185,8 +185,12 @@ SUSTAIN_AGREE_REL = 0.15
 # session LENGTHS were already right - 42.0 s against 42.0 s timed off the
 # grid meter itself - so this is about which readings count, not about length.
 # ^ STEP_AT_HALFWAY: always on, as the 2026-09-30 ablation found (AGENTS.md)
-# ^ INTERVAL_PERCENTILE: the median of the last 60 gaps, replaced by the
-# moving gaps' tenth percentile - see CADENCE_GAPS
+# ^ INTERVAL_PERCENTILE: the median of the last 60 gaps, gone (2026-10-02).
+# The recorder writes only changes, so a leg whose value holds between polls
+# has its median gap at two or three polls however fast its meter writes;
+# the old test of it passed only because its quiet leg skipped exactly a
+# third of an alternating value's readings. The interval is the moving gaps'
+# tenth percentile now - see CADENCE_GAPS.
 # The same relaxation, but only for a leg whose partner on another phase - a
 # balanced edge that started with it - is stopping at the same moment. See
 # Detector._corroborate. One reading is enough: the other leg is the evidence.
@@ -238,6 +242,15 @@ CORROBORATE_BALANCE = 0.7
 #   Hisa A 4.1 / 5.0 / 6.0       Mansarda C 4.1 / 4.1 / 4.9
 # The 10th is the lowest that skips the Victron's refresh (at most 9.3 % of
 # its post-move gaps in any 600; past 10 % it drifts to ~4 s, not 2.3).
+# One measure for everything that asks how often a meter writes - the
+# sustain, a silence, a span, the event and corroboration windows, the
+# crowding, the sample counts, the Fleet's tolerances and waits (2026-10-02;
+# a median of all gaps and a 5th percentile before ten moves were two more).
+# Taken from the first moving gap (the smallest until there are ten), so a
+# cold start needs nothing else, and the gaps are stored, so a restart goes
+# on where it stopped: a Shelly heartbeating once a minute keeps 18 of 20
+# cycles from cold and 20 of 20 restarted (14 and 16 with the moving gaps
+# neither used from the first nor stored).
 CADENCE_GAPS = 600
 MOVING_PERCENTILE = 0.10
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
@@ -1969,8 +1982,12 @@ class PhaseState:
             return []
         for o in self.open_edges:
             size = o.now or o.watts
-            # only what fell short SINCE it started can be its stop: a
-            # shortfall already standing when it began is not (EXPERIMENT T)
+            # only what fell short SINCE it started can be its stop. A
+            # shortfall already standing when it began - an older run followed
+            # past its own draw while alone - is not: the next run of about its
+            # size was closed seconds after it was SEEN to start, at its first
+            # settling drop (Home's hidrofor, 2026-10-02: ten runs lost, and
+            # Kozolec's pond EVSE a fifth of its charging)
             arose = short - max(0.0, o.short0)
             if abs(size - arose) <= self._tol(size, arose):
                 self.open_edges.remove(o)
