@@ -109,11 +109,15 @@
                 "description": "How load detection behaves. What it watches is no longer asked here: given the grid connection and the inverters, what the house draws is worked out rather than chosen.\n\n{found}",
                 "data": {
                     "meter_wait_s": "Wait for slower meters, at most",
-                    "single_device": "Meters that hold one device"
+                    "single_device": "Meters that hold one device",
+                    "horizon_skip": "Meters not to wait for",
+                    "ignore_meters": "Meters to leave out of detection"
                 },
                 "data_description": {
-                    "meter_wait_s": "Live detection judges each step at the grid connection once the meters below it have had time to report it - three of their reporting intervals - so a step is placed under the meter that took it, and never under one that did not change. A meter slower than this is not waited for. The named loads' live readings lag by the wait; 0 judges every step at once.",
-                    "single_device": "Tick a meter whose readings are one appliance - a plug with only the pump on it, a boiler's own meter. Its readings are that device, so nothing inside it is offered for naming, and it only takes loads on the phases that device uses. Leave circuit meters unticked - a 3EM on a sub-panel, a house circuit: loads are detected inside those. Until this is saved, the meters whose loads are nearly all one are ticked."
+                    "meter_wait_s": "Detection judges each step at the grid connection once the meters below it have had time to report it - as long as the slowest of them takes to show a step it shares with the grid, learned from those steps - so a step is placed under the meter that took it, never under one that did not change, and the same whether the history is read at once or a minute at a time. Never longer than this: a meter slower than it is judged with what it has said by then. The named loads' live readings lag by the wait, their energy does not; 0 judges every step at once.",
+                    "single_device": "Tick a meter whose readings are one appliance - a plug with only the pump on it, a boiler's own meter. Its readings are that device, so nothing inside it is offered for naming, and it only takes loads on the phases that device uses. Leave circuit meters unticked - a 3EM on a sub-panel, a house circuit: loads are detected inside those. Until this is saved, the meters whose loads are nearly all one are ticked.",
+                    "horizon_skip": "Detection judges each step at the grid connection once every meter below it has had time to report it. Tick a slow meter that is not worth waiting for - a UPS polled every minute, say: it is still read and still places loads, with what it has said by then, but how long it takes no longer holds every other step back.",
+                    "ignore_meters": "Tick a meter detection should not read at all, as if it were not on the Energy dashboard: its readings neither place loads nor split steps, and nothing waits for it."
                 }
             },
             "naming": {

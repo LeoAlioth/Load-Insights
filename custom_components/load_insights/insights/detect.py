@@ -442,11 +442,19 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
 ABOVE_CHANCE_ODDS = 100.0
-# How often, on the readings' clock, the accepted pairs are worked out again
-# from the runs learned so far: the whole table each time, so not at every
-# close. On a fixed grid of the clock, so a pass's length cannot decide which
-# runs it has learned from (2026-10-02; it was once a pass).
+# How often, on the readings' clock, the fleet works out again how far behind
+# its meters the grid is read, from the lags learned so far (Fleet._horizon):
+# on a fixed grid of the clock, so a pass's length cannot decide it.
 MODEL_REFRESH_S = 3600.0
+# Each meter's lag against the grid, learned from the steps the two share
+# (Fleet._learn_lags, Anze 2026-10-02: "how long we need to wait before we
+# have complete data from all sensors"): looked for this far either side of a
+# grid step, kept over the last LAG_SAMPLES, believed from LAG_MIN_SAMPLES, at
+# this percentile - the wait that rarely comes up short.
+LAG_REACH_S = 300.0
+LAG_SAMPLES = 200
+LAG_MIN_SAMPLES = 20
+LAG_PERCENTILE = 0.95
 # A run is filed by its DEVICE - the component of edge clusters its start
 # belongs to - into the signature most of the device's runs went to, or a new
 # one for a device not seen before; signatures whose runs are one device's are
@@ -606,16 +614,19 @@ SUB_SAMPLE_TAIL_S = 2 * 3600.0
 # after the question has been thrown away (2026-09-19).
 MATCH_PATIENCE_S = 20 * 60.0
 # A live pass reads the recorder up to now, and a meter slower than the grid
-# reports the same change later - the workshop boiler's, every 10 s, up to
-# 10 s later and its own step confirmed 30 s after that. Judged at once, a
-# grid step near a pass's end could not yet be told from a meter that held
-# its value (see Fleet._meter_held), nor placed under the meter that took it.
-# So the grid is judged only up to now minus SUSTAIN_CADENCES of the slowest
-# meter's cadence - every meter has had its say by then - and its newer
-# readings wait for the next pass. A meter slower than this cap is not waited
-# for (the 60 s heartbeat plugs); the named loads' live sensors lag by the
-# wait. Set on the detection settings page; 0 judges every step at once.
-METER_WAIT_CAP_S = 45.0
+# reports the same change later - the hidrofor's plug, every 10 s, up to a
+# cadence late and its own step confirmed three after that. Judged at once, a
+# grid step could not yet be told from a meter that held its value (see
+# Fleet._meter_held), nor placed under the meter that took it. So the grid is
+# read on the meters' clock, (1 + SUSTAIN_CADENCES) of the slowest meter's
+# cadence behind them (Fleet._horizon), and never more than this cap: a meter
+# slower than it is judged with what it has said by then. Until 2026-10-02
+# the wait was SUSTAIN_CADENCES of the slowest meter as each pass ended,
+# capped at 45 s, so it moved with the pass. Anze (2026-10-02) accepts up to
+# five minutes: the named loads' live readings lag by the horizon, their
+# energy does not. Set on the detection settings page; 0 judges every step at
+# once.
+METER_WAIT_CAP_S = 300.0
 # How many single-phase sessions a three-phase meter must have shared with the
 # house before its channels are mapped onto the house's phases. Until then its
 # own labels stand. Home's attic 3EM calls the house's C "b" and its A "c", so
@@ -1233,7 +1244,8 @@ def _sum_series(a: list, b: list) -> list:
     return out
 
 
-def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float) -> Optional[float]:
+def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float,
+                   hi: Optional[int] = None) -> Optional[float]:
     """Watt-hours a reading accounts for between two instants, sample and hold.
 
     This is what a coarse meter CAN answer. A Shelly reporting once a minute
@@ -1243,9 +1255,11 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     where power's does not (Anze, 2026-09-19, on a Zigbee meter that cannot
     be made faster at all).
 
-    None when the window is not covered by the reading.
+    None when the window is not covered by the reading. ``hi``: read only
+    rows[:hi] - what was written by then.
     """
-    if not rows or end <= start:
+    hi = len(rows) if hi is None else hi
+    if not hi or end <= start:
         return None
     # Both ends, not just the near one. Sample-and-hold carries the last
     # reading forward for as long as you let it, so a meter that fell silent
@@ -1253,7 +1267,7 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     # "it drew exactly what it was drawing before", is indistinguishable
     # from a device that really did stay put. The docstring promised this
     # check; the code only ever made half of it (2026-09-19).
-    if rows[0][0] > start or rows[-1][0] < end:
+    if rows[0][0] > start or rows[hi - 1][0] < end:
         return None
     total = 0.0
     # Seek, don't walk. _as_of scans forward from the index it is handed, and
@@ -1261,16 +1275,16 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     # session asks every device meter twice, every pass, and each of those
     # questions would otherwise re-read the whole retained tail from the
     # front (2026-09-19).
-    i = bisect.bisect_right(rows, (start, float("inf"))) - 1
+    i = bisect.bisect_right(rows, (start, float("inf")), 0, hi) - 1
     if i < 0:
         return None
     at = start
     while at < end:
-        nxt = rows[i + 1][0] if i + 1 < len(rows) else end
+        nxt = rows[i + 1][0] if i + 1 < hi else end
         until = min(nxt, end)
         total += rows[i][1] * (until - at)
         at = until
-        if i + 1 < len(rows):
+        if i + 1 < hi:
             i += 1
         elif at < end:
             break
@@ -1604,6 +1618,11 @@ class PhaseState:
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
     raw_last: Optional[Tuple[float, float]] = None   # the last reading as the meter wrote it - see Detector._corroborate
+    # a meter below the grid: its report delay against it, learned by the
+    # Fleet (Fleet._learn_lags), 0 until it is; and whether this reading is
+    # the reference itself - see latency
+    lag: float = 0.0
+    reference: bool = field(default=True, repr=False, compare=False)
     _stood: Optional[float] = field(default=None, repr=False, compare=False)   # the pending reading last stood in for
     # this phase's own reading interval - its cadence, see CADENCE_GAPS - the
     # meter's rate, not a setting, so turning a poll up from 5 s to 1 s is
@@ -1770,7 +1789,7 @@ class PhaseState:
         # but at Home's new 2.4 s the 5 s floor bound instead and meant three
         # OR four readings on timing jitter, and at 1 s would mean six. The
         # absolute figure is only a fallback while the interval is unknown.
-        sustain = self.sustain()
+        sustain = self.latency()
         need = SUSTAIN_SAMPLES
         if self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
@@ -1819,7 +1838,7 @@ class PhaseState:
         self.last_step_ts = since
         # its span: when the change can have happened - from the last moment
         # the old level is known to have held, to the first reading it settled on
-        self.declared.append((since, step, step_q, self.span_start(first_off), held[0][0] if held else since))
+        self.declared.append((since, step, step_q, self.span_start(first_off), held[0][0] if held else since, ts))
         self.declared_t.append(since)
         if len(self.declared) > 4000:
             del self.declared[:1000]
@@ -1834,21 +1853,38 @@ class PhaseState:
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
         return closed
 
-    def sustain(self) -> float:
-        """How long a new level must hold to be confirmed - see SUSTAIN_CADENCES."""
-        return SUSTAIN_CADENCES * self.interval if self.interval else SUSTAIN_SECONDS
+    def latency(self) -> float:
+        """How long after a moment this reading's data about it is complete -
+        how long a new level must go uncontradicted to be confirmed, a
+        silence to mean the value held, and how far before its first reading
+        a change can have happened (Anze, 2026-10-02: latency replaces the
+        cadence for every meter that reports to the grid). A meter below the
+        grid: its report delay against the grid as learned from the steps it
+        shares with it (``lag``, Fleet._learn_lags), never under its own
+        shortest repeat interval, which stands in until enough are shared.
+        The grid itself is the reference and has no delay to learn: its data
+        through a moment is complete only once it has written past it, and a
+        level that one more reading confirms lets a half-caught switch found
+        a load - so it keeps SUSTAIN_CADENCES of its repeat interval (see
+        that note: at two, Home's grid read its ordinary gaps as silence).
+        SUSTAIN_SECONDS until a repeat interval is measured."""
+        if not self.interval:
+            return SUSTAIN_SECONDS
+        if self.reference:
+            return SUSTAIN_CADENCES * self.interval
+        return max(self.interval, self.lag)
 
     def silence_due(self) -> Optional[float]:
         """When the change pending here is confirmed by the meter's silence:
-        SUSTAIN_CADENCES of its cadence after the last reading of it with no
-        reading since - the recorder writes only changes, so the value held.
+        its latency after the last reading of it with no reading since - the
+        recorder writes only changes, so the value held.
         On the readings' clock (Detector._advance), whether the next reading
         or a pass's end comes first: at a pass's end it was confirmed at that
         moment, and in one call at the next reading, half a second before it,
         and only if that one moved away - so the slicing decided it."""
         if not self.pending or self.level is None or not self.interval or self.pending[-1][0] == self._stood:
             return None
-        return self.pending[-1][0] + SUSTAIN_CADENCES * self.interval
+        return self.pending[-1][0] + self.latency()
 
     def stand_in(self, at: float) -> List[Session]:
         """The silence_due moment: the change's last reading stands in for the
@@ -1861,18 +1897,17 @@ class PhaseState:
     def span_start(self, first_off: float) -> float:
         """From when a change seen first at ``first_off`` can have happened:
         its last reading at the old level - not one of the change's own update
-        (see SAME_UPDATE_S) - but no earlier than SUSTAIN_CADENCES of its
-        cadence before: a longer silence is the old value held, unwritten.
+        (see SAME_UPDATE_S) - but no earlier than its latency before: a longer
+        silence is the old value held, unwritten.
         Taken from the last steady reading alone, a meter whose value had held
         for a minute had a span reaching a minute back, and chained in other
         loads' steps (the hidrofor's plug; Anze, 2026-10-01)."""
         held_until = self.steady_ts
         if held_until is not None and first_off - held_until <= SAME_UPDATE_S:
             held_until = self.steady_before         # the change's own update
-        cad = self.interval
-        if not cad:
+        if not self.interval:
             return first_off if held_until is None else held_until
-        earliest = first_off - SUSTAIN_CADENCES * cad
+        earliest = first_off - self.latency()
         return earliest if held_until is None else max(held_until, earliest)
 
     def _step_quality(self, step: float, held: list, since: float, was: float) -> float:
@@ -2303,7 +2338,7 @@ class PhaseState:
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
-                "raw_last": list(self.raw_last) if self.raw_last else None,
+                "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag,
                 "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
 
     @classmethod
@@ -2318,7 +2353,7 @@ class PhaseState:
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
-                   raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None,
+                   raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),
                    floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
 
 
@@ -2348,6 +2383,10 @@ class Signature:
     # back from a born-in twin that turned out to be chance
     born_in: Optional[str] = None
     takes_in: List[str] = field(default_factory=list)
+    # signatures its first run was kept out of - a switch that was off, a
+    # one-device meter that held through its start - which it is never
+    # merged into for sharing their device (Detector._merge_devices)
+    apart: List[int] = field(default_factory=list)
     # the value's episode count when it was born, how many it has run in (the
     # last one's start), and whether it has been judged to belong - see
     # INPUT_MIN_EPISODES
@@ -2489,6 +2528,7 @@ class Signature:
             taken = [b for b in (self.born_in, other.born_in) if b]
             self.takes_in = sorted(set(self.takes_in) | set(other.takes_in) | set(taken))
             self.born_in = None
+        self.apart = sorted(set(self.apart) | set(other.apart))
         for name, row in other.inputs.items():
             mine = self.inputs.setdefault(name, {"n": {}, "e": {}, "t": dict(row.get("t") or {})})
             for key in ("n", "e"):
@@ -2954,7 +2994,7 @@ class Signature:
                 "interval_mad": _trim(self.interval_mad, 1),
                 "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()},
                 "inputs": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
-                "born_in": self.born_in, "takes_in": list(self.takes_in),
+                "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
                 "hourly": {str(h): round(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05},
@@ -2977,7 +3017,7 @@ class Signature:
                    drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()},
                    inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or d.get("stages") or {}).items()},
                    born_in=d.get("born_in"),
-                   takes_in=list(d.get("takes_in") or []), born_ep=d.get("born_ep", 0.0),
+                   takes_in=list(d.get("takes_in") or []), apart=list(d.get("apart") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
                    born_judged=d.get("born_judged", d.get("stage_judged", False)),
                    hourly={int(h): float(wh) for h, wh in (d.get("hourly") or {}).items()},
@@ -3406,6 +3446,9 @@ class Detector:
     _clock: Optional[float] = field(default=None, repr=False, compare=False)
     _held_due: Optional[float] = field(default=None, repr=False, compare=False)
     _q: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
+    # how far the inputs' changes are known on the fleet's clock (Fleet.process):
+    # one a pass brought from after it is not known yet. None: all of them
+    horizon: Optional[float] = field(default=None, repr=False, compare=False)
     _pv: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
@@ -3414,8 +3457,7 @@ class Detector:
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
-    _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
-    _partners_at: Optional[int] = field(default=None, repr=False, compare=False)   # see MODEL_REFRESH_S
+    _pidx: Optional[dict] = field(default=None, repr=False, compare=False)   # see _pair_index
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
@@ -3486,8 +3528,6 @@ class Detector:
         moment phase by phase, not by where each fell in its pass's rows."""
         self._released, self._file_now = [], file
         self._q, self._pv = q or {}, pv or {}
-        if not file:
-            self._merge_devices()    # the fleet's filings since the last pass - see Fleet._file_waiting
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
         stream = []
@@ -3765,7 +3805,7 @@ class Detector:
         if best is None:
             best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
                              pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count),
-                             born_in=context)
+                             born_in=context, apart=sorted({self._current(x) for x in avoid}))
             if context:
                 setting, _, value = context.partition("=")
                 best.born_ep = (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0
@@ -3886,7 +3926,7 @@ class Detector:
         a companion's step takes to be DECLARED after it began - its phase's
         sustain - or a leg whose reading falls at the window's edge is not
         pending yet."""
-        return self.event_window() + max([SUSTAIN_SECONDS] + [st.sustain() for st in self.phases.values()])
+        return self.event_window() + max([SUSTAIN_SECONDS] + [st.latency() for st in self.phases.values()])
 
     def _form_first(self) -> None:
         """The oldest waiting rise, its event_wait past (see _advance), becomes
@@ -3985,7 +4025,8 @@ class Detector:
         for name, evs in events.items():
             ts = times[name]
             i = bisect.bisect_left(ts, since - EDGE_LAG_REACH_S)
-            near = [j for j in range(i, min(i + 8, len(ts))) if abs(ts[j] - since) <= EDGE_LAG_REACH_S]
+            near = [j for j in range(i, min(i + 8, len(ts))) if abs(ts[j] - since) <= EDGE_LAG_REACH_S
+                    and (self.horizon is None or ts[j] <= self.horizon)]
             kinds[name] = ""
             if not near:
                 continue
@@ -4183,7 +4224,9 @@ class Detector:
         """Signatures whose runs came from one device are one - see
         DEVICE_FILING. A named pair of them with different names stays apart,
         as do two filed in different values of a setting or on different
-        phases. Once a pass."""
+        phases, and one born of a run kept out of the other (Signature.apart).
+        After every filing: once a pass, a minute's pass merged what a
+        six-hour one had not yet."""
         votes: Dict[int, Dict[int, float]] = {}
         for k, home in self.start_home.items():
             d = int(k)
@@ -4206,6 +4249,9 @@ class Detector:
                     continue
                 if other.name and keep.name and other.name != keep.name:
                     continue
+                if (keep.id in {self._current(x) for x in other.apart}
+                        or other.id in {self._current(x) for x in keep.apart}):
+                    continue                  # one's run was kept out of the other - see Signature.apart
                 if other.born_in != keep.born_in:
                     # apart while they run in the value more than chance puts
                     # them there together - a fridge running through every
@@ -4240,7 +4286,9 @@ class Detector:
     def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
         if start is None or stop is None or start_w <= 0 or stop_w <= 0:
             return
-        acc = self.pairs.setdefault(f"{start}>{stop}", [0.0] * 6)
+        idx = self._pair_index()                 # before this run counts in it
+        key = f"{start}>{stop}"
+        acc = self.pairs.setdefault(key, [0.0] * 6)
         if len(acc) < 6:
             acc.append(0.0)
         lr, ld = math.log(stop_w / start_w), math.log(max(secs, 1.0))
@@ -4250,6 +4298,43 @@ class Detector:
         acc[2] += lr * lr
         acc[3] += ld
         acc[4] += ld * ld
+        c = self.cluster(start)
+        self._count_pair(idx, key, start, stop, 1.0, idx["phase"].get(key) or (c.phase if c else "?"))
+
+    def _pair_index(self) -> dict:
+        """The pairs' running totals - closes per start, per stop and per
+        phase - and those with PAIR_MIN_RUNS, by start and by stop: what
+        partners asks, kept as each pair is learned (see PAIR_MIN_RUNS). Built
+        from ``pairs`` on first use, so a restored library has it too."""
+        if self._pidx is None:
+            idx = self._pidx = {"start": {}, "stop": {}, "closes": {}, "phase": {}, "by_stop": {}, "by_start": {}}
+            phase_of = {c.id: c.phase for c in self.edges}
+            for key, acc in self.pairs.items():
+                a, b = (int(x) for x in key.split(">"))
+                self._count_pair(idx, key, a, b, acc[0], phase_of.get(a, "?"))
+        return self._pidx
+
+    @staticmethod
+    def _count_pair(idx: dict, key: str, a: int, b: int, n: float, phase: str) -> None:
+        idx["phase"][key] = phase
+        idx["start"][a] = idx["start"].get(a, 0.0) + n
+        idx["stop"][b] = idx["stop"].get(b, 0.0) + n
+        idx["closes"][phase] = idx["closes"].get(phase, 0.0) + n
+        idx["by_stop"].setdefault(b, {})[a] = key
+        idx["by_start"].setdefault(a, {})[b] = key
+
+    def _pair_model(self, idx: dict, a: int, b: int) -> Optional[tuple]:
+        """(stop/start ratio, its spread, mean log seconds, its spread) of the
+        pair a > b, or None while it is not accepted - see PAIR_MIN_RUNS."""
+        key = f"{a}>{b}"
+        acc = self.pairs.get(key)
+        n = acc[0] if acc else 0.0
+        if n < PAIR_MIN_RUNS or not above_chance(n, idx["start"][a] * idx["stop"][b] / idx["closes"][idx["phase"][key]]):
+            return None
+        m_lr, m_ld = acc[1] / n, acc[3] / n
+        sd_lr = math.sqrt(max(0.0, acc[2] / n - m_lr * m_lr))
+        sd_ld = math.sqrt(max(0.0, acc[4] / n - m_ld * m_ld))
+        return (math.exp(m_lr), math.exp(m_lr) * sd_lr, m_ld, sd_ld)
 
     def window(self, name: str) -> Optional[Tuple[float, float]]:
         """This input's learned lag window (see lag_window), kept until its histogram changes."""
@@ -4284,6 +4369,8 @@ class Detector:
             ts, evs = times[name], events[name]
             i = bisect.bisect_right(ts, since - lag + half)       # changes after the one that started it
             for j in range(i, len(ts)):
+                if self.horizon is not None and ts[j] > self.horizon:
+                    break                                         # not known yet
                 if evs[j][1] != kind:                             # it changed back
                     due = ts[j] - lag
                     return due if now > due + half else None
@@ -4292,46 +4379,25 @@ class Detector:
     def usual_length(self, start: int) -> Optional[float]:
         """Seconds a run that starts with this cluster usually lasts, over its
         accepted pairs - None when it has none."""
-        self.partners(-1)
-        lens = [(model[2], self.pairs.get(f"{start}>{stop}", [0.0])[0])
-                for stop, starts in self._partners.items() for a, model in starts.items() if a == start]
+        idx = self._pair_index()
+        lens = [(model[2], self.pairs[key][0]) for b, key in (idx["by_start"].get(start) or {}).items()
+                for model in [self._pair_model(idx, start, b)] if model is not None]
         w = sum(n for _, n in lens)
         return math.exp(sum(ld * n for ld, n in lens) / w) if w else None
 
     def partners(self, stop: int) -> Dict[int, tuple]:
         """rise cluster -> (stop/start ratio, its spread, mean log seconds, its
         spread) for the accepted pairs this fall cluster ends - see
-        PAIR_MIN_RUNS. Worked out again every MODEL_REFRESH_S of the readings'
-        clock - once a pass, a backfill's slice learned from six hours, a
-        live pass from one minute and one call from nothing at all."""
-        at = math.floor((self._clock or 0.0) / MODEL_REFRESH_S)
-        if self._partners is None or self._partners_at != at:
-            self._partners_at = at
-            by_start: Dict[int, float] = {}
-            by_stop: Dict[int, float] = {}
-            parsed = []
-            for key, acc in self.pairs.items():
-                a, b = (int(x) for x in key.split(">"))
-                parsed.append((a, b, acc))
-                by_start[a] = by_start.get(a, 0.0) + acc[0]
-                by_stop[b] = by_stop.get(b, 0.0) + acc[0]
-            out: Dict[int, Dict[int, tuple]] = {}
-            phase_of = {c.id: c.phase for c in self.edges}
-            closes: Dict[str, float] = {}
-            for a, _, acc in parsed:
-                closes[phase_of.get(a, "?")] = closes.get(phase_of.get(a, "?"), 0.0) + acc[0]
-            for a, b, acc in parsed:
-                n = acc[0]
-                if n < PAIR_MIN_RUNS:
-                    continue
-                if not above_chance(n, by_start[a] * by_stop[b] / closes[phase_of.get(a, "?")]):
-                    continue
-                m_lr, m_ld = acc[1] / n, acc[3] / n
-                sd_lr = math.sqrt(max(0.0, acc[2] / n - m_lr * m_lr))
-                sd_ld = math.sqrt(max(0.0, acc[4] / n - m_ld * m_ld))
-                out.setdefault(b, {})[a] = (math.exp(m_lr), math.exp(m_lr) * sd_lr, m_ld, sd_ld)
-            self._partners = out
-        return self._partners.get(stop, {})
+        PAIR_MIN_RUNS. As learned so far: worked out once a pass, a backfill's
+        slice asked models six hours old, a live pass one minute's and one
+        call none at all."""
+        idx = self._pair_index()
+        out = {}
+        for a in (idx["by_stop"].get(stop) or {}):
+            model = self._pair_model(idx, a, stop)
+            if model is not None:
+                out[a] = model
+        return out
 
     def _link_successors(self, now: float) -> None:
         """Point a named signature that has gone quiet at what may have
@@ -4658,7 +4724,8 @@ class Fleet:
     with every session."""
     main: Detector = field(default_factory=Detector)
     subs: Dict[str, Detector] = field(default_factory=dict)
-    pending_main: List[Session] = field(default_factory=list)    # main sessions awaiting a downstream partner
+    # filed house sessions no meter has placed yet: (when the last try is due, session)
+    pending_main: List[tuple] = field(default_factory=list)
     pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
     # Each device's raw samples, kept long enough to answer "how much energy
     # did you record while this was running". A meter too slow to produce a
@@ -4670,9 +4737,28 @@ class Fleet:
     meter_gain: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict)
-    _pass_end: float = field(default=0.0, repr=False, compare=False)   # how far this pass's readings reach - see _meter_held
+    # the readings' clock all meters are read on: the meters' own, the grid
+    # wait_cap_s behind them (see process); how far every meter's readings reach
+    _now: float = field(default=0.0, repr=False, compare=False)
+    # sub-meter sessions waiting to vote on their channel's phase: (when, meter, past the patience, session) - see _vote_blocked
+    _unvoted: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    # house sessions handed over lately, (when, session): what a meter's session votes against
+    _recent_main: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False)   # see _advance
+    _names: List[str] = field(default_factory=list, repr=False, compare=False)
+    _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
+    # how far behind its meters the grid is read now, and the MODEL_REFRESH_S
+    # step of the clock it was worked out at - see _horizon
+    _wait: float = 0.0
+    _wait_at: Optional[int] = None
+    # meter -> [[report lag, declaring lag], ...] against the grid, the last
+    # LAG_SAMPLES of them, and the clock up to which grid steps were asked - see _learn_lags
+    meter_lag: Dict[str, List[List[float]]] = field(default_factory=dict)
+    _lag_from: Optional[float] = None
+    # meters the runner says are not to set the horizon (the settings page) - see _horizon
+    horizon_skip: set = field(default_factory=set, repr=False, compare=False)
     # the grid's readings, reactive and PV newer than the wait, for the next pass
     _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # switch -> {on moment: off moment, or None while on}, as the runner last
@@ -4683,16 +4769,11 @@ class Fleet:
     # works it out each pass - the user's answer, else a parent holds several,
     # else guess_one_device; a meter missing here is guessed
     single: Dict[str, bool] = field(default_factory=dict)
-    # What each device meter can RESOLVE, measured from the rows above. The
-    # energy answer is an integral of those rows, so their quantisation is
-    # its error bar - and Home has a workshop boiler publishing in 46 W steps
-    # about every seven minutes (Anze, 2026-09-22).
-    sub_quantum: Dict[str, float] = field(default_factory=dict)
     # meter -> its own phase label -> house phase -> sessions that matched,
     # for phase_mapping
     phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
-    # house sessions not yet filed, waiting for a sub-meter partner
-    unfiled: List[Session] = field(default_factory=list)
+    # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
+    unfiled: List[tuple] = field(default_factory=list)
     # meter -> its signature id -> the house signature its sessions joined
     identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
@@ -4705,115 +4786,344 @@ class Fleet:
                 switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
                 drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
                 inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None) -> None:
-        latest = now_ts or 0.0
+        """A pass over every meter's new readings, on ONE clock (2026-10-02).
+
+        The meters below are read as they come and the grid wait_cap_s behind
+        them, so when a grid step asks what the meters did about it (the
+        hooks: _meter_steps, _step_meter, _meter_held, _meter_stop) they have
+        been read exactly that far past it - and a house session is filed,
+        a meter's session votes on its phase, at their own moments on that
+        clock (_ready_at, _vote_at). Before, the meters were read a whole
+        pass ahead of the grid and the fleet filed once a pass: in one call
+        the grid's steps saw ten days of the meters' future and no phase map
+        at all, and every house session was filed at the end."""
         if agnostic:
             self.agnostic.update(agnostic)
-        # kept from before the oldest reading this pass brings: a backfill
-        # slice is six hours long, and pruning off its END lost the switch
-        # for its first two (2026-09-28: 462 of 1232 floor-mat runs)
-        oldest = min((rows[0][0] for rows in (main_samples or {}).values() if rows), default=now_ts)
+        # kept from before the oldest moment still to be asked about - a run
+        # still open, a session still waiting: a backfill slice is six hours
+        # long, and pruning off its END lost the switch for its first two
+        # (2026-09-28: 462 of 1232 floor-mat runs); counted from the pass's
+        # oldest reading, a run older than the memory lost its own
+        keep = self._oldest_asked() - SWITCH_MEMORY_S
         for name, spans in (switches or {}).items():
             known = self.switch_on.setdefault(SWITCH_PREFIX + name, {})
             for on, off in spans:
                 if off is not None or on not in known:
                     known[on] = off
-            keep = min(oldest or now_ts or 0.0, now_ts or max(known, default=0.0)) - SWITCH_MEMORY_S
             for on in [t for t, off in known.items() if off is not None and off < keep]:
                 del known[on]                  # a span still on is never forgotten
         for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.inputs, inputs, str)):
             for name, rows in (fed or {}).items():
                 held = dict(store.get(name) or [])
                 held.update((float(t), cast(v)) for t, v in rows)
-                keep = min(oldest or now_ts or 0.0, now_ts or max(held, default=0.0)) - SWITCH_MEMORY_S
                 last = max((t for t in held if t < keep), default=None)   # still in force at the cut
                 store[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
-        for name in (inputs or {}):
-            self._count_input_time(name, now_ts)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
+        sub_samples = sub_samples or {}
+        latest = max([now_ts or 0.0] + [r[-1][0] for byp in [main_samples or {}] + list(sub_samples.values())
+                                         for r in byp.values() if r])
+        end = now_ts if now_ts is not None else latest
         # only the main meter needs the array: a downstream meter sees the
         # house side of it and never the sun
-        latest_seen = now_ts or 0.0
-        for name, rows_by_phase in (sub_samples or {}).items():
-            merged: List[Tuple[float, float]] = []
-            for series in rows_by_phase.values():
-                merged = _sum_series(merged, list(series))
-            if not merged:
-                continue
-            kept = self.sub_rows.get(name, []) + merged
-            kept.sort()
-            latest_seen = max(latest_seen, kept[-1][0])
-            # Everything this pass brought, plus a tail before it. Trimming to
-            # a fixed two hours looked thrifty and silently gutted the
-            # backfill, whose slices are six hours long: the sessions being
-            # placed were mostly older than the readings kept to place them
-            # with (2026-09-19).
-            oldest = min((r[0] for r in merged), default=latest_seen)
-            cut = min(oldest, latest_seen) - SUB_SAMPLE_TAIL_S
-            self.sub_rows[name] = [r for r in kept if r[0] >= cut]
-            q = measure_quantum([v for _, v in self.sub_rows[name]])
-            if q:
-                self.sub_quantum[name] = q
+        for name, rows_by_phase in sub_samples.items():
+            self._keep_rows(name, rows_by_phase, end)
         events, numbers = self._signal_events()
         self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
-        # the meters below first: their declared steps are what the grid's are
-        # compared with (see METER_CAL_SLACK)
-        closed_sub = {}
-        for name, samples in sub_samples.items():
-            det = self.subs.setdefault(name, Detector())
-            det.tz_offset_s = self.main.tz_offset_s
-            closed_sub[name] = det.process(samples, (sub_q or {}).get(name), now_ts)
         self.main.meter_steps = self._meter_steps
         self.main.step_meter = self._step_meter
         self.main.meter_held = self._meter_held
         self.main.meter_stop = self._meter_stop
-        self._pass_end = max(latest, latest_seen)
-        main_now = now_ts
-        if self.wait_cap_s or self._carry:
-            end = now_ts or max((r[-1][0] for r in (main_samples or {}).values() if r), default=0.0)
-            main_samples, main_q, pv, main_now = self._hold_back(main_samples, main_q, pv, end)
-        closed_main = self.main.process(main_samples, main_q, main_now, pv, main_q_quantum, file=False)
-        self._file_waiting(closed_main, closed_sub, latest)
-        self._locate(latest)
+        # the grid's readings, the last pass's held ones in front: each is
+        # read once the clock is the horizon past it (_run); the rest wait
+        main_samples, main_q, pv = self._hold_back(main_samples, main_q, pv, math.inf)
+        grid = self.main.begin(main_samples, main_q, pv, main_q_quantum, file=False)
+        meters = []
+        for name in sorted(set(self.subs) | set(sub_samples)):
+            det = self.subs.setdefault(name, Detector())
+            det.tz_offset_s = self.main.tz_offset_s
+            for st in det.phases.values():
+                st.reference = False                  # a meter below the grid: its latency, see PhaseState.latency
+            meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name))]
+        meters.sort(key=lambda r: r[:3])
+        self._dues, self._names = {}, [""] + sorted(self.subs)
+        if self._wait_at is None:
+            first = min([end] + [r[0] for r in grid[:1] + meters[:1]])
+            self._wait_at = math.floor(first / MODEL_REFRESH_S)
+        done = self._run(grid, meters, end)
+        left: Dict[str, list] = {}
+        for ts, ph, w in grid[done:]:
+            left.setdefault(ph, []).append((ts, w))
+        self._hold_back(left, main_q, pv, -math.inf)          # kept, with their reactive and PV values
+        self._now = max(self._now, end)
+        self.main.finish(main_samples, self.main._clock or end, self._oldest_asked())
+        for name, det in self.subs.items():
+            det.finish(sub_samples.get(name) or {}, end)
 
-    def _file_waiting(self, closed_main: List[Session], closed_sub: Dict[str, List[Session]],
-                      latest: float) -> None:
-        """File the house's sessions, each with its sub-meter partner's say
-        in which signature it joins - see SUB_OVERRIDE. What is filed without
-        a partner goes on to _locate, which places it as it always has."""
-        self.unfiled += closed_main
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
-        self._vote_phases(closed_sub, main_iv, self.unfiled + self.pending_main)
-        for name, sessions in closed_sub.items():
-            self.pending_sub.setdefault(name, []).extend(sessions)
-        pairs = sorted(self._session_pairs(self.unfiled, main_iv), key=lambda x: (x[0], x[1]))
-        taken_m, taken_s = set(), set()
-        for _, mi, name, si in pairs:
-            if mi in taken_m or (name, si) in taken_s:
-                continue
-            taken_m.add(mi)
-            taken_s.add((name, si))
-            self._file_as(self.unfiled[mi], name, self.pending_sub[name][si])
-        for name in self.pending_sub:
-            self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
-                                      if (name, i) not in taken_s]
-        waiting, ready = [], []
-        for i, m in enumerate(self.unfiled):
-            if i in taken_m:
-                continue
-            (ready if self._heard_from_all(m, main_iv, latest) else waiting).append(m)
-        self.unfiled = waiting
-        by_energy = {}
-        for cost, mi, name, _ in sorted(self._energy_pairs(ready), key=lambda x: (x[0], x[1])):
-            if mi not in by_energy and self._one_device(name):
-                by_energy[mi] = name
-        for mi, m in enumerate(ready):
-            name = by_energy.get(mi)
-            if name is None:
-                self._place(m, None, None)
-                self.pending_main.append(m)          # placed later, as ever
+    def _run(self, grid: List[tuple], meters: List[tuple], end: float) -> int:
+        """Every reading and everything due, in ONE order on one clock, up to
+        how far this pass's readings reach (``end``): a meter's reading at its
+        own time, the grid's once the clock is the horizon past it (_wait, see
+        _horizon), and what falls due between them - each meter's own
+        (Detector.next_due; the grid's the horizon later), a house session
+        done waiting for the meters (_decide), one more try at placing a
+        filed one (_locate), a meter's session's vote (_vote_phases), the
+        horizon worked out again. At one moment the readings first - the
+        grid's, then the meters' - and then what is due, in that order.
+        Returns how many of the grid's readings were read; the rest wait for
+        the next pass."""
+        im = isub = 0
+        while True:
+            best = (max(grid[im][0] + self._wait, self._now), 0, 0) if im < len(grid) else None
+            if isub < len(meters) and (best is None or (meters[isub][0], 0, 1) < best):
+                best = (meters[isub][0], 0, 1)
+            for name in self._names:
+                if name not in self._dues:
+                    self._dues[name] = (self.subs[name] if name else self.main).next_due()
+                d = self._dues[name]
+                if d is not None:
+                    c = (d[0] + self._wait, 1, 0) if not name else (d[0], 1, 1, name)
+                    if best is None or c < best:
+                        best = c
+            for c in ((self.unfiled[0][0], 1, 2) if self.unfiled else None,
+                      (self.pending_main[0][0], 1, 3) if self.pending_main else None,
+                      (self._unvoted[0][0], 1, 4) if self._unvoted else None,
+                      ((self._wait_at + 1) * MODEL_REFRESH_S, 1, 5)):
+                if c is not None and (best is None or c < best):
+                    best = c
+            at, cls, rank = best[:3]
+            if at > end or (cls == 1 and at >= end):
+                return im
+            self._now = self.main.horizon = max(self._now, at)
+            if cls == 0 and rank == 0:
+                ts, ph, w = grid[im]
+                im += 1
+                self.main.step(ts, ph, w)
+                self._dues.pop("", None)
+            elif cls == 0:
+                ts, name, ph, w = meters[isub]
+                isub += 1
+                self.subs[name].step(ts, ph, w)
+                self._dues.pop(name, None)
+            elif rank <= 1:
+                name = best[3] if rank else ""
+                det = self.subs[name] if name else self.main
+                det.fire(self._dues.pop(name))
+                got, det._released = det._released, []
+                for s in got:
+                    self._on_main(s) if not name else self._on_sub(name, s)
+            elif rank == 2:
+                self._decide(self.unfiled.pop(0)[1])
+            elif rank == 3:
+                self._locate(self.pending_main.pop(0)[1], final=True)
+            elif rank == 4:
+                _, name, final, s = self._unvoted.pop(0)
+                if not final and self._vote_blocked(name, s):
+                    # the grid may still hand over a session started with it:
+                    # it votes when the grid's last such run is out (_on_main),
+                    # or once MATCH_PATIENCE_S is over, with what is out by then
+                    self._insort(self._unvoted, (s.end + MATCH_PATIENCE_S, name, True, s))
+                else:
+                    self._vote(name, s)
             else:
-                self._place(m, name, self._meter_home(name))
+                self._learn_lags(at)
+                self._wait, self._wait_at = self._horizon(), math.floor(at / MODEL_REFRESH_S)
+                self._dues = {}                   # every meter's latency may have moved
+
+    def _horizon(self) -> float:
+        """How far behind its meters the grid is read: the longest any meter
+        takes to declare a step it shares with the grid (_declare_lag), so
+        every meter has had its say on a grid step before the grid's is
+        judged; at least EDGE_LAG_REACH_S where inputs are fed, whose changes
+        are looked for that far either side of a step. Never past
+        wait_cap_s (Anze, 2026-10-02: up to five minutes): a meter slower
+        than that is judged with what it has said by then. A meter in
+        horizon_skip - the settings page's own choice, a slow polled meter
+        not worth waiting for - is still read, and does not set it. Worked
+        out again every MODEL_REFRESH_S of the clock as the lags are learned -
+        at a pass's start it would move with the slicing."""
+        wait = max([0.0] + [self._declare_lag(name) for name in self.subs if name not in self.horizon_skip])
+        if self.switch_on or self.main.inputs:
+            wait = max(wait, EDGE_LAG_REACH_S)
+        return min(self.wait_cap_s, wait)
+
+    def _meter_latency(self, name: str) -> float:
+        """A meter's latency - its channels' longest (PhaseState.latency)."""
+        det = self.subs.get(name)
+        return max((st.latency() for st in det.phases.values() if st.interval), default=0.0) if det else 0.0
+
+    def _declare_lag(self, name: str) -> float:
+        """How long after a step the grid shares with it this meter has
+        declared its own: the LAG_PERCENTILE of what was learned, once
+        LAG_MIN_SAMPLES are; until then its latency twice over - the report,
+        then the silence that confirms it."""
+        rows = self.meter_lag.get(name) or []
+        if len(rows) >= LAG_MIN_SAMPLES:
+            got = sorted(r[1] for r in rows)
+            return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
+        return 2.0 * self._meter_latency(name)
+
+    def _learn_lags(self, at: float) -> None:
+        """Each meter's lag against the grid, from the steps the two share:
+        for every clear grid step at least LAG_REACH_S old on the clock - so
+        the meter has had its whole reach to declare its own, whatever the
+        slicing - the meter's nearest declared step that way of its size on
+        a channel mapped to that phase, when no other one is as near:
+        (when it happened, when it was declared) less the grid step's time.
+        The meter's report lag sets its latency (PhaseState.lag), the
+        declaring lag the grid's horizon (_horizon)."""
+        reach = LAG_REACH_S
+        upto = at - reach
+        start = self._lag_from if self._lag_from is not None else -math.inf
+        if upto <= start:
+            return
+        self._lag_from = upto
+        for ph, grid in self.main.phases.items():
+            noise_g = grid.noise_at()
+            lo, hi = bisect.bisect_right(grid.declared_t, start), bisect.bisect_right(grid.declared_t, upto)
+            steps = [g for g in grid.declared[lo:hi] if abs(g[1]) >= 10.0 * noise_g]
+            if not steps:
+                continue
+            for name, det in self.subs.items():
+                chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
+                if len(chans) != 1:
+                    continue                      # a meter on several channels of it: whose step is it
+                st = det.phases[chans[0]]
+                gain, noise_m = self.gain(name, "p"), st.noise_at()
+                rows = self.meter_lag.setdefault(name, [])
+                for g in steps:
+                    tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * abs(g[1])
+                    near = sorted((abs(e[0] - g[0]), e) for e in self._near(st, g[0] - reach, g[0] + reach, reach)
+                                  if (e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= tol
+                                  and abs(e[0] - g[0]) <= reach)
+                    if not near or (len(near) > 1 and near[1][0] <= 2.0 * near[0][0] + MERGE_TOLERANCE_S):
+                        continue                  # none, or not one the nearest by far
+                    e = near[0][1]
+                    rows.append([round(e[0] - g[0], 2), round((e[5] if len(e) > 5 else e[4]) - g[0], 2)])
+                del rows[:-LAG_SAMPLES]
+        for name, det in self.subs.items():
+            rows = self.meter_lag.get(name) or []
+            lag = 0.0
+            if len(rows) >= LAG_MIN_SAMPLES:
+                got = sorted(r[0] for r in rows)
+                lag = max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
+            for st in det.phases.values():
+                st.lag = lag
+
+    def _oldest_asked(self) -> float:
+        """The oldest moment a question may still be asked about on the clock:
+        the grid's runs still open or pending, the sessions still waiting."""
+        main = self.main
+        ts = [self._now - self.wait_cap_s]
+        ts += [o.since for st in main.phases.values() for o in st.open_edges]
+        ts += [st.pending[0][0] for st in main.phases.values() if st.pending]
+        ts += [s.start for s in main.held] + [m.start for _, m in self.unfiled] + [m.start for _, m in self.pending_main]
+        return min(ts)
+
+    def _keep_rows(self, name: str, rows_by_phase: Dict[str, Sequence[Tuple[float, float]]], end: float) -> None:
+        """A meter's readings for the energy answer (_energy_pairs), its
+        channels summed - each held at its last value from the last pass
+        until it writes again, not counted as nothing from the pass's start."""
+        last = self._sub_last.setdefault(name, {})
+        stamps = sorted({t for rows in rows_by_phase.values() for t, _ in rows})
+        if not stamps:
+            return
+        at = {p: 0 for p in rows_by_phase}
+        merged = []
+        for ts in stamps:
+            for p, rows in rows_by_phase.items():
+                while at[p] < len(rows) and rows[at[p]][0] <= ts:
+                    last[p] = rows[at[p]][1]
+                    at[p] += 1
+            merged.append((ts, sum(last.values())))
+        kept = self.sub_rows.get(name, [])
+        if kept and merged[0] <= kept[-1]:
+            kept = sorted(kept + merged)              # a pass that overlapped the last one
+        else:
+            kept = kept + merged
+        # Everything this pass brought, plus a tail before it. Trimming to
+        # a fixed two hours looked thrifty and silently gutted the
+        # backfill, whose slices are six hours long: the sessions being
+        # placed were mostly older than the readings kept to place them
+        # with (2026-09-19). Kept back to the oldest run or session still
+        # to be placed, its idle window before it, whatever the slicing.
+        cut = min(self._oldest_asked(), merged[0][0] - SUB_SAMPLE_TAIL_S) - IDLE_WINDOW_S
+        i = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)     # with the value in force at the cut
+        self.sub_rows[name] = kept[i:]
+
+    def _on_main(self, m: Session) -> None:
+        """A house session the grid's detector handed over: it waits for the
+        meters' say (_ready_at), and is one a meter's session may vote for."""
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        self._insort(self.unfiled, (self._ready_at(m, main_iv), m))
+        self._recent_main.append((self._now, m))
+        while self._recent_main and self._now - self._recent_main[0][0] >= MATCH_PATIENCE_S:
+            self._recent_main.pop(0)
+        for row in [r for r in self._unvoted if r[2] and not self._vote_blocked(r[1], r[3])]:
+            self._unvoted.remove(row)
+            self._vote(row[1], row[3])
+
+    def _vote_tol(self, name: str) -> float:
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        return max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+
+    def _vote_blocked(self, name: str, s: Session) -> bool:
+        """Could the grid still hand over a session that started with the
+        meter's ``s`` - a run still open, or waiting for a partner leg? A
+        vote takes the start and the size, never the end: a grid run that
+        stops late is still the one (09-25 11:02 at Kozolec: the IR panel's
+        house session closed after the panel's and its vote went unheard)."""
+        tol = self._vote_tol(name)
+        main = self.main
+        return (any(abs(o.since - s.start) <= tol for st in main.phases.values() for o in st.open_edges)
+                or any(abs(m.start - s.start) <= tol for m in main.held)
+                or any(st.pending and st.pending[0][0] <= s.start + tol for st in main.phases.values()))
+
+    def _vote(self, name: str, s: Session) -> None:
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        self._vote_phases({name: [s]}, main_iv, [m for _, m in self._recent_main])
+
+    def _on_sub(self, name: str, s: Session) -> None:
+        """A meter's session: a partner for a house session, and a vote on the
+        meter's phase once the grid has been read as far (_vote_at)."""
+        self.pending_sub.setdefault(name, []).append(s)
+        self._insort(self._unvoted, (self._vote_at(name), name, False, s))
+
+    @staticmethod
+    def _insort(rows: list, row: tuple) -> None:
+        """``row`` into ``rows`` by when it is due, and at one moment by its
+        session's start - one order the data fixes, whatever the slicing
+        (Anze, 2026-10-02)."""
+        key = (row[0], row[-1].start)
+        i = bisect.bisect_right([(r[0], r[-1].start) for r in rows], key)
+        rows.insert(i, row)
+
+    def _vote_at(self, name: str) -> float:
+        """When a meter's session just handed over votes: once the grid has
+        been read far enough to have handed over its own session of the same
+        load - the grid's wait behind, plus the two meters' tolerance."""
+        return self._now + self._wait + self._vote_tol(name)
+
+    def _decide(self, m: Session) -> None:
+        """File a house session done waiting (_ready_at), with its sub-meter
+        partner's say in which signature it joins - see SUB_OVERRIDE - or
+        else a one-device meter's energy's; placed where a meter saw it, if
+        one did (_locate)."""
+        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        for name in self.pending_sub:
+            self.pending_sub[name] = [s for s in self.pending_sub[name] if self._now - s.end < 2.0 * MATCH_PATIENCE_S]
+        pairs = sorted(self._session_pairs([m], main_iv), key=lambda x: (x[0], x[1]))
+        if pairs:
+            _, _, name, si = pairs[0]
+            self._file_as(m, name, self.pending_sub[name].pop(si))
+            return
+        one = [p for p in sorted(self._energy_pairs([m]), key=lambda x: (x[0], x[1])) if self._one_device(p[2])]
+        if one:
+            self._place(m, one[0][2], self._meter_home(one[0][2]))
+            return
+        self._place(m, None, None)
+        if not self._locate(m):
+            self._insort(self.pending_main, (m.end + MATCH_PATIENCE_S, m))   # one more try, as late as it may be
 
     def _count_input_time(self, name: str, now_ts: Optional[float]) -> None:
         """Add the time since it was last counted to each value's share of
@@ -4880,6 +5190,8 @@ class Fleet:
                 if abs(on - m.start) > tol:
                     continue
                 cost = abs(on - m.start) / tol
+                if off is not None and off > self._now:
+                    off = None                    # a pass read it ahead of the clock: not known yet
                 if off is not None:
                     end_tol = max(tol, SWITCH_END_SHARE * max(m.duration_s, 1.0))
                     if abs(off - m.end) > end_tol:
@@ -4949,7 +5261,10 @@ class Fleet:
         """File a house session, and note on its signature which edges it
         started, stepped and stopped with - see EDGE_LAG_REACH_S."""
         found = self._edges_of(m)
+        for name in self.main.inputs:
+            self._count_input_time(name, self._now)    # up to the clock, not the pass's end
         self.main._file(m, prefer=prefer, avoid=list(avoid) + self._held_homes(m))
+        self.main._merge_devices()           # as each is filed, as a meter's own detector does
         sig = self.main.signature_of(m)
         if sig is None:
             return
@@ -5052,23 +5367,26 @@ class Fleet:
         best = max(self.main.signatures, key=lambda s: s.locations.get(name, 0), default=None)
         return best.id if best is not None and best.locations.get(name, 0) else None
 
-    def _heard_from_all(self, m: Session, main_iv: float, latest: float) -> bool:
-        """Has every sub-meter that COULD have a session for ``m`` reported
-        long enough past its end to have closed one? A meter is only waited
-        for if it reads at least twice within the run - Home's workshop boiler
-        meter reports every seven minutes and can partner no two-minute run -
-        and never past MATCH_PATIENCE_S."""
-        if latest - m.end >= MATCH_PATIENCE_S:
-            return True
+    def _ready_at(self, m: Session, main_iv: float) -> float:
+        """When a house session stops waiting for the meters below: once every
+        one that COULD have a session for it has been read past its end far
+        enough to have handed one over - the two meters' tolerance, the
+        meter's sustain and a reading, and its own wait for a partner leg
+        (HELD_TAIL_S). A meter is only waited for if it reads at least twice
+        within the run - Home's workshop boiler meter reports every seven
+        minutes and can partner no two-minute run - and never past
+        MATCH_PATIENCE_S. On the one clock: every meter's readings reach it,
+        a silent one's value held. Asked of the meter's last reading at a
+        pass's end, as before, a meter that went quiet kept the session
+        waiting for whatever the pass's end brought."""
+        due = m.end
         for name, det in self.subs.items():
             iv = max((st.interval for st in det.phases.values()), default=0.0)
             if not iv or 2.0 * iv > m.duration_s:
                 continue
-            heard = max((st.last_ts or 0.0 for st in det.phases.values()), default=0.0)
-            need = m.end + max(MERGE_TOLERANCE_S, main_iv + iv) + max(st.sustain() for st in det.phases.values()) + iv
-            if heard < need:
-                return False
-        return True
+            due = max(due, m.end + max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+                      + self._declare_lag(name) + HELD_TAIL_S)
+        return min(due, m.end + MATCH_PATIENCE_S)
 
     def _file_as(self, m: Session, name: str, s: Session) -> None:
         """File the house's session ``m`` as the sub-meter session ``s`` says."""
@@ -5080,6 +5398,16 @@ class Fleet:
         sig = self._place(m, name, prefer)
         if sig is not None and sub_sig is not None:
             self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
+
+    def sub_quantum(self, name: str) -> float:
+        """What a device meter can RESOLVE, as its own detector measured it
+        (PhaseState.quantum). The energy answer is an integral of its rows, so
+        their quantisation is its error bar - and Home has a workshop boiler
+        publishing in 46 W steps about every seven minutes (Anze, 2026-09-22).
+        Measured once a pass over the rows kept, it read ten days in one call
+        and eight hours in a backfill's slice."""
+        det = self.subs.get(name)
+        return max((st.quantum for st in det.phases.values()), default=0.0) if det else 0.0
 
     def _energy_pairs(self, mains: List[Session]) -> list:
         """(cost, main index, meter, None) for every house session whose energy
@@ -5099,6 +5427,8 @@ class Fleet:
             for name, rows in self.sub_rows.items():
                 if name in phases and not set(m.phases) <= set(phases[name]):
                     continue
+                # nothing the meter wrote after now, however far the pass reaches
+                hi = bisect.bisect_right(rows, (self._now, math.inf))
                 # A meter that held its value through the run's start did not
                 # start it, whatever it drew later in the window: a pump
                 # cycling every 20 minutes made up a 102 W, 47-minute run's
@@ -5107,7 +5437,7 @@ class Fleet:
                 # device's next ones, were filed as the hidrofor (2026-10-01).
                 if any(self._meter_held(name, ph, m.start, True) for ph in m.phases):
                     continue
-                got = energy_between(rows, m.start, m.end)
+                got = energy_between(rows, m.start, m.end, hi)
                 if got is None:
                     continue
                 # What the device was drawing ANYWAY, over a window of the
@@ -5117,7 +5447,7 @@ class Fleet:
                 # 167 Wh without the heater being anywhere near it. The
                 # detector matches edges everywhere else for the same reason.
                 look = min(span, IDLE_WINDOW_S)
-                before = energy_between(rows, m.start - look, m.start)
+                before = energy_between(rows, m.start - look, m.start, hi)
                 if before is None:
                     continue
                 rose = got - before * (span / look)
@@ -5127,8 +5457,7 @@ class Fleet:
                 # only express whole quanta, so each carries about one
                 # quantum-hour of error and their difference carries two. A
                 # rise inside that is not evidence of anything.
-                floor = (ENERGY_MIN_QUANTA * self.sub_quantum.get(name, 0.0)
-                         * span / 3600.0)
+                floor = (ENERGY_MIN_QUANTA * self.sub_quantum(name) * span / 3600.0)
                 if rose < floor:
                     continue
                 ratio = rose / want
@@ -5145,11 +5474,10 @@ class Fleet:
         phases = self.meter_phases()
         meters = []
         for name, subs in self.pending_sub.items():
-            det = self.subs.get(name)
-            sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
-            # one full reporting interval each, since a step can land
-            # anywhere inside one, and never less than the merge tolerance
-            tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+            # the grid's reporting interval and the meter's latency, since a
+            # step can land anywhere inside them, and never less than the
+            # merge tolerance
+            tol = max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
             agnostic = self.agnostic.get(name, False)
             # a three-phase meter's sessions under the HOUSE's phase names
             mp = {} if agnostic else self.phase_map(name)
@@ -5179,20 +5507,19 @@ class Fleet:
         return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
                 for name, d in steps.items()]
 
-    def _hold_back(self, rows, q, pv, end: float):
-        """The grid's readings up to ``end`` minus the wait - SUSTAIN_CADENCES
-        of the slowest meter not over wait_cap_s - with the last pass's held
-        ones in front; the newer ones, and their reactive and PV values, are
-        kept for the next pass. See METER_WAIT_CAP_S.
+    def _hold_back(self, rows, q, pv, cut: float):
+        """The grid's readings up to ``cut`` - wait_cap_s before how far the
+        pass reaches, see process - with the last pass's held ones in front;
+        the newer ones, and their reactive and PV values, are kept for the
+        next pass. See METER_WAIT_CAP_S. The wait is the cap itself, not the
+        slowest meter's sustain as the pass ended: the grid is read on the
+        meters' clock, and a wait that moved with the pass moved it.
 
         The reactive and PV values go on as they came, the held ones behind
         them: the detector only looks them up at the readings it is handed,
         which are all at or before the cut. Copying both dicts every pass
         cost the replay, which hands over all ten days each time, five times
         its run on the live days."""
-        wait = max([0.0] + [x for det in self.subs.values() for st in det.phases.values() if st.last_ts is not None
-                            for x in (st.sustain(),) if x <= self.wait_cap_s])
-        cut = end - wait
         held = self._carry
         out_rows, keep_rows = {}, {}
         for ph in set(rows or {}) | set(held.get("rows") or {}):
@@ -5212,7 +5539,7 @@ class Fleet:
         self._carry = {k: {ph: v for ph, v in d.items() if v} for k, d in
                        (("rows", keep_rows), ("q", keep_q), ("pv", keep_pv))}
         self._carry = {k: d for k, d in self._carry.items() if d}
-        return out_rows, out_q, out_pv, cut
+        return out_rows, out_q, out_pv
 
     def _meter_stop(self, ph: str, a: float, b: float, opens: list):
         """The open run on grid phase ``ph`` that a one-device meter's own
@@ -5230,7 +5557,7 @@ class Fleet:
                 continue
             for c in [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]:
                 st = det.phases[c]
-                reach = st.sustain()
+                reach = st.latency()
                 for e in self._near(st, a, b, reach):
                     if e[1] >= 0 or (name, e[0]) in self._stops_used:
                         continue
@@ -5253,8 +5580,8 @@ class Fleet:
             return False
         for c in chans:
             st = det.phases[c]
-            reach = st.sustain()
-            if self._pass_end < since + reach or st.pending:
+            reach = st.latency()
+            if self._now < since + reach or st.pending:
                 return False
             if any((e[1] > 0) == up for e in self._near(st, since - reach, since + reach, reach)):
                 return False                          # it stepped: a placement missed, not a silence
@@ -5337,7 +5664,7 @@ class Fleet:
             if not chans:
                 continue
             noise = max(det.phases[c].noise_at() for c in chans)
-            cap = UNION_CAP_WINDOWS * max([self.main.event_window()] + [det.phases[c].sustain() for c in chans])
+            cap = UNION_CAP_WINDOWS * max([self.main.event_window()] + [det.phases[c].latency() for c in chans])
             a, b = g_span
             for _ in range(8):                       # the union, grown until it holds still
                 ms = [e for c in chans for e in self._near(det.phases[c], a, b, cap)]
@@ -5390,8 +5717,7 @@ class Fleet:
         votes too: only SPLIT_BY_METERS reads its answer."""
         for name, sessions in closed_sub.items():
             det = self.subs.get(name)
-            sub_iv = max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
-            tol = max(MERGE_TOLERANCE_S, main_iv + sub_iv)
+            tol = max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
             votes = self.phase_votes.setdefault(name, {})
             for s in sessions:
                 if len(s.levels) != 1:
@@ -5414,50 +5740,38 @@ class Fleet:
     def phase_map(self, name: str) -> Dict[str, str]:
         return phase_mapping(self.phase_votes.get(name) or {}, min_votes=PHASE_MAP_MIN_VOTES)
 
-    def _locate(self, latest: float) -> None:
-        # BEST fit, not first fit. Taking the first session that passed and
-        # popping it is order-dependent, and at Kozolec it was the whole
-        # reason a boiler with its own meter and 367 sightings collected
-        # thirteen locations: a main session that merely fitted consumed the
-        # downstream session a better-matching one needed, and loosening the
-        # test made it worse rather than better (Anze, 2026-09-18). Every
-        # passing pair is scored, the closest is taken first, and each
-        # session is spent once.
+    def _locate(self, m: Session, final: bool = False) -> bool:
+        """Credit a filed house session to the meter that saw it: the BEST
+        fit of a meter's own session and the energy its readings account
+        for, not the first that passes - first fit let a session that merely
+        fitted take the meter's session a better one needed, and at Kozolec a
+        boiler with its own meter and 367 sightings collected thirteen
+        locations (Anze, 2026-09-18). Tried when it is filed and once more
+        MATCH_PATIENCE_S after its end, by when a slow meter has written past
+        it."""
+        sig = self.main.signature_of(m)
+        if sig is None:
+            return True
         main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
-        pairs = self._session_pairs(self.pending_main, main_iv)
-        pairs += self._energy_pairs(self.pending_main)
-        pairs.sort(key=lambda x: (x[0], x[1]))
-        taken_main, taken_sub = set(), set()
-        for _, mi, name, si in pairs:
-            if mi in taken_main or (si is not None and (name, si) in taken_sub):
-                continue
-            sig = self.main.signature_of(self.pending_main[mi])
-            if sig is None:
-                continue
-            taken_main.add(mi)
-            if si is not None:
-                taken_sub.add((name, si))
-            sig.locations[name] = sig.locations.get(name, 0) + 1
-        for name in self.pending_sub:
-            self.pending_sub[name] = [s for i, s in enumerate(self.pending_sub[name])
-                                      if (name, i) not in taken_sub]
-        still = [m for i, m in enumerate(self.pending_main)
-                 if i not in taken_main and latest - m.end < MATCH_PATIENCE_S]
-        self.pending_main = still
-        for name in list(self.pending_sub):
-            # the same patience on both sides: _same_load already demands the
-            # two starts be within tol_s of each other, so holding a session
-            # longer only lets a slow meter's own session find the partner
-            # that is still waiting for it - it cannot pair two unrelated ones
-            self.pending_sub[name] = [s for s in self.pending_sub[name]
-                                      if latest - s.end < MATCH_PATIENCE_S]
+        pairs = self._session_pairs([m], main_iv) + self._energy_pairs([m])
+        if not pairs:
+            return False
+        _, _, name, si = min(pairs, key=lambda x: (x[0], x[1]))
+        if si is not None:
+            self.pending_sub[name].pop(si)
+        sig.locations[name] = sig.locations.get(name, 0) + 1
+        return True
 
     def to_dict(self) -> dict:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
-                "pending_main": [s.to_dict() for s in self.pending_main],
+                "pending_main": [[t, s.to_dict()] for t, s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
                 "agnostic": self.agnostic, "phase_votes": self.phase_votes,
-                "unfiled": [s.to_dict() for s in self.unfiled], "identity": self.identity,
+                "unfiled": [[t, s.to_dict()] for t, s in self.unfiled], "identity": self.identity,
+                "sub_last": self._sub_last, "wait": self._wait, "wait_at": self._wait_at,
+                "meter_lag": self.meter_lag, "lag_from": self._lag_from,
+                "unvoted": [[t, n, final, s.to_dict()] for t, n, final, s in self._unvoted],
+                "recent_main": [[t, s.to_dict()] for t, s in self._recent_main],
                 "meter_gain": self.meter_gain,
                 "carry": {"rows": {p: [list(r) for r in v] for p, v in (self._carry.get("rows") or {}).items()},
                           **{k: {p: [[t, x] for t, x in v.items()] for p, v in (self._carry.get(k) or {}).items()}
@@ -5470,12 +5784,22 @@ class Fleet:
             return f
         f.main = Detector.from_dict(d.get("main"))
         f.subs = {n: Detector.from_dict(v) for n, v in (d.get("subs") or {}).items()}
-        f.pending_main = [Session.from_dict(x) for x in d.get("pending_main") or []]
+        # (when, session); a store from before the one clock held sessions alone: due at once
+        timed = lambda rows: [(x[0], Session.from_dict(x[1])) if isinstance(x, list) else (0.0, Session.from_dict(x))  # noqa: E731
+                              for x in rows or []]
+        f.pending_main = timed(d.get("pending_main"))
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
         f.agnostic = dict(d.get("agnostic") or {})
         f.phase_votes = {n: {p: dict(r) for p, r in v.items()}
                          for n, v in (d.get("phase_votes") or {}).items()}
-        f.unfiled = [Session.from_dict(x) for x in d.get("unfiled") or []]
+        f.unfiled = timed(d.get("unfiled"))
+        f._sub_last = {n: dict(v) for n, v in (d.get("sub_last") or {}).items()}
+        f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
+        f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
+        f._lag_from = d.get("lag_from")
+        f._unvoted = [(r[0], r[1], bool(r[2]) if len(r) > 3 else False, Session.from_dict(r[-1]))
+                      for r in d.get("unvoted") or []]
+        f._recent_main = [(t, Session.from_dict(x)) for t, x in d.get("recent_main") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
         carry = d.get("carry") or {}
