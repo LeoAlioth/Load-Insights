@@ -1702,6 +1702,29 @@ class PhaseState:
         silence - see SUSTAIN_CADENCES and stand_in - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
+        if (not held and self.level is not None and len(self.pending) >= SUSTAIN_SAMPLES
+                and ts - self.pending[0][0] >= self.latency() + SAME_UPDATE_S - 1e-6
+                and len(self._held()) > SUSTAIN_SAMPLES
+                and abs(w - self.pending[-1][1]) > max(SUSTAIN_AGREE_TOL * self.noise_at(w),
+                                                       SUSTAIN_AGREE_REL * abs(w - self.level))):
+            # this reading leaves the plateau the pending ones made, which
+            # held from its first reading until now - as long as the latency,
+            # it is a level, declared (a stand-in one update before this
+            # reading) before this reading is judged against it - one reading
+            # more in agreement than a plateau still held needs, in place of
+            # the confirmation it never got (two sufficed for the charger but
+            # churned Home's three noisy phases: 5,500 sessions more in ten
+            # days, one of them 32 kWh that never was). Judged only with the
+            # newest reading in the plateau, a 20 s pause read three times
+            # (3, 7, 67 W) and left at the fourth reading was no level at
+            # all: Kozolec's car charger paused twice that way and its 14:34
+            # run ran on to 17:57 (09-20, 2026-10-02)
+            at = ts - SAME_UPDATE_S
+            before = self.stand_in(at)
+            if self.pending and self.pending[-1][0] == at:
+                self.pending.pop()               # not taken (a glitch guard, say): this reading as before
+            else:
+                return before + self.process(ts, w, q, pv)
         if not held:
             self.raw_last = (ts, w)
         if held:
@@ -1851,7 +1874,15 @@ class PhaseState:
         since = self.pending[0][0]
         first_off = since                  # the first reading that left the old level
         half = 0.5 * abs(new_level - self.level)
-        since = next((p[0] for p in self.pending if abs(p[1] - self.level) >= half), since)
+        k = next((i for i, p in enumerate(self.pending) if abs(p[1] - self.level) >= half), 0)
+        since = self.pending[k][0]
+        # the change happened after the last reading still on the old side of
+        # it: one off the old level by the agreement tolerance but nowhere near
+        # the new - the boiler's 1885 W after 1921, 35 s on - is that. Spanned
+        # from the last reading AT the old level, the boiler's stop reached 41 s
+        # back over the EVSE's start and was netted into it (Kozolec 09-20
+        # 10:23, 2026-10-02)
+        old_side = self.pending[k - 1][0] if k else None
         self.pending = []
         step = new_level - self.level
         # the level it stepped FROM, measured over the samples just before
@@ -1872,7 +1903,8 @@ class PhaseState:
         self.last_step_ts = since
         # its span: when the change can have happened - from the last moment
         # the old level is known to have held, to the first reading it settled on
-        self.declared.append((since, step, step_q, self.span_start(first_off), held[0][0] if held else since, ts))
+        self.declared.append((since, step, step_q, old_side if old_side is not None else self.span_start(first_off),
+                              held[0][0] if held else since, ts))
         self.declared_t.append(since)
         if len(self.declared) > 4000:
             del self.declared[:1000]
@@ -2191,7 +2223,7 @@ class PhaseState:
         # so the run it started ends, whatever the sizes - see Fleet._meter_stop.
         if self.lib is not None and self.lib.meter_stop is not None and self.declared:
             e = self.declared[-1]
-            o = self.lib.meter_stop(self.name, e[3], e[4], self.open_edges)
+            o = self.lib.meter_stop(self.name, e[3], e[4], self.open_edges, watts)
             if o is not None:
                 self.open_edges.remove(o)
                 self._remember_close(o, at)
@@ -2242,6 +2274,14 @@ class PhaseState:
                     at - o.since <= SHAPE_SETTLED_S and watts <= SETTLE_SHARE * o.watts):
                 o.watts -= watts
                 o.levels.append((at, o.watts))
+                if o.meter is None and self.lib is not None and self.lib.meter_started is not None:
+                    # settled, is it a meter's? A start that was a meter's rise
+                    # and a brief coincident load - Susilna's plug and 30 W for
+                    # a minute (09-24 18:00: 313 -> 283 W, the plug's 264) - is
+                    # the meter's once the load has gone
+                    found = self.lib.meter_started(self.name, o.since, o.watts)
+                    if found is not None and o.watts - found[1] < max(self.noise_at(), MATCH_EDGE_REL * o.watts):
+                        o.meter = found[0]
                 return []
         joint = self._joint_stop(at, watts, var)
         if joint:
@@ -5181,6 +5221,12 @@ class Fleet:
         declaring lag the grid's horizon (_horizon)."""
         reach = LAG_REACH_S
         upto = at - reach
+        # a lag is at most what the two meters' own reporting allows: a step
+        # the meter shows 100 s after the grid is another step of a wandering
+        # load, not a late report - Home's office plug (a computer) read a
+        # 95th report lag of 109 s and a declaring lag of 190 s that way, and
+        # set Home's horizon (2026-10-02)
+        bound_g = self.main.phases and max(st.latency() for st in self.main.phases.values())
         start = self._lag_from if self._lag_from is not None else -math.inf
         if upto <= start:
             return
@@ -5198,12 +5244,13 @@ class Fleet:
                 st = det.phases[chans[0]]
                 gain, noise_m = self.gain(name, "p"), st.noise_at()
                 rows = self.meter_lag.setdefault(name, [])
+                bound = st.latency() + (bound_g or 0.0) + MERGE_TOLERANCE_S
                 for g in steps:
                     tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * abs(g[1])
 
                     def like(e, size_tol):
                         return ((e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= size_tol
-                                and abs(e[0] - g[0]) <= reach)
+                                and abs(e[0] - g[0]) <= bound)
                     near = [e for e in self._near(st, g[0] - reach, g[0] + reach, reach) if like(e, tol)]
                     # one of its kind on both meters within the reach, or a
                     # cycling load's next run is taken for this one's late
@@ -5761,7 +5808,7 @@ class Fleet:
         self._carry = {k: d for k, d in self._carry.items() if d}
         return out_rows, out_q, out_pv
 
-    def _meter_stop(self, ph: str, a: float, b: float, opens: list):
+    def _meter_stop(self, ph: str, a: float, b: float, opens: list, fall: Optional[float] = None):
         """The open run on grid phase ``ph`` that a one-device meter's own
         stop over the grid fall's span [a, b] ends: the newest the meter
         started - it rose within its sustain of the run's start - by at
@@ -5786,6 +5833,14 @@ class Fleet:
                     if e[1] >= 0 or (name, e[0]) in self._stops_used:
                         continue
                     gain, grid = self.gain(name, "p"), self.main.phases[ph]
+                    if fall is not None and abs(fall) < 0.5 * -e[1] * gain:
+                        # not through this fall: it does not account for half
+                        # the meter's. A 263 W blip ending a second before the
+                        # EVSE's 3.6 kW fall, the plug's own fall within reach
+                        # of its span, took the EVSE's run and booked 23
+                        # minutes at 257 W (Kozolec 09-28 13:53, 2026-10-02).
+                        # Home's pump (-731 W for a plug fall of 818) passes.
+                        continue
                     for o in reversed(opens):
                         rises = [r[1] * gain for r in self._near(st, o.since - reach, o.since + reach, reach) if r[1] > 0
                                  and abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
