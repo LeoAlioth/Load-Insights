@@ -22,7 +22,11 @@ matches a device's sensors, and anything it gets wrong can be pinned with
 import argparse
 import bisect
 import csv
+import functools
+import hashlib
 import math
+import os
+import pickle
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -86,24 +90,70 @@ def expand(paths):
 ON_STATES = {"on", "heating", "cooling", "drying"}
 
 
+CACHE = Path.home() / ".cache" / "load_insights_bench"
+SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here re-parses
+
+
+def _cached(key, build):
+    """build()'s result, kept as a pickle in CACHE under ``key``: every replay
+    of a scorecard parsed the same half a gigabyte of CSV again, most of a
+    Kozolec replay's time. Entries a week old go when a new one is written."""
+    path = CACHE / (hashlib.sha1(repr((SOURCE, sorted(RENAMED.items()), key)).encode()).hexdigest() + ".pickle")
+    try:
+        with open(path, "rb") as handle:
+            return pickle.load(handle)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        pass
+    value = build()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    for old in CACHE.glob("*.pickle"):
+        if old.stat().st_mtime < datetime.now().timestamp() - 7 * 86400:
+            old.unlink(missing_ok=True)
+    part = path.with_suffix(f".{os.getpid()}.part")    # replays started together each write their own
+    with open(part, "wb") as handle:
+        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(part, path)
+    return value
+
+
+def _stamp(path) -> tuple:
+    st = os.stat(path)
+    return str(Path(path).resolve()), st.st_size, st.st_mtime_ns
+
+
+def _parse(path) -> dict:
+    """One export as {entity_id: [(epoch seconds, state)]}."""
+    out = defaultdict(list)
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            eid = (row.get("entity_id") or "").strip()
+            eid = RENAMED.get(eid, eid)       # history from before a rename
+            if not eid:
+                continue
+            when = (row.get("last_changed") or row.get("last_updated") or "").strip()
+            try:
+                moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            out[eid].append((moment.timestamp(), (row.get("state") or "").strip()))
+    return dict(out)
+
+
+@functools.lru_cache(maxsize=None)
+def _parsed(stamp: tuple) -> dict:
+    return _cached(("file", stamp), lambda: _parse(stamp[0]))
+
+
 def _rows(paths, entity_id=None):
     """(entity_id, epoch seconds, state) for every row of the exports, or of
     one entity's; an id renamed since is read as its new one."""
     for path in expand(paths):
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                eid = (row.get("entity_id") or "").strip()
-                eid = RENAMED.get(eid, eid)       # history from before a rename
-                if not eid or (entity_id and eid != entity_id):
-                    continue
-                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
-                try:
-                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if moment.tzinfo is None:
-                    moment = moment.replace(tzinfo=timezone.utc)
-                yield eid, moment.timestamp(), (row.get("state") or "").strip()
+        parsed = _parsed(_stamp(path))
+        for eid in ([entity_id] if entity_id else parsed):
+            for ts, state in parsed.get(eid, ()):
+                yield eid, ts, state
 
 
 def read_states(paths, entity_id):
@@ -133,7 +183,18 @@ def read_csv(paths, keep_coarse=False, say=print):
     """entity_id -> [(epoch seconds, value)], numbers only, in time order.
 
     Order across files does not matter, and the overlap between one day's
-    export and the next is harmless: rows are sorted and de-duplicated."""
+    export and the next is harmless: rows are sorted and de-duplicated. Kept
+    in CACHE, one file for the whole folder, until a file in it changes."""
+    files = expand(paths)
+    out, coarse = _cached(("series", [_stamp(f) for f in files], keep_coarse),
+                          lambda: _series(paths, keep_coarse))
+    if coarse:
+        say(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
+    say(f"read {len(files)} file(s)")
+    return out
+
+
+def _series(paths, keep_coarse):
     series = defaultdict(list)
     for eid, ts, raw in _rows(paths):
         try:
@@ -149,10 +210,7 @@ def read_csv(paths, keep_coarse=False, say=print):
             rows, gone = drop_aggregates(rows)
             coarse += gone
         out[eid] = rows
-    if coarse:
-        say(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
-    say(f"read {len(expand(paths))} file(s)")
-    return out
+    return out, coarse
 
 
 def guess_roles(series, say=print):
