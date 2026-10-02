@@ -3176,5 +3176,27 @@ def test_a_one_device_meters_stop_ends_the_run_it_started():
     _declare(st, (T0 + 75.0, -731.0, None, T0 + 74.0, T0 + 75.0))
     assert f._meter_stop("c", T0 + 74.0, T0 + 75.0, st.open_edges) is None   # one meter fall ends one run
 
+
+def test_as_of_bisects_to_where_the_walk_went():
+    """_as_of seeks instead of walking one row at a time (2026-10-02); on
+    every series in time order - duplicate stamps, ts on a row, a start
+    index past ts or off the end - it lands where the walk did."""
+    def walk(rows, ts, i):
+        if not rows or rows[0][0] > ts:
+            return -1
+        i = max(i, 0)
+        while i + 1 < len(rows) and rows[i + 1][0] <= ts:
+            i += 1
+        return i
+    rnd = random.Random(7)
+    for _ in range(5000):
+        rows = sorted((float(rnd.choice([0, 1, 1, 2, 3, 3, 3, 5, 8])), rnd.random()) for _ in range(rnd.randint(0, 12)))
+        ts, i = rnd.choice([-1.0, 0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 8.0, 9.0]), rnd.randint(-2, 14)
+        assert D._as_of(rows, ts, i) == walk(rows, ts, i), (rows, ts, i)
+    long = [(float(t), 0.0) for t in range(0, 1000, 2)]
+    assert D._as_of(long, 501.0, 0) == walk(long, 501.0, 0) == 250
+    assert D._as_of(long, 500.0, 3) == walk(long, 500.0, 3) == 250
+
+
 if __name__ == "__main__":
     run_main(globals())

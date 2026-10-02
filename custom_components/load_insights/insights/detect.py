@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import operator
 import statistics
 from collections import ChainMap
 from dataclasses import dataclass, field, replace
@@ -1109,15 +1110,24 @@ def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
     return out
 
 
+_TS = operator.itemgetter(0)
+
+
 def _as_of(rows: Sequence[Tuple[float, float]], ts: float, i: int) -> int:
-    """Index of the last row at or before ``ts``, walking forward from ``i``;
-    -1 when the series has not started yet."""
+    """Index of the last row at or before ``ts``, never before ``i``; -1 when
+    the series has not started yet. Two steps on are looked at directly -
+    the readings beside a power sample mostly moved one row - and a longer
+    way is bisected, not walked: a slice read from the start of its series
+    walked the whole way there (rows are in time order)."""
     if not rows or rows[0][0] > ts:
         return -1
     i = max(i, 0)
-    while i + 1 < len(rows) and rows[i + 1][0] <= ts:
-        i += 1
-    return i
+    n = len(rows)
+    if i + 1 >= n or rows[i + 1][0] > ts:
+        return i
+    if i + 2 >= n or rows[i + 2][0] > ts:
+        return i + 1
+    return bisect.bisect_right(rows, ts, i + 2, n, key=_TS) - 1
 
 
 def _align(source: list, target_rows: list) -> Dict[float, float]:
@@ -3739,6 +3749,8 @@ class Detector:
     def _current(self, sid: int) -> int:
         """The signature ``sid`` is now: the one each merge since moved it
         into, followed until it stops."""
+        if sid not in self._moved:
+            return sid
         seen = set()
         while sid in self._moved and sid not in seen:
             seen.add(sid)
@@ -4745,6 +4757,7 @@ class Fleet:
     _recent_main: List[tuple] = field(default_factory=list, repr=False, compare=False)
     _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False)   # see _advance
     _names: List[str] = field(default_factory=list, repr=False, compare=False)
+    _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
@@ -5356,11 +5369,15 @@ class Fleet:
         METER_PHASES_MIN sightings of, together. Read off the locations the
         house signatures already carry, so there is nothing new to keep."""
         seen: Dict[str, Dict[str, int]] = {}
+        one: Dict[str, bool] = {}            # holds_one_device, asked once per meter rather than per location
         for sig in self.main.signatures:
             for name, n in sig.locations.items():
-                if n and (name in self.subs or name in self.switch_on) and self.holds_one_device(name):
-                    row = seen.setdefault(name, {})
-                    row[sig.phases] = row.get(sig.phases, 0) + n
+                if n and (name in self.subs or name in self.switch_on):
+                    if name not in one:
+                        one[name] = self.holds_one_device(name)
+                    if one[name]:
+                        row = seen.setdefault(name, {})
+                        row[sig.phases] = row.get(sig.phases, 0) + n
         out = {}
         for name, row in seen.items():
             known = "".join(sorted({p for ph, n in row.items() if n >= METER_PHASES_MIN for p in ph}))
@@ -5661,7 +5678,7 @@ class Fleet:
         k = bisect.bisect_left(grid.declared_t, since - 0.01)
         mine = grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
         g_span = (mine[3], mine[4]) if mine else (since - window, since + window)
-        noise_g = grid.noise_at()
+        noise_g, main_window = grid.noise_at(), self.main.event_window()
         for name, det in self.subs.items():
             votes = self.phase_votes.get(name) or {}
             if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
@@ -5670,7 +5687,7 @@ class Fleet:
             if not chans:
                 continue
             noise = max(det.phases[c].noise_at() for c in chans)
-            cap = UNION_CAP_WINDOWS * max([self.main.event_window()] + [det.phases[c].latency() for c in chans])
+            cap = UNION_CAP_WINDOWS * max([main_window] + [det.phases[c].latency() for c in chans])
             a, b = g_span
             for _ in range(8):                       # the union, grown until it holds still
                 ms = [e for c in chans for e in self._near(det.phases[c], a, b, cap)]
@@ -5744,7 +5761,16 @@ class Fleet:
                     row[house] = row.get(house, 0) + 1
 
     def phase_map(self, name: str) -> Dict[str, str]:
-        return phase_mapping(self.phase_votes.get(name) or {}, min_votes=PHASE_MAP_MIN_VOTES)
+        """Which house phase each of the meter's channels carries, from its
+        votes - worked out again only once they have changed: every grid
+        step asks every meter, and the answer moves only when a session
+        votes (_vote_phases). Shared, so callers read it and never write."""
+        votes = self.phase_votes.get(name) or {}
+        key = tuple((c, tuple(sorted(r.items()))) for c, r in sorted(votes.items()))
+        hit = self._phase_maps.get(name)
+        if hit is None or hit[0] != key:
+            hit = self._phase_maps[name] = (key, phase_mapping(votes, min_votes=PHASE_MAP_MIN_VOTES))
+        return hit[1]
 
     def _locate(self, m: Session, final: bool = False) -> bool:
         """Credit a filed house session to the meter that saw it: the BEST
