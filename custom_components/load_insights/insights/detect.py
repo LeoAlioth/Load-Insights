@@ -1520,10 +1520,14 @@ class _Open:
     # how far the runs already open overstated the phase's reading when this
     # one started - see _unseen_stop. Not persisted, as `now` is not.
     short0: float = 0.0
+    # the meter below the grid whose own step was all of this start (its
+    # event's cluster `where`, placed, not guessed): the run is that meter's
+    # until the meter shows it stopped - see PhaseState.owned
+    meter: Optional[str] = None
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
-                self.surge, self.cluster]
+                self.surge, self.cluster, self.meter]
 
     @classmethod
     def of(cls, raw) -> "_Open":
@@ -1533,7 +1537,8 @@ class _Open:
                    lo=raw[4] if len(raw) > 4 else None,
                    hi=raw[5] if len(raw) > 5 else None,
                    surge=raw[6] if len(raw) > 6 else 0.0,
-                   cluster=raw[7] if len(raw) > 7 else None)
+                   cluster=raw[7] if len(raw) > 7 else None,
+                   meter=raw[8] if len(raw) > 8 else None)
 
 
 @dataclass
@@ -1659,12 +1664,27 @@ class PhaseState:
             due += self.stand_in(silent)
         return due + self._process(ts, w, q, pv, held)
 
+    def owned(self, o: _Open) -> bool:
+        """Is this run a meter's that still shows it on? A start a meter's own
+        step was all of (``_Open.meter``) is that load's, and the meter sees
+        the load stop: until it shows a fall of half the run's size, no fall
+        of the grid's, no held drop and no start of its kind can end the run
+        - a pairing by size, a step-down, a joint stop, a multi-close, an
+        unseen stop or a start of the same cluster. Home's Susilna plug (a
+        dehumidifier, 270 W for 20 hours from 18:00) read 254-285 W all night
+        while the grid's run of it was ended within 12-68 minutes five ways
+        over five nights, once booked at its followed 3.3 kW (2026-10-02);
+        the plug's own detector had the 20-hour run every time. The converse
+        of Fleet._meter_stop."""
+        return bool(o.meter) and self.lib is not None and self.lib.meter_on is not None and \
+            self.lib.meter_on(o.meter, self.name, o.since, o.watts)
+
     def _input_ended(self, ts: float) -> List[Session]:
         """Close runs whose input has switched back and whose stop never came -
         see INPUT_ENDS."""
         out = []
         for o in list(self.open_edges):
-            if o.cluster is None:
+            if o.cluster is None or self.owned(o):
                 continue
             at = self.lib.input_end(o.cluster, o.since, ts)
             if at is not None:
@@ -1755,9 +1775,15 @@ class PhaseState:
             # no step - follow the drift, so a ramp never becomes a load
             self.level += SLOW_FOLLOW * (w - self.level)
             if len(self.open_edges) == 1 and self.baseline is not None:
-                # a drop held since it started is not it sagging - see HELD_DROPS
                 o = self.open_edges[0]
-                o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
+                if self.owned(o):
+                    # a meter's run is what its meter reads, never what the phase does
+                    lvl = self.lib.meter_level(o.meter, self.name) if self.lib.meter_level is not None else None
+                    if lvl:
+                        o.now = lvl
+                else:
+                    # a drop held since it started is not it sagging - see HELD_DROPS
+                    o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
             if self.level is not None and abs(self.level) >= self.rel_floor:
                 wander = abs(w - prev_w) if prev_w is not None else abs(w - self.level)
                 self.rel_diffs.append(wander / abs(self.level))
@@ -1954,8 +1980,8 @@ class PhaseState:
             # back at the idle floor, so whatever was still open has stopped
             # without us seeing it go. Holding those starts open would have
             # them pair with an unrelated load hours later, and meanwhile
-            # count as running.
-            self.open_edges = []
+            # count as running. A run its meter still shows on stays.
+            self.open_edges = [o for o in self.open_edges if self.owned(o)]
         return closed
 
     @property
@@ -2041,6 +2067,8 @@ class PhaseState:
         if short <= self.noise_at(level):
             return []
         for o in self.open_edges:
+            if self.owned(o):
+                continue
             size = o.now or o.watts
             # only what fell short SINCE it started can be its stop. A
             # shortfall already standing when it began - an older run followed
@@ -2077,7 +2105,7 @@ class PhaseState:
         """A start cluster rising again ends the older open run of that
         cluster on this phase, at its usual length if one is known."""
         out = []
-        for o in [o for o in self.open_edges if o.cluster == cid and o is not keep]:
+        for o in [o for o in self.open_edges if o.cluster == cid and o is not keep and not self.owned(o)]:
             self.open_edges.remove(o)
             usual = self.lib.usual_length(cid) if self.lib is not None else None
             at = min(since, o.since + usual) if usual else since
@@ -2187,6 +2215,8 @@ class PhaseState:
                     return [self._close(part, at, watts, var)]
         cands = []
         for i, o in enumerate(self.open_edges):
+            if self.owned(o):
+                continue                      # its meter still shows it on: not this fall's
             tol = self._tol(o.watts, watts)
             gap = abs(o.watts - watts)
             if o.now is not None and o.now > 0:
@@ -2205,7 +2235,7 @@ class PhaseState:
             return [self._close(o, at, watts, var, direct=True)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
-            if o.watts - watts > self._tol(o.watts, watts) and (
+            if not self.owned(o) and o.watts - watts > self._tol(o.watts, watts) and (
                     at - o.since <= SHAPE_SETTLED_S and watts <= SETTLE_SHARE * o.watts):
                 o.watts -= watts
                 o.levels.append((at, o.watts))
@@ -2216,7 +2246,8 @@ class PhaseState:
         # several loads going together - the oven and its fan, a programme
         # ending - leave one step too big for any of them alone. Take them
         # largest first while the step still covers them, or nothing.
-        order = sorted(range(len(self.open_edges)), key=lambda i: -self.open_edges[i].watts)
+        order = sorted((i for i, o in enumerate(self.open_edges) if not self.owned(o)),
+                       key=lambda i: -self.open_edges[i].watts)
         taken, left = [], watts
         for i in order:
             o = self.open_edges[i]
@@ -2243,6 +2274,8 @@ class PhaseState:
         HELD_DROPS."""
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
+            if self.owned(o):
+                continue
             size = o.now or o.watts
             need = size - watts
             if need <= self._tol(size, watts):
@@ -2310,8 +2343,20 @@ class PhaseState:
         levels = list(o.levels)
         if len(levels) == 1:
             # one level throughout: both steps measure the same load, so
-            # average them, and its power factor with them
-            levels = [(o.since, 0.5 * (levels[0][1] + watts))]
+            # average them, and its power factor with them - where they agree
+            # (the start, or what it was followed to while alone, within the
+            # pairing tolerance of the stop - a sag, or a growth only where the
+            # run is a meter's and the growth its meter's: followed by the
+            # grid's level, a 270 W plug grew to 5 kW with a charger ramping up
+            # beside it, Home 09-26 20:28). Where they do not, the smaller: a
+            # 514 W run closed by a 2,027 W fall was booked at 1,270 W for two
+            # hours (Kozolec 09-22, 2026-10-02); under-report over over-report
+            # (Anze)
+            start = levels[0][1]
+            agree = (abs(start - watts) <= self._tol(start, watts)
+                     or (o.now is not None and o.now > 0 and abs(o.now - watts) <= self._tol(o.now, watts)
+                         and (o.now <= start + self._tol(start, o.now) or self.owned(o))))
+            levels = [(o.since, 0.5 * (start + watts) if agree else min(start, watts))]
             known = [abs(x) for x in (o.var, var) if x is not None]
             q = sum(known) / len(known) if known else None
         else:
@@ -3489,6 +3534,12 @@ class Detector:
     meter_held: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, span start, span end, open runs) -> the run a one-device meter's own stop there ends, set by the Fleet
     meter_stop: Optional[object] = field(default=None, repr=False, compare=False)
+    # (meter, phase, since, size) -> the meter whose step started that run still shows it on, set by the Fleet - see PhaseState.owned
+    meter_on: Optional[object] = field(default=None, repr=False, compare=False)
+    # (phase, since, size) -> the one-device meter whose own rise of that size came with a start the map could not place
+    meter_started: Optional[object] = field(default=None, repr=False, compare=False)
+    # (meter, phase) -> what the meter draws above its floor now, in the grid's terms - the size of a run that is its
+    meter_level: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
@@ -3981,6 +4032,12 @@ class Detector:
             m["open"].cluster = cluster.id
             if cluster.where and conf is not None:
                 m["open"].q *= 0.5 + 0.5 * conf     # how well the meters' timings agreed
+                m["open"].meter = cluster.where     # placed by the meter's own step: its run - see PhaseState.owned
+            elif len(members) == 1 and self.meter_started is not None:
+                # a one-device meter the phase map does not place yet (its
+                # votes come from runs that must first survive): its own rise
+                # of this size at this moment makes the run its own
+                m["open"].meter = self.meter_started(m["ph"], m["since"], m["watts"])
             self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
         return cluster, members
 
@@ -4846,6 +4903,9 @@ class Fleet:
         self.main.step_meter = self._step_meter
         self.main.meter_held = self._meter_held
         self.main.meter_stop = self._meter_stop
+        self.main.meter_on = self._meter_on
+        self.main.meter_started = self._meter_started
+        self.main.meter_level = self._meter_level
         # the grid's readings, the last pass's held ones in front: each is
         # read once the clock is the horizon past it (_run); the rest wait
         main_samples, main_q, pv = self._hold_back(main_samples, main_q, pv, math.inf)
@@ -5572,7 +5632,11 @@ class Fleet:
         pump started at +909 W, still settling, and stopped at -731 W while its
         plug fell 818 W to nothing; too unlike to pair by size, the fall
         closed a 689 W and a 118 W run together instead, and the pump's ran on
-        two hours (20.09 00:39). Each meter fall ends one run."""
+        two hours (20.09 00:39). Each meter fall ends one run. The run's start
+        must be the meter's rise, though - within the pairing tolerance, in
+        the grid's terms: a boiler rise 41 s after the IR panel's start, two
+        hours earlier, let a 2 kW boiler fall close the panel's 514 W run and
+        book it at 1,270 W (Kozolec 09-22 11:34, 2026-10-02)."""
         if len(self._stops_used) > 1000:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
         for name, det in self.subs.items():
@@ -5584,12 +5648,80 @@ class Fleet:
                 for e in self._near(st, a, b, reach):
                     if e[1] >= 0 or (name, e[0]) in self._stops_used:
                         continue
+                    gain, grid = self.gain(name, "p"), self.main.phases[ph]
                     for o in reversed(opens):
-                        rises = [r[1] for r in self._near(st, o.since - reach, o.since + reach, reach) if r[1] > 0]
-                        if rises and -e[1] >= 0.5 * max(rises):
+                        rises = [r[1] * gain for r in self._near(st, o.since - reach, o.since + reach, reach) if r[1] > 0
+                                 and abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
+                        if rises and -e[1] * gain >= 0.5 * max(rises):
                             self._stops_used[(name, e[0])] = e[0]
                             return o
         return None
+
+    def _meter_on(self, name: str, ph: str, since: float, size: float) -> bool:
+        """Does meter ``name``, whose own step started a grid run of ``size``
+        on ``ph`` at ``since``, still show that load on - no fall of half its
+        size declared since, on a channel mapped to that phase (every channel
+        of a meter not mapped yet)? Read ahead of the grid by the horizon, a
+        fall the meter has declared is known before the grid's own; one it
+        has not is not its load stopping. See PhaseState.owned."""
+        det = self.subs.get(name)
+        if det is None:
+            return False
+        gain = self.gain(name, "p")
+        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
+            [c for c, st in det.phases.items() if st.last_ts is not None]
+        for c in chans:
+            st = det.phases[c]
+            k = bisect.bisect_right(st.declared_t, since)
+            if any(e[1] < 0 and -e[1] * gain >= 0.5 * size for e in st.declared[k:]):
+                return False
+        return bool(chans)
+
+    def _meter_started(self, ph: str, since: float, size: float) -> Optional[str]:
+        """The one-device meter whose own rise of ``size`` (in the grid's
+        terms) came within its latency of a grid start at ``since`` on ``ph``,
+        where the meters' own steps placed none (_step_meter) - a meter the
+        phase map does not place yet, its votes coming from runs that have to
+        survive first (Home's Susilna plug, 0-10 of the 30 it needs in ten
+        days), or one whose step and the grid's disagreed in size or span.
+        Only a meter reporting a total: its one channel is the load's. Whether it holds one device does not
+        matter - a strip's load starting shows on the strip and the grid alike,
+        and a fall of half the size on the strip frees the run again. Home's
+        Susilna plug is not declared one device, and was never placed: its 20-
+        hour runs were cut 12-68 minutes in (2026-10-02). See PhaseState.owned."""
+        grid = self.main.phases.get(ph)
+        if grid is None:
+            return None
+        for name, det in self.subs.items():
+            if not self.agnostic.get(name):
+                continue
+            gain = self.gain(name, "p")
+            for st in det.phases.values():
+                if st.last_ts is None:
+                    continue
+                reach = st.latency()
+                if any(e[1] > 0 and abs(e[1] * gain - size) <= grid._tol(size, e[1] * gain)
+                       for e in self._near(st, since - reach, since + reach, reach)):
+                    return name
+        return None
+
+    def _meter_level(self, name: str, ph: str) -> Optional[float]:
+        """What meter ``name`` draws above its floor now, in the grid's terms,
+        on its channels mapped to ``ph`` (every channel of a meter not mapped
+        yet) - the size of a run that is its (PhaseState.owned): Kozolec's
+        Scala2 ramps 104-247 W, and its plug measures the ramp; the grid's
+        level, followed while the run was alone, read a charger ramping up on
+        the same phase as the Susilna plug's growth, 270 W to 5 kW (Home 09-26
+        20:28, 2026-10-02). None while the meter has no level yet."""
+        det = self.subs.get(name)
+        if det is None:
+            return None
+        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
+            [c for c, st in det.phases.items() if st.last_ts is not None]
+        known = [det.phases[c] for c in chans if det.phases[c].level is not None and det.phases[c].baseline is not None]
+        if not known:
+            return None
+        return max(0.0, sum(st.level - st.baseline for st in known)) * self.gain(name, "p")
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
@@ -5704,8 +5836,17 @@ class Fleet:
             # +1,108 W rise, and the pump's run went on for minutes. One the
             # grid took as its own step stays out: the kiln's previous pulse
             # ending seconds before this one began (see e039b4c).
+            # ...and one the other way only if the two spans truly overlap -
+            # the meter's change can have happened while the grid's did. One
+            # whose span merely touches the grid's plateau happened after it:
+            # a boiler stop the grid had not yet shown its own fall for - read
+            # ahead of the grid by the horizon - was carved out of an earlier
+            # rise (Kozolec 09-22 11:33: closing its run at 26 s and opening a
+            # phantom 2 kW start)
             own = [e for e in ms if e[3] <= g_span[1] and e[4] >= g_span[0]
-                   and (up is None or (e[1] > 0) == up or not self._grid_took(grid, e, gain, noise_g, noise, cap))]
+                   and (up is None or (e[1] > 0) == up
+                        or (e[3] < g_span[1] and e[4] > g_span[0]
+                            and not self._grid_took(grid, e, gain, noise_g, noise, cap)))]
             if not own:
                 out[name] = (0.0, None, None, noise, 0.0)
                 continue

@@ -209,10 +209,16 @@ def _started_with(rows: list, times: list, s) -> bool:
     each of the overlapping ones again - Susilna scored 86 kWh right of 63
     (2026-10-01). And the peak, not the reading a minute on: a pump runs 60-70
     s, was off again by then, and a third of its own runs scored as nobody's -
-    its group under half its own, and all of it "not found" (2026-10-01)."""
+    its group under half its own, and all of it "not found" (2026-10-01).
+    "Before" is the LOWEST the meter read in the ten seconds before the start,
+    not its reading ten seconds before: a 2.15 kW load at Home drops out for
+    six seconds and restarts, and read against the reading before the drop it
+    was nobody's run - 8.8 kWh of the Delavnica's, counted as wrongly
+    attributed once its signature was hers (2026-10-02)."""
     first = sum(rows_[0][1] for rows_ in s.levels.values() if rows_)
-    before = B._at(rows, s.start - 10.0, 0.0)
-    i, j = bisect.bisect_right(times, s.start - 10.0), bisect.bisect_right(times, s.start + 60.0)
+    i, k, j = (bisect.bisect_right(times, s.start - 10.0), bisect.bisect_right(times, s.start),
+               bisect.bisect_right(times, s.start + 60.0))
+    before = min([B._at(rows, s.start - 10.0, 0.0)] + [r[1] for r in rows[i:k]])
     peak = max([before] + [r[1] for r in rows[i:j]])
     return first > 0 and peak - before >= 0.5 * first
 
@@ -995,6 +1001,12 @@ def check() -> None:
     pump = [(0.0, 0.5), (100.0, 1100.0), (110.0, 880.0), (150.0, 0.5)]  # on 50 s: off again a minute on
     S.start, S.levels = 101.0, {"a": [(101.0, 900.0)]}
     assert _started_with(pump, [r[0] for r in pump], S)
+    # a load that drops out for six seconds and restarts: before is the dip, not the reading before it
+    restart = [(0.0, 3720.0), (94.0, 1600.0), (100.0, 3725.0), (200.0, 3720.0)]
+    S.start, S.levels = 100.0, {"a": [(100.0, 2150.0)]}
+    assert _started_with(restart, [r[0] for r in restart], S)
+    S.start = 50.0                                                     # mid-run, no restart near: not started here
+    assert not _started_with(restart, [r[0] for r in restart], S)
     # the floor: 5 W for 900 s, 1005 W for 100 s - the level of a tenth of the time
     wh, floor, floor_wh = _truth([(0.0, 5.0), (900.0, 1005.0), (1000.0, 5.0)])
     assert floor == 5.0 and round(wh, 2) == 27.78 and round(floor_wh, 2) == 1.39
