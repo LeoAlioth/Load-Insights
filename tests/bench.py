@@ -27,6 +27,10 @@ bench's own:
                  production's backfill does (the default); 0 for one call
     LIVE=5       ...but the last this many days in one-minute passes, as a
                  site runs once it has caught up (0, the default: none)
+    FEED=name    with SUBS=prod, feed only these meters (one dial each) of
+                 PROD_SUBS and EXTRA_SUBS - energy_bench's worth
+    EXTRA=folder another folder of CSVs read beside FOLDER (Home's fans and
+                 blinds in data/history/home-extra)
 
 score   purity (does one signature hold one device) and concentration (does
         one device land in one signature), per device with the ABSOLUTE size
@@ -55,6 +59,7 @@ from __future__ import annotations
 
 import bisect
 import collections
+import hashlib
 import sys
 from pathlib import Path
 
@@ -62,6 +67,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import replay as R  # noqa: E402
 
 D = R.D
+SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here rebuilds what R._cached keeps
 # Each site's house reading and the device meters ground truth is labelled by.
 SITES = {
     "kozolec": {
@@ -134,14 +140,26 @@ PROD_SUBS = {
     "home-hisa": {"Blaževa Soba": "sensor.blaz_pc_power"},
     "home-mansarda": {"Vtičnice - pisarna": "sensor.attic_office_power"},
 }
-# the meters production's options declare to hold one device (2026-09-30)
+# Meters production's set of 2026-09-30 lacks, their first days fetched into
+# data/history/home-extra (fetch_history's fans and blinds groups, the recorder
+# holding them from 22 Sep): truth wherever their history is read, fed only by
+# name (FEED=). The blinds went on the Energy dashboard on 2026-10-02.
+EXTRA_SUBS = {
+    "home": {"Bathroom fan": "sensor.bathroom_fan_switch_0_power",       # a Shelly 1PM Mini, ~15 W
+             "West Blinds": "sensor.west_blinds_power",                 # Shelly 2PMs, ~100 W for seconds
+             "North Blinds": "sensor.north_blinds_power",
+             "East Blinds": "sensor.living_room_east_blinds_power"},
+}
+# the meters production's options declare to hold one device (2026-09-30), and the bathroom fan
 PROD_SINGLE = {
-    "home": ["Polnilnica", "Workshop charger", "Hidrofor", "Attic AC", "Workshop boiler"],
+    "home": ["Polnilnica", "Workshop charger", "Hidrofor", "Attic AC", "Workshop boiler", "Bathroom fan"],
     "kozolec": ["Boiler", "Washing machine", "Well pump", "Water pump", "Pond", "Pond EVSE", "Pastir",
                 "Bug lamp", "Bathroom IR Panel"],
 }
 # the Energy dashboard's nesting among PROD_SUBS (2026-09-30); Kozolec's all hang under its inverter
-PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda"}}
+# (West Blinds on the grid connection, beside Attic AC)
+PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda", "Bathroom fan": "Mansarda",
+                         "North Blinds": "Mansarda", "East Blinds": "Mansarda"}}
 # the bench's own dials, each a global of the same name - see _apply
 SUBS = "lab"                           # lab, prod, circuits or none - see PROD_SUBS
 HOUSE = ""                             # HOUSE=prod - see the docstring
@@ -154,7 +172,9 @@ OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": 
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 STAGES: list = []                      # INPUT=entity dials, fed as --input
-LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES}
+FEED: list = []                        # FEED=meter dials - see the docstring
+EXTRAS: list = []                      # EXTRA=folder dials - see the docstring
+LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "FEED": FEED, "EXTRA": EXTRAS}
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
@@ -186,15 +206,17 @@ def _near(sessions):
     return lambda t, tol: got[bisect.bisect_left(starts, t - tol):bisect.bisect_right(starts, t + tol)]
 
 
-def _prod_house(s: dict) -> dict:
+def _prod_house(s: dict, key=None) -> dict:
     """Home's house reading the way production builds it: the grid meter
-    negated plus a third of the inverter, through combine()."""
+    negated plus a third of the inverter, through combine(). Under ``key``
+    (the files it is built from, and the settle) the combine, ~8 s of every
+    Home replay, is kept in replay's CACHE."""
     inv = s.get("sensor.solaredge_se17k_i1_ac_power")
     if inv:
-        for p in "abc":
-            m1 = s.get(f"sensor.solaredge_se17k_m1_ac_power_{p}")
-            if m1:
-                s[HOUSE_IDS[p]] = D.combine([(m1, -1.0), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S)
+        m1 = {p: s[f"sensor.solaredge_se17k_m1_ac_power_{p}"] for p in "abc" if s.get(f"sensor.solaredge_se17k_m1_ac_power_{p}")}
+        build = lambda: {p: D.combine([(rows, -1.0), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}  # noqa: E731
+        for p, rows in (R._cached(key, build) if key else build()).items():
+            s[HOUSE_IDS[p]] = rows
     return s
 
 
@@ -223,6 +245,12 @@ def _apply(dials) -> str:
 _RUNS: dict = {}
 
 
+def stamps(folder: str) -> list:
+    """What a replay of ``folder`` reads - its files and the EXTRA= folders' -
+    as R._stamp sees them: a cache key for what is built from them."""
+    return [R._stamp(f) for f in R.expand([folder] + EXTRAS)]
+
+
 def _run(folder: str, site: str | None, before=None):
     """Replay a folder; return the Fleet, every session its house detector
     filed, and each sub-meter's full series. Once per folder and site in a
@@ -235,7 +263,7 @@ def _run(folder: str, site: str | None, before=None):
 
 
 def _replay(folder: str, site: str | None, before=None):
-    argv = [folder, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
+    argv = [folder, *EXTRAS, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
     if LIVE:
         argv += ["--live-days", str(LIVE)]
     # the house roles pinned to what production reads, never guessed: with the
@@ -253,20 +281,23 @@ def _replay(folder: str, site: str | None, before=None):
     for eid in STAGES:
         argv += ["--input", eid]
     if site and SUBS in ("prod", "circuits"):
-        circuits = set(PROD_PARENTS.get(site, {}).values())
-        for n, e in PROD_SUBS[site].items():
-            if SUBS == "circuits" and n not in circuits:
-                continue
+        meters, parents = {**PROD_SUBS[site], **EXTRA_SUBS.get(site, {})}, PROD_PARENTS.get(site, {})
+        feed = (FEED if SUBS == "prod" and FEED else
+                [n for n in PROD_SUBS[site] if SUBS == "prod" or n in set(parents.values())])
+        for n in feed:
+            e = meters[n]
             argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
             argv += ["--single", n] if n in PROD_SINGLE.get(site, []) else []
-            argv += ["--parent", f"{n}={PROD_PARENTS[site][n]}"] if n in PROD_PARENTS.get(site, {}) else []
+            # under its circuit where that is fed too; otherwise under the main, as it then would be
+            argv += ["--parent", f"{n}={parents[n]}"] if parents.get(n) in feed else []
     elif site and SUBS == "lab":
         for n, e in SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]
 
     def transform(s):
-        s = before(s) if before else s
-        return _prod_house(s) if HOUSE == "prod" else s
+        s = before(s) if before else s                   # planted loads: the house is built afresh
+        key = None if before else ("prod_house", stamps(folder), D.COMBINE_SETTLE_S)
+        return _prod_house(s, key) if HOUSE == "prod" else s
     return R.run(R.parse(argv), transform, say=lambda *a, **k: None)
 
 

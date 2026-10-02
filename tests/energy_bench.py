@@ -7,7 +7,8 @@ wave of known size and timing, to score a load no meter watches.
     python3 tests/energy_bench.py card [SITE ...] [DIAL=value ...]
     python3 tests/energy_bench.py invariance SITE FOLDER [DIAL=value ...]
     python3 tests/energy_bench.py diff A.json B.json
-    python3 tests/energy_bench.py SITE FOLDER [DIAL=value ...] [PLANT=...] [QGATE=x] [OUT=run.json]
+    python3 tests/energy_bench.py worth SITE [DIAL=value ...]
+    python3 tests/energy_bench.py SITE FOLDER [DIAL=value ...] [PLANT=...] [QGATE=x] [WORTH=1] [OUT=run.json]
     python3 tests/energy_bench.py check
 
 Two numbers per measured load L (Anze, 2026-10-02; a boiler that used 10 kWh,
@@ -50,6 +51,25 @@ invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
             distorted - sub-meters run over everything before the grid, nothing
             is filed until the end - and should agree once the detector streams.
 diff        two card files, capture and impurity load by load.
+worth       what a meter is worth (Anze, 2026-10-02: "how much adding a sensor
+            to device X improves the prediction for device Y"): none fed, all
+            fed, and per meter X only X fed (add-one) and all but X
+            (remove-one), WORTH_PARALLEL replays at once at SLICE=6; every
+            target Y scored each time, and two matrices printed - Y rows x X
+            columns, capture / impurity points, add-one less none and
+            remove-one less all - with the none and all baselines; written to
+            data/scorecard/worth-<site>-<commit>-<utc>.json. The meters are
+            PROD_SUBS plus WORTH_FED (Home's bathroom fan); the targets every
+            load of the card plus, with WORTH=1, loads no meter of production
+            reads: Home's bathroom fan and blinds (bench.EXTRA_SUBS, read from
+            data/history/home-extra by the EXTRA= dial, scored from their first
+            reading), its CEILING fan - a MODELLED truth, the watts of the
+            speed HA assumes - and Kozolec's two fridges - a HEURISTIC truth,
+            bench._fridge_runs' runs off the house reading, each credited to
+            the session starting within FRIDGE_RUN_S of it, scored over the
+            sessions those runs can judge, and pooled as FRIDGES. The same
+            truth in every replay, so the deltas are meaningful whatever the
+            truth's own error.
 
 PLANT=set1 plants three loads at Home: 1.2 kW for 8 min every 5 h on A,
 150 W for 20 min every 3 h on B, 40 W for 45 min every 2 h on B. A plant is
@@ -61,9 +81,11 @@ from __future__ import annotations
 
 import bisect
 import collections
+import hashlib
 import json
 import os
 import random
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -77,6 +99,7 @@ import bench as B  # noqa: E402
 
 D, R = B.D, B.R
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here rebuilds the truth series
 PLANTS: list = []          # (name, watts, phase, [(on, off), ...])
 GRID = "sensor.solaredge_se17k_m1_ac_"
 SETS = {"set1": ["1200:480:18000:a", "150:1200:10800:b", "40:2700:7200:b"]}
@@ -89,6 +112,13 @@ MOVED_S = 60.0             # a run starting this near one of the other slicing's
 # what closed a run, by the function that closed it - see _instrument
 KINDS = {"_unseen_stop": "unseen stop", "<genexpr>": "multi-close", "_joint_stop": "joint stop",
          "end_older": "started again", "_input_ended": "input ended", "_pair": "leg split off"}
+# worth's targets no meter reads (WORTH=1)
+CEILING = "Ceiling fan"    # Home's CasaFan Eco Neo III 132 - MODELLED truth, see _fan_rows
+CEILING_W = (0.0, 2.3, 3.5, 6.3, 11.2, 18.3, 27.0)   # its watts at speed 0-6 (Anze, 2026-10-02)
+FRIDGE_RUN_S = 30.0        # Kozolec's fridges - HEURISTIC truth: a run is the session starting this near it
+FRIDGES = "Fridges"        # ...both as one load, a table of its own: two look-alikes are as good as one (Anze)
+WORTH_FED = {"home": ["Bathroom fan"]}   # worth's meters beyond PROD_SUBS
+WORTH_PARALLEL = 4         # worth's replays at once
 
 
 def _intervals(t0: float, t1: float, on_s: float, every_s: float, seed: int) -> list:
@@ -193,8 +223,10 @@ def _overlap(ivs: list, a: float, b: float) -> float:
 
 def _tables(site: str) -> dict:
     """The two truth sets a site is scored against - see the docstring - or
-    one, where they are the same loads."""
-    subs, parents = B.PROD_SUBS[site], B.PROD_PARENTS.get(site, {})
+    one, where they are the same loads. A meter of EXTRA_SUBS is one of them
+    where its history is read (an EXTRA= folder): West Blinds then leaves
+    Home's Delavnica."""
+    subs, parents = {**B.PROD_SUBS[site], **B.EXTRA_SUBS.get(site, {})}, B.PROD_PARENTS.get(site, {})
     circuits = set(parents.values())
     out = {"devices": [n for n in subs if n not in circuits],
            "partition": [n for n in subs if n not in parents] + ([REST[site]] if site in REST else [])}
@@ -222,15 +254,49 @@ def _held_wh(rows: list, a: float, b: float) -> float:
     return wh / 3600.0
 
 
-def measured(folder: str, site: str):
+def _clip(rows: list, a: float, b: float) -> list:
+    """``rows`` over [a, b]: what they held at a stamped a, where they held
+    anything yet, and the last held to b."""
+    out = [(a, r[1]) for r in rows if r[0] <= a][-1:] + [r for r in rows if a < r[0] < b]
+    return out + [(b, out[-1][1])] if out else []
+
+
+def _fan_rows(pcts: list, speeds: list) -> list:
+    """Home's ceiling fan's MODELLED power, [(ts, W)]: the watts of its speed
+    (CEILING_W) from HA's assumed state - an RF fan run by a learned remote
+    reports nothing itself. Its speed from either source, whichever spoke
+    last: fan.ceiling_fan's percentage ("off", or speed x 16.67) and the
+    speed sensor beside it."""
+    ev = [(t, round(float(v) / 16.667) if v.replace(".", "", 1).isdigit() else 0) for t, v in pcts]
+    ev += [(t, round(float(v))) for t, v in speeds]
+    return [(t, CEILING_W[max(0, min(sp, 6))]) for t, sp in sorted(ev)]
+
+
+def measured(folder: str, site: str, worth: bool = False):
     """Every load of the site's truth sets, name -> [(ts, watts)], read from
     the history whatever the Fleet was fed - a three-phase meter's phases
     summed - and the remainder's check: (main, meters, remainder) kWh over the
-    remainder's span, or None where the site has none."""
-    s = R.read_csv([folder], False, say=lambda *a, **k: None)
+    remainder's span, or None where the site has none. A series only an
+    EXTRA= folder holds is cut to the main meter's span; ``worth`` adds Home's
+    ceiling fan, modelled. Kept in replay's CACHE under the files it is built
+    from and this file's and bench's source: the remainder is ~30 s of every
+    Home replay."""
+    return R._cached(("measured", site, B.stamps(folder), worth, D.COMBINE_SETTLE_S, SOURCE, B.SOURCE),
+                     lambda: _measured(folder, site, worth))
+
+
+def _measured(folder: str, site: str, worth: bool):
+    quiet = lambda *a, **k: None  # noqa: E731
+    s = R.read_csv([folder], False, say=quiet)
+    main = [s[e] for e in B.SITES[site]["main"].values() if s.get(e)]
+    a, b = min(r[0][0] for r in main), max(r[-1][0] for r in main)
+    for e, rows in (R.read_csv(B.EXTRAS, False, say=quiet) if B.EXTRAS else {}).items():
+        if e not in s and _clip(rows, a, b):
+            s[e] = _clip(rows, a, b)
     if site == "home":
         B._prod_house(s)          # the house as production builds it: the delavnica's solar added back
-    parts = {n: [s[e] for e in (e if isinstance(e, list) else [e]) if s.get(e)] for n, e in B.PROD_SUBS[site].items()}
+    subs = {**B.PROD_SUBS[site], **B.EXTRA_SUBS.get(site, {})}
+    parts = {n: [s[e] for e in (e if isinstance(e, list) else [e]) if s.get(e)] for n, e in subs.items()}
     out = {}
     for n, rows in parts.items():
         total: list = []
@@ -238,6 +304,12 @@ def measured(folder: str, site: str):
             total = D._sum_series(total, r)
         if total:
             out[n] = total
+    if worth and site == "home":
+        paths = [folder] + B.EXTRAS
+        fan = _clip(_fan_rows(R.read_states(paths, "fan.ceiling_fan:percentage"),
+                              R.read_states(paths, "sensor.living_room_ceiling_fan_speed")), a, b)
+        if fan:
+            out[CEILING] = fan
     if site not in REST:
         return out, None
     main = [s[e] for e in B.SITES[site]["main"].values() if s.get(e)]
@@ -278,30 +350,67 @@ def _rates(truth_wh: float, attributed_wh: float, correct_wh: float) -> tuple:
     return correct_wh / truth_wh, ((attributed_wh - correct_wh) / attributed_wh if attributed_wh else None)
 
 
-def _table(per_sig: dict, truth: dict, floors: dict, names: list) -> tuple:
-    """One truth set's scorecard, and which load owns which signature."""
+def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scope=None) -> tuple:
+    """One truth set's scorecard, and which load owns which signature. A load
+    under 50 Wh over the replay is not scored, unless it is one of ``small``;
+    one in ``scope`` (load -> (what it says of itself, per_sig over fewer
+    sessions)) is scored over those alone, its signatures owned as they
+    decide: a meter whose history begins late over what it covers, a
+    heuristic truth over the sessions it can judge."""
     owner = _own(per_sig, names)
-    got = {n: {"in": 0.0, "of": 0.0, "sigs": []} for n in names if n in truth}
-    for sid, n in owner.items():
-        row = per_sig[sid]
-        got[n]["in"] += row[n]
-        got[n]["of"] += row["total"]
-        got[n]["sigs"].append([sid, row["n"], round(row["total"] / 1000.0, 2), round(row[n] / row["total"], 2)])
     loads, tot = {}, {"truth": 0.0, "of": 0.0, "in": 0.0}
-    for n, g in got.items():
-        if truth[n] < 50.0:                   # under 50 Wh over the replay: nothing to score
+    for n in names:
+        if n not in truth or not (truth[n] >= 50.0 or n in small and truth[n] > 0):
             continue
-        cap, imp = _rates(truth[n], g["of"], g["in"])
+        note, sig_e = (scope or {}).get(n, ({}, per_sig))
+        own = owner if sig_e is per_sig else _own(sig_e, names)
+        mine = [(sid, sig_e[sid]) for sid, m in own.items() if m == n]
+        right, of = sum(r[n] for _, r in mine), sum(r["total"] for _, r in mine)
+        cap, imp = _rates(truth[n], of, right)
         floor = floors.get(n, (0.0, 0.0))
         loads[n] = {"truth_kwh": truth[n] / 1000.0, "floor_w": floor[0], "floor_kwh": floor[1],
-                    "attributed_kwh": g["of"] / 1000.0, "correct_kwh": g["in"] / 1000.0,
-                    "capture": cap, "impurity": imp, "sigs": sorted(g["sigs"], key=lambda x: -x[2])}
+                    "attributed_kwh": of / 1000.0, "correct_kwh": right / 1000.0, "capture": cap, "impurity": imp,
+                    "sigs": sorted(([sid, r["n"], round(r["total"] / 1000.0, 2), round(r[n] / r["total"], 2)]
+                                    for sid, r in mine), key=lambda x: -x[2])}
+        loads[n].update(note)
         tot["truth"] += truth[n]
-        tot["of"] += g["of"]
-        tot["in"] += g["in"]
+        tot["of"] += of
+        tot["in"] += right
     cap, imp = _rates(tot["truth"], tot["of"], tot["in"]) if tot["truth"] else (None, None)
     return {"loads": loads, "capture": cap, "impurity": imp, "truth_kwh": tot["truth"] / 1000.0,
             "attributed_kwh": tot["of"] / 1000.0, "wrong_kwh": (tot["of"] - tot["in"]) / 1000.0}, owner
+
+
+def _fridges(folder: str) -> dict:
+    """Kozolec's two fridges, which no meter reads - HEURISTIC truth: bench's
+    run finder over the house reading (_fridge_runs: A starts with a surge, B
+    some 12 W high, ? neither), each run's energy what the house drew above
+    its level just before, at most its rise held over the run - more is
+    another load beside it (the excess ran to 33x on 2026-10-02). name ->
+    [(start, end, Wh)]."""
+    rows = R.read_csv([folder], False, say=lambda *a, **k: None).get(B.FRIDGE_POWER) or []
+    times = [r[0] for r in rows]
+    out = collections.defaultdict(list)
+    for t0, t1, step, kind in B._fridge_runs(folder):
+        i = bisect.bisect_left(times, t0)
+        base = statistics.median(v for _, v in rows[max(i - 6, 0):i])
+        out[f"Fridge {kind}"].append((t0, t1, min(_above(rows, times, t0, t1, base), step * (t1 - t0) / 3600.0)))
+    return dict(out)
+
+
+def _run_credit(sessions: list, runs: dict) -> dict:
+    """id(session) -> [(load, Wh)]: each run of ``runs`` (load -> [(start,
+    end, Wh)]) credited to the session starting nearest it within
+    FRIDGE_RUN_S that overlaps it, as much of its energy as that covers."""
+    at = B._near(sessions)
+    out = collections.defaultdict(list)
+    for name, rs in runs.items():
+        for t0, t1, wh in rs:
+            near = [s for s in at(t0, FRIDGE_RUN_S) if s.start < t1 and s.end > t0]
+            if near:
+                s = min(near, key=lambda s: abs(s.start - t0))
+                out[id(s)].append((name, wh * _overlap([(t0, t1)], s.start, s.end) / (t1 - t0)))
+    return out
 
 
 def _instrument():
@@ -397,19 +506,25 @@ def energy(site: str, folder: str, dials: list) -> dict:
     plants = [d[6:] for d in dials if d.startswith("PLANT=")]
     gate = next((float(d[6:]) for d in dials if d.startswith("QGATE=")), 0.0)
     out_path = next((d[4:] for d in dials if d.startswith("OUT=")), None)
-    tag = B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE=", "OUT="))]) + (f" QGATE={gate:g}" if gate else "")
+    worth = any(d == "WORTH=1" for d in dials)
+    tag = (B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE=", "OUT=", "WORTH="))])
+           + (f" QGATE={gate:g}" if gate else "") + (" WORTH=1" if worth else ""))
     log, undo = _instrument()
     try:
         fleet, filed, _ = B._run(folder, site, planted(plants))
     finally:
         undo()
     det = fleet.main
-    devices, rest = measured(folder, site)
+    devices, rest = measured(folder, site, worth)
     tables = _tables(site)
+    runs = _fridges(folder) if worth and site == "kozolec" else {}
+    tables["devices"] += ([CEILING] if CEILING in devices else []) + sorted(runs)
     truth, floors = {}, {}
     for name, rows in devices.items():
         truth[name], w, wh = _truth(rows)
         floors[name] = (w, wh / 1000.0)
+    for name, rs in runs.items():
+        truth[name], floors[name] = sum(wh for *_, wh in rs), (0.0, 0.0)
     times = {name: [r[0] for r in rows] for name, rows in devices.items()}
     for name, watts, _, ivs in PLANTS:
         truth[name] = watts * sum(b - a for a, b in ivs) / 3600.0
@@ -424,37 +539,62 @@ def energy(site: str, folder: str, dials: list) -> dict:
         cur = det._current(s.signature_id) if s.signature_id is not None else None
         return cur if cur in by_id else f"gone {s.signature_id}"
     sids = [sid_of(s) for s in filed]
-    per_sig: dict = {}
-    credited = collections.defaultdict(list)
-    gated = 0.0
-    for s, sid in zip(filed, sids):
-        if s.energy_wh <= 0:
-            continue
-        if s.quality < gate:
-            gated += s.energy_wh
-            continue
-        row = per_sig.setdefault(sid, {"total": 0.0, "n": 0})
-        row["total"] += s.energy_wh
-        row["n"] += 1
-        for name, rows in devices.items():
-            if not _started_with(rows, times[name], s):
+    run_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], runs)
+
+    def attribute(keep=lambda s: True):
+        """(per signature: its energy, runs and each load's share; each
+        load's credited sessions; Wh below the quality gate) over the sessions
+        ``keep`` keeps."""
+        per_sig: dict = {}
+        credited = collections.defaultdict(list)
+        gated = 0.0
+        for s, sid in zip(filed, sids):
+            if s.energy_wh <= 0 or not keep(s):
                 continue
-            got_wh = _above(rows, times[name], s.start, s.end, floors[name][0])
-            if got_wh > 0:
-                row[name] = row.get(name, 0.0) + min(got_wh, s.energy_wh)
+            if s.quality < gate:
+                gated += s.energy_wh
+                continue
+            row = per_sig.setdefault(sid, {"total": 0.0, "n": 0})
+            row["total"] += s.energy_wh
+            row["n"] += 1
+            for name, rows in devices.items():
+                if not _started_with(rows, times[name], s):
+                    continue
+                got_wh = _above(rows, times[name], s.start, s.end, floors[name][0])
+                if got_wh > 0:
+                    row[name] = row.get(name, 0.0) + min(got_wh, s.energy_wh)
+                    credited[name].append(s)
+            for name, watts, _, ivs in PLANTS:
+                ov = _overlap(ivs, s.start, s.end)
+                if ov > 0:
+                    row[name] = row.get(name, 0.0) + min(watts * ov / 3600.0, s.energy_wh)
+                    credited[name].append(s)
+            for name, wh in run_wh.get(id(s), ()):
+                row[name] = row.get(name, 0.0) + min(wh, s.energy_wh)
                 credited[name].append(s)
-        for name, watts, _, ivs in PLANTS:
-            ov = _overlap(ivs, s.start, s.end)
-            if ov > 0:
-                row[name] = row.get(name, 0.0) + min(watts * ov / 3600.0, s.energy_wh)
-                credited[name].append(s)
+            if id(s) in run_wh:       # the fridges as one load, too
+                row[FRIDGES] = row.get(FRIDGES, 0.0) + min(sum(wh for _, wh in run_wh[id(s)]), s.energy_wh)
+        return per_sig, credited, gated
+    per_sig, credited, gated = attribute()
+    # a meter of EXTRA_SUBS is scored from its first reading - Home's fan and
+    # blinds from 22 Sep; the fridges over the sessions credited a run the
+    # finder found - it finds about half of them (2026-10-02: 46 of the 126
+    # runs of 49 W / 29 min in the fridges' main signature), and a session it
+    # missed is not known to be anyone else's
+    scope = {n: ({"from": devices[n][0][0]}, attribute(lambda s, t=devices[n][0][0]: s.start >= t)[0])
+             for n in B.EXTRA_SUBS.get(site, {}) if n in devices}
+    if runs:
+        judged = attribute(lambda s: id(s) in run_wh)[0]
+        scope.update({n: ({"over": "found runs"}, judged) for n in [*runs, FRIDGES]})
+        truth[FRIDGES], floors[FRIDGES], tables["fridges"] = sum(truth[n] for n in runs), (0.0, 0.0), [FRIDGES]
+    small = set(B.EXTRA_SUBS.get(site, {})) | {CEILING}
     res = {"site": site, "folder": folder, "dials": tag, "mode": B.SUBS,
            "detected_kwh": sum(r["total"] for r in per_sig.values()) / 1000.0, "gated_kwh": gated / 1000.0,
            "signatures": len(per_sig), "tables": {}, "owners": {},
            "rest": None if rest is None else dict(zip(("main_kwh", "meters_kwh", "rest_kwh"), rest)),
            "pairing": _pairing(log, credited)}
     for k, names in tables.items():
-        res["tables"][k], res["owners"][k] = _table(per_sig, truth, floors, names)
+        res["tables"][k], res["owners"][k] = _table(per_sig, truth, floors, names, small, scope)
     own = res["owners"]["devices"]
     res["sessions"] = [[s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 3), sid, own.get(sid)]
                        for s, sid in zip(filed, sids)]
@@ -641,9 +781,9 @@ def _folder(site: str) -> str:
     return str(ROOT / "data" / "history" / site.split("-")[0])
 
 
-def _parallel(jobs: list) -> list:
+def _parallel(jobs: list, n: int = PARALLEL) -> list:
     """Each job (site, folder, dials) replayed by this file in a process of
-    its own, PARALLEL at once, one hash seed for all - a difference between
+    its own, ``n`` at once, one hash seed for all - a difference between
     them is never the seed's; their results, in order."""
     with tempfile.TemporaryDirectory() as tmp:
         def one(k):
@@ -655,7 +795,7 @@ def _parallel(jobs: list) -> list:
                 raise RuntimeError(f"{site} {' '.join(dials)} failed:\n{p.stdout[-2000:]}{p.stderr[-2000:]}")
             with open(out, encoding="utf-8") as f:
                 return json.load(f)
-        with ThreadPoolExecutor(PARALLEL) as pool:
+        with ThreadPoolExecutor(n) as pool:
             return list(pool.map(one, range(len(jobs))))
 
 
@@ -745,6 +885,76 @@ def invariance(site: str, folder: str, dials: list) -> None:
     print("\n".join(lines) + f"\n\nwritten {out}")
 
 
+# ------------------------------------------------------------- worth
+def _targets(run: dict) -> dict:
+    """worth's targets in one replay, name -> its scorecard entry: the
+    devices, then what only the partition and the fridges' table hold."""
+    out: dict = {}
+    for tab in run["tables"].values():
+        out.update({n: g for n, g in tab["loads"].items() if n not in out})
+    return out
+
+
+def _delta(a, b, metric: str):
+    """b's metric less a's, or None where either has none."""
+    va, vb = (a or {}).get(metric), (b or {}).get(metric)
+    return None if va is None or vb is None else vb - va
+
+
+def worth(site: str, dials: list) -> None:
+    """What a meter is worth: none fed, all fed, and per meter X only X fed
+    and all but X - every target scored in each - see the docstring."""
+    meters = list(B.PROD_SUBS[site]) + WORTH_FED.get(site, [])
+    extra = ROOT / "data" / "history" / f"{site}-extra"
+    base = _site_dials(site) + ["WORTH=1"] + ([f"EXTRA={extra}"] if extra.is_dir() else [])
+    feeds = {"none": ["SUBS=none"], "all": ["SUBS=prod"] + [f"FEED={m}" for m in meters]}
+    for m in meters:
+        feeds[f"+{m}"] = ["SUBS=prod", f"FEED={m}"]
+        feeds[f"-{m}"] = ["SUBS=prod"] + [f"FEED={x}" for x in meters if x != m]
+    t0 = time.time()
+    got = dict(zip(feeds, _parallel([(site, _folder(site), base + f + dials) for f in feeds.values()],
+                                    WORTH_PARALLEL)))
+    took = time.time() - t0
+    commit, utc = _stamp()
+    tg = {k: _targets(r) for k, r in got.items()}
+    names = list(tg["none"])
+
+    def what(n):
+        g = tg["none"][n]
+        return ("heuristic truth" if n.startswith("Fridge") else "modelled truth" if n == CEILING else
+                f"from {datetime.fromtimestamp(g['from']).strftime('%m-%d %H:%M')}" if "from" in g else "")
+    pts = lambda v: "-" if v is None else f"{100 * v:+.0f}"  # noqa: E731
+    lines = [f"worth {site} {commit} {utc}  {' '.join(dials) or 'defaults'}  - {len(feeds)} replays in {took:.0f} s",
+             "", f"{'target':22s} {'truth kWh':>9s} {'':16s} {'none fed':>15s} {'all fed':>15s}   capture / impurity %"]
+    for n in names:
+        a, b = tg["none"][n], tg["all"].get(n)
+        lines.append(f"  {n:20s} {a['truth_kwh']:9.3f} {what(n):16s} {_pct(a['capture']):>7s} {_pct(a['impurity']):>7s} "
+                     f"{_pct((b or {}).get('capture')):>7s} {_pct((b or {}).get('impurity')):>7s}")
+    lines.append("")
+    lines.append("meters X: " + "  ".join(f"{i + 1} {m}" for i, m in enumerate(meters)))
+    out = {"site": site, "commit": commit, "utc": utc, "dials": dials, "seconds": took, "meters": meters,
+           "runs": {k: {"dials": r["dials"], "tables": r["tables"]} for k, r in got.items()}}
+    for key, ref, sign, title in (("add", "none", "+", "add-one: only X fed, less none fed"),
+                                  ("remove", "all", "-", "remove-one: all but X fed, less all fed")):
+        lines += ["", f"{title} - capture / impurity points, '.' both under 1"]
+        lines.append(f"  {'target':20s}" + "".join(f"{i + 1:>9d}" for i in range(len(meters))))
+        out[key] = {}
+        for n in names:
+            row = f"  {n:20s}"
+            for m in meters:
+                a, b = tg[ref].get(n), tg[f"{sign}{m}"].get(n)
+                dc, di = _delta(a, b, "capture"), _delta(a, b, "impurity")
+                out[key].setdefault(m, {})[n] = [dc, di]
+                quiet = all(v is None or abs(v) < 0.01 for v in (dc, di))
+                row += f"{'.' if quiet else pts(dc) + '/' + pts(di):>9s}"
+            lines.append(row)
+    print("\n".join(lines))
+    path = ROOT / "data" / "scorecard" / f"worth-{site}-{commit}-{utc}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    print(f"\nwritten {path}")
+
+
 def diff(a_path: str, b_path: str) -> None:
     """Capture and impurity load by load, A -> B and the change."""
     A, Bj = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (a_path, b_path))
@@ -813,6 +1023,28 @@ def check() -> None:
     assert set(got) == {"end", "only A", "start", "only B"} and got["end"]["near_s"] == -10.0
     two = [["a", 0.0, 60.0, 10.0, 1, None], ["a", 0.0, 600.0, 50.0, 2, None]]     # two runs starting together
     assert compare(two, two[::-1], []) == []
+    # worth's targets: the ceiling fan's speed from whichever source spoke last...
+    assert _fan_rows([(0.0, "off"), (10.0, "16"), (20.0, "33")], [(15.0, "2")]) == [
+        (0.0, 0.0), (10.0, 2.3), (15.0, 3.5), (20.0, 3.5)]
+    # ...a series cut to the main's span, held at both ends where it reached them
+    assert _clip([(0.0, 1.0), (10.0, 2.0), (20.0, 3.0)], 5.0, 15.0) == [(5.0, 1.0), (10.0, 2.0), (15.0, 2.0)]
+    assert _clip([(10.0, 2.0)], 5.0, 15.0) == [(10.0, 2.0), (15.0, 2.0)] and _clip([(20.0, 1.0)], 5.0, 15.0) == []
+    # ...a fridge run to the session starting nearest it within 30 s, as far as that covers it
+    class Run:
+        def __init__(self, start, end):
+            self.start, self.end = start, end
+    near, late = Run(110.0, 400.0), Run(105.0, 130.0)
+    got = _run_credit([near, late, Run(140.0, 900.0)], {"Fridge A": [(100.0, 700.0, 30.0)]})
+    assert dict(got) == {id(late): [("Fridge A", 1.25)]}           # 25 of its 600 s
+    got = _run_credit([near, Run(140.0, 900.0)], {"Fridge A": [(100.0, 700.0, 30.0)]})
+    assert dict(got) == {id(near): [("Fridge A", 14.5)]}
+    # ...and a load scored over fewer sessions, owning what those decide; one under 50 Wh only if small
+    whole = {1: {"total": 100.0, "n": 4, "Fan": 30.0}}
+    later = {1: {"total": 40.0, "n": 2, "Fan": 30.0}}
+    tab, _ = _table(whole, {"Fan": 40.0}, {}, ["Fan"], small={"Fan"}, scope={"Fan": ({"from": 7.0}, later)})
+    f = tab["loads"]["Fan"]
+    assert f["capture"] == 0.75 and f["impurity"] == 0.25 and f["from"] == 7.0
+    assert _table(whole, {"Fan": 40.0}, {}, ["Fan"])[0]["loads"] == {}
     print("ok")
 
 
@@ -824,9 +1056,11 @@ if __name__ == "__main__":
         card(sys.argv[2:])
     elif cmd == ["invariance"] and len(sys.argv) >= 4:
         invariance(sys.argv[2], sys.argv[3], sys.argv[4:])
+    elif cmd == ["worth"] and len(sys.argv) >= 3:
+        worth(sys.argv[2], sys.argv[3:])
     elif cmd == ["diff"] and len(sys.argv) == 4:
         diff(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) >= 3 and cmd[0] not in ("card", "invariance", "diff"):
+    elif len(sys.argv) >= 3 and cmd[0] not in ("card", "invariance", "diff", "worth"):
         energy(sys.argv[1], sys.argv[2], sys.argv[3:])
     else:
         print(__doc__)
