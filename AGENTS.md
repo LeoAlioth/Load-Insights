@@ -684,6 +684,22 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
+- **A rename during a pass, and a pass across an unload** (2026-10-02, seen
+  while fixing the name_load race in 8e04c2c; never observed):
+  `DetectionRunner.async_rename` does not take `self._lock`, so a rename while
+  a pass runs changes the detector while the pass works on it in another
+  thread. And a pass still running when a reload unloads the entry can
+  re-attach a carried name after a reset and leave the same stale twin entity
+  through sensor.py's `_follow_names`. Taking the lock in `async_rename`, and
+  skipping `_follow_names` while the entry is unloading, would cover both.
+- **A phantom start after a multi-close** (2026-10-02, the trade 554de9a
+  leaves): when a multi-close takes a phase's last open runs while the phase
+  still reads about 700 W, the level falls back to the floor and the 700 W
+  comes back as a new start (traced at Home 09-26 05:31). It is what the
+  shortfall fix (`_Open.short0`) gives back of the one-estimator gain: Home
+  about 1 point of purity and 1.8 points of pooled energy precision against
+  the estimator alone (85.8 -> 82.8 % pooled).
+
 - **Signature churn with a device per start cluster** (2026-09-30, the
   all-phase events): Home makes 1,835 signatures in ten days and keeps 237 -
   the 200 cap evicts unnamed ones and their cluster's next run makes a new one.
