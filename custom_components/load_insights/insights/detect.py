@@ -1747,7 +1747,14 @@ class PhaseState:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
-                self.level = self.baseline
+                # The floor only where the reading is. A reading still above it
+                # with nothing open is a load whose run went with another's in
+                # one close: snapped to the floor under it, the level made it a
+                # new start the next reading - Home 09-26 05:31, a fall closing
+                # 700 and 500 W while 700 W stayed on. Left unowned, it is
+                # under-reported rather than booked as a load it is not.
+                if abs(w - self.baseline) <= self.noise_at(self.baseline):
+                    self.level = self.baseline
                 self.idle_diffs.append(abs(w - prev_w) if prev_w is not None
                                        else abs(w - self.baseline))
                 if len(self.idle_diffs) >= 240:
