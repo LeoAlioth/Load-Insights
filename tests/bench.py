@@ -87,12 +87,24 @@ SITES = {
             "Susilna": "sensor.shellypmminig3_susilna_power",
         },
     },
+    # Home's two circuits as main meters of their own, replayed from Home's
+    # history: how well a load is found from its circuit's meter. Without
+    # reactive power ("noq"): the replay derives a main meter's from its volts
+    # and amps, which the 3EMs do not publish, and the grid meter's would stand
+    # in. Mansarda's phase labels are its own, not the grid's - no matter here.
+    "home-hisa": {"main": {p: f"sensor.hisa_phase_{p}_active_power" for p in "abc"},
+                  "subs": {"Blaževa Soba": "sensor.blaz_pc_power"}, "noq": True},
+    "home-mansarda": {"main": {p: f"sensor.mansarda_phase_{p}_active_power" for p in "abc"},
+                      "subs": {"NASA station": "sensor.attic_office_power"}, "noq": True},
 }
 MIN_SESSIONS = 60                      # devices below this are too few to read
 # Every meter production reads, the way _resolve_submeters hands them over:
 # a three-phase meter per phase under its OWN labels, anything else as one
-# total whose phase is unknown. SUBS=prod feeds these to the Fleet; the
-# default feeds only SITES' device meters, as the bench always has.
+# total whose phase is unknown. SUBS=prod feeds these to the Fleet;
+# SUBS=circuits only the meters others hang under (PROD_PARENTS: Home's two
+# 3EMs); SUBS=none no meter at all - the main-meter estimate, the meters then
+# only the truth. The default (lab) feeds only SITES' device meters, as the
+# bench always has.
 PROD_SUBS = {
     "home": {
         "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
@@ -119,6 +131,8 @@ PROD_SUBS = {
         "Bug lamp": "sensor.bug_lamp_power",
         "Bathroom IR Panel": "sensor.bathroom_ir_panel_switch_0_power",   # a Shelly heartbeating once a minute
     },
+    "home-hisa": {"Blaževa Soba": "sensor.blaz_pc_power"},
+    "home-mansarda": {"Vtičnice - pisarna": "sensor.attic_office_power"},
 }
 # the meters production's options declare to hold one device (2026-09-30)
 PROD_SINGLE = {
@@ -129,7 +143,7 @@ PROD_SINGLE = {
 # the Energy dashboard's nesting among PROD_SUBS (2026-09-30); Kozolec's all hang under its inverter
 PROD_PARENTS = {"home": {"Blaževa Soba": "Hiša", "Vtičnice - pisarna": "Mansarda"}}
 # the bench's own dials, each a global of the same name - see _apply
-SUBS = "lab"
+SUBS = "lab"                           # lab, prod, circuits or none - see PROD_SUBS
 HOUSE = ""                             # HOUSE=prod - see the docstring
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE = 6.0                            # production's backfill slice, hours; SLICE=0 for one call
@@ -199,6 +213,8 @@ def _apply(dials) -> str:
             setattr(D, k, v if isinstance(cur, str) else type(cur)(float(v)))
         else:
             raise SystemExit(f"no such dial: {k}")
+    if SUBS not in ("lab", "prod", "circuits", "none"):
+        raise SystemExit(f"SUBS={SUBS}: lab, prod, circuits or none")
     if HOUSE not in ("", "prod"):
         raise SystemExit(f"HOUSE={HOUSE}: prod is the only house left")
     return " ".join(dials) or "defaults"
@@ -222,12 +238,12 @@ def _replay(folder: str, site: str | None, before=None):
     argv = [folder, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
     if LIVE:
         argv += ["--live-days", str(LIVE)]
-    if NOQ:
-        argv.append("--no-q")
     # the house roles pinned to what production reads, never guessed: with the
     # 3EMs' power factors in the history the guess took Hiša's power for the
     # house's (2026-09-30)
     which = site or next((n for n in SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
+    if NOQ or (which and SITES[which].get("noq")):
+        argv.append("--no-q")
     for pin in ([f"power_{p}={e}" for p, e in SITES[which]["main"].items()] if which else []):
         argv += ["--role", pin]
     for eid in SWITCHES:
@@ -236,12 +252,15 @@ def _replay(folder: str, site: str | None, before=None):
         argv += ["--driver", eid]
     for eid in STAGES:
         argv += ["--input", eid]
-    if site and SUBS == "prod":
+    if site and SUBS in ("prod", "circuits"):
+        circuits = set(PROD_PARENTS.get(site, {}).values())
         for n, e in PROD_SUBS[site].items():
+            if SUBS == "circuits" and n not in circuits:
+                continue
             argv += (["--sub-phases", f"{n}={','.join(e)}"] if isinstance(e, list) else ["--sub", f"{n}={e}"])
             argv += ["--single", n] if n in PROD_SINGLE.get(site, []) else []
             argv += ["--parent", f"{n}={PROD_PARENTS[site][n]}"] if n in PROD_PARENTS.get(site, {}) else []
-    elif site:
+    elif site and SUBS == "lab":
         for n, e in SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]
 
@@ -254,8 +273,8 @@ def _replay(folder: str, site: str | None, before=None):
 def _labels_from(folder: str, site: str, fed: dict) -> dict:
     """The device meters the score is labelled by - SITES', always.
     Fed production's meters, the Fleet also sees circuit meters, and a circuit
-    would 'label' half the house."""
-    if SUBS != "prod":
+    would 'label' half the house; fed none, there is nothing to label by."""
+    if SUBS == "lab":
         return fed
     s = R.read_csv([folder], False)
     return {n: sorted(s[e]) for n, e in SITES[site]["subs"].items() if s.get(e)}
@@ -427,7 +446,7 @@ def kiln(folder: str, dials) -> None:
     on one phase (two of them, 2.5 and 5 min long, run on days the kiln never
     fired) and depended on which signatures the library happened to keep."""
     tag = _apply(dials)
-    fleet, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     det = fleet.main
     pulses = _kiln_pulses(folder)
     fires = _firings(pulses)
@@ -508,7 +527,7 @@ def fridge(folder: str, dials) -> None:
     were spread over - ideally two, one per fridge."""
     import statistics as st
     tag = _apply(dials)
-    fleet, filed, _ = _run(folder, "kozolec" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "kozolec" if SUBS != "lab" else None)
     det = fleet.main
     truth = _fridge_runs(folder)
     at = _near(filed)
@@ -551,7 +570,7 @@ def inputs_bench(folder: str, dials) -> None:
     detector ties to one value of a setting, how strongly, and what that did
     to their evidence - the naming page's bar is DEFAULT_MIN_EVIDENCE."""
     tag = _apply(dials)
-    fleet, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    fleet, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     det = fleet.main
     bar = 0.7                                  # const.DEFAULT_MIN_EVIDENCE
     print(f"  {tag}   signatures {len(det.signatures)}, over the naming bar {sum(s.evidence >= bar for s in det.signatures)}")
@@ -615,7 +634,7 @@ def _pump_runs(folder: str) -> list:
 
 def pump(folder: str, dials) -> None:
     tag = _apply(dials)
-    _, filed, _ = _run(folder, "home" if SUBS == "prod" else None)
+    _, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     on_a = _near(x for x in filed if "a" in x.phases)
     n, runs = collections.Counter(), _pump_runs(folder)
     for a, b in runs:
