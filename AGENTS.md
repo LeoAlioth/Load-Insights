@@ -17,7 +17,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `custom_components/load_insights/sensor.py` | entities and the diagnostic attributes |
 | `tests/replay.py` | run the detector over exported CSVs, no HA |
 | `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does; ground-truth scoring and each site's device-meter list (`SITES`) |
-| `tests/energy_bench.py` | the scorecard: capture and impurity per measured load, hidden / circuits / fed, and the slicing invariance (`card`, `invariance`, `diff`) |
+| `tests/energy_bench.py` | the scorecard: capture and impurity per measured load, hidden / circuits / fed, the slicing invariance, and what each meter is worth to every other load (`card`, `invariance`, `diff`, `worth`) |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything
@@ -141,6 +141,7 @@ python3 tests/run_all.py                                  # 17 files, all must p
 python3 tests/energy_bench.py card [DIAL=V ...]           # THE score: capture / impurity per measured load
 python3 tests/energy_bench.py invariance SITE FOLDER      # what the pass slicing changes, session by session
 python3 tests/energy_bench.py diff A.json B.json          # two scorecards, load by load
+python3 tests/energy_bench.py worth SITE [DIAL=V ...]     # what each meter is worth to every other load
 python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration (diagnostics)
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
@@ -258,6 +259,45 @@ start of the same cluster, 8.1 % in a multi-close), 75 % of observed stops
 within 20 % of their start, 2.2 % of steps starts never closed and 7.6 % stops
 that closed nothing; Kozolec 88 %, 86 %, 0.9 and 6.6 %.
 
+**What a meter is worth** (`energy_bench.py worth SITE`, Anze, 2026-10-02: "how
+much adding a sensor to device X improves the prediction for device Y"): none
+fed, all fed, and per meter X only X fed (add-one) and all but X (remove-one),
+every target scored each time at SLICE=6; two matrices, targets Y by meters X,
+capture / impurity points - add-one less none, remove-one less all - beside
+the two baselines, written to `data/scorecard/worth-<site>-<commit>-<utc>.json`.
+Targets beyond the card's: Home's **bathroom fan** and **blinds** (Shellys
+behind Mansarda, West Blinds on the grid connection - so it leaves the
+Delavnica; `bench.EXTRA_SUBS`, read from `data/history/home-extra` by the
+`EXTRA=` dial, scored from their first reading, 22 Sep; the bathroom fan is a
+meter X too), its **ceiling fan** - a MODELLED truth, the watts of the speed
+HA assumes for an RF fan (2.3 / 3.5 / 6.3 / 11.2 / 18.3 / 27.0 W at speeds 1-6)
+- and Kozolec's **two fridges** - a HEURISTIC truth, `bench._fridge_runs`' runs
+off the house reading credited to the session starting within 30 s, scored
+over the sessions those runs can judge, pooled as "Fridges" too. The truth is
+the same in every replay, so the deltas hold whatever its own error.
+`FEED=name` feeds one meter (any number of them) under `SUBS=prod`.
+
+**First worth (2026-10-02, 5779c19, SLICE=6, points of capture / impurity):**
+Kozolec - the boiler's meter is worth +40 capture to the pond EVSE (its 3.5 kW
+runs no longer boiler-shaped; -40 / +3 when removed) and -19 impurity to the IR
+panel; the water pump's meter costs the car charger 27 points of capture
+(-27 / +0 added, +27 back when removed) and the pump itself 41 added alone, yet
+removing it from all loses 48 / -16 - the meters interact; the well pump is
+found only with every meter fed (73 %, impurity 46 %), and no meter helps the
+fridges beyond a point or two (Fridges 74 % caught, 26 % impure hidden; Fridge A
+0 % in every mode - its surge start never pairs, Fridge B 75 %). Home - the
+Mansarda 3EM is worth +22 capture to Mansarda itself and +13 / -6 to the office
+(remove-one -11 / +4); the Hiša 3EM +4 / -6 to Hiša, -28 impurity to the
+workshop boiler (+23 back when removed) and -16 to Susilna; the hidrofor's own
+meter +11 / -7 (remove -9 / +8). The bathroom fan (27 Wh, ~15 W for ~2 h) is
+caught in no mode, and its meter changes no other load by a point - nor does
+the office plug change it: at 15 W it sits under the detector's floor, with the
+ceiling fan (22 Wh at 2.3-3.5 W, 0 % everywhere). The blinds (19-28 Wh, 100 W
+for seconds) score 0-13 % and their deltas are noise. Susilna LOSES 7 points
+of capture under any one meter fed and 11 under its own: fed, its sessions
+leave the main-meter signatures the hidden run credited. Runtimes: Kozolec 22
+replays in 21 s, Home 26 in 21 min (python3.9, beside another bench).
+
 The old energy score was this with fewer loads: its precision and recall are
 1 - impurity and capture, identical on the same replay (checked 2026-10-02;
 exact ties - two meters each claiming a whole session - now break in
@@ -295,7 +335,12 @@ blob, one signature of 16,876 runs and ~470 kWh holding 4-9 % of every device.
   it - runs started a few seconds apart will read different days.
 - The laptop runs a Home replay in about two minutes on 0.1 GB, and ten at
   once. The sites are Raspberry Pis and a rebuild takes a ten-day backfill.
-  Tune here; deploy only to confirm.
+  Tune here; deploy only to confirm. What a replay builds from the CSVs alone
+  is kept in `~/.cache/load_insights_bench` (`replay._cached`): the parsed
+  series, Home's production house reading and the scorecard's truth series,
+  each keyed by the files it came from and the source that builds it - a
+  hidden Home replay 2-3 min -> 26 s; `python3.14` runs it identically and
+  faster still.
 
 ## The dials
 
