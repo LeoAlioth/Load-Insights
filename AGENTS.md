@@ -17,6 +17,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `custom_components/load_insights/sensor.py` | entities and the diagnostic attributes |
 | `tests/replay.py` | run the detector over exported CSVs, no HA |
 | `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does; ground-truth scoring and each site's device-meter list (`SITES`) |
+| `tests/energy_bench.py` | the scorecard: capture and impurity per measured load, hidden / circuits / fed, and the slicing invariance (`card`, `invariance`, `diff`) |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything
@@ -136,8 +137,11 @@ There is a bench. Use it — replaying costs minutes and a live site costs a
 deploy cycle plus a ten-day rebuild.
 
 ```bash
-python3 tests/run_all.py                                  # 16 files, all must pass
-python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration
+python3 tests/run_all.py                                  # 17 files, all must pass
+python3 tests/energy_bench.py card [DIAL=V ...]           # THE score: capture / impurity per measured load
+python3 tests/energy_bench.py invariance SITE FOLDER      # what the pass slicing changes, session by session
+python3 tests/energy_bench.py diff A.json B.json          # two scorecards, load by load
+python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration (diagnostics)
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln
 python3 tests/bench.py score SITE FOLDER SUBS=prod        # feed production's meters to the Fleet
@@ -152,14 +156,17 @@ site is one folder of per-day CSVs exported from the History panel.
 
 For anything touching clustering or attribution, score it against **sub-meter
 ground truth** rather than counting signatures — fewer signatures is also what
-over-merging looks like. `tests/bench.py` holds each site's device-meter
-entity list (`SITES`) and the two metrics:
+over-merging looks like. **The headline is the scorecard** (`energy_bench.py
+card`, below): capture and impurity per measured load, hidden, circuits and fed
+side by side, and the invariance count - how many sessions the pass slicing changes.
+Those numbers belong in the commit message. `tests/bench.py` keeps two
+session-count diagnostics, for finding out WHY a score moved:
 
 - **purity** — does one signature hold one device
 - **concentration** — does one device land mostly in one signature
 
-Report both. A change that raises concentration while dropping purity is a
-trade, not a win, and the numbers belong in the commit message.
+A change that raises concentration while dropping purity is a trade, not a
+win.
 
 Beware the metric's own trap: changing detection changes the *session set*, so
 percentages are over different populations. Only devices with 100+ labelled
@@ -185,23 +192,58 @@ The bench now PINS the house power roles to the site's configured entities
 the 3EMs' factors in the history the guess took Hiša's power for the house's
 and every count halved (caught in the recapture, 2026-09-30).
 
-### The energy score (`tests/energy_bench.py`)
+### The scorecard (`tests/energy_bench.py`)
 
-`python3 tests/energy_bench.py home data/history/home SWITCH=... [PLANT=set1]`
-scores what a named load's statistics will get right: per device meter, the
-watt-hours of its runs that land in signatures the device dominates (>= 50 %
-of the signature's energy) against the device's energy above its idle draw
-(the level it holds a tenth of the time, by time). Precision = of those
-signatures' energy, the device's share; recall = of the device's energy, the
-share caught; F0.5 weighs precision (under-reporting is the lesser evil). It
-also lists the signatures holding most detected energy and, per device, where
-its energy went. `PLANT=watts:on_s:every_s:phase` adds a square-wave load to
-the house reading (and the grid meter's power and current) to score a load no
-meter watches. 2026-09-30, 20 days: Kozolec new 72.7 / 67.5 % (old 78.0 /
-66.6; the boiler 68 -> 82 % precise, the water pump 13 -> 52 % caught, the
-pond EVSE 90 -> 75 % precise); Home new 55.8 / 10.1 % (old: no signature
-reaches 50 % of any device). The Home number is the blob: one signature with
-16,876 runs and ~470 kWh holding 4-9 % of every device's energy.
+One question per MEASURED load - how well is it estimated from the main meter
+- in two numbers (Anze, 2026-10-02; a boiler that used 10 kWh, 9.5 kWh
+attributed to it, 9 rightly):
+
+- **capture** = energy rightly attributed to the load / its measured energy - 9 / 10 = 90 %
+- **impurity** = energy wrongly attributed to it / all attributed to it - 0.5 / 9.5 = 5.3 %
+
+Measured energy is the meter's above its idle floor (the level it holds a
+tenth of the time, by time; the floor's kWh is printed beside it). Attributed:
+every session in a signature the load owns - holds >= 50 % of its energy, the
+one that would be named after it. A session's energy is the load's where its
+meter switched on with it and as far as it drew above its floor meanwhile.
+Per site: capture weighted by energy, impurity pooled (wrong / attributed).
+Under-reporting is the lesser evil: weigh impurity above capture.
+
+Two truth sets per site, each one owner per signature: **devices** - every
+meter that holds no other (Home's seven plugs under the grid connection plus
+Blaževa Soba inside Hiša and the office inside Mansarda; Kozolec's ten) - the
+headline; and the **partition** - the meters directly under the main and the
+remainder no meter reads (Home: Hiša, Mansarda, the seven plugs and the
+Delavnica = house - all of them, each held; Kozolec: the ten plugs and Rest),
+everything the main reads, once. Three modes: **hidden** (`SUBS=none`, no meter
+fed - the main-meter estimate), **circuits** (`SUBS=circuits`, Home's two 3EMs
+only) and **fed** (`SUBS=prod`, every meter production reads); the meters are
+the truth in all three, read from the history. And two circuit sites,
+`home-hisa` and `home-mansarda`: a 3EM as the main meter, scored on the device
+inside it (replayed without reactive power: the 3EMs publish no volts or amps).
+
+`card` replays every site in every mode at SLICE=0, 6 and LIVE=1, eight at a
+time, prints one figure where the slicings agree and each one's (0|6|L1) where
+they do not, the invariance count and how runs were closed (the pairing:
+share closed by an observed stop vs each inferred kind, how near an observed
+stop comes to its start's size, starts never closed and stops that closed
+nothing), and writes `data/scorecard/<commit>-<utc>.json`; `diff A B` compares
+two. `invariance SITE FOLDER` lists every session SLICE=6 and LIVE=1 file
+differently from one call - missing, extra, moved, another end, size or
+signature - with its distance to the nearest pass boundary, and saves the list
+to `data/scorecard/`. `energy_bench.py SITE FOLDER [DIALS]` is one replay with
+the full per-load detail; `PLANT=watts:on_s:every_s:phase` (or `PLANT=set1`)
+adds a square-wave load to the house reading and the grid meter to score a
+load no meter watches.
+
+The old energy score was this with fewer loads: its precision and recall are
+1 - impurity and capture, identical on the same replay (checked 2026-10-02;
+exact ties - two meters each claiming a whole session - now break in
+production's meter order, which moved 0.3 kWh from the workshop boiler to the
+office).
+Its earlier numbers: 2026-09-30, 20 days, Kozolec 72.7 / 67.5 % (the boiler
+68 -> 82 % precise, the water pump 13 -> 52 % caught); Home 55.8 / 10.1 % - the
+blob, one signature of 16,876 runs and ~470 kWh holding 4-9 % of every device.
 
 ### How to tune without fooling yourself
 
@@ -221,10 +263,11 @@ reaches 50 % of any device). The Home number is the blob: one signature with
 - **Ground truth only sees loads that have a sub-meter.** Home's kiln has none,
   so a change can raise every score while wiping it out. Check unmetered loads
   of interest separately at every point of a sweep.
-- **The pass slicing is the noise floor.** Re-run a verdict at SLICE=4, 5,
-  7 and 8 beside the default 6: on the same code the pump's clean runs move
-  482-490 and Home's energy precision 76-88 % (*A meter's cadence*,
-  2026-10-02). A difference inside that is not a result.
+- **The pass slicing is the noise floor** until the detector is invariant to
+  it. On the same code the pump's clean runs move 482-490 and Home's energy
+  precision 76-88 % between SLICE=4 and 8 (*A meter's cadence*, 2026-10-02).
+  `card` shows each slicing's figure where they differ; a difference inside
+  that spread is not a result. `invariance` lists the sessions behind it.
 - **Point sweeps at a fixed folder.** Build tuning and hold-out folders of
   symlinks and never replay `data/history/<site>` while a fetch is writing to
   it - runs started a few seconds apart will read different days.
