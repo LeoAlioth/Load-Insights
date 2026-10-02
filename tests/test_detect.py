@@ -1354,6 +1354,46 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
     assert det._merge_devices() == 0 and len(det.signatures) == 2
 
 
+def test_the_device_merge_judged_where_something_changed_is_the_full_walk():
+    """_merge_devices keeps start_home's votes between filings and judges
+    only the devices whose signatures changed; after every filing it must
+    merge what a walk over the whole library would, in the same order. A
+    device's runs filed into a second signature by a meter's word move that
+    signature's home as the votes tip, a run kept out stays apart, a leg on
+    another phase stays apart (2026-10-02)."""
+    import copy
+    det = D.Detector()
+    t = [T0]
+
+    def run(dev, phases="a", watts=1000.0):
+        t[0] += 900.0
+        return D.Session(phases=phases, start=t[0], end=t[0] + 300.0, pair=(dev, None),
+                         levels={p: [(t[0], watts / len(phases))] for p in phases})
+
+    def file(s, **kw):
+        det._file(s, **kw)
+        full = copy.deepcopy(det)
+        full._votes = None                            # the walk over everything, as before
+        incremental_judged_all = det._rejudge_all
+        assert det._merge_devices() == full._merge_devices()
+        assert list(det._moved.items()) == list(full._moved.items()), (det._moved, full._moved)
+        assert [x.id for x in det.signatures] == [x.id for x in full.signatures]
+        return incremental_judged_all
+
+    for _ in range(4):
+        file(run(7))                                  # device 7's runs: signature 1
+    for _ in range(3):
+        file(run(8))                                  # device 8's: signature 2
+    file(run(7, phases="b"))                          # a B leg of 7: signature 3, apart by phase
+    file(run(7), avoid=[1, 2])                        # kept out of both: signature 4, never merged into them
+    judged_all = []
+    for _ in range(5):                                # device 7's runs sent to 2 by a meter: its home tips to 7
+        judged_all.append(file(run(7), prefer=2))
+    assert det._moved == {1: 2}, det._moved          # 2 had the more runs when the votes tied
+    assert {x.id for x in det.signatures} == {2, 3, 4}
+    assert not all(judged_all), "every pass judged every device: nothing was kept between filings"
+
+
 def test_the_day_is_drawn_as_a_block_chart():
     hours = [0] * 24
     hours[7], hours[8], hours[20] = 6, 3, 2
