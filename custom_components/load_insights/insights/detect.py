@@ -2102,6 +2102,16 @@ class PhaseState:
         # pulse of 48, where recency gives 42.1 s. So the durations are
         # measurably wrong and the fix is not this one - probably a cost
         # combining size gap AND age rather than either alone.
+        #
+        # First what a one-device meter below says: its device stopped here,
+        # so the run it started ends, whatever the sizes - see Fleet._meter_stop.
+        if self.lib is not None and self.lib.meter_stop is not None and self.declared:
+            e = self.declared[-1]
+            o = self.lib.meter_stop(self.name, e[3], e[4], self.open_edges)
+            if o is not None:
+                self.open_edges.remove(o)
+                self._remember_close(o, at)
+                return [self._close(o, at, watts, var, direct=True)]
         if self.lib is not None and self.stop_cluster is not None:
             got = self._pair_by_model(at, watts, var)
             if got is not None:
@@ -3406,6 +3416,8 @@ class Detector:
     step_meter: Optional[object] = field(default=None, repr=False, compare=False)
     # (meter, phase, since, up) -> it held its value through that moment, set by the Fleet - see _likely_meter
     meter_held: Optional[object] = field(default=None, repr=False, compare=False)
+    # (phase, span start, span end, open runs) -> the run a one-device meter's own stop there ends, set by the Fleet
+    meter_stop: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
@@ -4549,6 +4561,7 @@ class Fleet:
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict)
     _pass_end: float = field(default=0.0, repr=False, compare=False)   # how far this pass's readings reach - see _meter_held
+    _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
     # the grid's readings, reactive and PV newer than the wait, for the next pass
     _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
@@ -4643,6 +4656,7 @@ class Fleet:
         self.main.meter_steps = self._meter_steps
         self.main.step_meter = self._step_meter
         self.main.meter_held = self._meter_held
+        self.main.meter_stop = self._meter_stop
         self._pass_end = max(latest, latest_seen)
         main_now = now_ts
         if self.wait_cap_s or self._carry:
@@ -5089,6 +5103,33 @@ class Fleet:
                        (("rows", keep_rows), ("q", keep_q), ("pv", keep_pv))}
         self._carry = {k: d for k, d in self._carry.items() if d}
         return out_rows, out_q, out_pv, cut
+
+    def _meter_stop(self, ph: str, a: float, b: float, opens: list):
+        """The open run on grid phase ``ph`` that a one-device meter's own
+        stop over the grid fall's span [a, b] ends: the newest the meter
+        started - it rose within its sustain of the run's start - by at
+        least half of what it fell. Whatever the grid's step measures: Home's
+        pump started at +909 W, still settling, and stopped at -731 W while its
+        plug fell 818 W to nothing; too unlike to pair by size, the fall
+        closed a 689 W and a 118 W run together instead, and the pump's ran on
+        two hours (20.09 00:39). Each meter fall ends one run."""
+        if len(self._stops_used) > 1000:
+            self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
+        for name, det in self.subs.items():
+            if not self.holds_one_device(name):
+                continue
+            for c in [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]:
+                st = det.phases[c]
+                reach = st.sustain()
+                for e in self._near(st, a, b, reach):
+                    if e[1] >= 0 or (name, e[0]) in self._stops_used:
+                        continue
+                    for o in reversed(opens):
+                        rises = [r[1] for r in self._near(st, o.since - reach, o.since + reach, reach) if r[1] > 0]
+                        if rises and -e[1] >= 0.5 * max(rises):
+                            self._stops_used[(name, e[0])] = e[0]
+                            return o
+        return None
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
