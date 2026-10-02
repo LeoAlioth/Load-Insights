@@ -757,11 +757,13 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return groups
 
     async def async_adopt(self, signature_id: int) -> Optional[str]:
-        """Move a predecessor's name onto this signature, and persist."""
-        name = self.detector.adopt(signature_id)
-        if name is None:
-            return None
-        await self._persist(force=True)
+        """Move a predecessor's name onto this signature, and persist -
+        between passes, as async_rename."""
+        async with self._lock:
+            name = self.detector.adopt(signature_id)
+            if name is None:
+                return None
+            await self._persist(force=True)
         self.async_update_listeners()
         return name
 
@@ -775,10 +777,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         that finished after the unload left a live twin the new platform
         refused ("ID ..._load_energy_kiln already exists"), frozen on the
         old runner (37 % of name_load calls in a scratch HA test,
-        2026-10-02)."""
-        if not self.detector.rename(signature_id, name):
-            return False
-        await self._persist(force=True)          # a user action, written at once
+        2026-10-02).
+
+        Between passes, never under one: a pass works on the library in an
+        executor thread, and a rename landing then changed it under the pass
+        (AGENTS.md, 2026-10-02)."""
+        async with self._lock:
+            if not self.detector.rename(signature_id, name):
+                return False
+            await self._persist(force=True)      # a user action, written at once
         return True
 
     async def _persist(self, force: bool = False) -> None:

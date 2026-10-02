@@ -684,14 +684,6 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
-- **A rename during a pass, and a pass across an unload** (2026-10-02, seen
-  while fixing the name_load race in 8e04c2c; never observed):
-  `DetectionRunner.async_rename` does not take `self._lock`, so a rename while
-  a pass runs changes the detector while the pass works on it in another
-  thread. And a pass still running when a reload unloads the entry can
-  re-attach a carried name after a reset and leave the same stale twin entity
-  through sensor.py's `_follow_names`. Taking the lock in `async_rename`, and
-  skipping `_follow_names` while the entry is unloading, would cover both.
 - **A phantom start after a multi-close** (2026-10-02, the trade 554de9a
   leaves): when a multi-close takes a phase's last open runs while the phase
   still reads about 700 W, the level falls back to the floor and the 700 W
