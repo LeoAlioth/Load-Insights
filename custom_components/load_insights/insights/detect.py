@@ -185,20 +185,8 @@ SUSTAIN_AGREE_REL = 0.15
 # session LENGTHS were already right - 42.0 s against 42.0 s timed off the
 # grid meter itself - so this is about which readings count, not about length.
 # ^ STEP_AT_HALFWAY: always on, as the 2026-09-30 ablation found (AGENTS.md)
-# How a reading's sample interval is estimated. Home Assistant records only a
-# CHANGE, so a running mean of the gaps measures how often the value changes,
-# not how often the meter reports: Home's grid meter reports every 6 s on all
-# three phases (mode 6 s), but phase A is quieter, records fewer changes, and
-# its mean came out 7.1 s against C's 6.0. One meter then judged its own two
-# legs by different sustain thresholds (10.7 s against 9.0 s). A low
-# percentile of recent gaps is the cadence, since the shortest regular gap is
-# the one where the value did change. The MEDIAN of the last INTERVAL_GAPS
-# gaps puts all three of Home's phases at 6.0 s. Swept 0.1-0.5: the median
-# also takes the kiln's full-size sessions 305 -> 337 and its spurious ladder
-# 130 -> 92, and on held-out days Home 76.7 -> 77.6 % purity, Kozolec's
-# hidrofor 65 -> 75. It does NOT fix the single-leg problem by itself -
-# the pairing (2026-09-23). The running mean it replaced is gone.
-INTERVAL_PERCENTILE = 0.5
+# ^ INTERVAL_PERCENTILE: the median of the last 60 gaps, replaced by the
+# moving gaps' tenth percentile - see CADENCE_GAPS
 # The same relaxation, but only for a leg whose partner on another phase - a
 # balanced edge that started with it - is stopping at the same moment. See
 # Detector._corroborate. One reading is enough: the other leg is the evidence.
@@ -234,8 +222,7 @@ CORROBORATE_BALANCE = 0.7
 #   the kiln main signature x385 -> x397, single-leg 116 -> 112, ladder 18 -> 23
 #   Kozolec  identical, as a single-phase site must be
 # ^ CORROBORATED_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
-INTERVAL_GAPS = 60
-# A meter's cadence is how often it writes WHILE ITS VALUE MOVES: the gaps
+# A meter's interval - its cadence - is how often it writes WHILE ITS VALUE MOVES: the gaps
 # after a reading that moved by more than its noise, over the last
 # CADENCE_GAPS of them, at MOVING_PERCENTILE. One rule for a polled meter and
 # one reporting on change. Of ALL gaps, a low percentile took Kozolec's
@@ -1553,9 +1540,7 @@ class PhaseState:
     # it can express.
     quantum: float = 0.0
     step_diffs: List[float] = field(default_factory=list)
-    gaps: List[float] = field(default_factory=list)       # recent sample gaps, see INTERVAL_PERCENTILE
-    _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False)   # the same, in order
-    _moving_gaps: List[float] = field(default_factory=list, repr=False, compare=False)   # see CADENCE_GAPS
+    moving_gaps: List[float] = field(default_factory=list)   # the gaps after a move, see CADENCE_GAPS
     _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
     _moved: bool = field(default=False, repr=False, compare=False)   # the last reading moved past the noise
     last_w: Optional[float] = None
@@ -1597,9 +1582,9 @@ class PhaseState:
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
-    # this phase's own sampling interval, as a slow mean of the gaps between
-    # samples - the meter's rate, not a setting, so turning a poll up from
-    # 5 s to 1 s is noticed rather than configured
+    # this phase's own reading interval - its cadence, see CADENCE_GAPS - the
+    # meter's rate, not a setting, so turning a poll up from 5 s to 1 s is
+    # noticed rather than configured
     interval: float = 0.0
 
     def _learn_quantum(self, w: float) -> None:
@@ -1645,7 +1630,7 @@ class PhaseState:
         if self.last_ts is not None and ts <= self.last_ts:
             return []
         if (not held and not _no_hold and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
-                and ts - self.pending[-1][0] > SUSTAIN_CADENCES * (self.cadence() or math.inf)
+                and ts - self.pending[-1][0] > SUSTAIN_CADENCES * (self.interval or math.inf)
                 and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
             # the change it last reported held right up to this reading
             last = self.pending[-1]
@@ -1660,23 +1645,16 @@ class PhaseState:
         elif self.last_ts is not None:
             gap = ts - self.last_ts
             if SAME_UPDATE_S < gap < 120.0:   # one update is not a gap; a restart's is not a sampling rate
-                # the meter's CADENCE, not the gap between recorded
-                # changes - see INTERVAL_PERCENTILE
-                self.gaps.append(gap)
-                if len(self._gaps_sorted) != len(self.gaps) - 1:
-                    self._gaps_sorted = sorted(self.gaps[:-1])
-                bisect.insort(self._gaps_sorted, gap)
-                while len(self.gaps) > INTERVAL_GAPS:
-                    old = self.gaps.pop(0)
-                    del self._gaps_sorted[bisect.bisect_left(self._gaps_sorted, old)]
-                ordered = self._gaps_sorted
-                if self._moved:
-                    self._moving_gaps.append(gap)
+                if self._moved:          # the meter's CADENCE - see CADENCE_GAPS
+                    self.moving_gaps.append(gap)
+                    if len(self._moving_sorted) != len(self.moving_gaps) - 1:
+                        self._moving_sorted = sorted(self.moving_gaps[:-1])   # restored from a store
                     bisect.insort(self._moving_sorted, gap)
-                    if len(self._moving_gaps) > CADENCE_GAPS:
-                        old = self._moving_gaps.pop(0)
+                    if len(self.moving_gaps) > CADENCE_GAPS:
+                        old = self.moving_gaps.pop(0)
                         del self._moving_sorted[bisect.bisect_left(self._moving_sorted, old)]
-                self.interval = ordered[int(INTERVAL_PERCENTILE * (len(ordered) - 1))]
+                    m = self._moving_sorted
+                    self.interval = m[int(MOVING_PERCENTILE * (len(m) - 1))]
         prev_w = self.last_w             # the reading before this one - see NOISE_FROM_MOVES
         if not held:
             moved = prev_w is not None and abs(w - prev_w) >= self.noise_at(prev_w)
@@ -1834,23 +1812,13 @@ class PhaseState:
 
     def sustain(self) -> float:
         """How long a new level must hold to be confirmed - see SUSTAIN_CADENCES."""
-        cad = self.cadence()
-        return SUSTAIN_CADENCES * cad if cad else SUSTAIN_SECONDS
-
-    def cadence(self) -> float:
-        """How often this meter writes while its value moves - see
-        CADENCE_GAPS; until ten such gaps are known, reading_cadence of the
-        recent gaps, then the interval."""
-        m = self._moving_sorted
-        if len(m) >= 10:
-            return m[int(MOVING_PERCENTILE * (len(m) - 1))]
-        return reading_cadence(self.gaps) or (self.interval or 0.0)
+        return SUSTAIN_CADENCES * self.interval if self.interval else SUSTAIN_SECONDS
 
     def confirm_silence(self, now: float) -> List[Session]:
         """At the end of a pass: a change pending longer than SUSTAIN_CADENCES
         of the cadence with no reading since held - the recorder writes only
         changes - and is confirmed now, not when the next change arrives."""
-        cad = self.cadence()
+        cad = self.interval
         if not self.pending or self.level is None or not cad:
             return []
         last = self.pending[-1]
@@ -1869,7 +1837,7 @@ class PhaseState:
         held_until = self.steady_ts
         if held_until is not None and first_off - held_until <= SAME_UPDATE_S:
             held_until = self.steady_before         # the change's own update
-        cad = self.cadence()
+        cad = self.interval
         if not cad:
             return first_off if held_until is None else held_until
         earliest = first_off - SUSTAIN_CADENCES * cad
@@ -2284,7 +2252,7 @@ class PhaseState:
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
-                "floor_zero": self.floor_zero}
+                "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "PhaseState":
@@ -2298,7 +2266,7 @@ class PhaseState:
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
-                   floor_zero=bool(d.get("floor_zero", False)))
+                   floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
 
 
 # ------------------------------------------------------------------ signatures
@@ -3239,25 +3207,6 @@ def edge_scale(watts: float, unit_w: float) -> float:
     """A step's size in measurement errors, one of them ``unit_w`` watts at
     small steps and EDGE_SCALE_REL of the step at large ones - see EDGE_BATCH."""
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
-
-
-def reading_cadence(gaps: Sequence[float]) -> float:
-    """How soon a meter reports a change: its shortest usual gap between
-    recorded readings; 0 with too few to say - PhaseState.cadence's fallback
-    until it has seen its value move (see CADENCE_GAPS). One rule
-    for every meter - the recorder writes only changes, so a meter polled
-    every 10 s that holds its value looks silent exactly like one reporting
-    on change (the hidrofor's Zigbee plug: 4,586 of 6,100 gaps exactly 10 s,
-    the rest its unchanged readings, unwritten)."""
-    g = sorted(x for x in gaps if x > SAME_UPDATE_S)   # one update's writes are not a cadence
-    if len(g) < 10:
-        return 0.0
-    # its shortest usual gap - the 5th percentile. Not the 10th: a Shelly
-    # heartbeating once a minute reports a change within ~5 s, and its 60 s
-    # heartbeats filled the tenth percentile (Kozolec's IR panel, 31 s; 6.5 at
-    # the 5th). Not the 2nd: Kozolec's Victron, polled every 5.3 s, has 2 % of
-    # its gaps at 1.6-2.3 s from its once-a-minute refresh - 5.0 s at the 5th.
-    return g[int(0.05 * (len(g) - 1))]
 
 
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
