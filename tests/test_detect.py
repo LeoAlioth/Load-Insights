@@ -155,6 +155,71 @@ def test_processing_in_slices_equals_processing_at_once():
     assert whole.signatures[0].count == sliced.signatures[0].count, (whole.signatures[0].count, sliced.signatures[0].count)
 
 
+def _passes(rows_by_phase, cuts, end):
+    """``rows_by_phase`` read the way a runner reads the recorder: in passes
+    ending at each of ``cuts`` and then ``end``, each [start, end)."""
+    t0 = -float("inf")
+    for e in list(cuts) + [end]:
+        yield {p: [r for r in rows if t0 <= r[0] < e] for p, rows in rows_by_phase.items()}, e
+        t0 = e
+
+
+def _as_filed(sessions):
+    return [(s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 6), s.signature_id) for s in sessions]
+
+
+def _sliced_history(hours=6.0):
+    """Three phases read together every 5 s: a two-phase pulser on A and C
+    whose legs settle a reading apart, and on B a 900 W load read as a plug
+    reports - on change, and once a minute otherwise - so a change is
+    confirmed by the meter's silence."""
+    secs = hours * 3600.0
+    a = series(secs, kiln(period=300.0, on=50.0), seed=1)
+    c = [(t + (5.0 if (t - T0) % 300.0 < 5.0 else 0.0), w) for t, w in series(secs, kiln(period=300.0, on=50.0), seed=2)]
+    c = sorted({t: w for t, w in c}.items())
+    b, last, t = [], None, T0
+    while t < T0 + secs:
+        w = 300.0 + (900.0 if (t - T0) % 1700.0 < 400.0 else 0.0)
+        if w != last or not b or t - b[-1][0] >= 60.0:
+            b.append((t, w))
+            last = w
+        t += 5.0
+    return {"a": a, "b": b, "c": c}, T0 + secs + 600.0
+
+
+def test_a_pass_is_only_a_pause():
+    """The same history read in one call, in passes of an hour or ten
+    minutes, or a minute or 37 s at a time, files the same sessions into the
+    same signatures (2026-10-02). Before, a pass's end confirmed every pending
+    change, formed every rise still in its event window alone, filed every
+    run that had waited out its tail and none that had not, and the library a
+    one-call replay consulted stayed empty until the end."""
+    rows, end = _sliced_history()
+    whole = _as_filed(D.Detector().process(rows, now_ts=end))
+    assert len(whole) > 60 and any(p == "ac" for p, *_ in whole) and any(p == "b" for p, *_ in whole), whole[:5]
+    for step in (3600.0, 600.0, 60.0, 37.0):
+        det, got = D.Detector(), []
+        for part, e in _passes(rows, [T0 + k * step for k in range(1, int(6 * 3600 / step) + 1)], end):
+            got += det.process(part, now_ts=e)
+        assert _as_filed(got) == whole, (step, [x for x in _as_filed(got) if x not in whole][:3])
+
+
+def test_a_rise_still_in_its_event_window_waits_across_a_restart():
+    """A pass's end no longer forms the rises waiting in their event window,
+    so they are stored: a two-phase start whose second leg is declared after
+    the pass ended - and after a restart - is still one A+C event."""
+    a = [(T0 + 5.0 * k, 300.0 + (3000.0 if k >= 120 else 0.0)) for k in range(200)]
+    c = [(t + 2.5, w) for t, w in a]
+    cut = T0 + 616.0                                   # A's rise declared, C's not yet
+    det = D.Detector()
+    det.process({"a": [r for r in a if r[0] < cut], "c": [r for r in c if r[0] < cut]}, now_ts=cut)
+    assert det._pending and det.phases["a"].open_edges and not det.phases["c"].open_edges
+    det = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    det.process({"a": [r for r in a if r[0] >= cut], "c": [r for r in c if r[0] >= cut]}, now_ts=T0 + 1000.0)
+    legs = [st.open_edges[0].cluster for st in (det.phases["a"], det.phases["c"])]
+    assert legs[0] == legs[1] and det.cluster(legs[0]).phase == "ac", [(c.id, c.phase) for c in det.edges]
+
+
 def test_state_round_trips_through_json_mid_session():
     a = series(400, lambda s: 3000.0 if s >= 100 else 0.0)     # still on at the end
     det = D.Detector(); det.process({"a": a}, now_ts=T0 + 400)
