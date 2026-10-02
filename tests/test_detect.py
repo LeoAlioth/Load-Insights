@@ -260,6 +260,72 @@ def test_a_rise_still_in_its_event_window_waits_across_a_restart():
     assert legs[0] == legs[1] and det.cluster(legs[0]).phase == "ac", [(c.id, c.phase) for c in det.edges]
 
 
+def _plug_day(busy: bool):
+    """A plug's one load: +300 W (a 15 W wobble) for 20 hours, read every
+    60 s, two seconds after the grid's 5 s readings; the grid's phase B with
+    it, alone or with four other loads cycling on it - 150 W ten minutes in
+    thirty, 1.2 kW three minutes an hour, a 60 W cycler and 2 kW for 90 s
+    every 90 minutes, none switching with the plug."""
+    rnd = random.Random(3)
+    on, off = T0 + 3600.0, T0 + 21 * 3600.0
+    end = off + 2 * 3600.0
+    warm = (T0 + 600.0, T0 + 1200.0)          # a 100 W blip in the first hour: the plug's cadence is measured
+    plug, grid = [], []
+    t = T0
+    while t < end:
+        w = 300.0 + rnd.uniform(-15, 15) if on <= t < off else (100.0 if warm[0] <= t < warm[1] else 0.0)
+        plug.append((t + 2.0, round(w, 1)))
+        t += 60.0
+    t = T0
+    while t < end:
+        w = 400.0 + rnd.uniform(-5, 5) + (300.0 if on <= t < off else 0.0) + (100.0 if warm[0] <= t < warm[1] else 0.0)
+        if busy:
+            s = t - T0
+            w += 150.0 if (s + 737.0) % 1800.0 < 600.0 else 0.0
+            w += 1200.0 if (s + 1313.0) % 3600.0 < 180.0 else 0.0
+            w += 60.0 if (s + 101.0) % 420.0 < 200.0 else 0.0
+            w += 2000.0 if (s + 2411.0) % 5400.0 < 90.0 else 0.0
+        grid.append((t, round(w, 1)))
+        t += 5.0
+    return {"b": grid}, plug, on, off, end
+
+
+def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
+    """Susilna's plug (Home, 09-24 to 09-27, on the busy phase A; not declared
+    one device, never placed by the phase map): one +270 W
+    step at 18:00 and its stop twenty hours later, read every minute, nothing
+    else on the plug. The plug's own detector files the 20-hour, 6 kWh run
+    every time, yet the house credited the plug 11 % of its energy: the grid's
+    run of the plug's start was ended within 12-68 minutes five ways over five
+    nights - a multi-close, another load's stop of its size, a joint stop
+    after held drops were booked as its step-downs, an unseen stop at its
+    followed 3.3 kW - while the plug still read 254-285 W. A run a meter's own
+    step started is that meter's until the meter shows it stopped
+    (PhaseState.owned, the converse of Fleet._meter_stop). With the phase
+    quiet it always was."""
+    for busy in (False, True):
+        rows, plug, on, off, end = _plug_day(busy)
+        fleet = D.Fleet()
+        fleet.wait_cap_s = D.METER_WAIT_CAP_S
+        filed, file = [], fleet.main._file
+
+        def keep(s, *a, **kw):
+            file(s, *a, **kw)
+            filed.append(s)
+        fleet.main._file = keep
+        for (part, e), (sub, _) in zip(_passes(rows, [T0 + 6 * 3600.0 * k for k in range(1, 4)], end),
+                                      _passes({"a": plug}, [T0 + 6 * 3600.0 * k for k in range(1, 4)], end)):
+            fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True})
+        own = [s for s in fleet.subs["Plug"].recent if s["end"] - s["start"] > 10 * 3600]
+        assert len(own) == 1 and abs(own[0]["kwh"] - 6.0) < 0.1, own          # the plug's own detector: one 20 h run
+        run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
+        assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
+        run = max(run, key=lambda s: s.duration_s)
+        sig = fleet.main.signature_of(run)
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 6000.0) < 300 and sig is not None and sig.locations.get("Plug"), (
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+
+
 def test_state_round_trips_through_json_mid_session():
     a = series(400, lambda s: 3000.0 if s >= 100 else 0.0)     # still on at the end
     det = D.Detector(); det.process({"a": a}, now_ts=T0 + 400)
@@ -3196,6 +3262,83 @@ def test_as_of_bisects_to_where_the_walk_went():
     long = [(float(t), 0.0) for t in range(0, 1000, 2)]
     assert D._as_of(long, 501.0, 0) == walk(long, 501.0, 0) == 250
     assert D._as_of(long, 500.0, 3) == walk(long, 500.0, 3) == 250
+
+
+def test_a_meter_step_the_grid_has_not_yet_shown_is_not_netted_into_an_earlier_rise():
+    """Kozolec 09-22 11:33: the grid rises +223 W at 11:33:28 (its plateau from
+    11:33:38); the boiler's meter, read a horizon ahead, has declared its
+    -1929 W stop with a span 11:33:38-11:34:19, whose grid fall comes at
+    11:34:17 - not yet read. Netted into the rise, it closed the boiler's run
+    at 26 s and opened a phantom 2 kW start. A meter step the other way is
+    netted only when it settled inside the grid step's span."""
+    f = _fleet_with_meters({"Boiler": 0.0})
+    f.main.meter_steps = f._meter_steps
+    grid, boiler = f.main.phases["c"], f.subs["Boiler"].phases["a"]
+    boiler.interval, grid.interval, grid.noise = 7.6, 2.0, 30.0
+    _declare(grid, (T0, 223.0, None, T0 - 2.0, T0 + 10.0))                   # the rise, settled at T0 + 10
+    _declare(boiler, (T0 + 51.0, -1929.0, None, T0 + 10.0, T0 + 51.0, T0 + 51.0))   # the stop, settled at T0 + 51
+    assert f.main.metered_parts("c", T0, 223.0) == [223.0]                   # not netted: it settled after the rise did
+    _declare(boiler, (T0 + 5.0, -600.0, None, T0 - 1.0, T0 + 5.0, T0 + 5.0))      # one that settled inside the rise's span
+    parts = f.main.metered_parts("c", T0, 223.0)
+    assert len(parts) == 2 and abs(parts[0] + 600.0) < 1.0, parts
+
+
+def test_a_meters_stop_ends_the_run_its_own_rise_started():
+    """Kozolec 09-22 11:34: the boiler's -1929 W stop was handed the IR
+    panel's 514 W run (started two hours before, 41 s before a boiler rise)
+    once the boiler's own run was gone, and the run was booked at 1,270 W.
+    A meter's stop ends a run whose start is the meter's rise, in size too."""
+    f = _fleet_with_meters({"Boiler": 0.0})
+    f.single = {"Boiler": True}
+    boiler, grid = f.subs["Boiler"].phases["a"], f.main.phases["c"]
+    boiler.interval, grid.noise = 7.6, 30.0
+    ir = D._Open(since=T0 - 7200.0, watts=514.0, var=None, levels=[(T0 - 7200.0, 514.0)])
+    pulse = D._Open(since=T0, watts=1805.0, var=None, levels=[(T0, 1805.0)])
+    _declare(boiler, (T0 - 7159.0, 1900.0, None, T0 - 7182.0, T0 - 7159.0, T0 - 7150.0),   # a rise 41 s after the IR's start, its span reaching back to it
+             (T0 + 4.0, 1929.0, None, T0 - 10.0, T0 + 4.0, T0 + 10.0),                     # this pulse's rise
+             (T0 + 78.0, -1929.0, None, T0 + 37.0, T0 + 78.0, T0 + 80.0))                   # and its stop
+    assert f._meter_stop("c", T0 + 70.0, T0 + 76.0, [ir, pulse]) is pulse
+    f._stops_used.clear()
+    assert f._meter_stop("c", T0 + 70.0, T0 + 76.0, [ir]) is None            # the IR's 514 W is not the boiler's 1.9 kW rise
+
+
+def test_a_run_closed_by_a_fall_far_from_its_size_is_booked_at_the_smaller():
+    """One level throughout, the start and the stop are averaged - where they
+    agree, or the stop agrees with what the run was followed to (a fridge
+    sagging 63 -> 47 W, 55 W all along). A 514 W run a 2,027 W fall closed
+    was booked at 1,270 W for two hours (Kozolec 09-22); far apart, the
+    smaller."""
+    st = D.PhaseState(noise=20.0, baseline=100.0, level=600.0, interval=2.0)
+    o = D._Open(since=T0, watts=514.0, var=None, levels=[(T0, 514.0)])
+    assert abs(st._close(o, T0 + 7200.0, 2027.0, None).energy_wh - 514.0 * 2.0) < 1.0
+    o = D._Open(since=T0, watts=909.0, var=None, levels=[(T0, 909.0)])
+    assert abs(st._close(o, T0 + 60.0, 820.0, None).power_by_phase()[""] - 864.5) < 0.1   # agree: the mean
+    o = D._Open(since=T0, watts=63.0, var=None, levels=[(T0, 63.0)], now=47.0)
+    assert abs(st._close(o, T0 + 1700.0, 47.0, None).power_by_phase()[""] - 55.0) < 0.1   # sagged to the stop: the mean
+    o = D._Open(since=T0, watts=270.0, var=None, levels=[(T0, 270.0)], now=5007.0)
+    assert abs(st._close(o, T0 + 4700.0, 5007.0, None).power_by_phase()[""] - 270.0) < 0.1  # grown 18x while "alone": its start
+
+
+def test_a_meters_run_is_that_meters_until_the_meter_shows_it_stopped():
+    """The converse of _meter_stop: a run a meter's own step started is not
+    ended by a fall of its size, a held drop, a multi-close or a start of its
+    kind while the meter has declared no fall of half its size since."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    f.main.meter_on, f.main.meter_stop = f._meter_on, f._meter_stop
+    plug, grid = f.subs["Plug"].phases["a"], f.main.phases["c"]
+    plug.interval, grid.baseline, grid.level = 10.0, 100.0, 370.0
+    grid.lib, grid.name = f.main, "c"
+    _declare(plug, (T0 + 2.0, 270.0, None, T0 - 8.0, T0 + 2.0, T0 + 12.0))
+    o = D._Open(since=T0, watts=270.0, var=None, levels=[(T0, 270.0)], meter="Plug")
+    grid.open_edges = [o]
+    assert grid.owned(o)
+    assert grid._pair(T0 + 600.0, 268.0, None, 100.0) == []                   # a fall of its size is not its stop
+    assert grid.open_edges == [o]
+    _declare(plug, (T0 + 900.0, -265.0, None, T0 + 890.0, T0 + 900.0, T0 + 910.0))
+    assert not grid.owned(o)                                                   # the plug fell: the run is free again
+    assert len(grid._pair(T0 + 905.0, 268.0, None, 100.0)) == 1 and not grid.open_edges
+    back = D._Open.of(o.as_list())
+    assert back.meter == "Plug"
 
 
 if __name__ == "__main__":
