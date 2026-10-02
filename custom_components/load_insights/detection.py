@@ -179,7 +179,13 @@ STORAGE_VERSION = 1
 #     moves); only a start is placed; a step no meter placed never joins a
 #     meter that held its value - which steps are declared, and where every
 #     start cluster sits, differ.
-DETECTOR_GENERATION = 18
+# 19 = one gap measure for every meter (its interval is its moving gaps'
+#     tenth percentile, persisted), an unseen stop fitted only to what fell
+#     short since a run started, a meter's step the other way split out of
+#     a grid step that netted it, a held meter's signatures avoided when
+#     filing, and the level left on the reading after a multi-close - which
+#     steps are declared, and how runs close and file, differ.
+DETECTOR_GENERATION = 19
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full

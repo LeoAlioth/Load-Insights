@@ -684,14 +684,6 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
-- **A phantom start after a multi-close** (2026-10-02, the trade 554de9a
-  leaves): when a multi-close takes a phase's last open runs while the phase
-  still reads about 700 W, the level falls back to the floor and the 700 W
-  comes back as a new start (traced at Home 09-26 05:31). It is what the
-  shortfall fix (`_Open.short0`) gives back of the one-estimator gain: Home
-  about 1 point of purity and 1.8 points of pooled energy precision against
-  the estimator alone (85.8 -> 82.8 % pooled).
-
 - **Signature churn with a device per start cluster** (2026-09-30, the
   all-phase events): Home makes 1,835 signatures in ten days and keeps 237 -
   the 200 cap evicts unnamed ones and their cluster's next run makes a new one.
