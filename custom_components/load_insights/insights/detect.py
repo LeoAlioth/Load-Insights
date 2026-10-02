@@ -1959,11 +1959,14 @@ class PhaseState:
         of the house alone: one carrying solar reads low with everything on."""
         if not self.floor_zero or not self.open_edges:
             return []
-        short = sum(o.now or o.watts for o in self.open_edges) - level
+        # each run at what it is KNOWN to draw: sagged to, or its own start -
+        # never what it was followed up to (EXPERIMENT U)
+        known = lambda o: min(o.now, o.watts) if o.now else o.watts  # noqa: E731
+        short = sum(known(o) for o in self.open_edges) - level
         if short <= self.noise_at(level):
             return []
         for o in self.open_edges:
-            size = o.now or o.watts
+            size = known(o)
             if abs(size - short) <= self._tol(size, short):
                 self.open_edges.remove(o)
                 self._remember_close(o, at)
