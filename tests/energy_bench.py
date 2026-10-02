@@ -224,11 +224,28 @@ def _started_with(rows: list, times: list, s) -> bool:
 
 
 def _free(taken: list, a: float, b: float) -> list:
-    """The parts of [a, b] that no interval of ``taken`` covers."""
-    out = [(a, b)]
-    for x, y in taken:
-        out = [p for lo, hi in out for p in ((lo, min(hi, x)), (max(lo, y), hi)) if p[1] > p[0]]
+    """The parts of [a, b] that no interval of ``taken`` - sorted and disjoint,
+    see _take - covers. By bisection: the boiler's 750 runs made a scan of
+    every interval per session the dearest part of a replay (46 s)."""
+    out, t = [], a
+    for x, y in taken[max(bisect.bisect_right(taken, (a, float("inf"))) - 1, 0):]:
+        if x >= b:
+            break
+        if y <= t:
+            continue
+        if x > t:
+            out.append((t, x))
+        t = max(t, y)
+    if t < b:
+        out.append((t, b))
     return out
+
+
+def _take(taken: list, parts: list) -> None:
+    """Add ``parts`` - from _free, so disjoint from everything in it - to
+    ``taken``, keeping it sorted."""
+    for part in parts:
+        taken.insert(bisect.bisect_left(taken, part), part)
 
 
 def _overlap(ivs: list, a: float, b: float) -> float:
@@ -591,7 +608,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
                     row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
                     if credit >= 0.8 * got_wh:
-                        taken[name].extend(free)
+                        _take(taken[name], free)
             for name, watts, _, ivs in PLANTS:
                 ov = _overlap(ivs, s.start, s.end)
                 if ov > 0:
