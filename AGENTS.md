@@ -379,6 +379,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction | count | — | not swept; Home used ~400 in all |
 | `EDGE_NOISE_SHARE` / `EDGE_SCALE_REL` | **0.25** / 0.02 | one measurement error on the edge-size scale: this share of the phase's measured noise at small steps, this share of the step at large | ratio | 0.25–1 | **swept 0.25 / 0.5 / 1 (2026-09-30)**: Home 82.6/66.4 vs 80.9/61.3 vs 76.3/50.2, pump 1153 / 915 / 410, Kozolec fridges 188 / 154 / 81. A fixed 15 W ran every small fall at Kozolec into one cluster |
 | `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / `EDGE_RECUT` | 1.0 / 0.25 / 10 d / 32 | smoothing of the size histogram (in measurement errors), its bin, how fast it fades, how many steps before its valleys are cut again | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled) |
+| `EDGE_ANGLE` (`EDGE_ANGLE_BIN` 3°, `EDGE_ANGLE_KERNEL` 6°) | **off** | the step's reactive angle, atan2(dQ, dP), as a second clustering dimension: within a size segment, steps are cut again at the valleys of their angle density, so a pump (~35°) and a heater (0°) of one size are two kinds of edge | switch | — | **not yet measurable**: only a SIGNED var gives the angle, and Home's grid meter signs it only from 2026-09-30 07:57 - ten days of it exist from about 2026-10-10 (Kozolec's Victron and the 3EMs are unsigned). Synthetic test only (900 W at 0 and at 630 var: one cluster off, two on). Bench it on Home's ten days then, against the purity, the pump (its cluster shares A with the compressor's leg) and the kiln, whose legs read 0.866 with opposite-signed var |
 | `PAIR_MIN_RUNS` / `ABOVE_CHANCE_ODDS` | 8 / 100 | a pair is accepted once it has this many runs and a Chernoff bound puts the odds of its count by chance under 1 in `ABOVE_CHANCE_ODDS` | count | — | **replaced shares of 30 % and 20 % (2026-09-30)**: mat hours outside heating 21.7 -> 11.5; odds 10, 100 and 1000 identical. `LINK_MIN` and the device union-find went with the all-phase events (a device is its start cluster) |
 | `EVENT_WINDOW_INTERVALS` / `EVENT_BALANCE` | 3 / 0.2 | rises on different phases within this many of the slowest phase's reading intervals, the smallest at least this share of the largest, are ONE start event, clustered on their phase pattern and total size | count / ratio | 2–4 / 0.2–0.5 | measured on Home's ten days: at 2 intervals the compressor's three-leg event never formed, at 3 it did (70 steps, a cluster of 28), at 4 little more; the pump gets a false companion within 5 s 1 % of the time; 0.2 / 0.5 / 0.9 balance alike offline |
 
@@ -1141,9 +1142,6 @@ Don't re-chase these; each cost real time.
   and a placed cluster: Home 69.9 / 38.6, Kozolec F0.5 80.7 %); `TOO_BIG`
   "shrink" and off; the running-mean interval under `INTERVAL_PERCENTILE`;
   the switches on `SAG_CLOSE`, `NOISE_FROM_MOVES`, `SPLIT_BY_METERS`.
-  `EDGE_ANGLE` (the step's reactive angle as a second clustering dimension)
-  was NOT ruled out: it was off waiting for ten days of signed var, and went
-  as code nothing ran. It is in commit 125c9dd for when that data exists.
 - **Device-level pairing rules on the edge library, removed 2026-09-30**:
   learned part-way drops as immediate step-downs (never fired at Home once the
   rise and drop had to be one learned device; 3 joint stops instead of a device
