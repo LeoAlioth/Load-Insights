@@ -2941,5 +2941,30 @@ def test_a_load_left_running_after_a_multi_close_is_not_a_new_start():
     assert not st.open_edges, [o.watts for o in st.open_edges]            # and no phantom 700 W start
     assert abs(st.level - 900.0) < 20.0, st.level
 
+
+def test_a_one_device_meters_stop_ends_the_run_it_started():
+    """Home 20.09 00:39: the pump started at +909 W, still settling, and
+    stopped at -731 W while its plug fell 818 W to nothing. Too unlike to pair
+    by size, the fall closed a 689 W and a 118 W run together, and the pump's
+    ran on two hours. The plug says its device stopped: its run ends."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    f.single = {"Hidrofor": True}
+    plug = f.subs["Hidrofor"].phases["a"]
+    plug.interval = 10.0
+    _declare(plug, (T0, 1000.0, None, T0 - 10.0, T0), (T0 + 70.0, -818.0, None, T0 + 60.0, T0 + 70.0))
+    st = f.main.phases["c"]
+    st.lib, st.name, st.baseline, st.level = f.main, "c", 130.0, 1846.0
+    f.main.meter_stop = f._meter_stop
+    st.open_edges = [D._Open(since=T0 - 7800.0, watts=689.0, var=None, levels=[(T0 - 7800.0, 689.0)]),
+                     D._Open(since=T0 - 500.0, watts=118.0, var=None, levels=[(T0 - 500.0, 118.0)]),
+                     D._Open(since=T0 + 1.7, watts=909.0, var=None, levels=[(T0 + 1.7, 909.0)])]
+    _declare(st, (T0 + 73.0, -731.0, None, T0 + 69.0, T0 + 73.0))
+    closed = st._pair(T0 + 73.0, 731.0, None, 1115.0)
+    assert [s.start for s in closed] == [T0 + 1.7], [s.start for s in closed]   # the pump's run
+    assert sorted(o.watts for o in st.open_edges) == [118.0, 689.0]
+    st.open_edges.append(D._Open(since=T0 + 200.0, watts=909.0, var=None, levels=[(T0 + 200.0, 909.0)]))
+    _declare(st, (T0 + 75.0, -731.0, None, T0 + 74.0, T0 + 75.0))
+    assert f._meter_stop("c", T0 + 74.0, T0 + 75.0, st.open_edges) is None   # one meter fall ends one run
+
 if __name__ == "__main__":
     run_main(globals())
