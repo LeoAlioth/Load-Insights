@@ -9,7 +9,7 @@ from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED, get_instance
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -80,7 +80,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         """A name that lands after setup gets its entities at once. After a
         reset the library is empty at setup and the carried names find
         their loads only during the re-read; until 2026-09-30 every named
-        load then stayed unavailable until the next reload."""
+        load then stayed unavailable until the next reload.
+
+        Not while the entry unloads: a pass still running across a reload
+        that re-attached a carried name would add its entities to the platform
+        going away, and leave a stale twin the next one refuses."""
+        if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
+            return
         new = [n for n in detection.detector.names() if n not in known]
         if not new:
             return
