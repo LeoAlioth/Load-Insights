@@ -53,6 +53,7 @@
 
 ### Fixes
 
+- **A meter whose device is named "...Energy Meter" keeps its readings.** A reading is turned away as a total, an energy counter or a min/max by what it is called itself, no longer by its device's name: with Home Assistant naming entities after their device, every reading of an *ET340 Energy Meter* (Victron GX) started `sensor.et340_energy_meter_...` and was rejected as an energy reading, so the setup page and detection found none of them.
 - **Naming a load while detection is running waits for it.** A name given, cleared or moved to a rebuilt load changed the library while a pass was working on it; it now waits for the pass to finish. And a name that lands while the integration is reloading no longer adds sensors to the copy going away, which left a frozen twin of the named load's sensors.
 - **Naming a load with `load_insights.name_load` gives it working sensors every time.** About one call in three left the load's energy sensor frozen on the version from before the naming, and every reload after it logged "ID ... already exists"; the sensors are now made once, by the reload the naming does.
 
