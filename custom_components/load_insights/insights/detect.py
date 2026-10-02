@@ -2093,7 +2093,10 @@ class PhaseState:
         # energy is the mean of its start and its close, so 410 min were
         # booked at 4,448 W (27.09, 6.8 kWh over).
         out = []
-        for o in [o for o in self.open_edges if o.watts - level > self.noise_at(level)]:
+        for o in [o for o in self.open_edges if o.watts - level > self.noise_at(level) and not self.owned(o)]:
+            # ...unless its meter still shows it on: then the reading is the
+            # one that is wrong, for a moment (Home's house reading is a grid
+            # meter and an inverter combined; Susilna 09-27 19:05)
             if o not in self.open_edges:
                 continue                  # closed meanwhile - see Detector.resolve_rise
             self.open_edges.remove(o)
@@ -3967,8 +3970,13 @@ class Detector:
         A share the other way is a change the grid netted into this step - a
         load stopping in the reading another started - and the rest is the
         larger for it."""
+        return [part for _, part in self.metered_shares(ph, since, step)]
+
+    def metered_shares(self, ph: str, since: float, step: float) -> List[Tuple[Optional[str], float]]:
+        """metered_parts with the meter each share is - (meter, share), the
+        rest (None, rest) last."""
         if self.meter_steps is None or ph not in self.phases:
-            return [step]
+            return [(None, step)]
         # Neither a piece nor what is left may be smaller than the step itself
         # can resolve - its noise, or the pairing's share of it. A server UPS
         # wandering 60 W inside a kiln pulse's window was carved off both of
@@ -3979,12 +3987,12 @@ class Detector:
         # over the start-event window, no wider: fifteen seconds either side
         # reached into the kiln's previous pulse and read half a step, and
         # every pulse was booked as two
-        for _, d in self.meter_steps(ph, since, self.event_window(), step > 0, step):
+        for name, d in self.meter_steps(ph, since, self.event_window(), step > 0, step):
             if abs(d) < least or (d * step > 0 and abs(rest) - abs(d) < least):
                 continue
-            parts.append(d)
+            parts.append((name, d))
             rest -= d
-        return parts + [rest] if parts else [step]
+        return parts + [(None, rest)] if parts else [(None, step)]
 
     def note_rise(self, state: "PhaseState", o: "_Open") -> None:
         """A rise just opened on ``state``'s phase: it waits for companions."""
@@ -4045,36 +4053,68 @@ class Detector:
             m["open"].cluster = cluster.id
             if cluster.where and conf is not None:
                 m["open"].q *= 0.5 + 0.5 * conf     # how well the meters' timings agreed
-                m["open"].meter = cluster.where     # placed by the meter's own step: its run - see PhaseState.owned
-            elif len(members) == 1 and self.meter_started is not None:
-                # a one-device meter the phase map does not place yet (its
-                # votes come from runs that must first survive): its own rise
-                # of this size at this moment makes the run its own
-                m["open"].meter = self.meter_started(m["ph"], m["since"], m["watts"])
+                # placed by the meter's own step: its run - see PhaseState.owned
+                # (unless a total-only meter's rise already took it, _split_rise)
+                m["open"].meter = m["open"].meter or cluster.where
+            elif len(members) > 1 and self.meter_started is not None and self.phases.get(m["ph"]) is not None:
+                # a leg of an event on several phases: a total-only meter's
+                # rise of all of it at this moment makes the leg its own, as
+                # _split_rise does for a start alone - Susilna's plug switching
+                # on in the same reading as a rise on phase C (09-21, 09-24)
+                found = self.meter_started(m["ph"], m["since"], m["watts"])
+                if found is not None:
+                    st = self.phases[m["ph"]]
+                    if m["watts"] - found[1] < max(st.noise_at(), MATCH_EDGE_REL * m["watts"]):
+                        m["open"].meter = found[0]
             self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
         return cluster, members
 
     def _split_rise(self, m: dict) -> None:
         """A single-phase rise cut into the shares the meters below took with
-        it - see SPLIT_BY_METERS. The first shares become rises of their own;
-        the last stays this one. A rise on several phases at once is one load
-        and is never cut phase by phase."""
+        it - see SPLIT_BY_METERS. The first shares become rises of their own,
+        each its meter's (PhaseState.owned); the last stays this one. A meter
+        the map does not place is asked too (meter_started): a rise of its
+        own at this moment that is all of this start makes the start its, one
+        that is part of it takes that part and leaves the rest a start of its
+        own - Home's Susilna plug (265 W) switching on with a 48 W fan, a +313
+        W start the plug neither owned nor matched, cut minutes later with the
+        fan's stop (09-21, 09-24; Anze, 2026-10-02: a separate fan in all
+        likelihood). A rise on several phases at once is one load and is never
+        cut phase by phase."""
         st = self.phases.get(m["ph"])
-        parts = self.metered_parts(m["ph"], m["since"], m["watts"])
-        if st is None or len(parts) < 2:
+        if st is None:
             return
         o, whole = m["open"], m["watts"]
-        for part in parts[:-1]:
+        shares = self.metered_shares(m["ph"], m["since"], whole)
+        if len(shares) < 2 and self.meter_started is not None:
+            found = self.meter_started(m["ph"], m["since"], whole)
+            if found is not None:
+                name, rise = found
+                least = max(st.noise_at(), MATCH_EDGE_REL * whole)
+                if rise < least:
+                    pass                             # a wobble of the meter's, not a part of this start
+                elif whole - rise < least:
+                    o.meter = name                   # all of it, as far as the grid can tell
+                else:
+                    shares = [(name, rise), (None, whole - rise)]
+        if len(shares) < 2:
+            return
+        for name, part in shares[:-1]:
             if part < 0:                       # a stop netted into this rise: it ends its run now
                 self._split_closed.extend((m["ph"], x) for x in st._declare(m["since"], part, None, 0.0, st.level, o.q))
                 continue
             extra = _Open(m["since"], part, None if m["var"] is None else m["var"] * part / whole,
-                          [(m["since"], part)], q=o.q)
+                          [(m["since"], part)], q=o.q, meter=name)
             extra.cluster = self._classify_step(m["ph"], m["since"], part, extra.var, 0.0).id
+            self.placement_conf = None          # its placement is its own, not the rest's
             self.edge_at.setdefault(m["ph"], []).append((m["since"], extra.cluster, part))
             st.open_edges.append(extra)
-        rest = parts[-1]
-        o.watts, o.levels = rest, [(o.since, rest)]
+        name, rest = shares[-1]
+        o.watts, o.levels, o.meter = rest, [(o.since, rest)], name
+        # what the whole was followed to while it waited for its event is not
+        # the rest's: kept, a 48 W rest carried the 313 W whole's level and a
+        # 152 W fall took it in a multi-close (the fan-and-plug test)
+        o.now, o.lo, o.hi = None, None, None
         o.var = None if o.var is None else o.var * rest / whole
         m["watts"], m["var"] = rest, o.var
 
@@ -5096,12 +5136,19 @@ class Fleet:
         judged; at least EDGE_LAG_REACH_S where inputs are fed, whose changes
         are looked for that far either side of a step. Never past
         wait_cap_s (Anze, 2026-10-02: up to five minutes): a meter slower
-        than that is judged with what it has said by then. A meter in
-        horizon_skip - the settings page's own choice, a slow polled meter
-        not worth waiting for - is still read, and does not set it. Worked
-        out again every MODEL_REFRESH_S of the clock as the lags are learned -
-        at a pass's start it would move with the slicing."""
-        wait = max([0.0] + [self._declare_lag(name) for name in self.subs if name not in self.horizon_skip])
+        than that is judged with what it has said by then. Only a meter that
+        has shared a step with the grid sets it - its lag once learned, twice
+        its latency until then: one that never shares a step (Home's Server
+        UPS, a 60 s heartbeat) has nothing the grid waits for (Anze,
+        2026-10-02) - until then Home sat at the cap for it. Only the learned
+        ones setting it left Kozolec's first hours at no horizon at all (its
+        pond EVSE 99 -> 88 % captured). A meter in horizon_skip - the settings
+        page's own choice, a meter that shares steps but reports them slowly -
+        is still read, and does not set it. Worked out again every
+        MODEL_REFRESH_S of the clock as the lags are learned - at a pass's
+        start it would move with the slicing."""
+        wait = max([0.0] + [self._declare_lag(name) for name in self.subs
+                            if name not in self.horizon_skip and self.meter_lag.get(name)])
         if self.switch_on or self.main.inputs:
             wait = max(wait, EDGE_LAG_REACH_S)
         return min(self.wait_cap_s, wait)
@@ -5762,26 +5809,32 @@ class Fleet:
             [c for c, st in det.phases.items() if st.last_ts is not None]
         for c in chans:
             st = det.phases[c]
-            k = bisect.bisect_right(st.declared_t, since)
+            # not a fall inside the meter's own latency of the start: a slow
+            # plug reads a motor's surge as a reading of its own and its
+            # settling as a fall (Susilna 09-24 18:00: 565 W, then 264)
+            k = bisect.bisect_right(st.declared_t, since + st.latency())
             if any(e[1] < 0 and -e[1] * gain >= 0.5 * size for e in st.declared[k:]):
                 return False
         return bool(chans)
 
-    def _meter_started(self, ph: str, since: float, size: float) -> Optional[str]:
-        """The one-device meter whose own rise of ``size`` (in the grid's
-        terms) came within its latency of a grid start at ``since`` on ``ph``,
-        where the meters' own steps placed none (_step_meter) - a meter the
-        phase map does not place yet, its votes coming from runs that have to
-        survive first (Home's Susilna plug, 0-10 of the 30 it needs in ten
-        days), or one whose step and the grid's disagreed in size or span.
-        Only a meter reporting a total: its one channel is the load's. Whether it holds one device does not
-        matter - a strip's load starting shows on the strip and the grid alike,
-        and a fall of half the size on the strip frees the run again. Home's
-        Susilna plug is not declared one device, and was never placed: its 20-
-        hour runs were cut 12-68 minutes in (2026-10-02). See PhaseState.owned."""
+    def _meter_started(self, ph: str, since: float, size: float) -> Optional[Tuple[str, float]]:
+        """(meter, its rise in the grid's terms): the meter reporting a total
+        whose own rise - no bigger than the grid's start of ``size`` at
+        ``since`` on ``ph``, within the pairing tolerance - came within its
+        latency of it; the largest such rise. Asked where the meters' own
+        steps placed none (_step_meter): a meter the phase map does not place
+        yet, its votes coming from runs that have to survive first (Home's
+        Susilna plug, 0-10 of the 30 it needs in ten days), or one whose step
+        and the grid's disagreed in size or span - the plug's 265 W inside a
+        +313 W start with a fan (_split_rise). Only a meter reporting a total:
+        its one channel is the load's. Whether it holds one device does not
+        matter - a strip's load starting shows on the strip and the grid
+        alike, and a fall of half the size on the strip frees the run again.
+        See PhaseState.owned."""
         grid = self.main.phases.get(ph)
         if grid is None:
             return None
+        best = None
         for name, det in self.subs.items():
             if not self.agnostic.get(name):
                 continue
@@ -5790,10 +5843,20 @@ class Fleet:
                 if st.last_ts is None:
                     continue
                 reach = st.latency()
-                if any(e[1] > 0 and abs(e[1] * gain - size) <= grid._tol(size, e[1] * gain)
-                       for e in self._near(st, since - reach, since + reach, reach)):
-                    return name
-        return None
+                for e in self._near(st, since - reach, since + reach, reach):
+                    rise = e[1] * gain
+                    if not (rise > 0 and rise <= size + grid._tol(size, rise)) or (best is not None and rise <= best[1]):
+                        continue
+                    # a rise the grid took as a step of its own - Kozolec's
+                    # boiler pulsing within a breath of the EVSE's charge
+                    # starting, its +1.9 kW a grid step 15 s later - is that
+                    # step, not a part of this start
+                    tol = math.hypot(grid.noise_at(), st.noise_at()) + METER_CAL_SLACK * rise
+                    if any(abs(g[0] - since) > 0.01 and g[1] > 0 and g[1] >= rise - tol
+                           for g in self._near(grid, e[3], e[4], reach)):
+                        continue
+                    best = (name, rise)
+        return best
 
     def _meter_level(self, name: str, ph: str) -> Optional[float]:
         """What meter ``name`` draws above its floor now, in the grid's terms,

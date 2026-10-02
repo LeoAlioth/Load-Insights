@@ -1037,12 +1037,18 @@ past `METER_WAIT_CAP_S` (300 s, the settings page's *Wait for slower meters*);
 a meter's own levels are confirmed over three of its repeat intervals or its
 learned report lag, whichever is longer - over the lag alone, Home's fed
 impurity doubled (14.9 -> 24.7 %: half-caught readings founded levels, the
-hidrofor's runs split over two signatures). Ten-day horizons: Kozolec ~60 s
-(the pond EVSE's 58 s declaring lag; the boiler reports within 4 s and declares
-within 36); Home sits at the 300 s cap because the Server UPS (60 s heartbeat)
-never shares a step with the grid and falls back to twice its latency, 360 s -
-left out on the page (*Meters not to wait for*) Home comes to ~173 s, set by
-the office plug's p95. Meters with fewer than 20 shared steps in ten days:
+hidrofor's runs split over two signatures). Only a meter that has shared a
+step with the grid sets the horizon (Anze: one that never does has nothing
+the grid waits for - Home's Server UPS, a 60 s heartbeat, had held Home at
+the 300 s cap at twice its latency); a meter with a step shared but fewer
+than 20 sets it at twice its latency until its lag is believed - only the
+believed ones setting it left Kozolec's first hours at no horizon and cost
+its pond EVSE 99 -> 88 % captured. Ten-day horizons: Kozolec ~60 s (the pond
+EVSE's 58 s declaring lag; the boiler reports within 4 s and declares within
+36); Home ~190 s, set by the office plug's p95 declaring lag - suspect: a
+wandering computer load matched "one of a kind" up to 109 s off (its report
+p95), Mansarda's 149 s the same way; bounding a match by the two meters'
+latencies is the proposal. Meters with fewer than 20 shared steps in ten days:
 Home's Attic AC, Blaževa Soba, Polnilnica, Server UPS, Susilna, Workshop boiler
 and charger; Kozolec's bug lamp, car charger, pastir, pond, washing machine and
 well pump (19).
@@ -1071,10 +1077,20 @@ the IR panel 83.0 / 6.6 -> 82.5 / 6.3, the water pump 88.4 / 33.3 -> 83.2 /
 18.6; the car charger reads 128.9 % captured - two of its sessions overlap
 and both are credited its draw, a scorer quirk); home-hisa hidden 8.7 / 31.7 ->
 7.2 / 9.9, fed 2.4 / 31.5 -> 22.3 / 36.7; home-mansarda hidden 24.3 / 15.8 ->
-27.9 / 11.2, fed 30.8 / 6.8 -> 32.3 / 6.4. Still cut: Susilna's 09-21 and 09-24
-runs, whose grid start carried a coincident 30-60 W load (313 W against the
-plug's 265: one watt outside the pairing tolerance) - re-asking ownership when
-the start settles (`_pair`'s step-down) would take them.
+27.9 / 11.2, fed 30.8 / 6.8 -> 32.3 / 6.4. A meter's rise inside a bigger start
+takes its part since 2026-10-02 evening (`_split_rise`, `_meter_started`: the
+plug's 265 W and a fan's 48 W switching on in one reading - Anze: "a separate
+fan in all likelihood"), a leg of a multi-phase event can be a total-only
+meter's, and a meter's own settling fall or a reading that dipped under the
+run does not end it. Against the scorer-fixed card `0928354-20261002T175951Z`
+(a meter's energy credited once across overlapping runs): Home fed devices
+42.8 / 15.3 -> 51.5 / 14.0 (Susilna 44.9 / 11.3 -> 57.0 / 6.7, the office plug
+23.1 / 27.9 -> 36.2 / 22.4, the hidrofor 65.3 / 20.1 -> 69.9 / 22.9), partition
+67.6 / 7.6 -> 70.4 / 9.8; circuits 28.2 / 16.5 -> 29.2 / 17.8; Kozolec fed 93.0 /
+5.4 -> 93.8 / 6.3; home-hisa fed 2.5 / 15.5 -> 8.4 / 20.7; home-mansarda fed
+32.3 / 6.4 -> 46.8 / 22.5 (the office plug's suspect lags again). Still cut:
+Susilna's 09-24 run - its 313 W start stepped down 30 W within a minute, then
+multi-closed with the fan.
 Replays cost more (Home ~160 s against 85-95 s:
 the one-clock loop), and some state is still restart-only (`declared`,
 `steady_ts`, `held_drops`, `recent_closed`, `_moved`, `_stops_used`,
