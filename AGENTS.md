@@ -1008,13 +1008,69 @@ credited sessions rose 214 -> 279 on held-out days. It is pure and
 self-contained because Load Juggler needs the same answer to be easier to set
 up (Anze, 2026-09-23).
 
-**Live ticks cost a little that a backfill does not.** Production reads a
-minute at a time. The recorder's start-of-window copy was fed in as a reading
-once a minute on every phase, which cost Home 2 points of purity replayed at
-one-minute slices; generation 13 drops it (`without_window_start`). What is
-left at one-minute slices: Home's hidrofor 219 -> 203 in its main cluster,
-from something done per call rather than per reading - not yet found. The
-bench replays in 6-hour slices, as the backfill does (`SLICE=`).
+**A pass is only a pause (2026-10-02).** Production reads the recorder six
+hours at a time while it catches up and a minute at a time after, and until
+2026-10-02 a pass's end decided what later readings could have decided
+otherwise: a change still pending was confirmed there, a start still in its
+event window became an event alone, runs waiting for a partner leg were filed
+in a batch, the meters below the grid were read a whole pass ahead of it, and
+the fleet filed, placed and voted once a pass - so the same history gave
+another library at every slicing (the scorecard baseline 500c275, fed: Home
+9,790 of 15,813 sessions differed between 6-hour and 1-hour passes, 1,166
+between 6-hour passes and live minutes, 14,292 against one call; Kozolec 192 /
+25 / 335; the hidrofor's old 219 -> 203 at one-minute slices was this). Now
+every meter is read on ONE clock (`Fleet.process` / `_run`): a meter's reading
+at its own time, the grid's once the clock is the horizon past it, and every
+deadline - a silence confirming a level (`PhaseState.silence_due`), an event
+window (`Detector.event_wait`), the held tail, a house session's wait for its
+meters (`Fleet._ready_at`), a meter session's vote (`_vote_blocked`) - fires
+when its moment comes on that clock, before the next reading or in the next
+pass; what is not due when a pass ends is carried, and stored (`pending_rises`,
+the timed `unfiled` / `pending_main` / `unvoted` lists). Sessions are filed when
+they become decidable, ties by start - one order the data fixes (Anze) - and
+device merges run after each filing, never into a signature a run was kept out
+of (`Signature.apart`). The horizon is the slowest meter's DECLARING lag against
+the grid, learned from the steps the two share where each is the only one of
+its kind within `LAG_REACH_S` on both meters (`Fleet._learn_lags`, p95 of the
+last 200, believed from 20), at least `EDGE_LAG_REACH_S` with inputs fed, never
+past `METER_WAIT_CAP_S` (300 s, the settings page's *Wait for slower meters*);
+a meter's own levels are confirmed over three of its repeat intervals or its
+learned report lag, whichever is longer - over the lag alone, Home's fed
+impurity doubled (14.9 -> 24.7 %: half-caught readings founded levels, the
+hidrofor's runs split over two signatures). Ten-day horizons: Kozolec ~60 s
+(the pond EVSE's 58 s declaring lag; the boiler reports within 4 s and declares
+within 36); Home sits at the 300 s cap because the Server UPS (60 s heartbeat)
+never shares a step with the grid and falls back to twice its latency, 360 s -
+left out on the page (*Meters not to wait for*) Home comes to ~173 s, set by
+the office plug's p95. Meters with fewer than 20 shared steps in ten days:
+Home's Attic AC, Blaževa Soba, Polnilnica, Server UPS, Susilna, Workshop boiler
+and charger; Kozolec's bug lamp, car charger, pastir, pond, washing machine and
+well pump (19).
+Result (card `f515afe-dirty-20261002T124241Z` and the fb54f67 fixes, SLICE=6
+unless said): invariance 0 sessions / 0 kWh at every site, mode and pair of
+slicings - one call, SLICE=6, SLICE=1 and LIVE=1 file the same sessions into
+the same signatures, so one slicing is enough for a score and a session the
+`invariance` command lists is a fault. Scorecard capture / impurity against
+500c275: Home devices hidden 24.8 / 33.0 -> 21.8 / 28.2, circuits 28.8 / 22.8
+-> 26.1 / 14.9, fed 25.5 / 14.9 -> 24.9 / 13.7; Home partition hidden 50.8 /
+13.0 -> 48.5 / 12.7, circuits 57.6 / 9.5 -> 51.9 / 7.4, fed 54.4 / 8.9 -> 54.3 /
+11.7 (a scorer artefact: a 2.15 kW phase-A load that drops out for 6 s and
+restarts is nobody's to `_started_with`, whose "before" reading 10 s earlier
+still holds it, and its 8.8 kWh moved from an unowned signature into a
+Delavnica-owned one); Kozolec devices hidden 68.0 / 9.0 -> 68.1 / 9.1, fed 86.9
+/ 4.6 -> 86.6 / 7.6 (the IR panel 83.0 / 6.6 -> 61.3 / 31.7: with the meters
+read ahead of the grid, a boiler stop the grid has not yet shown is netted
+into an earlier rise and the real fall then closes the IR run through
+`_meter_stop`'s size-blind match - 90.6 / 5.0 with the two fixes proposed
+2026-10-02, see the phase 2 report); home-hisa hidden 8.7 / 31.7 -> 7.0 / 8.5,
+fed 2.4 / 31.5 -> 15.6 / 35.9; home-mansarda hidden 24.3 / 15.8 -> 22.9 / 11.3,
+fed 30.8 / 6.8 -> 27.0 / 7.9. Replays cost more (Home ~160 s against 85-95 s:
+the one-clock loop), and some state is still restart-only (`declared`,
+`steady_ts`, `held_drops`, `recent_closed`, `_moved`, `_stops_used`,
+`sub_rows`): invariance holds across passes in memory, a restart mid-stream can
+still differ. The repeat-interval estimator stays: a meter's own transient
+rejection needs a multiple of it, and the event, corroboration and crowding
+windows and the sample counts read it.
 
 **The rolling session list is too short to reason with.** `MAX_RECENT_SESSIONS
 = 200` spans about **2.1 hours** at Home and holds 11 of 199 signatures.
