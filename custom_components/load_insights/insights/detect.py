@@ -27,7 +27,7 @@ import statistics
 from collections import ChainMap
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
 from .phases import phase_mapping
@@ -3518,6 +3518,16 @@ class Detector:
     _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False)
     # start cluster -> {signature id: runs filed there} - see DEVICE_FILING
     start_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
+    # what _merge_devices keeps between filings, so a pass judges only the
+    # devices whose signatures changed: start_home's votes by the signature
+    # they count for now (devices in start_home order), each signature's
+    # device, each device's place in start_home, the devices to judge again
+    # and whether all of them are. None: built again from start_home.
+    _votes: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
+    _home: Dict[int, int] = field(default_factory=dict, repr=False, compare=False)
+    _dev_pos: Dict[int, int] = field(default_factory=dict, repr=False, compare=False)
+    _rejudge: Set[int] = field(default_factory=set, repr=False, compare=False)
+    _rejudge_all: bool = field(default=True, repr=False, compare=False)
     # per phase|direction|inputs: bin -> recency-weighted steps, and when it
     # last faded - see EDGE_BATCH; its segments are cut again every EDGE_RECUT
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
@@ -3899,17 +3909,20 @@ class Detector:
             best.ep_seen += 1.0
             best.last_ep = episode
         s.signature_id = best.id
+        self._touch(best.id)
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
             if pair and pair[0] is not None:
                 row = self.start_home.setdefault(str(pair[0]), {})
                 row[best.id] = row.get(best.id, 0.0) + 1.0
+                self._vote(str(pair[0]), best.id)
                 if self._device_home is not None:
                     pooled = self._device_home.setdefault(pair[0], {})
                     pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
         self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
-        self._judge_born()
+        for sig in self._judge_born():
+            self._touch(sig.id)
         if self.orphan_names:
             # a name lands on a signature as it stands after this filing
             for sig in self.signatures:
@@ -4294,21 +4307,28 @@ class Detector:
         as do two filed in different values of a setting or on different
         phases, and one born of a run kept out of the other (Signature.apart).
         After every filing: once a pass, a minute's pass merged what a
-        six-hour one had not yet."""
-        votes: Dict[int, Dict[int, float]] = {}
-        for k, home in self.start_home.items():
-            d = int(k)
-            for sid, n in home.items():
-                row = votes.setdefault(self._current(sid), {})
-                row[d] = row.get(d, 0.0) + n
+        six-hour one had not yet.
+
+        Judged again only where something changed since the last pass: a
+        device whose signatures were filed into, judged born, named, merged
+        or moved to it - and all of them after _prune ordered the library
+        again, since who survives a tie is the earlier in it. Two signatures
+        neither of which changed were judged the last time one did, by the
+        same votes, and the merge order is the full walk's: devices as the
+        library lists their first signature (a Home replay walked ~160
+        signatures and ~600 votes 29,000 times for six merges, 2026-10-02)."""
+        if self._votes is None:
+            self._rebuild_votes()
         by_dev: Dict[int, List["Signature"]] = {}
         for sig in self.signatures:
-            v = votes.get(sig.id)
-            if v:
-                by_dev.setdefault(max(v, key=v.get), []).append(sig)
+            home = self._home.get(sig.id)
+            if home is not None:
+                by_dev.setdefault(home, []).append(sig)
+        judge = None if self._rejudge_all else self._rejudge
+        self._rejudge, self._rejudge_all = set(), False
         moved: Dict[int, int] = {}
-        for sigs in by_dev.values():
-            if len(sigs) < 2:
+        for dev, sigs in by_dev.items():
+            if len(sigs) < 2 or (judge is not None and dev not in judge):
                 continue
             sigs.sort(key=lambda x: (not x.name, -x.count))     # a named one survives
             keep = sigs[0]
@@ -4343,8 +4363,73 @@ class Detector:
             if s.signature_id in moved:
                 s.signature_id = moved[s.signature_id]
         self._moved.update(moved)
+        for other_id, keep_id in moved.items():
+            self._fold(other_id, keep_id)
         self._by_sig, self._device_home = None, None
         return len(moved)
+
+    def _rebuild_votes(self) -> None:
+        """start_home's votes by the signature each counts for now - what
+        _merge_devices walked every pass - and every device to judge."""
+        votes: Dict[int, Dict[int, float]] = {}
+        for k, home in self.start_home.items():
+            d = int(k)
+            for sid, n in home.items():
+                row = votes.setdefault(self._current(sid), {})
+                row[d] = row.get(d, 0.0) + n
+        self._votes = votes
+        self._home = {sid: max(row, key=row.get) for sid, row in votes.items()}
+        self._dev_pos = {int(k): i for i, k in enumerate(self.start_home)}
+        self._rejudge_all = True
+
+    def _touch(self, sid: int) -> None:
+        """This signature changed in what _merge_devices reads: judge its device again."""
+        home = self._home.get(sid)
+        if home is not None:
+            self._rejudge.add(home)
+
+    def _vote(self, key: str, sid: int) -> None:
+        """One more of start cluster ``key``'s runs filed into ``sid`` - as
+        start_home now says - kept in the votes _merge_devices reads."""
+        if self._votes is None:
+            return
+        d = int(key)
+        pos = self._dev_pos.setdefault(d, len(self._dev_pos))
+        if len(self._dev_pos) != len(self.start_home):
+            self._votes = None                    # start_home was not grown through here: build again
+            return
+        row = self._votes.get(sid)
+        if row is None:
+            row = self._votes[sid] = {d: 1.0}
+        elif d in row:
+            row[d] += 1.0
+        else:
+            row[d] = 1.0
+            if any(self._dev_pos[x] > pos for x in row):
+                row = self._votes[sid] = dict(sorted(row.items(), key=lambda kv: self._dev_pos[kv[0]]))
+        self._rehome(sid, row)
+
+    def _fold(self, other_id: int, keep_id: int) -> None:
+        """A merged signature's votes count for its keeper now - see _current."""
+        if self._votes is None:
+            return
+        self._touch(other_id)
+        gone = self._votes.pop(other_id, None)
+        self._home.pop(other_id, None)
+        row = self._votes.get(keep_id)
+        if gone is None or row is None:
+            self._votes = None                    # not what start_home says: build again
+            return
+        for d, n in gone.items():
+            row[d] = row.get(d, 0.0) + n
+        row = self._votes[keep_id] = dict(sorted(row.items(), key=lambda kv: self._dev_pos[kv[0]]))
+        self._rehome(keep_id, row)
+
+    def _rehome(self, sid: int, row: Dict[int, float]) -> None:
+        """The device most of ``sid``'s runs came from, after its votes changed: judge it and the old one again."""
+        self._touch(sid)
+        self._home[sid] = max(row, key=row.get)
+        self._touch(sid)
 
     def device_of(self, s: "Session") -> Optional[int]:
         """The start cluster of the run, or of its first leg: its device."""
@@ -4558,6 +4643,7 @@ class Detector:
         keep += tiers[3][-room:] if room > 0 else []
         self.signatures = keep
         self._by_sig = None          # or _sig hands back one just evicted, and a run filed there is no one's
+        self._rejudge_all = True     # the order decides a merge's survivor - see _merge_devices
 
     # ------------------------------------------------ query
     def active(self, now_ts: float) -> List[dict]:
@@ -4683,12 +4769,14 @@ class Detector:
             if stub.alike(sig, noise_w):
                 sig.name = orphan.get("name")
                 self.orphan_names.pop(i)
+                self._touch(sig.id)
                 return
 
     def rename(self, signature_id: int, name: Optional[str]) -> bool:
         for sig in self.signatures:
             if sig.id == signature_id:
                 sig.name = (name or "").strip() or None
+                self._touch(sig.id)
                 return True
         return False
 
@@ -4721,6 +4809,7 @@ class Detector:
             return None
         heir.carried_wh += old.energy_wh
         old.name, old.successor_id = None, None
+        self._touch(old.id)
         self.rename(signature_id, name)
         return name
 
@@ -5231,6 +5320,7 @@ class Fleet:
         pairs = [(a, b) for old, new in renames.items()
                  for a, b in ((old, new), (SWITCH_PREFIX + old, SWITCH_PREFIX + new))]
         for det in [self.main, *self.subs.values()]:
+            det._rejudge_all = True              # born_in and takes_in are read by _merge_devices
             for sig in det.signatures:
                 for a, b in pairs:
                     if a in sig.locations:
