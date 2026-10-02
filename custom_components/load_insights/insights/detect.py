@@ -108,7 +108,7 @@ NOISE_MAD_FACTOR = 3.0              # under test with EDGE_BY_METER: Anze wants 
 # (the hidrofor's plug, every 10 s: 20 s - Anze), a change seen first after a
 # silence happened at most that long before (a span's start - see
 # PhaseState.span_start), and a silence that long confirms a pending level
-# (see confirm_silence). Confirmed over the PERIOD - the median gap - instead,
+# (see PhaseState.silence_due). Confirmed over the PERIOD - the median gap - instead,
 # Hisa's 3EM, reporting on change within 4 s but writing every 15 s when
 # little moves, held a level 30 s: the floor mat merged into the kiln's start
 # as one +3,516 W step with a span 28.8 s long. Three, on the moving-gap
@@ -442,6 +442,11 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
 ABOVE_CHANCE_ODDS = 100.0
+# How often, on the readings' clock, the accepted pairs are worked out again
+# from the runs learned so far: the whole table each time, so not at every
+# close. On a fixed grid of the clock, so a pass's length cannot decide which
+# runs it has learned from (2026-10-02; it was once a pass).
+MODEL_REFRESH_S = 3600.0
 # A run is filed by its DEVICE - the component of edge clusters its start
 # belongs to - into the signature most of the device's runs went to, or a new
 # one for a device not seen before; signatures whose runs are one device's are
@@ -1598,6 +1603,8 @@ class PhaseState:
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
+    raw_last: Optional[Tuple[float, float]] = None   # the last reading as the meter wrote it - see Detector._corroborate
+    _stood: Optional[float] = field(default=None, repr=False, compare=False)   # the pending reading last stood in for
     # this phase's own reading interval - its cadence, see CADENCE_GAPS - the
     # meter's rate, not a setting, so turning a poll up from 5 s to 1 s is
     # noticed rather than configured
@@ -1620,6 +1627,9 @@ class PhaseState:
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
         due = self._input_ended(ts) if self.lib is not None and self.open_edges else []
+        silent = self.silence_due() if not held else None
+        if silent is not None and silent < ts:     # on its own; a Detector has done this already (_advance)
+            due += self.stand_in(silent)
         return due + self._process(ts, w, q, pv, held)
 
     def _input_ended(self, ts: float) -> List[Session]:
@@ -1637,25 +1647,16 @@ class PhaseState:
         return out
 
     def _process(self, ts: float, w: float, q: Optional[float] = None,
-                 pv: Optional[float] = None, held: bool = False, _no_hold: bool = False) -> List[Session]:
+                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
         """One sample: seconds, watts, reactive VAr where the meter gives
         enough to work it out, and what the array was making at the time.
         Returns the sessions this sample closed - more than one when several
         loads stopped together. ``held`` marks a stand-in for a slow meter's
-        silence - see SUSTAIN_CADENCES - which teaches nothing about it."""
+        silence - see SUSTAIN_CADENCES and stand_in - which teaches nothing about it."""
         if self.last_ts is not None and ts <= self.last_ts:
             return []
-        if (not held and not _no_hold and self.pending and ts - self.pending[-1][0] > 1.0 and self.level is not None
-                and ts - self.pending[-1][0] > SUSTAIN_CADENCES * (self.interval or math.inf)
-                and abs(w - self.pending[-1][1]) >= self.noise_at(self.pending[-1][1])):
-            # the change it last reported held right up to this reading
-            last = self.pending[-1]
-            before = self.process(ts - 0.5, last[1], last[2], last[3], held=True)
-            if self.pending and self.pending[-1] is last:
-                # the stand-in was not taken (a glitch guard, say): go on without
-                # it rather than offer it again for ever
-                return before + self._process(ts, w, q, pv, held=False, _no_hold=True)
-            return before + self.process(ts, w, q, pv)
+        if not held:
+            self.raw_last = (ts, w)
         if held:
             pass                          # not a reading: no cadence, no quantum
         elif self.last_ts is not None:
@@ -1774,7 +1775,7 @@ class PhaseState:
         if self._corroborated_stop(ts):
             # another leg of the same load is stopping at the same moment
             need, sustain = 1, 0.0
-        if len(self.pending) < need or (ts - self.pending[0][0]) < sustain:
+        if len(self.pending) < need or (ts - self.pending[0][0]) < sustain - 1e-6:   # a stand-in lands on the mark
             return []
         # How long the phase has been away is timed from the FIRST reading that
         # left the old level - a half-caught switch is part of the change, and
@@ -1837,17 +1838,25 @@ class PhaseState:
         """How long a new level must hold to be confirmed - see SUSTAIN_CADENCES."""
         return SUSTAIN_CADENCES * self.interval if self.interval else SUSTAIN_SECONDS
 
-    def confirm_silence(self, now: float) -> List[Session]:
-        """At the end of a pass: a change pending longer than SUSTAIN_CADENCES
-        of the cadence with no reading since held - the recorder writes only
-        changes - and is confirmed now, not when the next change arrives."""
-        cad = self.interval
-        if not self.pending or self.level is None or not cad:
-            return []
+    def silence_due(self) -> Optional[float]:
+        """When the change pending here is confirmed by the meter's silence:
+        SUSTAIN_CADENCES of its cadence after the last reading of it with no
+        reading since - the recorder writes only changes, so the value held.
+        On the readings' clock (Detector._advance), whether the next reading
+        or a pass's end comes first: at a pass's end it was confirmed at that
+        moment, and in one call at the next reading, half a second before it,
+        and only if that one moved away - so the slicing decided it."""
+        if not self.pending or self.level is None or not self.interval or self.pending[-1][0] == self._stood:
+            return None
+        return self.pending[-1][0] + SUSTAIN_CADENCES * self.interval
+
+    def stand_in(self, at: float) -> List[Session]:
+        """The silence_due moment: the change's last reading stands in for the
+        reading the meter did not write. Offered once - a stand-in not taken
+        (a glitch on the way) is not offered again."""
         last = self.pending[-1]
-        if now - last[0] <= SUSTAIN_CADENCES * cad:
-            return []
-        return self.process(now - 0.001, last[1], last[2], last[3], held=True)
+        self._stood = last[0]
+        return self.process(at, last[1], last[2], last[3], held=True)
 
     def span_start(self, first_off: float) -> float:
         """From when a change seen first at ``first_off`` can have happened:
@@ -2294,6 +2303,7 @@ class PhaseState:
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
+                "raw_last": list(self.raw_last) if self.raw_last else None,
                 "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
 
     @classmethod
@@ -2308,6 +2318,7 @@ class PhaseState:
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
+                   raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None,
                    floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
 
 
@@ -3387,6 +3398,15 @@ class Detector:
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # runs ended by a stop found inside a rise when its event formed - see _split_rise
     _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    # the pass's work on the readings' clock - see _advance: what it released,
+    # whether it files, the reading or deadline being handled, and when the
+    # first waiting group is due (None: work it out again)
+    _released: List[Session] = field(default_factory=list, repr=False, compare=False)
+    _file_now: bool = field(default=True, repr=False, compare=False)
+    _clock: Optional[float] = field(default=None, repr=False, compare=False)
+    _held_due: Optional[float] = field(default=None, repr=False, compare=False)
+    _q: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
+    _pv: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
@@ -3395,7 +3415,7 @@ class Detector:
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False)
     _partners: Optional[Dict[int, Dict[int, tuple]]] = field(default=None, repr=False, compare=False)
-    _learned: Optional[List[str]] = field(default=None, repr=False, compare=False)
+    _partners_at: Optional[int] = field(default=None, repr=False, compare=False)   # see MODEL_REFRESH_S
     _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
     _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
@@ -3435,69 +3455,171 @@ class Detector:
         ``q`` is reactive VAr keyed by the SAME timestamps, where the meter
         gives enough to work it out, and ``q_quantum`` how much apparent power
         one quantum of the amps behind it is worth - the limit on any factor
-        derived from it. Returns the sessions this batch closed."""
-        closed: List[Session] = []
-        latest = now_ts or 0.0
-        # ALL phases in time order, not one phase after another. Each phase's
-        # state is its own, so the order changes nothing by itself - but it
-        # means that when one leg of a load is judged, the other legs' state is
-        # as of the same moment rather than the end of the previous batch,
-        # which is what lets one leg vouch for another (see _corroborate).
-        stream = []
-        self._partners, self._learned = None, None
-        self._device_home, self._by_id, self._windows = None, None, None
-        self._kinds = None
+        derived from it. Returns the sessions this batch closed.
+
+        A pass is only a pause (2026-10-02). Everything is decided on the
+        readings' clock - a change its meter's silence confirms, a start's
+        event window, a run's wait for a partner leg - when its moment comes
+        before the next reading (see _advance), and what is not due when the
+        pass ends waits for the next one. ``now_ts`` is how far the readings
+        reach: the meters wrote nothing after their last row until then. The
+        same history read in one call, in six-hour slices or a minute at a
+        time files the same sessions; before, the pass's end confirmed every
+        pending change, formed every waiting event and filed what had waited
+        out its tail, and a library filled only once a pass."""
+        stream = self.begin(samples, q, pv, q_quantum, file)
+        latest = max([now_ts or 0.0] + [ts for ts, _, _ in stream[-1:]])
+        for ts, ph, w in stream:
+            self._advance(ts)
+            self.step(ts, ph, w)
+        self._advance(latest)
+        return self.finish(samples, latest)
+
+    def begin(self, samples: Dict[str, Sequence[Tuple[float, float]]],
+              q: Optional[Dict[str, Dict[float, float]]] = None,
+              pv: Optional[Dict[str, Dict[float, float]]] = None,
+              q_quantum: Optional[Dict[str, float]] = None, file: bool = True) -> List[tuple]:
+        """A pass's set-up - see process, or Fleet.process, which interleaves
+        its meters' readings. Returns the pass's readings as (ts, phase,
+        watts): ALL phases in time order, not one phase after another, which
+        lets one leg vouch for another (see _corroborate), and readings of one
+        moment phase by phase, not by where each fell in its pass's rows."""
+        self._released, self._file_now = [], file
+        self._q, self._pv = q or {}, pv or {}
+        if not file:
+            self._merge_devices()    # the fleet's filings since the last pass - see Fleet._file_waiting
         for ph, st in self.phases.items():
             st.lib, st.name = self, ph
+        stream = []
         for ph, rows in samples.items():
             if ph not in self.phases:
                 continue
             st = self.phases[ph]
             if q_quantum and q_quantum.get(ph):
                 st.q_quantum = q_quantum[ph]
+            stream.extend((ts, ph, w) for ts, w in rows)
+        for ph, st in self.phases.items():
             st.corroborate = self._corroborate(ph, samples)
-            stream.extend((ts, i, ph, w) for i, (ts, w) in enumerate(rows))
-        stream.sort()
-        for ts, _, ph, w in stream:
-            latest = max(latest, ts)
-            qm = (q or {}).get(ph) or {}
-            pvm = (pv or {}).get(ph) or {}
-            for s in self.phases[ph].process(ts, w, qm.get(ts), pvm.get(ts)):
-                s.phases = ph
-                s.levels = {ph: s.levels.pop("")}
-                closed.append(s)
-            for fph, s in self._flush_events(ts):
-                s.phases = fph
-                s.levels = {fph: s.levels.pop("")}
-                closed.append(s)
-        for ph, st in self.phases.items():          # a change the meter has been silent since held
-            for s in st.confirm_silence(now_ts or latest):
-                s.phases = ph
-                s.levels = {ph: s.levels.pop("")}
-                closed.append(s)
-        for fph, s in self._flush_events(latest, final=True):   # the batch is over: nothing more will rise beside them
-            s.phases = fph
-            s.levels = {fph: s.levels.pop("")}
-            closed.append(s)
-        oldest = min((rows[0][0] for rows in samples.values() if rows), default=None)
-        cut = (oldest or 0.0) - SWITCH_MEMORY_S
+        stream.sort(key=lambda r: (r[0], r[1]))
+        return stream
+
+    def step(self, ts: float, ph: str, w: float) -> None:
+        """One reading, once everything due before it is done (_advance)."""
+        self._clock = ts if self._clock is None else max(self._clock, ts)
+        qm, pvm = self._q.get(ph) or {}, self._pv.get(ph) or {}
+        self._closed(ph, self.phases[ph].process(ts, w, qm.get(ts), pvm.get(ts)))
+
+    def finish(self, samples, latest: float, oldest: Optional[float] = None) -> List[Session]:
+        """A pass's end: what it released, filed or for the fleet to file.
+        The edges a signature's are told from (Fleet._edges_of) are kept
+        SWITCH_MEMORY_S before the oldest run still to be filed - ``oldest``,
+        as the fleet knows it, or this detector's own - not before the pass's
+        first reading, which dropped a long run's start edge in short passes."""
+        if oldest is None:
+            oldest = min([self._clock or latest] + [o.since for st in self.phases.values() for o in st.open_edges]
+                         + [st.pending[0][0] for st in self.phases.values() if st.pending]
+                         + [s.start for s in self.held])
+        cut = oldest - SWITCH_MEMORY_S
         for ph in self.edge_at:
             self.edge_at[ph] = [e for e in self.edge_at[ph] if e[0] >= cut]
-        for ph in {c.phase for c in self.edges}:
-            for up in (True, False):
-                group = [c for c in self.edges if c.phase == ph and c.up == up]
-                if len(group) > EDGE_LIBRARY:
-                    gone = {c.id for c in sorted(group, key=lambda c: (c.count, c.last_seen))[:len(group) - EDGE_LIBRARY]}
-                    self.edges = [c for c in self.edges if c.id not in gone]
-                    self._kinds = None
-        self._merge_devices()
-        out = self._merge_and_file(closed, latest, file)
         # once per pass, not once per session: it walks the whole
-        # library for every named load, and nothing about it changes
-        # between one filing and the next
+        # library for every named load, and it only points the naming page
         if latest:
             self._link_successors(latest)
+        out, self._released = self._released, []
         return out
+
+    def _closed(self, ph: Optional[str], sessions) -> None:
+        """Runs a phase closed, and any a split rise ended (_split_rise), into
+        the pool that waits for partner legs (see HELD_TAIL_S)."""
+        got = [(ph, s) for s in sessions] + self._split_closed
+        self._split_closed = []
+        for fph, s in got:
+            s.phases = fph
+            s.levels = {fph: s.levels.pop("")}
+            self.held.append(s)
+        if got:
+            self._held_due = None
+
+    def _advance(self, until: float) -> None:
+        """Everything due on the readings' clock before ``until``, earliest
+        first: a pending change its meter's silence confirms (silence_due), a
+        start whose event window has passed (event_wait), a run that has
+        waited out its tail for a partner leg (HELD_TAIL_S). Called before
+        each reading with its time, and at a pass's end with how far the
+        readings reach - nothing happens between two readings but these, so
+        a pass ending between them changes nothing."""
+        while True:
+            due = self.next_due()
+            if due is None or due[0] >= until:
+                return
+            self.fire(due)
+
+    def next_due(self) -> Optional[tuple]:
+        """(when, what, phase) of the first thing due - see _advance."""
+        best = None
+        for ph, st in self.phases.items():
+            d = st.silence_due()
+            if d is not None and (best is None or d < best[0]):
+                best = (d, 0, ph)
+        if self._pending:
+            d = min(x["since"] for x in self._pending) + self.event_wait()
+            if best is None or d < best[0]:
+                best = (d, 1, None)
+        d = self._held_next()
+        if d is not None and (best is None or d < best[0]):
+            best = (d, 2, None)
+        return best
+
+    def fire(self, due: tuple) -> None:
+        d, kind, ph = due
+        self._clock = d if self._clock is None else max(self._clock, d)
+        if kind == 0:
+            self._closed(ph, self.phases[ph].stand_in(d))
+        elif kind == 1:
+            self._form_first()
+        else:
+            self._release_held()
+
+    def _groups(self) -> List[List[Session]]:
+        """The waiting runs as legs of one load: start AND end within
+        MERGE_TOLERANCE_S, on other phases, balanced."""
+        groups: List[List[Session]] = []
+        for s in sorted(self.held, key=lambda s: s.start):
+            for g in groups:
+                if (abs(g[0].start - s.start) <= MERGE_TOLERANCE_S and abs(g[0].end - s.end) <= MERGE_TOLERANCE_S
+                        and all(s.phases not in m.phases for m in g)
+                        and _balanced(g, s)):
+                    g.append(s)
+                    break
+            else:
+                groups.append([s])
+        return groups
+
+    @staticmethod
+    def _group_due(g: List[Session]) -> float:
+        """When a group stops waiting: at once with three legs, else
+        HELD_TAIL_S after its last leg ended."""
+        return -math.inf if len(g) >= 3 else max(m.end for m in g) + HELD_TAIL_S
+
+    def _held_next(self) -> Optional[float]:
+        if self._held_due is None:
+            self._held_due = min((self._group_due(g) for g in self._groups()), default=math.inf)
+        return None if self._held_due == math.inf else self._held_due
+
+    def _release_held(self) -> None:
+        """The group due first goes out as one session: filed, or handed to the
+        fleet (``file`` False) - unless it is a blip."""
+        g = min(self._groups(), key=lambda g: (self._group_due(g), g[0].start))
+        self.held = [s for s in self.held if all(s is not m for m in g)]
+        self._held_due = None
+        s = self._combine(g)
+        if s.energy_wh < NOISE_SESSION_WH and s.duration_s < NOISE_SESSION_S:
+            return
+        if self._file_now:
+            self._file(s)
+            self._merge_devices()
+        self._released.append(s)
 
     def _corroborate(self, ph: str, samples):
         """Build the question one phase may ask of the others for this pass:
@@ -3512,8 +3634,13 @@ class Detector:
         leg seeing its gap is evidence the other's short gap was real too.
         A single-phase load never has a partner and is never affected."""
         index = {}
-        for oph, rows in samples.items():
-            if oph != ph and oph in self.phases and rows:
+        for oph, ost in self.phases.items():
+            # with its last reading before the pass: at a pass's start the
+            # other leg's reading as of now was in the last one's rows
+            rows = list(samples.get(oph) or [])
+            if ost.raw_last and (not rows or ost.raw_last[0] < rows[0][0]):
+                rows.insert(0, ost.raw_last)
+            if oph != ph and rows:
                 index[oph] = ([t for t, _ in rows], rows)
 
         def as_of(oph: str, ts: float):
@@ -3559,36 +3686,6 @@ class Detector:
                         return True
             return False
         return check
-
-    def _merge_and_file(self, closed: List[Session], latest: float, file: bool = True) -> List[Session]:
-        pool = self.held + closed
-        pool.sort(key=lambda s: s.start)
-        groups: List[List[Session]] = []
-        for s in pool:
-            for g in groups:
-                if (abs(g[0].start - s.start) <= MERGE_TOLERANCE_S and abs(g[0].end - s.end) <= MERGE_TOLERANCE_S
-                        and all(s.phases not in m.phases for m in g)
-                        and _balanced(g, s)):
-                    g.append(s)
-                    break
-            else:
-                groups.append([s])
-        done: List[Session] = []
-        self.held = []
-        for g in groups:
-            # a group still young enough that a partner phase may yet close waits
-            if latest - max(m.end for m in g) < HELD_TAIL_S and len(g) < 3:
-                self.held.extend(g)
-                continue
-            done.append(self._combine(g))
-        out = []
-        for s in done:
-            if s.energy_wh < NOISE_SESSION_WH and s.duration_s < NOISE_SESSION_S:
-                continue
-            if file:
-                self._file(s)
-            out.append(s)
-        return out
 
     def signature_of(self, s: Session) -> Optional["Signature"]:
         """The signature a just-filed session went into.
@@ -3791,26 +3888,19 @@ class Detector:
         pending yet."""
         return self.event_window() + max([SUSTAIN_SECONDS] + [st.sustain() for st in self.phases.values()])
 
-    def _flush_events(self, now: float, final: bool = False) -> List[Tuple[str, "Session"]]:
-        """Rises older than the event window (all of them when ``final``)
-        become events with whatever rose beside them, get their cluster, and
-        end an older open run of the same cluster on their phase. Returns the
-        runs so ended, with their phase."""
-        out: List[Tuple[str, "Session"]] = list(self._split_closed)
-        self._split_closed = []
-        window, wait = self.event_window(), self.event_wait()
-        while self._pending:
-            # read afresh each time: forming one event can form others (see resolve_rise)
-            pend = sorted(self._pending, key=lambda x: x["since"])
-            first = pend[0]
-            if not final and now - first["since"] < wait:
-                break
-            cluster, members = self._form_event(first, pend, window)
-            for m in members:
-                st = self.phases.get(m["ph"])
-                if st is not None:
-                    out.extend((m["ph"], x) for x in st.end_older(cluster.id, m["since"], m["open"]))
-        return out
+    def _form_first(self) -> None:
+        """The oldest waiting rise, its event_wait past (see _advance), becomes
+        an event with whatever rose beside it, gets its cluster, and ends an
+        older open run of the same cluster on its phase. A pass's end used to
+        form every waiting rise alone, so a leg whose companion's reading fell
+        in the next pass was an event of its own."""
+        pend = sorted(self._pending, key=lambda x: x["since"])
+        cluster, members = self._form_event(pend[0], pend, self.event_window())
+        for m in members:
+            st = self.phases.get(m["ph"])
+            if st is not None:
+                self._closed(m["ph"], st.end_older(cluster.id, m["since"], m["open"]))
+        self._closed(None, [])                    # and what forming it split off (_split_rise)
 
     def _form_event(self, first: dict, pend: List[dict], window: float):
         """``first`` and whatever rose beside it within ``window`` on other
@@ -3877,7 +3967,7 @@ class Detector:
         share that is a stop is declared at once (_split_rise) - pairing on
         that phase while its caller is pairing or flushing there. So callers
         take every run they close out of open_edges before closing any, and
-        _flush_events re-reads what is pending after each event it forms."""
+        _form_first re-reads what is pending after each event it forms."""
         first = next((x for x in self._pending if x["open"] is o), None)
         if first is not None:
             self._form_event(first, list(self._pending), self.event_window())
@@ -3889,8 +3979,7 @@ class Detector:
         size = abs(watts)
         pf = size / math.hypot(size, var) if var is not None and size > 0 else None
         events, times, numbers = self.signals or ({}, {}, {})
-        if self._learned is None:
-            self._learned = [n for n in events if self.window(n)]
+        learned = [n for n in events if self.window(n)]     # as of this step, not of the pass's first
         bins = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
         kinds, lags, values = {}, {}, {}
         for name, evs in events.items():
@@ -3914,7 +4003,7 @@ class Detector:
             i = bisect.bisect_right(rows, (since, math.inf)) - 1
             if i >= 0:
                 values[name] = rows[i][1]
-        keyed = {n: kinds.get(n, "") for n in self._learned}
+        keyed = {n: kinds.get(n, "") for n in learned}
         placed = len(ph) == 1 and watts > 0
         where = (self.step_meter(ph, since, size, watts > 0, var) or "") if placed and self.step_meter is not None else ""
         if self._kinds is None:
@@ -3931,6 +4020,14 @@ class Detector:
             self.next_edge_id += 1
             self.edges.append(cluster)
             kind.append(cluster)
+            if len(kind) > EDGE_LIBRARY:
+                # the cap kept as each cluster is born, the weakest going
+                # first - at a pass's end, the library a six-hour slice kept
+                # was not the one a minute's pass kept
+                gone = min((c for c in kind if c is not cluster), key=lambda c: (c.count, c.last_seen))
+                kind.remove(gone)
+                self.edges = [c for c in self.edges if c is not gone]
+                self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         return cluster
 
@@ -4195,8 +4292,7 @@ class Detector:
     def usual_length(self, start: int) -> Optional[float]:
         """Seconds a run that starts with this cluster usually lasts, over its
         accepted pairs - None when it has none."""
-        if self._partners is None:
-            self.partners(-1)
+        self.partners(-1)
         lens = [(model[2], self.pairs.get(f"{start}>{stop}", [0.0])[0])
                 for stop, starts in self._partners.items() for a, model in starts.items() if a == start]
         w = sum(n for _, n in lens)
@@ -4205,8 +4301,12 @@ class Detector:
     def partners(self, stop: int) -> Dict[int, tuple]:
         """rise cluster -> (stop/start ratio, its spread, mean log seconds, its
         spread) for the accepted pairs this fall cluster ends - see
-        PAIR_MIN_RUNS. Worked out once a pass."""
-        if self._partners is None:
+        PAIR_MIN_RUNS. Worked out again every MODEL_REFRESH_S of the readings'
+        clock - once a pass, a backfill's slice learned from six hours, a
+        live pass from one minute and one call from nothing at all."""
+        at = math.floor((self._clock or 0.0) / MODEL_REFRESH_S)
+        if self._partners is None or self._partners_at != at:
+            self._partners_at = at
             by_start: Dict[int, float] = {}
             by_stop: Dict[int, float] = {}
             parsed = []
@@ -4507,6 +4607,10 @@ class Detector:
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
+                # rises still in their event window - a pass's end no longer forms them
+                "pending_rises": [[m["ph"], i, m["since"], m["watts"], m["var"], m["surge"]] for m in self._pending
+                                  for i, o in enumerate(self.phases[m["ph"]].open_edges if m["ph"] in self.phases else [])
+                                  if o is m["open"]],
                 }
 
     @classmethod
@@ -4535,6 +4639,11 @@ class Detector:
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
+        for ph, i, since, watts, var, surge in d.get("pending_rises") or []:
+            opens = det.phases[ph].open_edges if ph in det.phases else []
+            if 0 <= i < len(opens) and opens[i].since == since:
+                det._pending.append({"since": since, "ph": ph, "watts": watts, "var": var, "surge": surge,
+                                     "open": opens[i]})
         return det
 
 
