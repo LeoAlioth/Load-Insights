@@ -153,6 +153,29 @@ def test_energy_counters_and_frequency_are_never_phase_readings():
     assert "sensor.solaredge_se17k_m1_ac_frequency" not in picked
 
 
+def test_a_device_named_energy_meter_keeps_its_readings():
+    """REJECT reads what a reading is called itself, not its device: with
+    has_entity_name the id starts with the device's name, and Victron GX
+    names an ET340 "ET340 Energy Meter" - every one of its readings was
+    turned away as an energy counter (2026-10-02)."""
+    dev = "sensor.et340_energy_meter_id_30_"
+    rows = [e(dev + f"{k}_on_l{n}", dc, f"{label} on L{n}")
+            for n in (1, 2, 3)
+            for k, dc, label in (("power", "power", "Power"),
+                                 ("current", "current", "Current"),
+                                 ("voltage", "voltage", "Voltage"))]
+    rows += [e(dev + "energy_from_net_on_l1", "power", "Energy from net on L1"),
+             e(dev + "total_power", "power", "Total power")]
+    got = D.match_meter_entities(rows, role="grid")
+    assert got["power_a"] == dev + "power_on_l1", got
+    assert got["current_c"] == dev + "current_on_l3", got
+    assert got["voltage_b"] == dev + "voltage_on_l2", got
+    assert dev + "energy_from_net_on_l1" not in got.values()
+    assert dev + "total_power" not in got.values()
+    # a reading with no name of its own is judged by its id, as before
+    assert D.match_meter_entities([e("sensor.m_total_power_a", "power", "")]) == {}
+
+
 def test_describe_match_says_what_was_recognised():
     got = D.match_meter_entities(SOLAREDGE)
     line = D.describe_match(got)
