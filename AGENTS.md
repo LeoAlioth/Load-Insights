@@ -240,6 +240,24 @@ the full per-load detail; `PLANT=watts:on_s:every_s:phase` (or `PLANT=set1`)
 adds a square-wave load to the house reading and the grid meter to score a
 load no meter watches.
 
+**First scorecard (2026-10-02, 500c275, the ten days; the baseline is
+`data/scorecard/500c275-20261002T114540Z.json`), capture / impurity at SLICE=6,
+hidden -> circuits -> fed:** Home's devices 24.8 / 33.0 -> 28.8 / 22.8 -> 25.5 /
+14.9 % (the workshop boiler 81 / 35 -> 83 / 9 -> 86 / 13, the hidrofor 69 / 22 ->
+71 / 26 -> 79 / 18; Susilna, the office, Blaževa Soba and the UPS under 20 %
+caught in every mode); its partition 50.8 / 13.0 -> 57.6 / 9.5 -> 54.4 / 8.9
+(Delavnica 59 / 9 -> 61 / 8 -> 57 / 7, Hiša 64 / 14 -> 77 / 10 -> 74 / 10).
+Kozolec's devices 68.0 / 9.0 hidden -> 86.9 / 4.6 fed (the pond EVSE 56 -> 92 %
+caught). A 3EM as the main meter, hidden: Blaževa Soba 8.7 / 31.7 from Hiša, the
+office 24.3 / 15.8 from Mansarda. Among SLICE=6, 1 and LIVE=1 the site figures
+move up to 3 points; one call is far off (Home fed impurity 33 %). Invariance,
+fed, sessions / kWh two slicings file differently: Home 6~1 9,790 of 15,813 /
+379, 6~LIVE=1 1,166 / 42, 0~6 14,292 / 521; Kozolec 192 / 49, 25 / 4.6, 335 /
+101. Pairing, fed: Home 78 % of runs closed by an observed stop (8.9 % by a
+start of the same cluster, 8.1 % in a multi-close), 75 % of observed stops
+within 20 % of their start, 2.2 % of steps starts never closed and 7.6 % stops
+that closed nothing; Kozolec 88 %, 86 %, 0.9 and 6.6 %.
+
 The old energy score was this with fewer loads: its precision and recall are
 1 - impurity and capture, identical on the same replay (checked 2026-10-02;
 exact ties - two meters each claiming a whole session - now break in
