@@ -27,6 +27,8 @@ from .const import (
     ROLE_PREFIX,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
+    CONF_IGNORE_METERS,
+    CONF_HORIZON_SKIP,
     CONF_INPUT_ENTITIES,
     CONF_INVERTERS,
     CONF_INV_INPUT_PREFIX,
@@ -185,7 +187,14 @@ STORAGE_VERSION = 1
 #     a grid step that netted it, a held meter's signatures avoided when
 #     filing, and the level left on the reading after a multi-close - which
 #     steps are declared, and how runs close and file, differ.
-DETECTOR_GENERATION = 19
+# 20 = a pass is only a pause: every meter read on one clock, the grid its
+#     meters' learned lag behind them; every decision on that clock and each
+#     session filed when it becomes decidable, not at a pass's end; a meter's
+#     latency learned from the steps it shares with the grid; device merges
+#     after every filing, never into a signature a run was kept out of - the
+#     same history read at any slicing files the same library, which differs
+#     from one built in passes.
+DETECTOR_GENERATION = 20
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -275,6 +284,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # Meters below the main one come from the Energy dashboard, resolved once
         # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
         self.submeters: Dict[str, dict] = {}
+        # ...and every meter the dashboard has, those left out of detection
+        # on the settings page too (see CONF_IGNORE_METERS)
+        self.all_submeters: Dict[str, dict] = {}
         self.fleet: Fleet = Fleet()
         # V x dI per phase: the apparent power one quantum of the amps
         # behind this role's power factor is worth. Measured, never set.
@@ -332,6 +344,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         by_stat = {d.energy: d for d in site.devices}
         declared = self.config.get(CONF_SINGLE_DEVICE)
         declared = None if declared is None else set(declared)
+        ignored = set(self.config.get(CONF_IGNORE_METERS) or [])
+        unwaited = set(self.config.get(CONF_HORIZON_SKIP) or [])
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
@@ -357,8 +371,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             out[dev.label] = {"fields": fields, "agnostic": agnostic,
                               "parent": parent.label if parent else None, "energy": dev.energy,
                               # None: not declared, the library's shape decides
-                              "single": None if declared is None else dev.energy in declared}
+                              "single": None if declared is None else dev.energy in declared,
+                              "ignored": dev.energy in ignored, "horizon_skip": dev.energy in unwaited}
         return out
+
+    async def _refresh_submeters(self) -> None:
+        """Every meter the dashboard has (the settings page lists them all),
+        and the ones detection reads: all but those left out of it."""
+        self.all_submeters = await self._resolve_submeters()
+        self.submeters = {n: m for n, m in self.all_submeters.items() if not m.get("ignored")}
 
     async def _inverter_terms(self, start: datetime, end: datetime) -> List[tuple]:
         """Each inverter as (rows, sign) per phase: its output, less its input.
@@ -885,7 +906,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         # before the platforms, which leave out the loads that ARE a metered
         # device; every pass resolves them again
-        self.submeters = await self._resolve_submeters()
+        await self._refresh_submeters()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         self.refiling = bool(raw.get("refiling")) or self.last_processed is None
@@ -985,8 +1006,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                         self.pv_visible[p] = verdict
                     if self.pv_visible.get(p) is False:
                         pv.pop(p)         # this reading never sees the sun; leave its steps alone
-                self.submeters = await self._resolve_submeters()
+                await self._refresh_submeters()
+                for name, meter in self.all_submeters.items():
+                    if meter.get("ignored"):
+                        self.fleet.subs.pop(name, None)     # left out on the settings page: as if never read
                 self.fleet.parents = {n: m.get("parent") for n, m in self.submeters.items()}
+                # not waited for: as the settings page says, and any meter the
+                # dashboard no longer resolves, whose detector is kept unread
+                self.fleet.horizon_skip = ({n for n, m in self.submeters.items() if m.get("horizon_skip")}
+                                           | (set(self.fleet.subs) - set(self.submeters)))
                 sub_samples, sub_q, agnostic = {}, {}, {}
                 for name, meter in self.submeters.items():
                     ss, sq = await self._read(start, end, meter["fields"])
