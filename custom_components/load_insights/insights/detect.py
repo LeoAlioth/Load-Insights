@@ -1618,11 +1618,9 @@ class PhaseState:
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
     raw_last: Optional[Tuple[float, float]] = None   # the last reading as the meter wrote it - see Detector._corroborate
-    # a meter below the grid: its report delay against it, learned by the
-    # Fleet (Fleet._learn_lags), 0 until it is; and whether this reading is
-    # the reference itself - see latency
+    # a meter below the grid: its report lag against it, learned by the
+    # Fleet (Fleet._learn_lags), 0 until it is - see latency
     lag: float = 0.0
-    reference: bool = field(default=True, repr=False, compare=False)
     _stood: Optional[float] = field(default=None, repr=False, compare=False)   # the pending reading last stood in for
     # this phase's own reading interval - its cadence, see CADENCE_GAPS - the
     # meter's rate, not a setting, so turning a poll up from 5 s to 1 s is
@@ -1857,22 +1855,23 @@ class PhaseState:
         """How long after a moment this reading's data about it is complete -
         how long a new level must go uncontradicted to be confirmed, a
         silence to mean the value held, and how far before its first reading
-        a change can have happened (Anze, 2026-10-02: latency replaces the
-        cadence for every meter that reports to the grid). A meter below the
-        grid: its report delay against the grid as learned from the steps it
-        shares with it (``lag``, Fleet._learn_lags), never under its own
-        shortest repeat interval, which stands in until enough are shared.
-        The grid itself is the reference and has no delay to learn: its data
-        through a moment is complete only once it has written past it, and a
-        level that one more reading confirms lets a half-caught switch found
-        a load - so it keeps SUSTAIN_CADENCES of its repeat interval (see
-        that note: at two, Home's grid read its ordinary gaps as silence).
-        SUSTAIN_SECONDS until a repeat interval is measured."""
+        a change can have happened: SUSTAIN_CADENCES of its shortest repeat
+        interval, or its report lag against the grid where that is longer
+        (``lag``, learned from the steps it shares with the grid - see
+        Fleet._learn_lags; the grid itself is the reference and has none).
+        Anze (2026-10-02) asked for the lag in place of the repeat interval
+        everywhere; for a meter's own levels it is not enough: a level that
+        one repeat interval leaves uncontradicted lets a half-caught reading
+        found a load, at the grid as at a plug - Home with its meters fed,
+        ten days, energy impurity 24.7 % confirmed over the lag against 12.9
+        over three repeat intervals (the hidrofor's runs split over two
+        signatures, Susilna's meter claiming runs not its own). What waits
+        on another meter - the horizon, a house session's wait, the meters'
+        tolerances - waits for the lag (Fleet._declare_lag). SUSTAIN_SECONDS
+        until a repeat interval is measured."""
         if not self.interval:
-            return SUSTAIN_SECONDS
-        if self.reference:
-            return SUSTAIN_CADENCES * self.interval
-        return max(self.interval, self.lag)
+            return max(SUSTAIN_SECONDS, self.lag)
+        return max(SUSTAIN_CADENCES * self.interval, self.lag)
 
     def silence_due(self) -> Optional[float]:
         """When the change pending here is confirmed by the meter's silence:
@@ -4842,8 +4841,6 @@ class Fleet:
         for name in sorted(set(self.subs) | set(sub_samples)):
             det = self.subs.setdefault(name, Detector())
             det.tz_offset_s = self.main.tz_offset_s
-            for st in det.phases.values():
-                st.reference = False                  # a meter below the grid: its latency, see PhaseState.latency
             meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name))]
         meters.sort(key=lambda r: r[:3])
         self._dues, self._names = {}, [""] + sorted(self.subs)
@@ -4967,9 +4964,10 @@ class Fleet:
         """Each meter's lag against the grid, from the steps the two share:
         for every clear grid step at least LAG_REACH_S old on the clock - so
         the meter has had its whole reach to declare its own, whatever the
-        slicing - the meter's nearest declared step that way of its size on
-        a channel mapped to that phase, when no other one is as near:
-        (when it happened, when it was declared) less the grid step's time.
+        slicing - the meter's declared step that way of its size on a channel
+        mapped to that phase, where each is the only one of its kind on its
+        meter within the reach: (when it happened, when it was declared)
+        less the grid step's time.
         The meter's report lag sets its latency (PhaseState.lag), the
         declaring lag the grid's horizon (_horizon)."""
         reach = LAG_REACH_S
@@ -4993,12 +4991,20 @@ class Fleet:
                 rows = self.meter_lag.setdefault(name, [])
                 for g in steps:
                     tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * abs(g[1])
-                    near = sorted((abs(e[0] - g[0]), e) for e in self._near(st, g[0] - reach, g[0] + reach, reach)
-                                  if (e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= tol
-                                  and abs(e[0] - g[0]) <= reach)
-                    if not near or (len(near) > 1 and near[1][0] <= 2.0 * near[0][0] + MERGE_TOLERANCE_S):
-                        continue                  # none, or not one the nearest by far
-                    e = near[0][1]
+
+                    def like(e, size_tol):
+                        return ((e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= size_tol
+                                and abs(e[0] - g[0]) <= reach)
+                    near = [e for e in self._near(st, g[0] - reach, g[0] + reach, reach) if like(e, tol)]
+                    # one of its kind on both meters within the reach, or a
+                    # cycling load's next run is taken for this one's late
+                    # report and the lag reads minutes (Kozolec's boiler,
+                    # pulsing every four: its 95th 256 s)
+                    twins = [x for x in self._near(grid, g[0] - reach, g[0] + reach, reach)
+                             if x is not g and (x[1] > 0) == (g[1] > 0) and abs(abs(x[1]) - abs(g[1])) <= 2.0 * tol]
+                    if len(near) != 1 or twins:
+                        continue
+                    e = near[0]
                     rows.append([round(e[0] - g[0], 2), round((e[5] if len(e) > 5 else e[4]) - g[0], 2)])
                 del rows[:-LAG_SAMPLES]
         for name, det in self.subs.items():

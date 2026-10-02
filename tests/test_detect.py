@@ -1556,15 +1556,14 @@ def test_a_session_waits_only_for_meters_that_could_have_seen_it():
     fleet = D.Fleet()
     fast, slow = D.Detector(), D.Detector()
     fast.phases["a"].interval, slow.phases["a"].interval = 10.0, 420.0
-    for det in (fast, slow):
-        det.phases["a"].reference = False
     fleet.subs = {"plug": fast, "workshop": slow}
     run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
-    # the two meters' tolerance, the plug's declaring lag - its latency twice
-    # until one is learned - and its wait for a partner leg
-    assert fleet._ready_at(run, 6.0) == 60.0 + 16.0 + 20.0 + D.HELD_TAIL_S   # the slow meter not waited for
+    # the two meters' tolerance (the grid's 6 s and the plug's latency, three
+    # of its 10 s), the plug's declaring lag - its latency twice until one is
+    # learned - and its wait for a partner leg
+    assert fleet._ready_at(run, 6.0) == 60.0 + 36.0 + 60.0 + D.HELD_TAIL_S   # the slow meter not waited for
     fleet.meter_lag["plug"] = [[3.0, 12.0]] * D.LAG_MIN_SAMPLES                 # learned: declared 12 s after the grid
-    assert fleet._ready_at(run, 6.0) == 60.0 + 16.0 + 12.0 + D.HELD_TAIL_S
+    assert fleet._ready_at(run, 6.0) == 60.0 + 36.0 + 12.0 + D.HELD_TAIL_S
     fast.phases["a"].interval = 50.0                                 # a plug as slow as the run: not waited for either
     assert fleet._ready_at(run, 6.0) == 60.0
     long_run = D.Session(phases="a", start=0.0, end=3000.0, levels={"a": [(0.0, 900.0)]})
@@ -2895,12 +2894,11 @@ def test_the_grid_is_read_as_far_behind_as_its_slowest_meter_needs():
     for name, cad in (("Hidrofor", 10.0), ("Hisa", 5.0), ("Workshop boiler", 146.0)):
         f.subs[name] = D.Detector()
         f.subs[name].phases["a"].interval = cad
-        f.subs[name].phases["a"].reference = False
-    assert f._horizon() == 292.0                                    # the boiler, until it is learned
+    assert f._horizon() == D.METER_WAIT_CAP_S                      # the boiler, until it is learned: past the cap
     f.horizon_skip = {"Workshop boiler"}
-    assert f._horizon() == 20.0
+    assert f._horizon() == 60.0                                     # the hidrofor: twice three of its 10 s
     f.meter_lag["Hidrofor"] = [[2.0, 14.0]] * 18 + [[4.0, 35.0]]          # 19 steps shared
-    assert f._horizon() == 20.0                                     # not yet believed
+    assert f._horizon() == 60.0                                     # not yet believed
     f.meter_lag["Hidrofor"].append([4.0, 35.0])                            # 20: its 95th, 35 s
     assert f._horizon() == 35.0
     f.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0: None}
@@ -2918,7 +2916,7 @@ def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
     learned from."""
     f = _fleet_with_meters({"Hidrofor": 0.0})
     plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
-    plug.reference, plug.interval, grid.noise = False, 10.0, 10.0
+    plug.interval, grid.noise = 10.0, 10.0
     for k in range(30):
         t = T0 + 600.0 * k
         _declare(grid, (t, 900.0, None, t - 1.0, t))
@@ -2929,7 +2927,7 @@ def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
     f._learn_lags(T0 + 600.0 * 30 + D.LAG_REACH_S + 1.0)
     rows = f.meter_lag["Hidrofor"]
     assert len(rows) == 30 and all(r == [1.5, 12.0] for r in rows), rows[:3]
-    assert plug.lag == 1.5 and plug.latency() == 10.0              # never under its own repeat interval
+    assert plug.lag == 1.5 and plug.latency() == 30.0              # never under three of its repeat intervals
     assert f._horizon() == 12.0
 
 
