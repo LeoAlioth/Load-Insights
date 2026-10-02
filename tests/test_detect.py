@@ -1265,14 +1265,23 @@ def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
     """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
     records fewer, so a running mean of its gaps came out 7.1 s against the
     busy phases' 6.0 - one meter, three cadences - and the sustain guard judged
-    two legs of one load by different thresholds (2026-09-23)."""
+    two legs of one load by different thresholds (2026-09-23). Here a quiet
+    leg's reading changes on a quarter of the 6 s polls and holds - unrecorded
+    - between: the median of its gaps reads 12-18 s, the gaps after it MOVED
+    still say 6."""
+    rnd = random.Random(5)
     busy, quiet = D.PhaseState(min_noise=10.0), D.PhaseState(min_noise=10.0)
-    t = 0.0
-    for i in range(400):
+    t, wobble, last = 0.0, 1.0, None
+    for i in range(1200):
         t += 6.0
-        busy.process(t, 500.0 + (i % 2) * 40.0)          # changes every reading
-        if i % 3 != 0:                                     # a third unrecorded:
-            quiet.process(t, 500.0 + (i % 2) * 40.0)      # the value repeated
+        level = 300.0 + 400.0 * ((i // 10) % 2)           # a load switching every minute
+        busy.process(t, level + (1.0 if i % 2 else -1.0))  # changes every poll
+        if rnd.random() < 0.25:
+            wobble = -wobble
+        w = level + wobble
+        if w != last:                                      # unchanged: not recorded
+            quiet.process(t, w)
+            last = w
     assert abs(busy.interval - 6.0) < 0.01, busy.interval
     assert abs(quiet.interval - 6.0) < 0.01, f"the cadence is still 6 s ({quiet.interval})"
 
@@ -2839,20 +2848,13 @@ def test_a_change_reporters_span_starts_three_cadences_before_its_first_new_read
     """The recorder keeps only changes, so a meter's silence is a held value:
     the change is within SUSTAIN_CADENCES of its cadence before its first new
     reading - the hidrofor's 10 s plug three cycles, 30 s."""
-    poll = [10.0] * 15 + [20.0, 30.0, 60.0, 10.0, 40.0]                            # a 10 s poll, unchanged ones unwritten
-    assert D.reading_cadence(poll) == 10.0
-    change = [1.1, 1.3, 2.0, 5.0, 60.0, 60.0, 1.2, 3.0, 60.0, 1.0, 30.0, 1.4] * 2
-    assert 1.0 <= D.reading_cadence(change) <= 1.3, D.reading_cadence(change)
-    assert D.reading_cadence([60.0] * 40 + [5.0] * 3) == 5.0                       # heartbeats do not hide a quick report
-    jitter = [5.5] * 95 + [1.8, 2.1, 2.3, 9.0, 8.8]                                # polled every 5.5 s, 2 % early by jitter
-    assert D.reading_cadence(jitter) == 5.5
     st = D.PhaseState()
-    st.steady_ts, st.gaps = T0 - 60.0, list(change)
+    st.steady_ts, st.interval = T0 - 60.0, 1.2                                     # reports a change within ~1 s
     assert T0 - 3.9 <= st.span_start(T0) <= T0 - 3.0                               # not a minute back
-    st.gaps = poll
+    st.interval = 10.0                                                             # a 10 s poll
     assert st.span_start(T0) == T0 - 30.0                                          # three polls back
-    grid = D.PhaseState()                                                          # polled every 2 s, some jitter
-    grid.interval, grid.gaps, grid.steady_ts = 2.0, [1.9] * 3 + [2.0] * 40, T0 - 3.8
+    grid = D.PhaseState()                                                          # polled every 2 s
+    grid.interval, grid.steady_ts = 2.0, T0 - 3.8
     assert grid.span_start(T0) == T0 - 3.8                                         # nothing unwritten: from its last reading
 
 
@@ -2873,7 +2875,7 @@ def test_a_meters_cadence_is_how_often_it_writes_while_its_value_moves():
         if k % 12 == 5:                                                    # the minute's refresh
             victron.process(ts + rnd.uniform(0.6, 4.7), w + rnd.uniform(-3, 3))
         ts += 5.3
-    assert 5.0 <= victron.cadence() <= 5.4, victron.cadence()
+    assert 5.0 <= victron.interval <= 5.4, victron.interval
     panel, ts = D.PhaseState(min_noise=10.0), T0
     for cycle in range(30):
         for k in range(10):                                                # idle, a heartbeat a minute
@@ -2884,7 +2886,7 @@ def test_a_meters_cadence_is_how_often_it_writes_while_its_value_moves():
             panel.process(ts, 902.0 + k % 2); ts += 60.0
         for w in (0.5, 0.4):                                               # off
             panel.process(ts, w); ts += 5.0
-    assert 4.9 <= panel.cadence() <= 5.1, panel.cadence()
+    assert 4.9 <= panel.interval <= 5.1, panel.interval
 
 def test_a_reading_of_the_changes_own_update_is_not_the_old_level_holding():
     """Home's grid is two writes per update - the inverter's, then the meter's
