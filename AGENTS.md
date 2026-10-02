@@ -53,7 +53,7 @@ around them are dimensionless *counts* of those measurements:
 |---|---|
 | `PhaseState.quantum` | `measure_quantum` — a low percentile of its changes, confirmed against a lattice |
 | `PhaseState.noise` | median deviation while idle |
-| `PhaseState.interval` | observed gap between samples |
+| `PhaseState.interval` | its cadence: the 10th percentile of the gaps after a reading that moved (`CADENCE_GAPS`), stored with the phase |
 | `PhaseState.q_quantum` | `V x dI` from the amps behind the power factor |
 | `Signature.pf_mad` / `power_mad` / `duration_mad` | spread across sightings |
 
@@ -221,6 +221,10 @@ reaches 50 % of any device). The Home number is the blob: one signature with
 - **Ground truth only sees loads that have a sub-meter.** Home's kiln has none,
   so a change can raise every score while wiping it out. Check unmetered loads
   of interest separately at every point of a sweep.
+- **The pass slicing is the noise floor.** Re-run a verdict at SLICE=4, 5,
+  7 and 8 beside the default 6: on the same code the pump's clean runs move
+  482-490 and Home's energy precision 76-88 % (*A meter's cadence*,
+  2026-10-02). A difference inside that is not a result.
 - **Point sweeps at a fixed folder.** Build tuning and hold-out folders of
   symlinks and never replay `data/history/<site>` while a fetch is writing to
   it - runs started a few seconds apart will read different days.
@@ -295,15 +299,17 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
 | `SUSTAIN_SAMPLES` | 2 | readings a new level must hold before it counts | count | 2–4 | Kozolec: 3 ≈ `SUSTAIN_INTERVALS` 1.5 (86.3 vs 87.3 % wconc); 4 is worse (80.6 %) |
-| `SUSTAIN_SECONDS` | 5.0 | ...and at least this long | **physical** | — | **defective**: below the 6 s sampling interval at both sites, so it never fires |
+| `SUSTAIN_SECONDS` | 5.0 | ...and at least this long | **physical** | — | only until a reading's first moving gap (`CADENCE_GAPS`); was **defective** as the guard itself - below the 6 s sampling interval at both sites, so it never fired |
 | ~~`SUSTAIN_INTERVALS`~~ | replaced by `SUSTAIN_CADENCES` (3, 2026-10-01; see *A meter's cadence*) | ...and at least this many measured sample intervals. 1.5 ≈ three readings at 6 s | count | 0–3 | **swept at both sites and the kiln; shipped.** Kozolec wconc 72.2 → 87.3 %, confirmed held out 73.8 → 84.2 %. Home held-out purity 64.6 → 68.3 %. Kiln (no sub-meter) best at 1.5: full-size sessions 272 → 317, spurious ladder 236 → 145; from 2.0 it loses pulses. Costs loads that wander rather than switch (NASA station); `ALIKE_MAD_SHARE` gives most of it back. Made the old surge detector blind — see `_declare_surge` |
 | `SUSTAIN_AGREE` | always on (the switch removed 2026-09-30) | a new level is only the pending readings that AGREE with the newest; the ones before are the transition | switch | — | **shipped (gen 13).** The old rule took the median of everything away from the old level, so [1251, 1082, 436] - a sag, a half-caught switch, the stop - read as a 198 W step: it closed a 4-hour-old 179 W start and left the hidrofor's session open 7.8 h. Home purity 76.6 → 78.7 %, held out 75.0 → 78.6 %; hidrofor held out 208 → 213; Kozolec's boiler 499 / 337 → 500 / 339. The TIME away is still counted from the first reading that left - timing it from the agreeing readings alone cost the kiln a third of its pulses (399 → 264), whose off-gaps are two readings after a half-caught one |
 | `SUSTAIN_AGREE_TOL` | 1.414 | readings agree within this many `noise_at`s... | count | 1–2 | swept 1.0 / 1.414 / 2.0: Home best at √2 (held out 76.8 / 78.6 / 77.1 %); Kozolec's boiler flat, its Scala2 prefers 1.0. √2 because two readings each carry the noise |
 | `SUSTAIN_AGREE_REL` | 0.15 | ...or within this share of the step they are making | ratio | 0–0.25 | swept 0 / 0.1 / 0.15 / 0.25 on the kiln: 0 lost pulses (345 full-size) because phase A's off readings wander 19 W under load; 0.1-0.25 all ~395. 0.15 is the pairing tolerance, and the best for Kozolec |
 | `SUSTAIN_AGREE_MAX_INTERVALS` | 12 | after this many intervals of readings that never agree, the old median decides - a wandering load | count | 3–∞ | swept 3 / 6 / 12 / 24 / ∞: flat from 12 up (Kozolec identical 12-∞), so it barely binds; kept as a safety net |
-| `STEP_AT_HALFWAY` | always on (the switch removed 2026-09-30) | a step is dated at the first reading more than half-way to the new level, not the first that left the old one | switch | — | **shipped (gen 13).** Kiln single-leg 141 → 118, main signature x335 → x384; hidrofor held out 213 → 220; workshop boiler held out 29 → 38; Kozolec's Scala2 held out 67 → 53 (it ramps). The kiln's LENGTHS were already right (42.0 s against 42.0 s off the grid meter) || `INTERVAL_PERCENTILE` | **0.5** | a reading's interval is this percentile of its last `INTERVAL_GAPS` gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped.** Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75 |
+| `STEP_AT_HALFWAY` | always on (the switch removed 2026-09-30) | a step is dated at the first reading more than half-way to the new level, not the first that left the old one | switch | — | **shipped (gen 13).** Kiln single-leg 141 → 118, main signature x335 → x384; hidrofor held out 213 → 220; workshop boiler held out 29 → 38; Kozolec's Scala2 held out 67 → 53 (it ramps). The kiln's LENGTHS were already right (42.0 s against 42.0 s off the grid meter) |
+| ~~`INTERVAL_PERCENTILE`~~ / ~~`INTERVAL_GAPS`~~ | 0.5 / 60, replaced by the moving gaps' cadence (2026-10-02; see *A meter's cadence*) | a reading's interval was this percentile of its last 60 gaps - its cadence, not the mean gap between recorded changes | ratio | 0.1–0.5 | **swept; shipped (2026-09-23)**: Home's three phases were 7.1/6.0/6.0 s from the running mean, all 6.0 with the median. Kiln full-size 305 → 337, ladder 130 → 92; held out, Home purity 76.7 → 77.6 %, Kozolec hidrofor 65 → 75. The median still read how often a value CHANGES once a leg held between polls (12-18 s for a 6 s meter changing on a quarter of its polls) |
+| `CADENCE_GAPS` / `MOVING_PERCENTILE` | 600 / 0.10 | a reading's interval - its cadence - is this percentile of its last 600 gaps after a reading that moved past the noise; from the first such gap, stored with the phase | budget / ratio | — / 0.05–0.25 | p5 / p10 / p25 read off ten days of every meter (the table in `detect.py`): the 10th is the lowest that skips the Victron's once-a-minute refresh. The ONE gap measure since 2026-10-02 - sustain, silence, span, the event, corroboration and crowding windows, sample counts and the Fleet's tolerances (see *A meter's cadence*) |
 | `CORROBORATED_STOP` | 1 reading / 0 s (inline since 2026-10-01) | a stop another leg of the same load vouches for passes on one reading | count | 1–2 | **swept; shipped.** 1 reading beats 2 (old metric: single-leg 80 vs 136 with the loose partner test). Off → on, inside the firings: full-size 353 → 399 of 437 pulses, single-leg 212 → 158, ladder 23 → 22. See the single-leg entry for the trade |
-| `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose) |
+| `CORROBORATE_INTERVALS` | **1.0** | how close in time a partner leg must start and stop, in sample intervals (cadences since 2026-10-02: ~1.1 s at Home's grid by day, the median gap's 2.0 before) | count | 1–2.5 | **swept**: the merge test's 15 s let unrelated loads vouch for each other; 1.0 kept the most of the hidrofor (208 vs 196 loose). In cadences, one trial each on 66f190a (before the shortfall fix): 1.0 / 1.5 / 1.8 / 2.0 / 2.5 / 3.0 - kiln full-size 470 / 468 / 476 / 472 / 478 / 472, pump clean 482 / 486 / 482 / 489 / 492 / 484, inside the slicing noise; left at 1 |
 | `CORROBORATE_BALANCE` | 0.7 | how near in power a partner leg must be | ratio | 0.7–0.85 | swept 0.7 and 0.85; 0.85 lost more single-leg than it saved |
 | `CORROBORATED_CLOSES_ITS_EDGE` | always on (the switch removed 2026-09-30) | close the edge the partners vouched for, not the newest of that size | switch | — | kiln ladder 114 → 98, pulse length back toward the true 42 s; did not recover the hidrofor |
 | `CORROBORATED_SPLIT` | always on (the switch removed 2026-09-30) | a leg whose start was bigger than the drop its closed partner vouches for is split: that part closes, the rest stays open as the coincident load | switch | — | **shipped (gen 13).** With the reading-level partner test it fired 164 times in ten days, 11 on the kiln, and cost Home 1.9 points held out; with only CLOSED partners: Home 77.6 → 78.6 %, held out 79.7 → 80.6 %, kiln main signature x385 → x397, single-leg 116 → 112, ladder 18 → 23. Kozolec identical || `BASELINE_EMA` | 0.02 | how fast the idle floor follows drift while nothing runs | ratio | 0.005–0.1 | not tested |
@@ -381,7 +387,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / `EDGE_RECUT` | 1.0 / 0.25 / 10 d / 32 | smoothing of the size histogram (in measurement errors), its bin, how fast it fades, how many steps before its valleys are cut again | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled) |
 | `EDGE_ANGLE` (`EDGE_ANGLE_BIN` 3°, `EDGE_ANGLE_KERNEL` 6°) | **off** | the step's reactive angle, atan2(dQ, dP), as a second clustering dimension: within a size segment, steps are cut again at the valleys of their angle density, so a pump (~35°) and a heater (0°) of one size are two kinds of edge | switch | — | **not yet measurable**: only a SIGNED var gives the angle, and Home's grid meter signs it only from 2026-09-30 07:57 - ten days of it exist from about 2026-10-10 (Kozolec's Victron and the 3EMs are unsigned). Synthetic test only (900 W at 0 and at 630 var: one cluster off, two on). Bench it on Home's ten days then, against the purity, the pump (its cluster shares A with the compressor's leg) and the kiln, whose legs read 0.866 with opposite-signed var |
 | `PAIR_MIN_RUNS` / `ABOVE_CHANCE_ODDS` | 8 / 100 | a pair is accepted once it has this many runs and a Chernoff bound puts the odds of its count by chance under 1 in `ABOVE_CHANCE_ODDS` | count | — | **replaced shares of 30 % and 20 % (2026-09-30)**: mat hours outside heating 21.7 -> 11.5; odds 10, 100 and 1000 identical. `LINK_MIN` and the device union-find went with the all-phase events (a device is its start cluster) |
-| `EVENT_WINDOW_INTERVALS` / `EVENT_BALANCE` | 3 / 0.2 | rises on different phases within this many of the slowest phase's reading intervals, the smallest at least this share of the largest, are ONE start event, clustered on their phase pattern and total size | count / ratio | 2–4 / 0.2–0.5 | measured on Home's ten days: at 2 intervals the compressor's three-leg event never formed, at 3 it did (70 steps, a cluster of 28), at 4 little more; the pump gets a false companion within 5 s 1 % of the time; 0.2 / 0.5 / 0.9 balance alike offline |
+| `EVENT_WINDOW_INTERVALS` / `EVENT_BALANCE` | 3 / 0.2 | rises on different phases within this many of the slowest phase's reading intervals, the smallest at least this share of the largest, are ONE start event, clustered on their phase pattern and total size | count / ratio | 2–4 / 0.2–0.5 | measured on Home's ten days: at 2 intervals the compressor's three-leg event never formed, at 3 it did (70 steps, a cluster of 28), at 4 little more; the pump gets a false companion within 5 s 1 % of the time; 0.2 / 0.5 / 0.9 balance alike offline. In cadences since 2026-10-02 (3.3 s at Home by day, 6 s on the median): 5.5 - about the old seconds - on 66f190a cost purity 78.2 → 76.0 %, the kiln and pump unchanged |
 
 ### Suggesting one device across settings
 
@@ -589,25 +595,70 @@ change's span can start: SUSTAIN_CADENCES (3) of the meter's cadence.
   merged the floor mat into the kiln's start (one reading at the mat's level).
 - **Confirming over the period (the median gap) instead** held Hisa's levels
   30 s, its writes being 15 s apart when little moves.
-- **Until ten moving gaps are known, the 5th percentile of the last 60 gaps**
-  (`reading_cadence`), not the interval. Without it (2026-10-01) the bench is
-  identical but for Home with production's meters (purity 75.5 -> 75.4 %,
-  energy F0.5 56.9 -> 59.1), and the IR panel's library at Kozolec too, but a
-  meter heartbeating once a minute then times itself by its 60 s median until
-  it has moved ten times: `test_a_slow_meters_silence_is_a_held_value` keeps
-  14 of its 20 cycles from cold (18 with it), and 16 after a restart (20) -
-  the moving gaps are not saved. Saving their last 60 gives the restart back
-  (20), not the cold start. Kept.
-- **The interval as the cadence** - one gap estimator, `interval` taking the
-  moving gaps' 10th percentile once ten are known (2026-10-01, without
-  `reading_cadence`, one trial, unswept): Home 77.5 / 46.5 -> 79.3 / 50.3 %,
-  with the thermostat 77.1 / 47.8 -> 78.2 / 48.9, Kozolec 99.2 / 89.8 ->
-  99.1 / 95.4 % (its Scala2 69 -> 120 of 146 in one signature), Home's energy
-  P 78.4 -> 88.1 %; but the pump's clean runs 490 -> 482 (missing 25 -> 31),
-  and `test_a_readings_interval_is_its_cadence_not_how_often_it_changes`
-  fails. The interval sizes the event window, the corroboration window and
-  the sample counts, so this moves far more than a cleanup should; not
-  shipped, a lead.
+- **One gap measure (2026-10-02).** The interval IS the cadence: every
+  caller of the median of the last 60 gaps (`INTERVAL_PERCENTILE`) and of
+  `reading_cadence` (the 5th percentile of all gaps, until ten moving gaps
+  were known) reads the moving gaps' 10th percentile, taken from the first
+  moving gap (the smallest until there are ten) and stored with the phase.
+  The once-a-minute heartbeat meter (`test_a_slow_meters_silence_is_a_held_value`)
+  keeps 18 of 20 cycles from cold and 20 of 20 after a restart, as with
+  `reading_cadence` (14 / 16 with the moving gaps neither used from the
+  first nor stored). The interval test pinned an artefact: its quiet leg
+  skipped exactly a third of an alternating value's readings, so the median
+  read 6 s while every gap after a move was 12; rewritten as the recorder
+  behaves - the value changes on a quarter of the polls and holds between -
+  the median reads 12-18 s and the cadence 6.0.
+- **Why the pump lost runs under it** (the previous phase's lead: 490 -> 482
+  clean, missing 25 -> 31). Run by run against its meter: 10 of the 18 runs
+  lost were closed by `_unseen_stop` 5-11 s after their start, at their full
+  size - "missing" (an 11 s run is a blip) or "short". Each time the phase
+  already carried a shortfall nothing fitted - an older run followed while
+  alone up to everything above the floor (a 407 W start followed to 1,348 W)
+  - and the pump, the next run of about its size, was taken for the one that
+  stopped unseen at its first settling drop. The gap estimate there 1.06 s
+  against the median's 1.94, the sustain identical (it already ran on the
+  cadence). Not caused by the estimator: `_unseen_stop` closes the same 680
+  runs at Home either way, as young; the estimator only reshuffled which pump
+  runs met the trap. Fixed where it is: a run is fitted only to what fell
+  short SINCE it started (`_Open.short0`, the shortfall standing when it
+  began, not stored). Kozolec's pond EVSE was its other victim (energy recall
+  76 -> 95 %). Counting each run at min(followed, start) instead fixed the
+  pump too but lost a ramping load's real growth (Kozolec's Scala2 signature
+  took 9 kWh not its own) - checkpoint d067ce6, not kept.
+- **Benched as a 2 x 2, each the mean of five pass slicings (SLICE 4-8)**:
+
+  | | old estimators | one estimator | old + shortfall fix | shipped (both) |
+  |---|---|---|---|---|
+  | Home + thermostat pur / wconc | 78.1 / 48.1 | 78.5 / 49.4 | 77.1 / 47.7 | 79.1 / 50.1 |
+  | Home SUBS=prod pur / wconc | 75.2 / 46.0 | 76.6 / 47.1 | 76.3 / 46.8 | 77.3 / 47.8 |
+  | kiln full / ladder / single | 472.6 / 13.6 / 7.2 | 469.0 / 12.6 / 8.2 | 474.0 / 14.0 / 4.0 | 472.6 / 12.2 / 3.4 |
+  | pump clean / missing (of 665) | 486.0 / 26.8 | 483.8 / 30.0 | 491.2 / 27.2 | 492.2 / 27.8 |
+  | mat h / over | 48.7 / 2.1 | 49.5 / 2.1 | 48.9 / 2.1 | 49.4 / 2.1 |
+  | Kozolec pur / wconc | 99.2 / 93.4 | 99.1 / 95.4 | 99.1 / 93.3 | 99.2 / 95.6 |
+  | fridges within 25 % / purity | 64.8 / 87 | 64.8 / 87 | 65.0 / 86 | 65.0 / 86 |
+  | energy Home P / R / F0.5 | 81.3 / 27.8 / 58.6 | 87.3 / 27.4 / 60.6 | 82.9 / 27.6 / 59.1 | 81.9 / 28.4 / 59.4 |
+  | ... pooled P / wrong kWh | 81.5 / 10.1 | 85.8 / 7.2 | 79.7 / 11.2 | 82.8 / 9.3 |
+  | energy Kozolec P / R / F0.5 | 94.6 / 81.3 / 91.6 | 94.3 / 81.3 / 91.4 | 95.4 / 93.8 / 95.1 | 95.3 / 93.6 / 95.0 |
+
+  The estimator alone is the precision win (Home's pump signature 6.2 ->
+  3.2 kWh not its own) and cost the kiln 3.6 pulses and the pump 3 more
+  missing; the shortfall fix alone costs Home a point of purity and 1.8 of
+  pooled energy precision for 5 pump runs, 3 kiln single-legs and Kozolec's
+  charger; together every precision figure is at or above the old one but
+  the fridges' A/B purity (87 -> 86 %, one run: the two fridges Anze would
+  rather see as one). What the fix gives back of the estimator's Home
+  precision (85.8 -> 82.8 pooled) is the trade still open: the pump
+  signature's extra wrong energy is a handful of 25-67 min runs starting
+  within a minute of the pump. The one traced (09-26 05:31, 613 Wh) is a
+  phantom: a multi-close took a phase's last open runs while it still read
+  700 W, the level fell back to the floor, and the 700 W came back as a new
+  start - a fault older than either change.
+- **The pass slicing is the bench's noise**: SLICE 4 / 5 / 6 / 7 / 8 on the
+  old code moved the pump's clean runs 482-490, the kiln's full-size 469-475,
+  Home's purity 77.1-78.6, Kozolec's wconc 89.8-95.8 (6 and 7 are the low
+  ones: the Scala2's "69 -> 121" was mostly that) and Home's energy precision
+  76-88 % (its headline weighs Susilna's 1 %-recall signatures by her 63 kWh;
+  read the pooled precision beside it). PYTHONHASHSEED changes nothing.
 
 Unplaced steps are a SIZE disagreement between the meter's step and the
 grid's, not timing: Hisa 36 of 168, Mansarda 44 of 186 inside the window
