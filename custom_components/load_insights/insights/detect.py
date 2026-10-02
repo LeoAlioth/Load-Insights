@@ -1475,6 +1475,9 @@ class _Open:
     # the edge cluster it started with - see PAIR_MIN_RUNS
     cluster: Optional[int] = None
     q: float = 1.0                                # its start's quality - see QUALITY_SNR_FULL; not persisted
+    # how far the runs already open overstated the phase's reading when this
+    # one started - see _unseen_stop. Not persisted, as `now` is not.
+    short0: float = 0.0
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
@@ -1862,6 +1865,8 @@ class PhaseState:
         if step > 0:
             ended: List[Session] = []
             o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid, q=quality)
+            if self.floor_zero:
+                o.short0 = sum(x.now or x.watts for x in self.open_edges) - (new_level - step)
             self.open_edges.append(o)
             if self.lib is not None:
                 self.lib.note_rise(self, o)      # its cluster comes with its event, see EVENT_WINDOW_INTERVALS
@@ -1959,15 +1964,15 @@ class PhaseState:
         of the house alone: one carrying solar reads low with everything on."""
         if not self.floor_zero or not self.open_edges:
             return []
-        # each run at what it is KNOWN to draw: sagged to, or its own start -
-        # never what it was followed up to (EXPERIMENT U)
-        known = lambda o: min(o.now, o.watts) if o.now else o.watts  # noqa: E731
-        short = sum(known(o) for o in self.open_edges) - level
+        short = sum(o.now or o.watts for o in self.open_edges) - level
         if short <= self.noise_at(level):
             return []
         for o in self.open_edges:
-            size = known(o)
-            if abs(size - short) <= self._tol(size, short):
+            size = o.now or o.watts
+            # only what fell short SINCE it started can be its stop: a
+            # shortfall already standing when it began is not (EXPERIMENT T)
+            arose = short - max(0.0, o.short0)
+            if abs(size - arose) <= self._tol(size, arose):
                 self.open_edges.remove(o)
                 self._remember_close(o, at)
                 return [self._close(o, at, size, None)]
