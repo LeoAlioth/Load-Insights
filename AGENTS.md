@@ -232,7 +232,7 @@ two. `invariance SITE FOLDER` compares the slicings two by two - 6 vs 1, 6 vs
 LIVE=1, and 0 vs 6 on a line of its own - and lists every session one files
 and the other does not, or files with another start, end, size or signature,
 with its distance to the nearest pass boundary; the list is saved to
-`data/scorecard/`. None of the slicings is the truth: one call is today the
+`data/scorecard/`, and `card` writes one per site and mode from its own replays. None of the slicings is the truth: one call is today the
 most distorted (sub-meters run over everything before the grid, nothing is
 filed until the end, so no phase votes or meter splits); it should agree with
 the others once the detector truly streams. `energy_bench.py SITE FOLDER [DIALS]` is one replay with
