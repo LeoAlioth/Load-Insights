@@ -223,6 +223,14 @@ def _started_with(rows: list, times: list, s) -> bool:
     return first > 0 and peak - before >= 0.5 * first
 
 
+def _free(taken: list, a: float, b: float) -> list:
+    """The parts of [a, b] that no interval of ``taken`` covers."""
+    out = [(a, b)]
+    for x, y in taken:
+        out = [p for lo, hi in out for p in ((lo, min(hi, x)), (max(lo, y), hi)) if p[1] > p[0]]
+    return out
+
+
 def _overlap(ivs: list, a: float, b: float) -> float:
     return sum(max(0.0, min(b, y) - max(a, x)) for x, y in ivs)
 
@@ -554,7 +562,17 @@ def energy(site: str, folder: str, dials: list) -> dict:
         per_sig: dict = {}
         credited = collections.defaultdict(list)
         gated = 0.0
-        for s, sid in zip(filed, sids):
+        # a meter's energy is credited ONCE: two runs of one load overlapping in
+        # time each took the meter's whole draw over their span - Kozolec's car
+        # charger scored 128.9 % capture (2026-10-02). Shortest run first, and
+        # only a run that accounts for most of the meter's energy over its span
+        # takes those moments: a boiler pulse takes its own minute before a
+        # four-hour charge that happened to start with a pulse can take the
+        # boiler's whole afternoon, while a pulse that starts as the EVSE ramps
+        # back up is a bystander on the EVSE's meter and takes nothing from it.
+        taken = {name: [] for name in devices}      # each meter's moments already credited
+        for k in sorted(range(len(filed)), key=lambda k: (filed[k].end - filed[k].start, filed[k].start)):
+            s, sid = filed[k], sids[k]
             if s.energy_wh <= 0 or not keep(s):
                 continue
             if s.quality < gate:
@@ -566,10 +584,14 @@ def energy(site: str, folder: str, dials: list) -> dict:
             for name, rows in devices.items():
                 if not _started_with(rows, times[name], s):
                     continue
-                got_wh = _above(rows, times[name], s.start, s.end, floors[name][0])
+                free = _free(taken[name], s.start, s.end)
+                got_wh = sum(_above(rows, times[name], a, b, floors[name][0]) for a, b in free)
                 if got_wh > 0:
-                    row[name] = row.get(name, 0.0) + min(got_wh, s.energy_wh)
+                    credit = min(got_wh, s.energy_wh)
+                    row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
+                    if credit >= 0.8 * got_wh:
+                        taken[name].extend(free)
             for name, watts, _, ivs in PLANTS:
                 ov = _overlap(ivs, s.start, s.end)
                 if ov > 0:
