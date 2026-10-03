@@ -30,15 +30,18 @@ under the grid connection plus Blaževa Soba (inside Hiša) and the office
 (inside Mansarda), a session credited to a device inside a circuit and never
 to the circuit - and its PARTITION: the meters directly under the main meter
 and, named in REST, what is left of the main without them (Home's Delavnica,
-Kozolec's Rest) - everything the main meter reads, once.
+Kozolec's and Andrej's Rest) - everything the main meter reads, once. Andrej's
+site (andrejg) is one meter, the go-e charger's own total, its truth masked
+over any charge the house did not draw - a portable unit charging elsewhere
+(PORTABLE, _away).
 
 Modes (bench.py's SUBS): hidden (SUBS=none - no meter fed, the main-meter
 estimate), circuits (SUBS=circuits - only the meters others hang under, Home's
 two 3EMs) and fed (SUBS=prod - every meter production reads). The meters are
 the truth in every mode, read from the history.
 
-card        every site (default home, kozolec and the circuits home-hisa and
-            home-mansarda) in every mode at SLICE=0, 6 and 1 and LIVE=1,
+card        every site (default home, kozolec, the circuits home-hisa and
+            home-mansarda, and andrejg) in every mode at SLICE=0, 6 and 1 and LIVE=1,
             PARALLEL replays at once: one figure where the slicings agree, each
             one's (0|6|1|L1) where they do not; the slicing invariance, and how
             runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json,
@@ -103,7 +106,9 @@ SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here
 PLANTS: list = []          # (name, watts, phase, [(on, off), ...])
 GRID = "sensor.solaredge_se17k_m1_ac_"
 SETS = {"set1": ["1200:480:18000:a", "150:1200:10800:b", "40:2700:7200:b"]}
-REST = {"home": "Delavnica", "kozolec": "Rest"}    # what the main meter reads and no meter below it
+REST = {"home": "Delavnica", "kozolec": "Rest", "andrejg": "Rest"}    # what the main meter reads and no meter below it
+PORTABLE = {"andrejg": "Stara Polnilnica"}   # a charger that leaves the site: its truth masked where the house did not draw it (_away)
+CHARGE_MIN_W = 6 * 230.0   # the least an EV charges at, 6 A on one phase (IEC 61851): a charge is a span at or above it
 MODES = {"hidden": "SUBS=none", "circuits": "SUBS=circuits", "fed": "SUBS=prod"}
 SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"]}
 PAIRS = [("6", "1"), ("6", "L1"), ("0", "6")]     # the slicings invariance compares, two by two
@@ -319,15 +324,23 @@ def measured(folder: str, site: str, worth: bool = False):
 def _measured(folder: str, site: str, worth: bool):
     quiet = lambda *a, **k: None  # noqa: E731
     s = R.read_csv([folder], False, say=quiet)
+    if site in B.PROD_HOUSE:
+        B._prod_house(s, site=site)   # the house as production builds it: Home's delavnica's solar added back
     main = [s[e] for e in B.SITES[site]["main"].values() if s.get(e)]
     a, b = min(r[0][0] for r in main), max(r[-1][0] for r in main)
     for e, rows in (R.read_csv(B.EXTRAS, False, say=quiet) if B.EXTRAS else {}).items():
         if e not in s and _clip(rows, a, b):
             s[e] = _clip(rows, a, b)
-    if site == "home":
-        B._prod_house(s)          # the house as production builds it: the delavnica's solar added back
     subs = {**B.PROD_SUBS[site], **B.EXTRA_SUBS.get(site, {})}
     parts = {n: [s[e] for e in (e if isinstance(e, list) else [e]) if s.get(e)] for n, e in subs.items()}
+    away = []
+    if parts.get(PORTABLE.get(site)):
+        house: list = []
+        for r in main:
+            house = D._sum_series(house, r)
+        away = _away(parts[PORTABLE[site]][0], house)
+        parts[PORTABLE[site]] = [[(t, 0.0 if any(x <= t < y for x, y, _ in away) else w) for t, w in r]
+                                 for r in parts[PORTABLE[site]]]
     out = {}
     for n, rows in parts.items():
         total: list = []
@@ -348,7 +361,32 @@ def _measured(folder: str, site: str, worth: bool):
     rest = out[REST[site]] = _remainder(main, meters)
     a, b = rest[0][0], rest[-1][0]
     kwh = lambda rows: sum(_held_wh(r, a, b) for r in rows) / 1000.0   # noqa: E731
-    return out, (kwh(main), kwh(meters), kwh([rest]))
+    return out, (kwh(main), kwh(meters), kwh([rest]), away)
+
+
+def _away(meter: list, house: list) -> list:
+    """The charges a portable charger drew away from the site, [(start, end,
+    kWh)]: each span its meter read CHARGE_MIN_W or more over which, from
+    half a minute before to a minute after for the meters' lag, the house
+    drew less than half of what the charger did - at home the house holds the
+    charger's draw and more. Andrej's go-e counts what it charges elsewhere.
+    A charge before the house's first reading is not judged."""
+    spans, on = [], None
+    for t, w in meter:
+        if w >= CHARGE_MIN_W and on is None:
+            on = t
+        elif w < CHARGE_MIN_W and on is not None:
+            spans.append((on, t))
+            on = None
+    spans += [(on, meter[-1][0])] if on is not None else []
+    out = []
+    for a, b in spans:
+        if not house or a < house[0][0]:
+            continue                       # before the house reads anything: not known to be away
+        got = _held_wh(meter, a - 30.0, b + 60.0)
+        if _held_wh(house, a - 30.0, b + 60.0) < 0.5 * got:
+            out.append((a, b, got / 1000.0))
+    return out
 
 
 def _truth(rows: list) -> tuple:
@@ -643,7 +681,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
     res = {"site": site, "folder": folder, "dials": tag, "mode": B.SUBS,
            "detected_kwh": sum(r["total"] for r in per_sig.values()) / 1000.0, "gated_kwh": gated / 1000.0,
            "signatures": len(per_sig), "tables": {}, "owners": {},
-           "rest": None if rest is None else dict(zip(("main_kwh", "meters_kwh", "rest_kwh"), rest)),
+           "rest": None if rest is None else dict(zip(("main_kwh", "meters_kwh", "rest_kwh", "away"), rest)),
            "pairing": _pairing(log, credited)}
     for k, names in tables.items():
         res["tables"][k], res["owners"][k] = _table(per_sig, truth, floors, names, small, scope)
@@ -661,6 +699,11 @@ def energy(site: str, folder: str, dials: list) -> dict:
 
 def _pct(v, signed: bool = False) -> str:
     return "-" if v is None else (f"{100 * v:+.1f}" if signed else f"{100 * v:.1f}")
+
+
+def _away_s(away) -> str:
+    return ", ".join(f"{datetime.fromtimestamp(a):%m-%d %H:%M}-{datetime.fromtimestamp(b):%H:%M} {kwh:.2f} kWh"
+                     for a, b, kwh in away) if away else "never - every charge drawn by the house"
 
 
 def _kinds(st: dict) -> str:
@@ -698,6 +741,8 @@ def _print_run(res: dict, per_sig: dict, by_id: dict) -> None:
         r = res["rest"]
         print(f"  {REST[res['site']]} = main {r['main_kwh']:.2f} kWh - meters {r['meters_kwh']:.2f} kWh = "
               f"{r['main_kwh'] - r['meters_kwh']:.2f} kWh; its series integrates to {r['rest_kwh']:.2f} kWh")
+        if res["site"] in PORTABLE:
+            print(f"  {PORTABLE[res['site']]} away, its truth masked: {_away_s(r.get('away'))}")
     p = res["pairing"]["site"]
     print(f"  pairing: {p['closes']} runs closed - {_kinds(p)}")
     print(f"           observed stops within 10 % of their start's size {_pct(p['within10'])} %, within 20 % "
@@ -852,7 +897,7 @@ def _parallel(jobs: list, n: int = PARALLEL) -> list:
 
 
 def _site_dials(site: str) -> list:
-    return ["HOUSE=prod"] if site == "home" else []   # always at Home - see bench.py
+    return ["HOUSE=prod"] if site in B.PROD_HOUSE else []   # always at Home, and Andrej has no other house - see bench.py
 
 
 def _fig(vals: list, signed: bool = False) -> str:
@@ -862,7 +907,7 @@ def _fig(vals: list, signed: bool = False) -> str:
 
 
 def card(args: list) -> None:
-    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda"]
+    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda", "andrejg"]
     dials = [a for a in args if "=" in a]
     keys = sorted([(site, mode, sl) for site in sites for mode in MODES
                    if mode != "circuits" or B.PROD_PARENTS.get(site) for sl in SLICINGS],
@@ -903,6 +948,8 @@ def card(args: list) -> None:
             r = first["rest"]
             lines.append(f"  {REST[site]} = main {r['main_kwh']:.2f} - meters {r['meters_kwh']:.2f} = "
                          f"{r['main_kwh'] - r['meters_kwh']:.2f} kWh; its series integrates to {r['rest_kwh']:.2f} kWh")
+            if site in PORTABLE:
+                lines.append(f"  {PORTABLE[site]} away, its truth masked: {_away_s(r.get('away'))}")
         lines.append("  invariance, sessions / kWh two slicings file differently: " + "   ".join(
             f"{m}: " + ", ".join(f"{k} {v['differ']}/{v['kwh']:.1f}" for k, v in inv[f"{site}|{m}"].items()) for m in modes))
         lines.append("  pairing at SLICE=6 - closes, observed stops within 10/20 % of their start, median off; never closed / closed nothing, % of steps")
@@ -1103,6 +1150,11 @@ def check() -> None:
     f = tab["loads"]["Fan"]
     assert f["capture"] == 0.75 and f["impurity"] == 0.25 and f["from"] == 7.0
     assert _table(whole, {"Fan": 40.0}, {}, ["Fan"])[0]["loads"] == {}
+    # a portable charger: a charge the house drew is at home, one it did not is away
+    meter = [(0.0, 0.0), (100.0, 11000.0), (400.0, 0.0), (1000.0, 11000.0), (1300.0, 0.0)]
+    house = [(0.0, 200.0), (102.0, 11200.0), (402.0, 200.0), (2000.0, 200.0)]
+    assert [(a, b) for a, b, _ in _away(meter, house)] == [(1000.0, 1300.0)]
+    assert _away(meter, house[1:]) == [(1000.0, 1300.0, _away(meter, house)[0][2])]   # before the house: not judged
     print("ok")
 
 
