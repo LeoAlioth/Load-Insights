@@ -2272,6 +2272,23 @@ class PhaseState:
                     tol, gap = now_tol, abs(o.now - watts)
             if gap <= tol:
                 cands.append((i, gap, tol))
+        if not cands:
+            # ...or, nothing matching, the run a rise of the fall's size opened
+            # seconds ago, whatever part of it a meter took: a 400 W load
+            # dipped twice for 6 s; its first return (+392) was split, 107 W
+            # to a plug's coincident wobble and a 286 W rest, and the second
+            # dip (-402), matching nothing, joint-stopped a 515 W run 102
+            # minutes old (Home 09-24 20:55). The newest run such a rise
+            # opened is the one ending now (Anze, 2026-10-03)
+            for i in range(len(self.open_edges) - 1, -1, -1):
+                o = self.open_edges[i]
+                if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
+                    continue
+                k = bisect.bisect_left(self.declared_t, o.since - 0.01)
+                rose = self.declared[k][1] if k < len(self.declared) and abs(self.declared[k][0] - o.since) <= 0.01 else 0.0
+                if rose > o.watts and abs(rose - watts) <= self._tol(rose, watts):
+                    cands.append((i, abs(rose - watts), self._tol(rose, watts)))
+                    break
         if cands:
             best_gap = min(g for _, g, _ in cands)
             band = PAIR_TIE_BAND * max(t for _, _, t in cands)
@@ -5854,12 +5871,20 @@ class Fleet:
         must be the meter's rise, though - within the pairing tolerance, in
         the grid's terms: a boiler rise 41 s after the IR panel's start, two
         hours earlier, let a 2 kW boiler fall close the panel's 514 W run and
-        book it at 1,270 W (Kozolec 09-22 11:34, 2026-10-02)."""
+        book it at 1,270 W (Kozolec 09-22 11:34, 2026-10-02).
+        A meter reporting a total that holds several devices - a strip, a
+        plug its library takes for one - ends a run it owns once its own
+        reading after its fall is below the run's size beyond the pairing
+        tolerance: the run cannot still be running on less than it started
+        with (Anze, 2026-10-03). Home, ten days: of the energy filed as
+        Susilna's 4.5 % is another load's, from 6.5. Every meter's runs ended
+        so - a 3EM's channel read off its declared levels, as it keeps no
+        readings of its own - made it 11.1 %, and the house's metered loads
+        13.0 % from 11.3: a 3EM is not asked."""
         if len(self._stops_used) > 1000:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
         for name, det in self.subs.items():
-            if not self.holds_one_device(name):
-                continue
+            one = self.holds_one_device(name)
             for c in [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]:
                 st = det.phases[c]
                 reach = st.latency()
@@ -5875,10 +5900,21 @@ class Fleet:
                         # minutes at 257 W (Kozolec 09-28 13:53, 2026-10-02).
                         # Home's pump (-731 W for a plug fall of 818) passes.
                         continue
+                    if not one and self.agnostic.get(name):
+                        # its reading once this fall settled, in the grid's terms
+                        rows = self.sub_rows.get(name) or []
+                        k = bisect.bisect_right(rows, (e[4], math.inf))
+                        after = rows[k - 1][1] * gain if k else None
                     for o in reversed(opens):
-                        rises = [r[1] * gain for r in self._near(st, o.since - reach, o.since + reach, reach) if r[1] > 0
-                                 and abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
-                        if rises and -e[1] * gain >= 0.5 * max(rises):
+                        if one:
+                            rises = [r[1] * gain for r in self._near(st, o.since - reach, o.since + reach, reach)
+                                     if r[1] > 0 and abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
+                            ends = bool(rises) and -e[1] * gain >= 0.5 * max(rises)
+                        else:
+                            size = o.watts                  # what it settled at, not a starting surge
+                            ends = (o.meter == name and self.agnostic.get(name) and after is not None
+                                    and o.since < e[0] and after < size - grid._tol(size, max(after, 0.0)))
+                        if ends:
                             self._stops_used[(name, e[0])] = e[0]
                             return o
         return None

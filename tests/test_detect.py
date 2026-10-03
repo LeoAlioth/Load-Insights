@@ -3177,6 +3177,56 @@ def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
     assert f._held_homes(run) == []                                      # the plug stepped with it
 
 
+def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
+    """Home 09-24 20:55 UTC: a 400 W workshop load dipped twice for 6 s (3980
+    -> 3581 -> 3973 -> 3572 -> 3973 W). The first dip closed its run and the
+    return (+392) opened a new one - right, and it stays (Anze) - but a plug's
+    coincident wobble took 107 W of the return, leaving a 286 W rest that
+    the second dip (-402) did not match; it joint-stopped a 515 W run 102
+    minutes old with a held 113 W drop instead. The newest run a rise of the
+    fall's size opened seconds ago is the one ending now: the 515 W run goes
+    on, the 400 W load's runs are back-to-back pieces."""
+    st = D.PhaseState()
+    st.noise, st.interval, st.baseline, st.level, st.name = 10.0, 1.1, 116.0, 3973.0, "a"
+    lib = D.Detector()
+    lib.meter_on = lambda name, ph, since, size: name == "Blaževa Soba"     # its wobble still on
+    st.lib = lib
+    old = D._Open(since=T0 - 6137.0, watts=515.0, var=None, levels=[(T0 - 6137.0, 530.0), (T0 - 6131.0, 515.0)], cluster=1)
+    rest = D._Open(since=T0 - 5.0, watts=286.0, var=None, levels=[(T0 - 5.0, 286.0)], cluster=2)
+    pc = D._Open(since=T0 - 5.0, watts=107.0, var=None, levels=[(T0 - 5.0, 107.0)], cluster=3, meter="Blaževa Soba")
+    st.open_edges = [old, rest, pc]
+    st.held_drops = [(T0 - 3000.0, 113.0, None)]
+    _declare(st, (T0 - 5.0, 392.0, None, T0 - 7.0, T0 - 5.0))              # the first return
+    closed = st._pair(T0, 402.0, None, 3571.0)                              # the second dip
+    assert [round(s.start - T0) for s in closed] == [-5], [(round(s.start - T0), round(s.duration_s)) for s in closed]
+    assert old in st.open_edges and pc in st.open_edges and rest not in st.open_edges
+
+
+def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
+    """A run cannot still be running on less than it started with (Anze,
+    2026-10-03): a meter reporting a total that holds several devices - a
+    strip, or a plug its library takes for one, as Home's Susilna plug -
+    ends a run it owns once its own reading after its fall is below the run's
+    size. A fall of another of its devices, leaving it above, does not."""
+    f = _fleet_with_meters({"Strip": 0.0})
+    f.single = {"Strip": False}
+    f.agnostic = {"Strip": True}
+    strip = f.subs["Strip"].phases["a"]
+    strip.interval = 6.0
+    _declare(strip, (T0 + 2.0, 279.0, None, T0 - 4.0, T0 + 2.0), (T0 + 2219.0, -426.0, None, T0 + 2213.0, T0 + 2219.0))
+    f.sub_rows["Strip"] = [(T0 - 60.0, 167.0), (T0 + 2.0, 446.0), (T0 + 2219.0, 20.0)]
+    run = D._Open(since=T0, watts=279.0, var=None, levels=[(T0, 279.0)], meter="Strip")
+    older = D._Open(since=T0 - 3600.0, watts=400.0, var=None, levels=[(T0 - 3600.0, 400.0)])
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is run
+    f._stops_used = {}
+    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 300.0)                         # still above the run: not its stop
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+    f._stops_used = {}
+    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 20.0)
+    run.meter = None                                                        # a run it does not own: nothing to say
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+
+
 def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     """Home's plain cluster of 1 kW phase-A starts filed its runs as the
     hidrofor, its majority: a 2.3 kW load's last 1,064 W step went with them
