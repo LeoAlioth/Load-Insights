@@ -24,6 +24,7 @@ import bisect
 import csv
 import functools
 import hashlib
+import json
 import math
 import os
 import pickle
@@ -182,26 +183,43 @@ def read_switch(paths, entity_id):
     return spans
 
 
+def units(files) -> dict:
+    """entity_id -> its unit, from the units.json fetch_history writes beside
+    a site's CSVs - read from each file's own folder, so a folder of symlinks
+    reads its site's."""
+    out = {}
+    for folder in sorted({Path(f).resolve().parent for f in files}):
+        if (folder / "units.json").is_file():
+            out.update(json.loads((folder / "units.json").read_text(encoding="utf-8")))
+    return out
+
+
 def read_csv(paths, keep_coarse=False, say=print):
-    """entity_id -> [(epoch seconds, value)], numbers only, in time order.
+    """entity_id -> [(epoch seconds, value)], numbers only, in time order,
+    each scaled to W, A or V by its unit (units, detect.unit_scale) as
+    production scales what it reads: the CSVs carry no unit, and Home's
+    EVBox, publishing kW, was replayed as watts - its 10.8 kW charge 10.8 W,
+    its truth 0.20 kWh in every card (2026-10-04).
 
     Order across files does not matter, and the overlap between one day's
     export and the next is harmless: rows are sorted and de-duplicated. Kept
-    in CACHE, one file for the whole folder, until a file in it changes."""
+    in CACHE, one file for the whole folder, until a file in it or a unit
+    changes."""
     files = expand(paths)
-    out, coarse = _cached(("series", [_stamp(f) for f in files], keep_coarse),
-                          lambda: _series(paths, keep_coarse))
+    scale = {e: D.unit_scale(u) for e, u in units(files).items()}
+    out, coarse = _cached(("series", [_stamp(f) for f in files], keep_coarse, sorted(scale.items())),
+                          lambda: _series(paths, keep_coarse, scale))
     if coarse:
         say(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
     say(f"read {len(files)} file(s)")
     return out
 
 
-def _series(paths, keep_coarse):
+def _series(paths, keep_coarse, scale):
     series = defaultdict(list)
     for eid, ts, raw in _rows(paths):
         try:
-            value = float(raw)
+            value = float(raw) * scale.get(eid, 1.0)
         except ValueError:
             continue                              # unavailable, unknown, a text state
         series[eid].append((ts, value))

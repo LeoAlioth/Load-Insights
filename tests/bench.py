@@ -152,9 +152,9 @@ PROD_SUBS = {
     },
     "home-hisa": {"Blaževa Soba": "sensor.blaz_pc_power"},
     "home-mansarda": {"Vtičnice - pisarna": "sensor.attic_office_power"},
-    # production reads the charger through OCPP in kW (sensor.charger_power_active_import,
-    # every 30 s to 2 min); the replay's CSVs carry no unit to scale it by, so the
-    # go-e's own total in W stands in for it - the same charger, read every ~5 s
+    # production reads the charger through OCPP (sensor.charger_power_active_import,
+    # kW, clock-aligned every 900 s while charging - 154 readings in ten days); the
+    # go-e's own total stands in for it - the same charger, in W every ~5 s
     "andrejg": {"Stara Polnilnica": "sensor.goe_216841_nrg_11"},
 }
 # Meters production's set of 2026-09-30 lacks, their first days fetched into
@@ -264,9 +264,11 @@ _RUNS: dict = {}
 
 
 def stamps(folder: str) -> list:
-    """What a replay of ``folder`` reads - its files and the EXTRA= folders' -
-    as R._stamp sees them: a cache key for what is built from them."""
-    return [R._stamp(f) for f in R.expand([folder] + EXTRAS)]
+    """What a replay of ``folder`` reads - its files and the EXTRA= folders',
+    as R._stamp sees them, and their units: a cache key for what is built
+    from them."""
+    files = R.expand([folder] + EXTRAS)
+    return [R._stamp(f) for f in files] + sorted(R.units(files).items())
 
 
 def _run(folder: str, site: str | None, before=None):
