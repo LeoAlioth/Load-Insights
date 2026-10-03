@@ -490,15 +490,18 @@ def _instrument():
     PhaseState._pair: one that closes nothing and steps no run down to a lower
     level is a stop that closed nothing. Every rise opens a run in
     PhaseState._declare: one that never reaches _close is a start never
-    closed - still open at the end, or given up on. Each closed run carries
+    closed - still open at the end, or given up on - unless a run took it in
+    as the rest of its ramp (Detector._form_first, _form_event: absorb_until),
+    an ABSORBED start. Each closed run carries
     its close ("closes": kind, start and stop watts), through Detector._combine
     for a run merged across phases. Each Fleet.process is a pass, its end a
     pass boundary. Returns (log, undo)."""
-    log: dict = {"closes": [], "rises": [], "falls": [], "bounds": [], "fleet": None}
+    log: dict = {"closes": [], "rises": [], "falls": [], "bounds": [], "fleet": None, "absorbed": set()}
     P, Det, F = D.PhaseState, D.Detector, D.Fleet
-    saved = [(c, n, c.__dict__[n]) for c, n in ((P, "_close"), (P, "_pair"), (P, "_declare"),
-                                                 (Det, "_combine"), (F, "process"))]
+    saved = [(c, n, c.__dict__[n]) for c, n in ((P, "_close"), (P, "_pair"), (P, "_declare"), (Det, "_combine"),
+                                                 (Det, "_form_first"), (Det, "_form_event"), (F, "process"))]
     close0, pair0, declare0, combine0, process0 = P._close, P._pair, P._declare, Det._combine, F.process
+    first0, event0 = Det._form_first, Det._form_event
 
     def close(st, o, at, watts, var=None, direct=False):
         s = close0(st, o, at, watts, var, direct)
@@ -528,12 +531,33 @@ def _instrument():
             s.closes = [c for m in g for c in getattr(m, "closes", ())]
         return s
 
+    def form_first(det):
+        # the oldest waiting rise, inside a ramp a run already holds whole
+        pend = min(det._pending, key=lambda x: x["since"]) if det._pending else None
+        st = det.phases.get(pend["ph"]) if pend else None
+        held = st is not None and pend["since"] <= st.absorb_until and pend["open"] in st.open_edges
+        out = first0(det)
+        if held and pend["open"] not in st.open_edges:
+            log["absorbed"].add(id(pend["open"]))
+        return out
+
+    def form_event(det, *a, **kw):
+        # a run placed by a meter's whole ramp takes in the rises inside it
+        was = {p: (st.absorb_until, list(st.open_edges)) for p, st in det.phases.items()}
+        out = event0(det, *a, **kw)
+        for p, st in det.phases.items():
+            if st.absorb_until != was[p][0]:
+                log["absorbed"].update(id(o) for o in was[p][1]
+                                       if o not in st.open_edges and o.since <= st.absorb_until)
+        return out
+
     def process(fleet, *a, **kw):
         log["fleet"] = fleet
         log["bounds"].append(kw["now_ts"] if "now_ts" in kw else a[4])
         return process0(fleet, *a, **kw)
 
     P._close, P._pair, P._declare, F.process = close, pair, declare, process
+    Det._form_first, Det._form_event = form_first, form_event
     Det._combine = staticmethod(combine)
 
     def undo():
@@ -564,7 +588,9 @@ def _pairing(log: dict, credited: dict) -> dict:
     shut = {id(c[1]) for c in closes}
     site = _close_stats([c[2:] for c in closes])
     steps = len(rises) + len(falls)
-    site.update(starts=len(rises), stops=len(falls), unpaired_starts=sum(id(o) not in shut for o in rises),
+    absorbed = [id(o) not in shut and id(o) in log["absorbed"] for o in rises]
+    site.update(starts=len(rises), stops=len(falls), absorbed_starts=sum(absorbed),
+                unpaired_starts=sum(id(o) not in shut and not a for o, a in zip(rises, absorbed)),
                 unpaired_stops=sum(falls), steps=steps)
     return {"site": site,
             "loads": {n: _close_stats([c for s in ss for c in getattr(s, "closes", ())]) for n, ss in credited.items()}}
@@ -747,8 +773,9 @@ def _print_run(res: dict, per_sig: dict, by_id: dict) -> None:
     print(f"  pairing: {p['closes']} runs closed - {_kinds(p)}")
     print(f"           observed stops within 10 % of their start's size {_pct(p['within10'])} %, within 20 % "
           f"{_pct(p['within20'])} %, median off {_pct(p['median_err'])} %; never closed: {p['unpaired_starts']} of "
-          f"{p['starts']} starts, closed nothing: {p['unpaired_stops']} of {p['stops']} stops "
-          f"({_pct(p['unpaired_starts'] / max(p['steps'], 1))} / {_pct(p['unpaired_stops'] / max(p['steps'], 1))} % of all steps)")
+          f"{p['starts']} starts ({p.get('absorbed_starts', 0)} more absorbed into a ramp), closed nothing: "
+          f"{p['unpaired_stops']} of {p['stops']} stops ({_pct(p['unpaired_starts'] / max(p['steps'], 1))} / "
+          f"{_pct(p['unpaired_stops'] / max(p['steps'], 1))} % of all steps)")
     for name, st in sorted(res["pairing"]["loads"].items(), key=lambda kv: -kv[1]["closes"]):
         print(f"    {name:20s} {st['closes']:6d} closes, within 10/20 % {_pct(st['within10'])}/{_pct(st['within20'])}, "
               f"median off {_pct(st['median_err'])} % - {_kinds(st)}")
@@ -952,12 +979,14 @@ def card(args: list) -> None:
                 lines.append(f"  {PORTABLE[site]} away, its truth masked: {_away_s(r.get('away'))}")
         lines.append("  invariance, sessions / kWh two slicings file differently: " + "   ".join(
             f"{m}: " + ", ".join(f"{k} {v['differ']}/{v['kwh']:.1f}" for k, v in inv[f"{site}|{m}"].items()) for m in modes))
-        lines.append("  pairing at SLICE=6 - closes, observed stops within 10/20 % of their start, median off; never closed / closed nothing, % of steps")
+        lines.append("  pairing at SLICE=6 - closes, observed stops within 10/20 % of their start, median off; never closed "
+                     "(absorbed into a ramp) / closed nothing, % of steps")
         for m in modes:
             p = got[(site, m, "6")]["pairing"]
             s = p["site"]
             lines.append(f"    {m:9s} {s['closes']:6d} closes, {_pct(s['within10'])}/{_pct(s['within20'])}, "
-                         f"{_pct(s['median_err'])} %; starts {_pct(s['unpaired_starts'] / max(s['steps'], 1))}, stops "
+                         f"{_pct(s['median_err'])} %; starts {_pct(s['unpaired_starts'] / max(s['steps'], 1))} "
+                         f"({_pct(s.get('absorbed_starts', 0) / max(s['steps'], 1))}), stops "
                          f"{_pct(s['unpaired_stops'] / max(s['steps'], 1))}  - {_kinds(s)}")
             for name in sorted(p["loads"], key=lambda n: -p["loads"][n]["closes"]):
                 st = p["loads"][name]
