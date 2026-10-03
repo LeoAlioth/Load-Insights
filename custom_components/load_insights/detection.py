@@ -985,6 +985,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 for p, target in samples.items():
                     if generation.get(p):
                         pv[p] = _align(generation[p], target)
+                for p, rows in samples.items():
+                    if p in self.fleet.main.phases:
+                        # a reading that never exports is the house alone, and
+                        # the house cannot draw less than nothing. Kept, and
+                        # saved, where a pass is too short to say: "can't tell"
+                        # read as "no" switched the guard off on every live pass.
+                        # Not a meter's, though it is as house-side: what the
+                        # guard brings - runs the reading cannot carry end
+                        # unseen - assumes a reading many loads share, and Home's
+                        # office plug, its computer's draw sagging under its
+                        # runs, filed 364 sessions of its own in ten days for
+                        # 827 (the unify audit's R6, 2026-10-03)
+                        verdict = carries_generation(rows)
+                        if verdict is not None:
+                            self.fleet.main.phases[p].floor_zero = verdict is False
                 for p in list(pv):
                     verdict = carries_generation(samples[p])
                     if verdict is not None:

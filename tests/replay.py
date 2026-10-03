@@ -487,6 +487,8 @@ def run(args, transform=None, say=print):
         file(s, *a, **kw)
         filed.append(s)
     fleet.main._file = keep
+    for p in phases:
+        fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
     # Production reads the recorder six hours at a time and files what each
     # slice closed before reading the next, so the library GROWS through a
