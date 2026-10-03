@@ -3461,23 +3461,6 @@ def test_a_meters_energy_answers_only_on_the_sessions_phases():
     assert not f._energy_pairs([run])                                     # placed on no channel of C
 
 
-def test_the_grids_reading_is_judged_house_side_by_the_fleet_each_pass():
-    """The grid's reading is the house alone where it never exports, judged
-    on its own rows each pass by the fleet - kept where a pass is too short
-    to say. A meter's is not judged: what the guard brings assumes a reading
-    many loads share (the unify audit, 2026-10-03)."""
-    f = D.Fleet()
-    rows = [(T0 + 5.0 * k, 100.0) for k in range(300)]
-    f.process({"a": rows}, {"Plug": {"a": rows}}, now_ts=T0 + 1500.0)
-    assert f.main.phases["a"].floor_zero and not f.subs["Plug"].phases["a"].floor_zero
-    f.process({"a": [(T0 + 1505.0, -80.0)]}, {}, now_ts=T0 + 1510.0)
-    assert f.main.phases["a"].floor_zero                                  # one reading says nothing
-    exporting = [(t, -500.0 if k % 50 == 0 else 100.0) for k, (t, _) in enumerate(rows)]
-    g = D.Fleet()
-    g.process({"a": exporting}, {}, now_ts=T0 + 1500.0)
-    assert not g.main.phases["a"].floor_zero
-
-
 def test_a_run_the_reading_carries_half_of_is_still_on():
     """A load sags and is still on - as a meter's run is until its meter fell
     by half its size: a run is ended as one the reading cannot carry only

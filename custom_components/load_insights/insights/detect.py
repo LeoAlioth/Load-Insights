@@ -5182,7 +5182,6 @@ class Fleet:
         # pass's held ones in front: each is read once the clock is its
         # horizon past it (_run); the rest wait. Only the main meter needs the
         # array: a downstream meter sees the house side of it, never the sun
-        fed = main_samples or {}
         streams, kept = {}, {}
         for name, f in units:
             rows, q, quantum = ((main_samples, main_q, main_q_quantum) if not name else
@@ -5196,19 +5195,6 @@ class Fleet:
                 det = self.subs[name]
                 meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name),
                                                                         q_quantum=(sub_q_quantum or {}).get(name))]
-        # The grid's reading is the house alone where it never exports, and
-        # the house cannot draw less than nothing - asked of its own rows
-        # each pass, and kept where a pass is too short to say: "can't tell"
-        # read as "no" switched the guard off on every live pass. Not a
-        # meter's, though it is as house-side: what the guard brings - runs
-        # the reading cannot carry end unseen - assumes a reading many loads
-        # share, and Home's office plug, its computer's draw sagging under
-        # its runs, filed 364 sessions of its own in ten days for 827, the
-        # grid credited it 30 for 360 (the unify audit's R6, 2026-10-03).
-        for ph, rows in fed.items():
-            verdict = carries_generation(rows)
-            if verdict is not None and ph in self.main.phases:
-                self.main.phases[ph].floor_zero = verdict is False
         meters.sort(key=lambda r: r[:3])
         self._dues, self._names = {}, [""] + sorted(self.subs)
         first = min([end] + [r[0] for r in streams[""][:1] + meters[:1]])
