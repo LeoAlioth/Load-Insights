@@ -3439,6 +3439,7 @@ def test_every_meters_session_is_matched_by_its_peak_in_the_grids_terms():
     f.meter_gain["Plug"] = {"p": [math.log(1.25), D.METER_GAIN_MIN]}
     f._vote_phases({"Plug": [low]}, 5.0, [pulse])
     assert f.phase_votes["Plug"] == {"a": {"c": 1}}
+    assert abs(f.phase_energy["Plug"]["a"]["c"] - low.energy_wh * 1.25) < 1e-6      # its energy, in the grid's terms
 
 
 def test_a_meters_energy_answers_only_on_the_sessions_phases():
@@ -3576,6 +3577,33 @@ def test_a_meters_stop_the_grid_did_not_show_ends_its_run():
     plug.declared[-1] = (T0 + 61.0, -942.0, None, T0 + 1.0, T0 + 61.0)       # a fall it did not time: its span a minute
     plug.declared_t[-1] = T0 + 61.0
     assert grid._meter_ended(T0 + 120.0) == [] and grid.open_edges
+
+
+def test_a_channels_phase_is_learned_from_the_count_or_the_energy_of_its_votes():
+    """Anze (2026-10-03): score the votes by both their number and their
+    energy. Home's Susilna plug votes 2-4 times in ten days, each a 20-hour
+    run: as much energy as PHASE_MAP_MIN_VOTES of the site's votes carry
+    places it, as that many votes would. A few tiny votes do not, nor do
+    votes whose count and energy clearly disagree."""
+    f = D.Fleet()
+    f.phase_votes = {"Hiša": {"a": {"a": 100}}}                      # the site's votes: 10 Wh each,
+    f.phase_energy = {"Hiša": {"a": {"a": 1000.0}}}                  # 30 of them 300 Wh
+    f.phase_votes["Susilna"] = {"a": {"c": 2, "b": 1}}
+    f.phase_energy["Susilna"] = {"a": {"c": 11000.0, "b": 4.0}}
+    assert f.phase_map("Susilna") == {"a": "c"}
+    f.phase_votes["UPS"] = {"a": {"b": 2, "c": 2}}
+    f.phase_energy["UPS"] = {"a": {"b": 9.0, "c": 11.0}}
+    assert f.phase_map("UPS") == {}                                  # 4 votes, 20 Wh: nothing yet
+    f.phase_votes["Odd"] = {"a": {"c": 30, "b": 3}}
+    f.phase_energy["Odd"] = {"a": {"c": 30.0, "b": 3000.0}}
+    assert f.phase_map("Odd") == {}                                  # the count says c, the energy b
+    f.phase_votes["Odd"]["a"]["b"] = 20
+    assert f.phase_map("Odd") == {"a": "b"}                          # the energy's, the count not clearly against
+    back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
+    assert back.phase_energy == f.phase_energy and back.phase_map("Susilna") == {"a": "c"}
+    g = D.Fleet()
+    g.phase_votes, g.phase_energy = {"Plug": {"a": {"c": 2}}}, {"Plug": {"a": {"c": 9000.0}}}
+    assert g.phase_map("Plug") == {}                                 # a site of 2 votes says nothing of a typical one
 
 
 def test_a_meter_others_hang_under_is_never_guessed_one_device():
