@@ -519,7 +519,7 @@ def run(args, transform=None, say=print):
                 fed.setdefault(n, []).append((ts, sum(last.values())))   # ...across slices, as the Fleet keeps them
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
                       sub_slice, q, sub_q or None, e, agnostic, pv or None, q_quantum,
-                      single={n: n in args.single for n in subs} if args.single else None,
+                      single={n: n in args.single for n in subs},     # every meter declared, as the runner does
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,

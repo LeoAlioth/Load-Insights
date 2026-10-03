@@ -718,9 +718,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             await self.async_backfill_statistics(name)
 
     def guess_one_device(self, name: str) -> bool:
-        if any(m.get("parent") == name for m in self.submeters.values()):
-            return False
-        return self.fleet.guess_one_device(name)
+        return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,

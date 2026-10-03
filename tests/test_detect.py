@@ -3322,6 +3322,21 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, other], 385.0) is None   # not its: it did not rise for it
 
 
+def test_a_meter_others_hang_under_is_never_guessed_one_device():
+    """A meter with meters inside it holds several by definition - Home's
+    Hiša, with Blaž PC under it, though 52 % of its sightings are one
+    signature. The runner asked that itself, so a bench replay that declared
+    nothing ran Hiša as one device; the Fleet asks it now."""
+    f = D.Fleet()
+    f.subs["Hiša"] = D.Detector()
+    f.subs["Hiša"].signatures = [_sig(1, 120.0, count=40), _sig(2, 900.0, count=5)]
+    assert f.guess_one_device("Hiša") and f.holds_one_device("Hiša")          # its library looks like one
+    f.parents = {"Blaž PC": "Hiša", "Hiša": None}
+    assert not f.guess_one_device("Hiša") and not f.holds_one_device("Hiša")  # a meter inside it: several
+    f.single = {"Hiša": True}
+    assert f.holds_one_device("Hiša")                                         # the user's answer stands
+
+
 def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     """Home's plain cluster of 1 kW phase-A starts filed its runs as the
     hidrofor, its majority: a 2.3 kW load's last 1,064 W step went with them
