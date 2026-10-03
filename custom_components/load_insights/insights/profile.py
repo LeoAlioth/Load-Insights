@@ -381,6 +381,16 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         nowcast = fit_joint(build_rows_joint(state_history, resid, weights))
     deltas = nowcast.deltas(state_now)
 
+    # No hour of the forecast - nor either end of its band - above the most
+    # this series has done in an hour over the hours the fit reads. Its own
+    # history alone: a parent meter is never capped by its children's caps
+    # or their sum, only by what it has itself drawn, which held them too.
+    # Every product of factors can overshoot what a meter has ever done;
+    # with 50fdacb Home's car charger still read 14.4 kWh at p90 (its most
+    # 10.7) and Kozolec's pond EVSE 4.2 (3.58). The day totals and the grid
+    # forecast are built from these hours, so they carry the cap too.
+    cut = floor_hour(now).timestamp()
+    cap = max((max(0.0, v) for t, v in samples if v is not None and t.timestamp() < cut), default=float("inf"))
     base = profile.predict(now, horizon_hours)
     base_bands = profile.predict_bands(now, horizon_hours)
     hourly = []
@@ -406,8 +416,8 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             half_hi = (hi_v - centre) * shrink
             centre += shift
             lo_v, hi_v = centre - half_lo, centre + half_hi
-        hourly.append((t, max(0.0, centre)))
-        bands.append((max(0.0, lo_v), max(0.0, hi_v)))
+        hourly.append((t, min(cap, max(0.0, centre))))
+        bands.append((min(cap, max(0.0, lo_v)), min(cap, max(0.0, hi_v))))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(

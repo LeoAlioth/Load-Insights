@@ -116,6 +116,27 @@ def test_today_is_actual_so_far_plus_forecast_for_the_rest():
     assert fc2.today_kwh > expect_today + morning * 0.9
 
 
+def test_no_hour_is_forecast_above_the_most_the_series_has_done():
+    """The last day ran at 1.1 kWh every hour: the level correction lifts
+    the weekend evenings (1.2 kWh, the most this series has drawn) to ~1.5.
+    Every hour and both ends of its band stop at 1.2, and tomorrow's total
+    is the capped hours' sum (Home's car charger: 76 kWh an hour, its most
+    10.7)."""
+    now = datetime(2026, 9, 18, 10, 30, tzinfo=TZ)        # a Friday
+    cut = P.floor_hour(now) - timedelta(hours=24)
+    samples = [(t, 1.1 if t >= cut else v) for t, v in weeks_of(now, 6)]
+    peak = max(v for _, v in samples)
+    fc = P.forecast(samples, now)
+    assert fc.level > 1.2, fc.level
+    assert all(v <= peak and lo <= peak and hi <= peak for (_, v), (lo, hi) in zip(fc.hourly, fc.bands))
+    saturday = (P.floor_hour(now) + timedelta(days=1)).date()
+    evening = [v for t, v in fc.hourly if t.date() == saturday and 17 <= t.hour < 22]
+    assert evening == [peak] * 5, evening
+    day = [v for t, v in fc.hourly if t.date() == saturday and t.hour == 10][0]
+    assert math.isclose(day, 0.8 * fc.level, rel_tol=1e-9), (day, fc.level)    # under the cap: untouched
+    assert math.isclose(fc.tomorrow_kwh, sum(v for t, v in fc.hourly if t.date() == saturday), abs_tol=1e-9)
+
+
 def test_weighted_quantile_is_the_inverted_cdf():
     pairs = [(1.0, 10.0), (1.0, 20.0), (1.0, 30.0), (1.0, 40.0)]
     assert P.weighted_quantile(pairs, 0.10) == 10.0
@@ -145,9 +166,11 @@ def test_a_steady_slot_has_no_spread_and_a_bimodal_one_shows_it():
     t, v, (lo, hi) = ten
     assert lo < v < hi, (lo, v, hi)
     # the band is level-scaled like the value (yesterday's 10:00 was itself a
-    # car week or not, so the level is not 1 here)
+    # car week or not, so the level is not 1 here) - up to the most the
+    # series has drawn in an hour, the car week's 3.8, where it stops
+    peak = max(v for _, v in weeks_of(NOW, 8, car))
     assert math.isclose(lo, pattern(t) * fc2.level, rel_tol=1e-9), (lo, fc2.level)
-    assert math.isclose(hi, (pattern(t) + 3.0) * fc2.level, rel_tol=1e-9), (hi, fc2.level)
+    assert math.isclose(hi, min(peak, (pattern(t) + 3.0) * fc2.level), rel_tol=1e-9), (hi, fc2.level)
 
 
 def test_the_band_scales_with_the_level_correction():
