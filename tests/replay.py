@@ -285,6 +285,18 @@ def coherent_triples(series, fields, phases):
     return out
 
 
+def own_reactive(series, power_eid, p, rows):
+    """VAr at ``rows``' times from what the power's own device publishes
+    beside it - its signed reactive power, apparent power or power factor -
+    as production derives it for every meter's channel; None without."""
+    by_kind = {device_kind_phase(e): e for e in series if pseudo_device(e) == pseudo_device(power_eid)}
+    pf, va, signed = (series.get(by_kind.get((k, p))) for k in ("power_factor", "apparent_power", "reactive_power"))
+    if not (pf or va or signed):
+        return None
+    var = reactive(rows, None, None, pf, signed, va)
+    return D._align(sorted(var.items()), rows) if var else None
+
+
 def device_kind_phase(entity_id: str):
     lowered = entity_id.lower()
     kind = device_class_of(entity_id)
@@ -380,6 +392,14 @@ def run(args, transform=None, say=print):
         trios = coherent_triples(series, fields, phases)
         say("reactive power from:")
         for p in phases:
+            if p not in trios or pseudo_device(trios[p][0]) != pseudo_device(fields[f"power_{p}"]):
+                # the load reading's own device first, as production and every
+                # sub-meter: a 3EM's apparent power or power factor
+                got = own_reactive(series, fields[f"power_{p}"], p, samples[p])
+                if got:
+                    q[p] = got
+                    say(f"   {p.upper()}: {fields[f'power_{p}']} (its own apparent power or power factor)")
+                    continue
             if p not in trios:
                 say(f"   {p.upper()}: no meter publishes power, voltage and current together")
                 continue
@@ -417,12 +437,11 @@ def run(args, transform=None, say=print):
         if verdict is False:
             pv.pop(p)
 
-    subs, agnostic = {}, {}
+    subs = {}
     for pin in args.sub:
         name, _, eid = pin.partition("=")
         if eid.strip() in series:
             subs[name.strip()] = {"a": series[eid.strip()]}
-            agnostic[name.strip()] = True
     # A three-phase meter, as production reads one: a reading per phase, under
     # the phase letters the METER gives them - which need not be the house's.
     sub_q = {}
@@ -431,20 +450,14 @@ def run(args, transform=None, say=print):
         rows = {p: series[e.strip()] for p, e in zip("abc", eids.split(",")) if e.strip() in series}
         if rows:
             subs[name.strip()] = rows
-            agnostic[name.strip()] = False
             if not args.no_q:
                 # its reactive power from what the meter publishes beside the
                 # power - a 3EM its apparent power and a power factor - as production
                 # derives it for every sub-meter
-                by_kind = {device_kind_phase(e): e for e in series
-                           if pseudo_device(e) == pseudo_device(eids.split(",")[0].strip())}
                 for p, prow in rows.items():
-                    pf = series.get(by_kind.get(("power_factor", p)))
-                    va = series.get(by_kind.get(("apparent_power", p)))
-                    if pf or va:
-                        var = reactive(prow, None, None, pf, None, va)
-                        if var:
-                            sub_q.setdefault(name.strip(), {})[p] = D._align(sorted(var.items()), prow)
+                    got = own_reactive(series, eids.split(",")[0].strip(), p, prow)
+                    if got:
+                        sub_q.setdefault(name.strip(), {})[p] = got
                 if name.strip() in sub_q:
                     say(f"   {name.strip()}: reactive power from its apparent power or power factor on {''.join(sorted(sub_q[name.strip()]))}")
 
@@ -518,7 +531,7 @@ def run(args, transform=None, say=print):
                         at[p] += 1
                 fed.setdefault(n, []).append((ts, sum(last.values())))   # ...across slices, as the Fleet keeps them
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
-                      sub_slice, q, sub_q or None, e, agnostic, pv or None, q_quantum,
+                      sub_slice, q, sub_q or None, e, pv or None, q_quantum,
                       single={n: n in args.single for n in subs},     # every meter declared, as the runner does
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]

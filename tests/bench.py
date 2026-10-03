@@ -94,14 +94,14 @@ SITES = {
         },
     },
     # Home's two circuits as main meters of their own, replayed from Home's
-    # history: how well a load is found from its circuit's meter. Without
-    # reactive power ("noq"): the replay derives a main meter's from its volts
-    # and amps, which the 3EMs do not publish, and the grid meter's would stand
-    # in. Mansarda's phase labels are its own, not the grid's - no matter here.
+    # history: how well a load is found from its circuit's meter. Their
+    # reactive power their own, from the 3EMs' apparent power and power
+    # factor, as every meter's (the unify audit, 2026-10-03). Mansarda's phase
+    # labels are its own, not the grid's - no matter here.
     "home-hisa": {"main": {p: f"sensor.hisa_phase_{p}_active_power" for p in "abc"},
-                  "subs": {"Blaževa Soba": "sensor.blaz_pc_power"}, "noq": True},
+                  "subs": {"Blaževa Soba": "sensor.blaz_pc_power"}},
     "home-mansarda": {"main": {p: f"sensor.mansarda_phase_{p}_active_power" for p in "abc"},
-                      "subs": {"NASA station": "sensor.attic_office_power"}, "noq": True},
+                      "subs": {"NASA station": "sensor.attic_office_power"}},
 }
 MIN_SESSIONS = 60                      # devices below this are too few to read
 # Every meter production reads, the way _resolve_submeters hands them over:
@@ -270,7 +270,7 @@ def _replay(folder: str, site: str | None, before=None):
     # 3EMs' power factors in the history the guess took Hiša's power for the
     # house's (2026-09-30)
     which = site or next((n for n in SITES if Path(folder).name.startswith(n)), None)   # kiln/pump replay with no site
-    if NOQ or (which and SITES[which].get("noq")):
+    if NOQ:
         argv.append("--no-q")
     for pin in ([f"power_{p}={e}" for p, e in SITES[which]["main"].items()] if which else []):
         argv += ["--role", pin]
