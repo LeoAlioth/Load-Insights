@@ -3490,6 +3490,76 @@ def test_a_run_the_reading_carries_half_of_is_still_on():
     assert len(got) == 1 and not st.open_edges                                 # under half: it cannot be
 
 
+def _tree_fleet(hours=12):
+    """Home's Hiša with Blaž PC inside it, through a Fleet in 2-hour passes:
+    the PC's plug +300 W for 10 minutes every hour; Hiša's own channel the PC
+    plus a 1 kW load of its own every 90 minutes and 150 W idle; the grid
+    Hiša plus 200 W. (the fleet, the PC's and Hiša's loads' starts)"""
+    pc = lambda s: 300.0 if (s % 3600.0) >= 600.0 and (s % 3600.0) < 1200.0 else 0.0       # noqa: E731
+    other = lambda s: 1000.0 if (s % 5400.0) >= 2400.0 and (s % 5400.0) < 3000.0 else 0.0  # noqa: E731
+    secs = hours * 3600
+    plug = series(secs, pc, seed=1, base=0.0, noise=2.0)
+    his = series(secs, lambda s: pc(s) + other(s), seed=2, base=150.0, noise=4.0)
+    grid = series(secs, lambda s: pc(s) + other(s), seed=3, base=350.0, noise=6.0)
+    f = D.Fleet()
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f.parents = {"Blaž PC": "Hiša"}
+    cuts = [T0 + 7200.0 * k for k in range(1, hours // 2)]
+    end = T0 + secs
+    for (g, e), (h, _), (p, _) in zip(_passes({"a": grid}, cuts, end), _passes({"a": his}, cuts, end),
+                                      _passes({"a": plug}, cuts, end)):
+        f.process(g, {"Hiša": h, "Blaž PC": p}, now_ts=e, single={"Blaž PC": True, "Hiša": False})
+    return f
+
+
+def test_a_meter_others_hang_under_reads_them_as_the_grid_reads_every_meter():
+    """The fleet as a tree (Anze, 2026-10-03): Hiša's own detector reads Blaž
+    PC inside it - its own fleet, its sessions filed after the PC's have had
+    their say - so its library knows which of its loads is the PC, as the
+    grid's does; the PC is read by both, and only the grid's fleet learns a
+    meter's report lag. A meter no read meter hangs under any longer files
+    its own sessions again and asks no one."""
+    f = _tree_fleet()
+    assert list(f.views) == ["Hiša"] and f.views["Hiša"].main is f.subs["Hiša"]
+    assert list(f.views["Hiša"].subs) == ["Blaž PC"] and not f.views["Hiša"].reference
+    assert f.views["Hiša"]._wait > 0.0 and f.views["Hiša"].meter_lag.get("Blaž PC")   # read behind the PC
+    his = f.subs["Hiša"]
+    assert not his._file_now and his.meter_stop is not None                 # its fleet files and asks for it
+    pc_at_his = [sig for sig in his.signatures if sig.locations.get("Blaž PC")]
+    assert pc_at_his and all(abs(sum(sig.power.values()) - 300.0) < 60.0 for sig in pc_at_his), \
+        [(sig.id, sig.power, sig.locations) for sig in his.signatures]
+    assert any(sig.locations.get("Blaž PC") for sig in f.main.signatures)
+    back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
+    assert back._view_states["Hiša"]["phase_votes"] == f.views["Hiša"].phase_votes
+    f.parents = {}
+    f.process({}, {}, now_ts=T0 + 12 * 3600.0 + 60.0)
+    assert not f.views and his.meter_stop is None and his._file_now
+
+
+def test_an_event_on_several_phases_is_placed_where_every_leg_was_one_meters():
+    """The kiln, on A and C, under Hiša: an event on several phases is placed
+    at the meter whose own steps were all of every leg - a 3EM's two channels
+    - as a start on one phase is (the unify audit's F1, 2026-10-03); a plug
+    can take one leg only, and places nothing."""
+    f = D.Fleet()
+    for ph in "ac":
+        f.main.phases[ph] = D.PhaseState(noise=10.0, interval=2.0)
+        _declare(f.main.phases[ph], (T0, 2000.0, None, T0 - 2.0, T0))
+    his = D.Detector()
+    for c in "ac":
+        his.phases[c] = D.PhaseState(noise=5.0, interval=10.0, last_ts=T0 + 60.0)
+        _declare(his.phases[c], (T0 + 3.0, 2000.0, None, T0 - 7.0, T0 + 3.0))
+    f.subs["Hiša"] = his
+    f.phase_votes = {"Hiša": {"a": {"a": D.PHASE_MAP_MIN_VOTES}, "c": {"c": D.PHASE_MAP_MIN_VOTES}}}
+    f._bind()
+    cl = f.main._classify_step("ac", T0, 4000.0, None, 0.0, legs=[("a", T0, 2000.0), ("c", T0, 2000.0)])
+    assert cl.where == "Hiša", cl.where
+    f.phase_votes = {"Hiša": {"a": {"a": D.PHASE_MAP_MIN_VOTES}}}
+    his.phases["c"].declared, his.phases["c"].declared_t = [], []
+    cl = f.main._classify_step("ac", T0, 4000.0, None, 0.0, legs=[("a", T0, 2000.0), ("c", T0, 2000.0)])
+    assert cl.where != "Hiša"
+
+
 def test_a_meter_others_hang_under_is_never_guessed_one_device():
     """A meter with meters inside it holds several by definition - Home's
     Hiša, with Blaž PC under it, though 52 % of its sightings are one

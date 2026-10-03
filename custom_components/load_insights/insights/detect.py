@@ -4137,7 +4137,8 @@ class Detector:
         self.placement_window = None
         cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
                                       sum(vars_) if all(v is not None for v in vars_) else None,
-                                      max(m["surge"] for m in members), window_ok=len(members) == 1)
+                                      max(m["surge"] for m in members), window_ok=len(members) == 1,
+                                      legs=[(m["ph"], m["since"], m["watts"]) for m in members])
         conf, self.placement_conf = self.placement_conf, None
         win, self.placement_window = self.placement_window, None
         if win is not None and cluster.where and len(members) == 1:
@@ -4241,10 +4242,10 @@ class Detector:
             self._form_event(first, list(self._pending), self.event_window())
 
     def _classify_step(self, ph: str, since: float, watts: float, var: Optional[float], surge: float,
-                       window_ok: bool = False) -> "EdgeCluster":
+                       window_ok: bool = False, legs: Optional[List[tuple]] = None) -> "EdgeCluster":
         """File a step - or an all-phase event, ``ph`` then being its phase
-        pattern and ``watts`` its total - as an edge (see EDGE_LAG_REACH_S)
-        and return its cluster."""
+        pattern, ``watts`` its total and ``legs`` its (phase, since, watts)
+        on each - as an edge (see EDGE_LAG_REACH_S) and return its cluster."""
         size = abs(watts)
         pf = size / math.hypot(size, var) if var is not None and size > 0 else None
         events, times, numbers = self.signals or ({}, {}, {})
@@ -4274,8 +4275,23 @@ class Detector:
             if i >= 0:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in learned}
-        placed = len(ph) == 1 and watts > 0
-        where = (self.step_meter(ph, since, size, watts > 0) or "") if placed and self.step_meter is not None else ""
+        where = ""
+        if watts > 0 and self.step_meter is not None:
+            if len(ph) == 1:
+                where = self.step_meter(ph, since, size, True) or ""
+            elif legs and len(legs) == len(ph):
+                # an event on several phases where every leg was one meter's
+                # own step - the kiln's two legs each a channel of Hiša's - is
+                # that meter's, as a start on one phase is (the unify audit's
+                # F1, 2026-10-03); its timing as sure as its least sure leg
+                got, confs = set(), []
+                for lph, lsince, lwatts in legs:
+                    self.placement_conf = None
+                    got.add(self.step_meter(lph, lsince, abs(lwatts), True) or "")
+                    confs.append(self.placement_conf)
+                where = got.pop() if len(got) == 1 else ""
+                self.placement_conf = min(confs) if where and None not in confs else None
+                self.placement_window = None
         if where and window_ok and self.placement_window is not None:
             size = abs(self.placement_window[0])     # placed by the ramp's whole window: its size
         if self._kinds is None:
@@ -4283,7 +4299,7 @@ class Detector:
             for c in self.edges:
                 self._kinds.setdefault((c.phase, c.up), []).append(c)
         kind = self._kinds.setdefault((ph, watts > 0), [])
-        if placed and not where:
+        if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
@@ -5089,6 +5105,13 @@ class Fleet:
     phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
     # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
     unfiled: List[tuple] = field(default_factory=list)
+    # One fleet per meter others hang under - its main that meter's
+    # detector, its subs the meters inside it - reading them as this one
+    # reads every meter (_sync_views); and whether this is the grid's, the
+    # reference every meter's report lag is learned against (_learn_lags)
+    views: Dict[str, "Fleet"] = field(default_factory=dict, repr=False, compare=False)
+    reference: bool = field(default=True, repr=False, compare=False)
+    _view_states: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # meter -> its signature id -> the house signature its sessions joined
     identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
@@ -5137,31 +5160,42 @@ class Fleet:
         latest = max([now_ts or 0.0] + [r[-1][0] for byp in [main_samples or {}] + list(sub_samples.values())
                                          for r in byp.values() if r])
         end = now_ts if now_ts is not None else latest
-        # only the main meter needs the array: a downstream meter sees the
-        # house side of it and never the sun
+        for name in sorted(set(self.subs) | set(sub_samples)):
+            self.subs.setdefault(name, Detector()).tz_offset_s = self.main.tz_offset_s
+        self._sync_views()
         for name, rows_by_phase in sub_samples.items():
             self._keep_rows(name, rows_by_phase, end)
         self._keep_rows("", main_samples or {}, end)        # the grid's own, as a meter's
         events, numbers = self._signal_events()
-        self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
-        self.main.meter_steps = self._meter_steps
-        self.main.step_meter = self._step_meter
-        self.main.meter_held = self._meter_held
-        self.main.meter_stop = self._meter_stop
-        self.main.meter_on = self._meter_on
-        self.main.meter_started = self._meter_started
-        self.main.meter_level = self._meter_level
-        # the grid's readings, the last pass's held ones in front: each is
-        # read once the clock is the horizon past it (_run); the rest wait
+        signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
+        units = self._units()
+        for name, f in units:
+            # every detector is told what the meters inside it did, and what
+            # the switches and settings did
+            f._bind()
+            f.main.signals, f.main.drivers, f.main.inputs = signals, self.main.drivers, self.main.inputs
+            if name:
+                f._keep_rows("", sub_samples.get(name) or {}, end)
+                for n in f.subs:
+                    f._keep_rows(n, sub_samples.get(n) or {}, end)
+        # a main's readings - the grid's, a meter others hang under - the last
+        # pass's held ones in front: each is read once the clock is its
+        # horizon past it (_run); the rest wait. Only the main meter needs the
+        # array: a downstream meter sees the house side of it, never the sun
         fed = main_samples or {}
-        main_samples, main_q, pv = self._hold_back(main_samples, main_q, pv, math.inf)
-        grid = self.main.begin(main_samples, main_q, pv, main_q_quantum, file=False)
+        streams, kept = {}, {}
+        for name, f in units:
+            rows, q, quantum = ((main_samples, main_q, main_q_quantum) if not name else
+                                (sub_samples.get(name) or {}, (sub_q or {}).get(name), (sub_q_quantum or {}).get(name)))
+            rows, q, arr = f._hold_back(rows, q, pv if not name else None, math.inf)
+            kept[name] = (rows, q, arr)
+            streams[name] = f.main.begin(rows, q, arr, quantum, file=False)
         meters = []
-        for name in sorted(set(self.subs) | set(sub_samples)):
-            det = self.subs.setdefault(name, Detector())
-            det.tz_offset_s = self.main.tz_offset_s
-            meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name),
-                                                                    q_quantum=(sub_q_quantum or {}).get(name))]
+        for name in sorted(self.subs):
+            if name not in self.views:
+                det = self.subs[name]
+                meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name),
+                                                                        q_quantum=(sub_q_quantum or {}).get(name))]
         # The grid's reading is the house alone where it never exports, and
         # the house cannot draw less than nothing - asked of its own rows
         # each pass, and kept where a pass is too short to say: "can't tell"
@@ -5177,34 +5211,84 @@ class Fleet:
                 self.main.phases[ph].floor_zero = verdict is False
         meters.sort(key=lambda r: r[:3])
         self._dues, self._names = {}, [""] + sorted(self.subs)
-        if self._wait_at is None:
-            first = min([end] + [r[0] for r in grid[:1] + meters[:1]])
-            self._wait_at = math.floor(first / MODEL_REFRESH_S)
-        done = self._run(grid, meters, end)
-        left: Dict[str, list] = {}
-        for ts, ph, w in grid[done:]:
-            left.setdefault(ph, []).append((ts, w))
-        self._hold_back(left, main_q, pv, -math.inf)          # kept, with their reactive and PV values
+        first = min([end] + [r[0] for r in streams[""][:1] + meters[:1]])
+        for _, f in units:
+            if f._wait_at is None:
+                f._wait_at = math.floor(first / MODEL_REFRESH_S)
+        done = self._run(units, streams, meters, end)
+        for name, f in units:
+            left: Dict[str, list] = {}
+            for ts, ph, w in streams[name][done[name]:]:
+                left.setdefault(ph, []).append((ts, w))
+            f._hold_back(left, kept[name][1], kept[name][2], -math.inf)   # kept, with their reactive and PV values
         self._now = max(self._now, end)
-        self.main.finish(main_samples, self.main._clock or end, self._oldest_asked())
+        for name, f in units:
+            f._now = self._now
+            f.main.finish(kept[name][0], f.main._clock or end, f._oldest_asked())
         for name, det in self.subs.items():
-            det.finish(sub_samples.get(name) or {}, end)
+            if name not in self.views:
+                det.finish(sub_samples.get(name) or {}, end)
 
-    def _run(self, grid: List[tuple], meters: List[tuple], end: float) -> int:
+    def _units(self) -> List[Tuple[str, "Fleet"]]:
+        """The grid's fleet under "", then each meter's others hang under, by name."""
+        return [("", self)] + [(p, self.views[p]) for p in sorted(self.views)]
+
+    def _bind(self) -> None:
+        """This fleet's main detector asks it what the meters inside did."""
+        main = self.main
+        main.meter_steps, main.step_meter, main.meter_held = self._meter_steps, self._step_meter, self._meter_held
+        main.meter_stop, main.meter_on = self._meter_stop, self._meter_on
+        main.meter_started, main.meter_level = self._meter_started, self._meter_level
+
+    def _sync_views(self) -> None:
+        """The fleet as a tree (Anze, 2026-10-03): every meter others hang
+        under reads the meters inside it, as the grid reads every meter - a
+        fleet of its own (``views``) whose main is that meter's detector and
+        whose subs are the meters under it at any depth, with its own say
+        about them: their votes on its channels, their gains and lags against
+        it, its sessions waiting for theirs, the identity their sessions give
+        its own. It shares the grid's clock, declarations, switches and
+        settings. A meter no read meter hangs under any longer is a meter
+        again: its detector files its own sessions and asks no one."""
+        tops = {p for n, p in self.parents.items() if p and n in self.subs and p in self.subs}
+        for p in [p for p in self.views if p not in tops]:
+            v = self.views.pop(p)
+            v.main.meter_steps = v.main.step_meter = v.main.meter_held = v.main.meter_stop = None
+            v.main.meter_on = v.main.meter_started = v.main.meter_level = None
+        for p in sorted(tops):
+            v = self.views.get(p)
+            if v is None:
+                v = self.views[p] = Fleet.from_dict(self._view_states.pop(p, None))
+            v.main, v.reference = self.subs[p], False
+            v.subs = {n: d for n, d in self.subs.items() if self._under(n, p)}
+            v.parents, v.single, v.switch_on, v.horizon_skip = self.parents, self.single, self.switch_on, self.horizon_skip
+            v.wait_cap_s, v._now = self.wait_cap_s, self._now
+
+    def _run(self, units: List[Tuple[str, "Fleet"]], streams: Dict[str, List[tuple]], meters: List[tuple],
+             end: float) -> Dict[str, int]:
         """Every reading and everything due, in ONE order on one clock, up to
         how far this pass's readings reach (``end``): a meter's reading at its
-        own time, the grid's once the clock is the horizon past it (_wait, see
+        own time, a main's - the grid's, a meter others hang under (``units``,
+        _sync_views) - once the clock is its horizon past it (_wait, see
         _horizon), and what falls due between them - each meter's own
-        (Detector.next_due; the grid's the horizon later), a house session
-        done waiting for the meters (_decide), one more try at placing a
-        filed one (_locate), a meter's session's vote (_vote_phases), the
-        horizon worked out again. At one moment the readings first - the
-        grid's, then the meters' - and then what is due, in that order.
-        Returns how many of the grid's readings were read; the rest wait for
-        the next pass."""
-        im = isub = 0
+        (Detector.next_due; a main's its horizon later), a main's session
+        done waiting for the meters inside it (_decide), one more try at
+        placing a filed one (_locate), a meter's session's vote
+        (_vote_phases), a horizon worked out again. At one moment the
+        readings first - the mains', the grid's first, then the meters' - and
+        then what is due, in that order. Returns how many of each main's
+        readings were read; the rest wait for the next pass."""
+        at_ = {name: 0 for name, _ in units}
+        isub = 0
+        fleets = [f for _, f in units]
         while True:
-            best = (max(grid[im][0] + self._wait, self._now), 0, 0) if im < len(grid) else None
+            best = None
+            for k, (name, f) in enumerate(units):
+                i = at_[name]
+                if i < len(streams[name]):
+                    c = (max(streams[name][i][0] + f._wait, self._now), 0, 0, k)
+                    if best is None or c < best:
+                        best = c
             if isub < len(meters) and (best is None or (meters[isub][0], 0, 1) < best):
                 best = (meters[isub][0], 0, 1)
             for name in self._names:
@@ -5212,24 +5296,28 @@ class Fleet:
                     self._dues[name] = self._det(name).next_due()
                 d = self._dues[name]
                 if d is not None:
-                    c = (d[0] + self._wait, 1, 0) if not name else (d[0], 1, 1, name)
+                    c = (d[0] + self._wait, 1, 0) if not name else (d[0] + self._wait_of(name), 1, 1, name)
                     if best is None or c < best:
                         best = c
-            for c in ((self.unfiled[0][0], 1, 2) if self.unfiled else None,
-                      (self.pending_main[0][0], 1, 3) if self.pending_main else None,
-                      (self._unvoted[0][0], 1, 4) if self._unvoted else None,
-                      ((self._wait_at + 1) * MODEL_REFRESH_S, 1, 5)):
-                if c is not None and (best is None or c < best):
-                    best = c
+            for k, f in enumerate(fleets):
+                for c in ((f.unfiled[0][0], 1, 2, k) if f.unfiled else None,
+                          (f.pending_main[0][0], 1, 3, k) if f.pending_main else None,
+                          (f._unvoted[0][0], 1, 4, k) if f._unvoted else None,
+                          ((f._wait_at + 1) * MODEL_REFRESH_S, 1, 5, k)):
+                    if c is not None and (best is None or c < best):
+                        best = c
             at, cls, rank = best[:3]
             if at > end or (cls == 1 and at >= end):
-                return im
-            self._now = self.main.horizon = max(self._now, at)
+                return at_
+            self._now = max(self._now, at)
+            for f in fleets:
+                f._now = f.main.horizon = self._now
             if cls == 0 and rank == 0:
-                ts, ph, w = grid[im]
-                im += 1
-                self.main.step(ts, ph, w)
-                self._dues.pop("", None)
+                name, f = units[best[3]]
+                ts, ph, w = streams[name][at_[name]]
+                at_[name] += 1
+                f.main.step(ts, ph, w)
+                self._dues.pop(name, None)
             elif cls == 0:
                 ts, name, ph, w = meters[isub]
                 isub += 1
@@ -5241,24 +5329,46 @@ class Fleet:
                 det.fire(self._dues.pop(name))
                 got, det._released = det._released, []
                 for s in got:
-                    self._on_main(s) if not name else self._on_sub(name, s)
-            elif rank == 2:
-                self._decide(self.unfiled.pop(0)[1])
-            elif rank == 3:
-                self._locate(self.pending_main.pop(0)[1], final=True)
-            elif rank == 4:
-                _, name, final, s = self._unvoted.pop(0)
-                if not final and self._vote_blocked(name, s):
-                    # the grid may still hand over a session started with it:
-                    # it votes when the grid's last such run is out (_on_main),
-                    # or once MATCH_PATIENCE_S is over, with what is out by then
-                    self._insort(self._unvoted, (s.end + MATCH_PATIENCE_S, name, True, s))
-                else:
-                    self._vote(name, s)
+                    self._hand(name, s)
             else:
-                self._learn_lags(at)
-                self._wait, self._wait_at = self._horizon(), math.floor(at / MODEL_REFRESH_S)
-                self._dues = {}                   # every meter's latency may have moved
+                f = fleets[best[3]]
+                if rank == 2:
+                    f._decide(f.unfiled.pop(0)[1])
+                elif rank == 3:
+                    f._locate(f.pending_main.pop(0)[1], final=True)
+                elif rank == 4:
+                    _, name, final, s = f._unvoted.pop(0)
+                    if not final and f._vote_blocked(name, s):
+                        # the main may still hand over a session started with it:
+                        # it votes when the main's last such run is out (_on_main),
+                        # or once MATCH_PATIENCE_S is over, with what is out by then
+                        f._insort(f._unvoted, (s.end + MATCH_PATIENCE_S, name, True, s))
+                    else:
+                        f._vote(name, s)
+                else:
+                    f._learn_lags(at)
+                    f._wait, f._wait_at = f._horizon(), math.floor(at / MODEL_REFRESH_S)
+                    self._dues = {}                   # every meter's latency may have moved
+
+    def _wait_of(self, name: str) -> float:
+        """How far behind the meters inside it a meter is read: its own
+        fleet's horizon where others hang under it, none where none do."""
+        v = self.views.get(name)
+        return v._wait if v is not None else 0.0
+
+    def _hand(self, name: str, s: Session) -> None:
+        """A session a detector handed over: the grid's to the grid's fleet; a
+        meter's to every fleet it is inside, as a meter's session - and, where
+        others hang under it, to its own fleet as its main's, filed after
+        theirs have had their say."""
+        if not name:
+            self._on_main(s)
+            return
+        if name in self.views:
+            self.views[name]._on_main(s)
+        for _, f in self._units():
+            if name in f.subs:
+                f._on_sub(name, s)
 
     def _horizon(self) -> float:
         """How far behind its meters the grid is read: the longest any meter
@@ -5336,12 +5446,15 @@ class Fleet:
         """How long after a step the grid shares with it this meter has
         declared its own: the LAG_PERCENTILE of what was learned, once
         LAG_MIN_SAMPLES are; until then its latency twice over - the report,
-        then the silence that confirms it."""
+        then the silence that confirms it - and, where others hang under it,
+        the horizon it is read behind them (_wait_of)."""
         rows = self.meter_lag.get(name) or []
         if len(rows) >= LAG_MIN_SAMPLES:
             got = sorted(r[1] for r in rows)
             return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
-        return 2.0 * self._latency(name)
+        # ...and a meter others hang under is read its own horizon behind them
+        # ponytail: a view's own nested views are not asked - one level of nesting at both sites
+        return 2.0 * self._latency(name) + self._wait_of(name)
 
     def _learn_lags(self, at: float) -> None:
         """Each meter's lag against the grid, from the steps the two share:
@@ -5398,6 +5511,8 @@ class Fleet:
                     e = near[0]
                     rows.append([round(e[0] - g[0], 2), round((e[5] if len(e) > 5 else e[4]) - g[0], 2)])
                 del rows[:-LAG_SAMPLES]
+        if not self.reference:
+            return                 # the grid is the reference clock: a report lag is against it
         for name, det in self.subs.items():
             rows = self.meter_lag.get(name) or []
             lag = 0.0
@@ -6563,7 +6678,12 @@ class Fleet:
         return True
 
     def to_dict(self) -> dict:
-        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
+        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()}, **self._state()}
+
+    def _state(self) -> dict:
+        """What a fleet knows beyond its detectors - a meter's own fleet is
+        stored that way, its detectors being the grid's fleet's."""
+        return {"views": {p: v._state() for p, v in self.views.items()} or None,
                 "pending_main": [[t, s.to_dict()] for t, s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
                 "phase_votes": self.phase_votes,
@@ -6601,6 +6721,7 @@ class Fleet:
         f._recent_main = [(t, Session.from_dict(x)) for t, x in d.get("recent_main") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
+        f._view_states = dict(d.get("views") or {})
         carry = d.get("carry") or {}
         f._carry = {k: v for k, v in (
             ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
