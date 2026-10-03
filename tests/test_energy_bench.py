@@ -27,5 +27,27 @@ def test_a_readings_reactive_power_comes_from_its_own_device_first():
     assert replay.own_reactive({"sensor.se17k_home_power_phase_a": rows}, "sensor.se17k_home_power_phase_a", "a", rows) is None
 
 
+def test_a_reading_is_scaled_by_the_unit_beside_its_file():
+    """The CSVs carry no unit; units.json beside them does, read from the
+    file's own folder through a symlink, and a kW meter is replayed in W
+    (Home's EVBox, 2026-10-04)."""
+    import json
+    import os
+    import tempfile
+    import replay
+    with tempfile.TemporaryDirectory() as tmp:
+        site, tuning = Path(tmp, "site"), Path(tmp, "tuning")
+        site.mkdir()
+        tuning.mkdir()
+        (site / "day.csv").write_text("entity_id,state,last_changed\nsensor.ev,10.78,2026-09-25T10:07:13+00:00\n"
+                                      "sensor.plug,5,2026-09-25T10:07:13+00:00\n", encoding="utf-8")
+        (site / "units.json").write_text(json.dumps({"sensor.ev": "kW", "sensor.plug": "W"}), encoding="utf-8")
+        os.symlink(site / "day.csv", tuning / "day.csv")
+        files = replay.expand([str(tuning)])
+        scale = {e: replay.D.unit_scale(u) for e, u in replay.units(files).items()}
+        got, _ = replay._series([str(tuning)], False, scale)
+        assert got["sensor.ev"][0][1] == 10780.0 and got["sensor.plug"][0][1] == 5.0
+
+
 if __name__ == "__main__":
     run_main(globals())

@@ -19,7 +19,9 @@ takes on the command line, where it would land in a shell history:
 A token belongs to ONE instance, so each site needs its own, and naming the
 file after the host is what keeps them straight (Anze, 2026-09-18).
 
-Days already downloaded are skipped, so an interrupted run resumes.
+Days already downloaded are skipped, so an interrupted run resumes. Beside
+the CSVs it writes units.json, each electrical entity's unit from its live
+state (write_units): the replay scales by it, as production does.
 """
 from __future__ import annotations
 
@@ -234,6 +236,28 @@ def fetch(base: str, token: str, entities, start: datetime, end: datetime, timeo
     return rows
 
 
+ELECTRICAL = {"power", "current", "voltage", "power_factor", "apparent_power", "reactive_power"}
+
+
+def write_units(out: Path, base: str, token: str, entities, timeout: int) -> dict:
+    """Each electrical entity's unit, from its live state, merged into
+    out/units.json - entity -> unit - which replay.read_csv scales by, as
+    production scales every reading it reads (detect.unit_scale). The history
+    comes without attributes, so the CSVs carry no unit: Home's EVBox and
+    Andrej's OCPP chargers publish kW and were replayed as watts, the EVBox's
+    10.8 kW charge as 10.8 W (2026-10-04)."""
+    request = urllib.request.Request(f"{base}/api/states", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        states = json.load(response)
+    want, path = set(entities), out / "units.json"
+    got = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    got.update({s["entity_id"]: s["attributes"]["unit_of_measurement"] for s in states
+                if s["entity_id"] in want and s.get("attributes", {}).get("device_class") in ELECTRICAL
+                and s["attributes"].get("unit_of_measurement")})
+    path.write_text(json.dumps(dict(sorted(got.items())), indent=1) + "\n", encoding="utf-8")
+    return got
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site", default="home", choices=sorted(SITES))
@@ -299,6 +323,8 @@ def main() -> int:
             print(f"  {target.name}: {len(rows)} rows")
     if not args.dry_run:
         print(f"{total} rows into {out}")
+        entities = [e for g, es in site["groups"].items() if not args.group or g in args.group for e in es]
+        print(f"{len(write_units(out, site['base'], token, entities, args.timeout))} units in {out / 'units.json'}")
     return 0
 
 
