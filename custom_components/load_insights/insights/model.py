@@ -243,6 +243,18 @@ def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
     return {**options, "input_links": links}
 
 
+def scoped(signals, links: dict, within, stat: Optional[str] = None) -> list:
+    """The signals the forecast of ``stat`` takes (Anze, 2026-10-03). An
+    input linked to nothing acts on every forecast. One linked to devices
+    acts on those, on every meter they sit inside - ``within(target)``, the
+    walk the nowcast's links take - and on the site (``stat`` None), which
+    every meter sits inside; on nothing else, the unmetered remainder
+    included. Unscoped, the workshop boiler's tank temperature was fitted
+    on Blaz's PC and engaged there."""
+    return [g for g in signals
+            if stat is None or not links.get(g.entity) or any(stat in within(t) for t in links[g.entity])]
+
+
 def follow_renames(value, renames: dict):
     """``value`` - options, data, anything JSON-shaped - with every string
     that IS a renamed entity id, key or value, swapped for its new id. Home
