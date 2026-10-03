@@ -52,7 +52,6 @@ from .insights.detect import (
     Detector,
     Fleet,
     carries_generation,
-    MIN_NOISE_W,
     _align,
     _reactive,
     SIGNED_VAR_SLACK_S,
@@ -719,9 +718,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             await self.async_backfill_statistics(name)
 
     def guess_one_device(self, name: str) -> bool:
-        if any(m.get("parent") == name for m in self.submeters.values()):
-            return False
-        return self.fleet.guess_one_device(name)
+        return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
@@ -990,9 +987,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                         pv[p] = _align(generation[p], target)
                 for p, rows in samples.items():
                     if p in self.fleet.main.phases:
-                        # a fixed floor since 2026-09-23 - see _meter_wait_field in
-                        # config_flow; a value stored by an older version is not read
-                        self.fleet.main.phases[p].min_noise = MIN_NOISE_W
                         # a reading that never exports is the house alone, and
                         # the house cannot draw less than nothing. Kept, and
                         # saved, where a pass is too short to say: "can't tell"
