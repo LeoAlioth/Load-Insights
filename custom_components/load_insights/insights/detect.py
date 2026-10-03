@@ -1693,7 +1693,7 @@ class PhaseState:
         the plug's own detector had the 20-hour run every time. The converse
         of Fleet._meter_stop."""
         return bool(o.meter) and self.lib is not None and self.lib.meter_on is not None and \
-            self.lib.meter_on(o.meter, self.name, o.since, o.watts)
+            self.lib.meter_on(o.meter, self.name, o.since, o.watts, self.last_ts)
 
     def _meter_ended(self, ts: float) -> List[Session]:
         """Close each run a meter's own step started whose stop that meter
@@ -2422,7 +2422,10 @@ class PhaseState:
         best = None
         for i, o in enumerate(self.open_edges):
             model = partners.get(o.cluster)
-            if model is None:
+            if model is None or self.owned(o):
+                # ...not a run its meter still shows on - see owned: Home's
+                # dehumidifier read 283 W at 21:30 when a learned pair's
+                # 366 W fall ended its 20-hour run 3.5 hours in (09-25)
                 continue
             ratio, ratio_sd = model[0], model[1]
             expect = o.watts * ratio
@@ -6398,30 +6401,29 @@ class Fleet:
         lo, hi = bisect.bisect_left(st.declared_t, frm), bisect.bisect_right(st.declared_t, t)
         return sum(e[1] for e in st.declared[lo:hi])
 
-    def _meter_on(self, name: str, ph: str, since: float, size: float) -> bool:
+    def _meter_on(self, name: str, ph: str, since: float, size: float, t: Optional[float] = None) -> bool:
         """Does meter ``name``, whose own step started a grid run of ``size``
-        on ``ph`` at ``since``, still show that load on - no fall of half its
-        size declared since, on its channels that may carry the phase
-        (_chans)? Read ahead of the grid by the horizon, a fall the meter has
-        declared is known before the grid's own; one it has not is not its
-        load stopping. Any such fall, not the meter's net change since: a run
-        a circuit's other load frees is paired by size as any run, but net, a
-        cycling boiler's next rise owned its last run again and held it open
-        for good, and a load starting in the circuit after the run would hold
-        it past its own stop (the unify audit's option, 2026-10-03). See
-        PhaseState.owned."""
+        on ``ph`` at ``since``, still show that load on at the grid's moment
+        ``t`` - what its channels that may carry the phase (_chans) read then,
+        against just before the run started (_change_since), in the grid's
+        terms, at least half the run's size? Then, not on the clock: read
+        ahead of the grid by the horizon, the plug of a 20-hour run already
+        read its stop while the grid was at a 150 W load's fall three minutes
+        before it, and that fall closed the run. A stop the grid has not yet
+        reached is _meter_stop's, or _meter_ended's. Its net change, not any fall of half the
+        size: a circuit's other loads coming and going, and a motor's surge
+        settling (Susilna 09-24 18:00: 565 W, then 264), do not free the run
+        (the unify audit's R4; Home fed devices 51.8 -> 63.3 % at SLICE=6).
+        Read, not summed from its declared steps: Kozolec's water pump
+        wandered +184, -17, -78, +74, +78 W, never down by half in declared
+        steps, and held its run five hours while it drifted off (09-27,
+        2026-10-03). See PhaseState.owned."""
         det = self.subs.get(name)
         chans = self._chans(name, ph) if det is not None else []
-        gain = self.gain(name, "p")
-        for c in chans:
-            st = det.phases[c]
-            # not a fall inside the meter's own latency of the start: a slow
-            # plug reads a motor's surge as a reading of its own and its
-            # settling as a fall (Susilna 09-24 18:00: 565 W, then 264)
-            k = bisect.bisect_right(st.declared_t, since + st.latency())
-            if any(e[1] < 0 and -e[1] * gain >= 0.5 * size for e in st.declared[k:]):
-                return False
-        return bool(chans)
+        if not chans:
+            return False
+        t = self._now if t is None else t
+        return sum(self._change_since(name, ph, c, since, t) for c in chans) * self.gain(name, "p") > 0.5 * size
 
     def _meter_started(self, ph: str, since: float, size: float) -> Optional[Tuple[str, float]]:
         """(meter, its rise in the grid's terms): the meter whose own rise -
