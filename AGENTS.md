@@ -800,6 +800,22 @@ wconc 36 against the baseline's 48).
 Open defects, with what is measured and what is guessed. Numbers are from the
 two sites' ten-day exports unless stated.
 
+### To explore or discuss (Anze, 2026-10-03)
+
+- [ ] **Explore: a daily retroactive repair pass.** The statistics can be
+  rewritten, so once a day a more thorough pass could re-file the day's runs
+  with everything known by then, instead of patching each decision in the
+  stream. Candidates it would settle: runs filed into a signature before its
+  meter's location was known there (Sušilna's signature took plain ~270 W
+  workshop starts by size until the dehumidifier's first 20-hour run filed at
+  16:00 - the "filed while a meter held a run of that size" count was the
+  in-stream alternative); a share a rise gave to a plug whose phase was not yet
+  mapped (Blaževa Soba's PC took 107 W of a phase-A rise from another phase).
+- [ ] **Discuss: multi-step pairing** - a start that ramps in steps (Mansarda's
+  ~400 W load: 142 -> 404 -> 465 W over 15 s) is booked at its first step and
+  cannot pair with its full-size stop. Agreed meanwhile: a run placed at a
+  meter is closed once that meter's total reads below the run's opening size.
+
 ### Confirmed, unfixed
 
 - **Signature churn with a device per start cluster** (2026-09-30, the
