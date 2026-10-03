@@ -2475,7 +2475,7 @@ class PhaseState:
             return cls()
         return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
-                   interval=d.get("interval", 0.0), min_noise=d.get("min_noise", MIN_NOISE_W), noise_rel=d.get("noise_rel", 0.0),
+                   interval=d.get("interval", 0.0), noise_rel=d.get("noise_rel", 0.0),
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
                    step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
@@ -4266,7 +4266,7 @@ class Detector:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in learned}
         placed = len(ph) == 1 and watts > 0
-        where = (self.step_meter(ph, since, size, watts > 0, var) or "") if placed and self.step_meter is not None else ""
+        where = (self.step_meter(ph, since, size, watts > 0) or "") if placed and self.step_meter is not None else ""
         if where and window_ok and self.placement_window is not None:
             size = abs(self.placement_window[0])     # placed by the ramp's whole window: its size
         if self._kinds is None:
@@ -5037,9 +5037,6 @@ class Fleet:
     _sub_from: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     _sub_seed: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
     _sub_totals: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
-    # the grid's own readings, phase by phase, kept by the same rule - the
-    # level over a window a meter's step and the grid's covered (_window_size)
-    grid_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, repr=False, compare=False)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
     # meter -> "p" (power) / "q" (reactive) -> [mean log of grid's step over the
     # meter's, steps] - see METER_GAIN_MIN
@@ -5138,7 +5135,7 @@ class Fleet:
         # house side of it and never the sun
         for name, rows_by_phase in sub_samples.items():
             self._keep_rows(name, rows_by_phase, end)
-        self._keep_grid(main_samples or {})
+        self._keep_rows("", main_samples or {}, end)        # the grid's own, as a meter's
         events, numbers = self._signal_events()
         self.main.signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
         self.main.meter_steps = self._meter_steps
@@ -5191,7 +5188,7 @@ class Fleet:
                 best = (meters[isub][0], 0, 1)
             for name in self._names:
                 if name not in self._dues:
-                    self._dues[name] = (self.subs[name] if name else self.main).next_due()
+                    self._dues[name] = self._det(name).next_due()
                 d = self._dues[name]
                 if d is not None:
                     c = (d[0] + self._wait, 1, 0) if not name else (d[0], 1, 1, name)
@@ -5219,7 +5216,7 @@ class Fleet:
                 self._dues.pop(name, None)
             elif rank <= 1:
                 name = best[3] if rank else ""
-                det = self.subs[name] if name else self.main
+                det = self._det(name)
                 det.fire(self._dues.pop(name))
                 got, det._released = det._released, []
                 for s in got:
@@ -5266,10 +5263,45 @@ class Fleet:
             wait = max(wait, EDGE_LAG_REACH_S)
         return min(self.wait_cap_s, wait)
 
-    def _meter_latency(self, name: str) -> float:
+    def _det(self, name: str) -> Optional["Detector"]:
+        """A meter's detector - the grid's under ""."""
+        return self.subs.get(name) if name else self.main
+
+    def _interval(self, name: str) -> float:
+        """A meter's cadence - its channels' longest reading interval."""
+        det = self._det(name)
+        return max((st.interval for st in det.phases.values()), default=0.0) if det else 0.0
+
+    def _latency(self, name: str) -> float:
         """A meter's latency - its channels' longest (PhaseState.latency)."""
-        det = self.subs.get(name)
+        det = self._det(name)
         return max((st.latency() for st in det.phases.values() if st.interval), default=0.0) if det else 0.0
+
+    def _mapped(self, name: str, ph: str) -> List[str]:
+        """Meter ``name``'s channels the phase map places on grid phase ``ph``."""
+        det = self._det(name)
+        return [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] if det else []
+
+    def _read_chans(self, name: str) -> List[str]:
+        """Meter ``name``'s channels that have read."""
+        det = self._det(name)
+        return [c for c, st in det.phases.items() if st.last_ts is not None] if det else []
+
+    def _under(self, n: str, anc: str) -> bool:
+        """Does meter ``n`` hang under ``anc``, at any depth?"""
+        seen = set()
+        while n in self.parents and n not in seen:
+            seen.add(n)
+            n = self.parents[n]
+            if n == anc:
+                return True
+        return False
+
+    def _pair_tol(self, name: str, main_iv: Optional[float] = None) -> float:
+        """How far apart the grid's and meter ``name``'s views of one moment
+        may lie: the merge tolerance, or the grid's cadence and the meter's
+        latency together where that is longer."""
+        return max(MERGE_TOLERANCE_S, (self._interval("") if main_iv is None else main_iv) + self._latency(name))
 
     def _declare_lag(self, name: str) -> float:
         """How long after a step the grid shares with it this meter has
@@ -5280,7 +5312,7 @@ class Fleet:
         if len(rows) >= LAG_MIN_SAMPLES:
             got = sorted(r[1] for r in rows)
             return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
-        return 2.0 * self._meter_latency(name)
+        return 2.0 * self._latency(name)
 
     def _learn_lags(self, at: float) -> None:
         """Each meter's lag against the grid, from the steps the two share:
@@ -5299,7 +5331,7 @@ class Fleet:
         # load, not a late report - Home's office plug (a computer) read a
         # 95th report lag of 109 s and a declaring lag of 190 s that way, and
         # set Home's horizon (2026-10-02)
-        bound_g = self.main.phases and max(st.latency() for st in self.main.phases.values())
+        bound_g = self._latency("")
         start = self._lag_from if self._lag_from is not None else -math.inf
         if upto <= start:
             return
@@ -5311,13 +5343,13 @@ class Fleet:
             if not steps:
                 continue
             for name, det in self.subs.items():
-                chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
+                chans = self._mapped(name, ph)
                 if len(chans) != 1:
                     continue                      # a meter on several channels of it: whose step is it
                 st = det.phases[chans[0]]
                 gain, noise_m = self.gain(name, "p"), st.noise_at()
                 rows = self.meter_lag.setdefault(name, [])
-                bound = st.latency() + (bound_g or 0.0) + MERGE_TOLERANCE_S
+                bound = st.latency() + bound_g + MERGE_TOLERANCE_S
                 for g in steps:
                     tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * abs(g[1])
 
@@ -5358,7 +5390,7 @@ class Fleet:
     def _keep_rows(self, name: str, rows_by_phase: Dict[str, Sequence[Tuple[float, float]]], end: float) -> None:
         """A meter's readings, channel by channel, for the energy answer
         (_energy_pairs, the channels summed - _sub_total) and for what a
-        channel read (_meter_reading). Each channel is held at its last value
+        channel read (_reading). Each channel is held at its last value
         from the last pass until it writes again, not counted as nothing from
         the pass's start."""
         last = self._sub_last.setdefault(name, {})
@@ -5391,33 +5423,6 @@ class Fleet:
             j = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)
             chans[p] = kept[j:]
 
-    def _keep_grid(self, rows_by_phase: Dict[str, Sequence[Tuple[float, float]]]) -> None:
-        """The grid's readings, phase by phase, kept as a meter's are (see
-        _keep_rows): back to the oldest moment still asked about, its idle
-        window before it, each phase with its value in force at the cut."""
-        stamps = [r[0][0] for r in rows_by_phase.values() if r]
-        if not stamps:
-            return
-        cut = min(self._oldest_asked(), min(stamps) - SUB_SAMPLE_TAIL_S) - IDLE_WINDOW_S
-        for p, rows in rows_by_phase.items():
-            if not rows:
-                continue
-            kept = self.grid_rows.get(p) or []
-            new = [(t, v) for t, v in rows]
-            kept = sorted(kept + new) if kept and new[0] <= kept[-1] else kept + new
-            j = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)
-            self.grid_rows[p] = kept[j:]
-
-    @staticmethod
-    def _read_at(rows: Sequence[Tuple[float, float]], t: float, side: int) -> Optional[float]:
-        """A reading off ``rows``: the one in force just before ``t`` (side
-        -1), or the first at or after it (side 1)."""
-        if side < 0:
-            k = bisect.bisect_left(rows, (t, -math.inf))
-            return rows[k - 1][1] if k else None
-        k = bisect.bisect_left(rows, (t, -math.inf))
-        return rows[k][1] if k < len(rows) else None
-
     def _window_size(self, name: str, ph: str, since: float, up: bool,
                      size: Optional[float] = None) -> Optional[Tuple[float, float, float, float]]:
         """(the grid's change, from, to, the meter's change) over the union
@@ -5439,7 +5444,7 @@ class Fleet:
             return None
         k = bisect.bisect_left(grid.declared_t, since - 0.01)
         mine = grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
-        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
+        chans = self._mapped(name, ph)
         if mine is None or not chans:
             return None
         if size is not None and abs(abs(mine[1]) - size) > grid._tol(abs(mine[1]), size):
@@ -5452,27 +5457,16 @@ class Fleet:
         cap = UNION_CAP_WINDOWS * max([self.main.event_window()] + [det.phases[c].latency() for c in chans])
         if b - a > cap or any((e[1] > 0) == up and a <= e[0] < since for e in self._near(grid, a, since, 0.0)):
             return None
-        rows = self.grid_rows.get(ph) or []
-        g0, g1 = self._read_at(rows, a, -1), self._read_at(rows, b, 1)
-        chan_rows = [(self.sub_rows.get(name) or {}).get(c) or [] for c in chans]
-        m0 = [self._read_at(r, a, -1) for r in chan_rows]
-        m1 = [self._read_at(r, b, 1) for r in chan_rows]
+        g0, g1 = self._reading("", ph, a, -1), self._reading("", ph, b, 1)
+        m0 = [self._reading(name, c, a, -1) for c in chans]
+        m1 = [self._reading(name, c, b, 1) for c in chans]
         if g0 is None or g1 is None or None in m0 or None in m1:
             return None
-
-        def line(x: str, y: str) -> bool:           # one hangs under the other
-            seen = set()
-            while x in self.parents and x not in seen:
-                seen.add(x)
-                x = self.parents[x]
-                if x == y:
-                    return True
-            return False
         change = g1 - g0
         for other, odet in self.subs.items():
-            if other == name or line(other, name) or line(name, other):
+            if other == name or self._under(other, name) or self._under(name, other):
                 continue
-            och = [c for c, h in self.phase_map(other).items() if h == ph and c in odet.phases]
+            och = self._mapped(other, ph)
             change -= sum(e[1] for c in och for e in self._near(odet.phases[c], a, b, 0.0) if a <= e[0] <= b) \
                 * self.gain(other, "p")
         if size is not None and abs(change) > 2.0 * size:
@@ -5511,7 +5505,7 @@ class Fleet:
     def _on_main(self, m: Session) -> None:
         """A house session the grid's detector handed over: it waits for the
         meters' say (_ready_at), and is one a meter's session may vote for."""
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        main_iv = self._interval("")
         self._insort(self.unfiled, (self._ready_at(m, main_iv), m))
         self._recent_main.append((self._now, m))
         while self._recent_main and self._now - self._recent_main[0][0] >= MATCH_PATIENCE_S:
@@ -5521,8 +5515,8 @@ class Fleet:
             self._vote(row[1], row[3])
 
     def _vote_tol(self, name: str) -> float:
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
-        return max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+        main_iv = self._interval("")
+        return self._pair_tol(name, main_iv)
 
     def _vote_blocked(self, name: str, s: Session) -> bool:
         """Could the grid still hand over a session that started with the
@@ -5537,7 +5531,7 @@ class Fleet:
                 or any(st.pending and st.pending[0][0] <= s.start + tol for st in main.phases.values()))
 
     def _vote(self, name: str, s: Session) -> None:
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        main_iv = self._interval("")
         self._vote_phases({name: [s]}, main_iv, [m for _, m in self._recent_main])
 
     def _on_sub(self, name: str, s: Session) -> None:
@@ -5566,7 +5560,7 @@ class Fleet:
         partner's say in which signature it joins - see SUB_OVERRIDE - or
         else a one-device meter's energy's; placed where a meter saw it, if
         one did (_locate)."""
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        main_iv = self._interval("")
         for name in self.pending_sub:
             self.pending_sub[name] = [s for s in self.pending_sub[name] if self._now - s.end < 2.0 * MATCH_PATIENCE_S]
         pairs = sorted(self._session_pairs([m], main_iv), key=lambda x: (x[0], x[1]))
@@ -5788,7 +5782,7 @@ class Fleet:
         says it joins - and credit it to the meter ``name`` that saw it, if
         any, and to the switch whose on-period it is. The switch is read
         before filing: filing moves the locations it is read from."""
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        main_iv = self._interval("")
         switch = self._switch_for(m, main_iv) if self.switch_on else None
         self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
         sig = self.main.signature_of(m)
@@ -5810,11 +5804,17 @@ class Fleet:
         return self.guess_one_device(name)
 
     def guess_one_device(self, name: str) -> bool:
-        """The library's shape, once it has something to say: at least
-        METER_PHASES_MIN sightings, most of them one signature. A young meter -
-        one renamed on the Energy dashboard starts again - holds several until
-        it has shown otherwise, since hiding a meter's loads is the costly
-        mistake (Kozolec's Inverter, three sightings in, looked like one)."""
+        """A meter other meters hang under holds several by definition (Home's
+        Delavnica, Kozolec's Inverter); otherwise the library's shape, once it
+        has something to say: at least METER_PHASES_MIN sightings, most of them
+        one signature. A young meter - one renamed on the Energy dashboard
+        starts again - holds several until it has shown otherwise, since hiding
+        a meter's loads is the costly mistake (Kozolec's Inverter, three
+        sightings in, looked like one). The runner asked the first part
+        itself, so a bench replay with no declarations ran Home's Hiša - 52 %
+        of its 10,125 sightings one signature - as one device (2026-10-03)."""
+        if any(p == name for p in self.parents.values()):
+            return False
         det = self.subs.get(name)
         return self._one_device(name) and sum(s.count for s in det.signatures) >= METER_PHASES_MIN
 
@@ -5878,7 +5878,7 @@ class Fleet:
             iv = max((st.interval for st in det.phases.values()), default=0.0)
             if not iv or 2.0 * iv > m.duration_s:
                 continue
-            due = max(due, m.end + max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+            due = max(due, m.end + self._pair_tol(name, main_iv)
                       + self._declare_lag(name) + HELD_TAIL_S)
         return min(due, m.end + MATCH_PATIENCE_S)
 
@@ -5918,7 +5918,7 @@ class Fleet:
             span = m.duration_s
             if want <= 0 or span <= 0:
                 continue
-            for name in self.sub_rows:
+            for name in (n for n in self.sub_rows if n):    # the meters', not the grid's
                 rows = self._sub_total(name)
                 if name in phases and not set(m.phases) <= set(phases[name]):
                     continue
@@ -5972,7 +5972,7 @@ class Fleet:
             # the grid's reporting interval and the meter's latency, since a
             # step can land anywhere inside them, and never less than the
             # merge tolerance
-            tol = max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+            tol = self._pair_tol(name, main_iv)
             agnostic = self.agnostic.get(name, False)
             # a three-phase meter's sessions under the HOUSE's phase names
             mp = {} if agnostic else self.phase_map(name)
@@ -5999,7 +5999,7 @@ class Fleet:
         counts once, and Hiša adds only what else inside it changed. The
         pieces do not overlap."""
         steps = {n: (m[0] if m[0] is not None else (size or 0.0)) for n, m in self._meter_totals(ph, since, window, up).items()}
-        return [(name, d - sum(x for k, x in steps.items() if self.parents.get(k) == name))
+        return [(name, d - sum(x for k, x in steps.items() if self._under(k, name)))
                 for name, d in steps.items()]
 
     def _hold_back(self, rows, q, pv, cut: float):
@@ -6061,7 +6061,7 @@ class Fleet:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
         for name, det in self.subs.items():
             one = self.holds_one_device(name)
-            for c in [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]:
+            for c in self._mapped(name, ph):
                 st = det.phases[c]
                 reach = st.latency()
                 for e in self._near(st, a, b, reach):
@@ -6078,7 +6078,7 @@ class Fleet:
                         continue
                     if not one:
                         # what its channel read once this fall settled, in the grid's terms
-                        after = self._meter_reading(name, c, e[4])
+                        after = self._reading(name, c, e[4])
                         after = None if after is None else after * gain
                     for o in reversed(opens):
                         if one:
@@ -6094,12 +6094,23 @@ class Fleet:
                             return o
         return None
 
-    def _meter_reading(self, name: str, ch: str, t: float) -> Optional[float]:
-        """What channel ``ch`` of meter ``name`` read at ``t`` - its reading in
-        force then, a silence being the value held; None before it has one."""
+    def _reading(self, name: str, ch: str, t: float, side: int = 0) -> Optional[float]:
+        """What channel ``ch`` of meter ``name`` (a phase of the grid's, under
+        "") read: in force at ``t`` (``side`` 0) - a silence being the value
+        held, before its first row kept the value carried in (_sub_seed) -,
+        just before ``t`` (-1), or first at or after it and not past the
+        clock (1); None without."""
         rows = (self.sub_rows.get(name) or {}).get(ch) or []
-        k = bisect.bisect_right(rows, (t, math.inf))
-        return rows[k - 1][1] if k else (self._sub_seed.get(name) or {}).get(ch)
+        if side > 0:
+            # ...never past the clock: the rows run to the pass's end, and a
+            # reading the clock has not reached would be there in one slicing
+            # and not in another (the unify audit, 2026-10-03)
+            k = bisect.bisect_left(rows, (t, -math.inf))
+            return rows[k][1] if k < len(rows) and rows[k][0] <= self._now else None
+        k = bisect.bisect_left(rows, (t, -math.inf)) if side < 0 else bisect.bisect_right(rows, (t, math.inf))
+        if k:
+            return rows[k - 1][1]
+        return (self._sub_seed.get(name) or {}).get(ch) if side == 0 else None
 
     def _meter_on(self, name: str, ph: str, since: float, size: float) -> bool:
         """Does meter ``name``, whose own step started a grid run of ``size``
@@ -6112,8 +6123,7 @@ class Fleet:
         if det is None:
             return False
         gain = self.gain(name, "p")
-        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
-            [c for c, st in det.phases.items() if st.last_ts is not None]
+        chans = self._mapped(name, ph) or self._read_chans(name)
         for c in chans:
             st = det.phases[c]
             # not a fall inside the meter's own latency of the start: a slow
@@ -6180,13 +6190,12 @@ class Fleet:
         det = self.subs.get(name)
         if det is None:
             return None
-        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
-            [c for c, st in det.phases.items() if st.last_ts is not None]
+        chans = self._mapped(name, ph) or self._read_chans(name)
         known = [c for c in chans if det.phases[c].level is not None and det.phases[c].baseline is not None]
         if not known:
             return None
         if t is not None:
-            read = [self._meter_reading(name, c, t) for c in known]
+            read = [self._reading(name, c, t) for c in known]
             if all(r is not None for r in read):
                 return max(0.0, sum(r - det.phases[c].baseline for c, r in zip(known, read))) * self.gain(name, "p")
         return max(0.0, sum(det.phases[c].level - det.phases[c].baseline for c in known)) * self.gain(name, "p")
@@ -6218,7 +6227,7 @@ class Fleet:
                 return False                          # it stepped: a placement missed, not a silence
         return True
 
-    def _step_meter(self, ph: str, since: float, size: float, up: bool, var: Optional[float] = None) -> Optional[str]:
+    def _step_meter(self, ph: str, since: float, size: float, up: bool) -> Optional[str]:
         """The innermost meter whose own declared step was all of a grid step
         on ``ph`` - within both meters' noise and METER_CAL_SLACK; of several,
         the one none of the others hangs under. Teaches the meter its gains."""
@@ -6228,11 +6237,11 @@ class Fleet:
         noise = main.phases[ph].noise_at()
         main.placement_window = None
         took, windows = {}, {}
-        for n, (d, raw, raw_q, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
+        for n, (d, raw, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
             if d is None:                   # all of the grid's step over the union of both spans
                 if not self._meter_stepped(n, ph, since, 0.5 * size, up):
                     continue                # ...but its own steps are not half of it: not its
-                took[n] = (size if up else -size, None, None, noise_m, conf)
+                took[n] = (size if up else -size, None, noise_m, conf)
                 # ...and the ramp's whole size where the grid's first plateau
                 # was only part of it - see _window_size
                 win = self._window_size(n, ph, since, up, size)
@@ -6241,7 +6250,7 @@ class Fleet:
                         abs(abs(win[3]) - abs(win[0])) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * abs(win[0]):
                     windows[n] = win
             elif d and (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
-                took[n] = (d, raw, raw_q, noise_m, conf)
+                took[n] = (d, raw, noise_m, conf)
             elif d and (d > 0) == up:
                 # unlike in size, but the two may have declared one ramp over
                 # different stretches of it: the meter's change against the
@@ -6254,27 +6263,16 @@ class Fleet:
                 tol = math.hypot(noise, noise_m) + METER_CAL_SLACK * size
                 if win is not None and (win[0] > 0) == up and abs(win[0]) >= size - tol and \
                         abs(abs(win[3]) - abs(win[0])) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * abs(win[0]):
-                    took[n], windows[n] = (win[0], None, None, noise_m, conf), win
-
-        def under(n: str, anc: str) -> bool:
-            seen = set()
-            while n in self.parents and n not in seen:
-                seen.add(n)
-                n = self.parents[n]
-                if n == anc:
-                    return True
-            return False
-        inner = [n for n in took if not any(under(o, n) for o in took if o != n)]
+                    took[n], windows[n] = (win[0], None, noise_m, conf), win
+        inner = [n for n in took if not any(self._under(o, n) for o in took if o != n)]
         if not inner:
             return None
         meter = min(inner, key=lambda n: abs(abs(took[n][0]) - size))
-        _, raw, raw_q, noise_m, conf = took[meter]
+        _, raw, noise_m, conf = took[meter]
         main.placement_conf = conf
         main.placement_window = windows.get(meter)
         if raw is not None and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(meter, "p", size, raw)
-            if var is not None and raw_q is not None and min(abs(var), abs(raw_q)) >= 20.0:
-                self._learn_gain(meter, "q", var, raw_q)
         return meter
 
     def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
@@ -6294,8 +6292,7 @@ class Fleet:
         if det is None:
             return False
         gain = self.gain(name, "p")
-        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
-            [c for c, st in det.phases.items() if st.last_ts is not None]
+        chans = self._mapped(name, ph) or self._read_chans(name)
         total = 0.0
         for c in chans:
             st = det.phases[c]
@@ -6327,8 +6324,8 @@ class Fleet:
     def _meter_totals(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> Dict[str, tuple]:
         """Per meter measured to carry grid phase ``ph``: (its share of the grid
         step at ``since``, in the grid's terms - None when it is all of it -,
-        the meter's own step raw where one clean step faces one, its reactive
-        part, its noise, the timing confidence 0..1) - see UNION_CAP_WINDOWS."""
+        the meter's own step raw where one clean step faces one, its noise,
+        the timing confidence 0..1) - see UNION_CAP_WINDOWS."""
         out: Dict[str, tuple] = {}
         if ph not in self.main.phases:
             return out
@@ -6341,7 +6338,7 @@ class Fleet:
             votes = self.phase_votes.get(name) or {}
             if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
                 continue
-            chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases]
+            chans = self._mapped(name, ph)
             if not chans:
                 continue
             noise = max(det.phases[c].noise_at() for c in chans)
@@ -6380,7 +6377,7 @@ class Fleet:
                         or (e[3] < g_span[1] and e[4] > g_span[0] and e[4] <= read
                             and not self._grid_took(grid, e, gain, noise_g, noise, cap)))]
             if not own:
-                out[name] = (0.0, None, None, noise, 0.0)
+                out[name] = (0.0, None, noise, 0.0)
                 continue
             # timing: how much the grid step's span and the meter's overlap, of both together
             oa, ob = max(g_span[0], min(e[3] for e in own)), min(g_span[1], max(e[4] for e in own))
@@ -6392,8 +6389,7 @@ class Fleet:
                     and len(gs) > 1):
                 share = None                         # over the union, the meter's net is the grid's: all of it
             clean = len(ms) == 1 and len(gs) == 1
-            q = own[0][2] if clean else None
-            out[name] = (share, own[0][1] if clean else None, q, noise, conf)
+            out[name] = (share, own[0][1] if clean else None, noise, conf)
         return out
 
     def _grid_took(self, grid: "PhaseState", e: tuple, gain: float, noise_g: float, noise_m: float,
@@ -6413,7 +6409,7 @@ class Fleet:
         votes too: only SPLIT_BY_METERS reads its answer."""
         for name, sessions in closed_sub.items():
             det = self.subs.get(name)
-            tol = max(MERGE_TOLERANCE_S, main_iv + self._meter_latency(name))
+            tol = self._pair_tol(name, main_iv)
             votes = self.phase_votes.setdefault(name, {})
             for s in sessions:
                 if len(s.levels) != 1:
@@ -6457,7 +6453,7 @@ class Fleet:
         sig = self.main.signature_of(m)
         if sig is None:
             return True
-        main_iv = max((st.interval for st in self.main.phases.values()), default=0.0)
+        main_iv = self._interval("")
         pairs = self._session_pairs([m], main_iv) + self._energy_pairs([m])
         if not pairs:
             return False
