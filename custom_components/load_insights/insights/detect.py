@@ -5556,10 +5556,33 @@ class Fleet:
         no start (2026-10-01). See Fleet._meter_held."""
         held = {name for name in self.subs if self.holds_one_device(name)
                 and any(self._meter_held(name, ph, m.start, True) for ph in m.phases)}
-        if not held:
-            return []
-        return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
-                and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in held)]
+        out = [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
+               and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in held)] if held else []
+        # ...and a run of the size of a run a meter holds open on its phase -
+        # one the meter's own step started, since before this one - while that
+        # meter held through this start: the level is that run's already, this
+        # run another load of its size, not of the meter's run's kind - kept
+        # out of the signatures that run's device went to and those placed at
+        # the meter, however few of the meter's runs they hold. Home's
+        # dehumidifier (Susilna's plug, 254-313 W from 20:00 to 16:00) shared
+        # its 263 W signature with 60 runs it never started - a 270 W workshop
+        # load cycling, a ramping one under Mansarda, a 400 W load's return
+        # from a 6 s dip - 3.6 kWh: the plug, guessed a strip by its library,
+        # was never asked above; its 20-hour runs, filed at their end, carried
+        # none of its locations there yet; and they start with a surge, in a
+        # cluster of their own (2026-10-03).
+        w = sum(lv[0][1] for lv in m.levels.values() if lv)
+        for ph in m.phases:
+            grid = self.main.phases.get(ph)
+            for o in (grid.open_edges if grid is not None else ()):
+                if not (o.meter and o.since < m.start and abs(o.watts - w) <= MATCH_EDGE_REL * max(o.watts, w)
+                        and self._meter_held(o.meter, ph, m.start, True)):
+                    continue
+                homes = {self.main._current(int(sid)) for k, home in self.main.start_home.items()
+                         if o.cluster is not None and int(k) == o.cluster for sid in home}
+                homes |= {sig.id for sig in self.main.signatures if sig.locations.get(o.meter, 0)}
+                out += [sid for sid in sorted(homes) if sid not in out]
+        return out
 
     def _switched_off(self, m: Session, main_iv: float) -> List[int]:
         """Signatures placed at a switch that was off throughout ``m`` - see
@@ -5947,9 +5970,17 @@ class Fleet:
         ``ph`` at ``since``? As of the pass's end it has written nothing that
         moved for SUSTAIN_CADENCES of its cadence after it - silence is its
         value held - has nothing pending, and declared no step that way near
-        it. Too soon to tell, or a meter not measured on ``ph``: no."""
+        it. Too soon to tell, or a meter measured on other phases: no. A meter
+        the phase map places nowhere yet - no votes at all - is read on its
+        channels, as _meter_on reads it: one that stepped nowhere near the
+        start did not start it, wherever it hangs."""
         det = self.subs.get(name)
-        chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] if det else []
+        if det is None:
+            return False
+        mapped = self.phase_map(name)
+        chans = [c for c, h in mapped.items() if h == ph and c in det.phases]
+        if not mapped:
+            chans = [c for c, st in det.phases.items() if st.last_ts is not None]
         if not chans:
             return False
         for c in chans:
