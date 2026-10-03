@@ -130,6 +130,55 @@ def test_a_title_earns_a_factor_only_for_how_it_differs():
     assert v_away < plain[t_away] * 0.8 and v_guests > plain[t_guests] * 1.1, (v_away, plain[t_away], v_guests, plain[t_guests])
 
 
+def test_signals_telling_one_story_count_it_once():
+    """Three signals on the same hours - Home's motion, occupancy and dryer
+    sensors, whose states the recorder keeps for the same ten days - each
+    see one evening doubling. Fitted side by side each learned x2 and the
+    forecast took x8 (Blaz's PC, 3 Oct: ten factors, x880, 70.7 kWh for an
+    hour it idled at 7 Wh). The second and third are fitted on what the
+    first left, which is nothing."""
+    hist, horizon, keys = setup()
+    events = away_days(hist)
+    s = P.floor_hour(NOW).replace(hour=0) + timedelta(days=2)
+    events.append((s.timestamp(), (s + timedelta(days=2)).timestamp(), "On"))
+    sigs = [CAL.CalendarSignals.from_events(f"calendar.{n}", events, keys) for n in ("a", "b", "c")]
+
+    def actual(t):
+        on = t.timestamp() in sigs[0].existence and 17 <= t.hour < 23
+        return pattern(t) * (2.0 if on else 1.0)
+    samples = [(t, actual(t)) for t in hist]
+    one = P.forecast(samples, NOW, calendars=sigs[:1])
+    three = P.forecast(samples, NOW, calendars=sigs)
+    assert one.calendars[0].engaged and not any(m.engaged for m in three.calendars[1:]), three.calendars
+    for (t, v1), (_, v3) in zip(one.hourly, three.hourly):
+        assert math.isclose(v3, v1, rel_tol=1e-6), (t, v1, v3)
+        assert math.isclose(v1, actual(t), rel_tol=0.12), (t, v1, actual(t))
+
+
+def test_the_order_signals_are_attached_in_decides_nothing():
+    """A signal on the doubled evenings and a wider one on them and as many
+    ordinary days: the one that explains the most alone is fitted first,
+    whichever came first in the list - so the wider one finds nothing left,
+    and an ordinary day it alone covers is forecast ordinary."""
+    hist, horizon, keys = setup()
+    days = away_days(hist)
+    others = [(s + 4 * 86400, e + 4 * 86400, "Other") for s, e, _ in days]
+    s = P.floor_hour(NOW).replace(hour=0) + timedelta(days=2)
+    on = days + [(s.timestamp(), (s + timedelta(days=1)).timestamp(), "On")]
+    extra = others + [((s + timedelta(days=3)).timestamp(), (s + timedelta(days=4)).timestamp(), "Other")]
+    narrow = CAL.CalendarSignals.from_events("calendar.narrow", on, keys)
+    wide = CAL.CalendarSignals.from_events("calendar.wide", on + extra, keys)
+
+    def actual(t):
+        return pattern(t) * (2.0 if t.timestamp() in narrow.existence and 17 <= t.hour < 23 else 1.0)
+    samples = [(t, actual(t)) for t in hist]
+    a = P.forecast(samples, NOW, calendars=[narrow, wide])
+    b = P.forecast(samples, NOW, calendars=[wide, narrow])
+    assert [v for _, v in a.hourly] == [v for _, v in b.hourly]
+    for t, v in b.hourly:
+        assert math.isclose(v, actual(t), rel_tol=0.12), (t, v, actual(t))
+
+
 def test_too_few_on_hours_means_no_fit():
     hist, horizon, keys = setup()
     s = hist[100]

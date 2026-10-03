@@ -305,7 +305,8 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     alone; present, a temperature response is fitted on the residuals and
     applied to the horizon hours that have a forecast temperature.
     ``calendars`` carry each linked calendar's on-hours over history and
-    horizon; each is fitted on this series and applied where it engaged.
+    horizon; each is fitted on this series - the strongest first, each on
+    what those before it left - and applied where it engaged.
     ``state_history`` / ``state_now`` are a device's own state sensors, in
     one order (each hour key -> hourly mean, and each live value): a nowcast
     is fitted on the residuals (``fit_joint``) and shifts the first few
@@ -341,9 +342,26 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             if baseline.sample_count >= HOURS_PER_WEEK:      # a week of ordinary hours, or the baseline is too thin to trust
                 profile = baseline
         rows = residual_rows(profile)
-        for sig, det in zip(calendars, detected):
-            m = fit_calendar(rows, sig, scale_off=False) if det.engaged else det
-            cal_models.append(m)
+
+        def left_alone(i: int) -> float:
+            """The squared residual signal ``i`` leaves, fitted alone."""
+            m = fit_calendar(rows, calendars[i], scale_off=False)
+            return sum(w * (a - e * m.multiplier(k, h, calendars[i])) ** 2 for k, h, w, a, e in rows)
+
+        # Each signal is fitted on what the ones before it left - the
+        # expectation already carries their factors - since the factors
+        # MULTIPLY; the one that explains the most alone goes first, as in
+        # nowcast.fit_joint, so the order inputs were attached in decides
+        # nothing. Fitted side by side, signals telling one story each
+        # learned all of it (2026-10-03): Home's inputs whose history is the
+        # recorder's ten days each read those days as a x2.1 evening, and
+        # ten factors together (x880 at 21:00) forecast Blaz's PC at
+        # 70.7 kWh for an hour it spent idling at 7 Wh.
+        cal_models = list(detected)
+        for i in sorted((i for i, det in enumerate(detected) if det.engaged), key=left_alone):
+            sig = calendars[i]
+            m = cal_models[i] = fit_calendar([(k, h, w, a, e * hist_mult.get(k, 1.0)) for k, h, w, a, e in rows],
+                                             sig, scale_off=False)
             if m.engaged:
                 for k, h, _, _, _ in rows:
                     hist_mult[k] = hist_mult.get(k, 1.0) * m.multiplier(k, h, sig)
