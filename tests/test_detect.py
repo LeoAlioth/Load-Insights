@@ -3197,7 +3197,7 @@ def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
     st = D.PhaseState()
     st.noise, st.interval, st.baseline, st.level, st.name = 10.0, 1.1, 116.0, 3973.0, "a"
     lib = D.Detector()
-    lib.meter_on = lambda name, ph, since, size: name == "Blaževa Soba"     # its wobble still on
+    lib.meter_on = lambda name, ph, since, size, t=None: name == "Blaževa Soba"     # its wobble still on
     st.lib = lib
     old = D._Open(since=T0 - 6137.0, watts=515.0, var=None, levels=[(T0 - 6137.0, 530.0), (T0 - 6131.0, 515.0)], cluster=1)
     rest = D._Open(since=T0 - 5.0, watts=286.0, var=None, levels=[(T0 - 5.0, 286.0)], cluster=2)
@@ -3606,6 +3606,29 @@ def test_a_channels_phase_is_learned_from_the_count_or_the_energy_of_its_votes()
     assert g.phase_map("Plug") == {}                                 # a site of 2 votes says nothing of a typical one
 
 
+def test_a_meters_run_is_on_while_its_reading_holds_half_of_it():
+    """Net, as read: Kozolec's water pump wandered +184, -17, -78, +74 W - its
+    declared steps never down by half the run - and drifted off unseen; its
+    run held five hours (09-27). A run its meter's own step started is on
+    while the meter reads at least half its size over what it read just
+    before the run started, at the grid's moment - drift it never declared
+    counts - and a circuit's other load starting and stopping meanwhile
+    does not free it."""
+    f = _fleet_with_meters({"Pump": 0.0})
+    pump = f.subs["Pump"].phases["a"]
+    pump.interval = 10.0
+    _declare(pump, (T0 + 1.0, 184.0, None, T0 - 9.0, T0 + 1.0), (T0 + 40.0, -17.0, None, T0 + 30.0, T0 + 40.0),
+             (T0 + 61.0, -78.0, None, T0 + 51.0, T0 + 61.0), (T0 + 93.0, 74.0, None, T0 + 83.0, T0 + 93.0))
+    rows = [(T0 - 60.0, 2.0), (T0 + 1.0, 186.0), (T0 + 40.0, 169.0), (T0 + 61.0, 91.0), (T0 + 93.0, 165.0)]
+    f.sub_rows["Pump"] = {"a": rows}
+    assert f._meter_on("Pump", "c", T0, 188.0, T0 + 120.0)                  # wandering about its size: on
+    rows += [(T0 + 300.0, 120.0), (T0 + 900.0, 60.0), (T0 + 1500.0, 25.0)]   # drifting down, no step declared
+    assert f._meter_on("Pump", "c", T0, 188.0, T0 + 600.0)
+    assert not f._meter_on("Pump", "c", T0, 188.0, T0 + 1000.0)              # under half of it: free
+    rows[-3:] = [(T0 + 300.0, 2186.0), (T0 + 900.0, 165.0)]                  # another load on and off: still on
+    assert f._meter_on("Pump", "c", T0, 188.0, T0 + 1000.0)
+
+
 def test_a_meter_others_hang_under_is_never_guessed_one_device():
     """A meter with meters inside it holds several by definition - Home's
     Hiša, with Blaž PC under it, though 52 % of its sightings are one
@@ -3929,7 +3952,8 @@ def test_a_run_closed_by_a_fall_far_from_its_size_is_booked_at_the_smaller():
 def test_a_meters_run_is_that_meters_until_the_meter_shows_it_stopped():
     """The converse of _meter_stop: a run a meter's own step started is not
     ended by a fall of its size, a held drop, a multi-close or a start of its
-    kind while the meter has declared no fall of half its size since."""
+    kind while the meter, at the grid's moment, still shows half its size
+    over what it read before the run started."""
     f = _fleet_with_meters({"Plug": 0.0})
     f.main.meter_on, f.main.meter_stop = f._meter_on, f._meter_stop
     plug, grid = f.subs["Plug"].phases["a"], f.main.phases["c"]
@@ -3938,10 +3962,13 @@ def test_a_meters_run_is_that_meters_until_the_meter_shows_it_stopped():
     _declare(plug, (T0 + 2.0, 270.0, None, T0 - 8.0, T0 + 2.0, T0 + 12.0))
     o = D._Open(since=T0, watts=270.0, var=None, levels=[(T0, 270.0)], meter="Plug")
     grid.open_edges = [o]
+    grid.last_ts = T0 + 600.0
     assert grid.owned(o)
     assert grid._pair(T0 + 600.0, 268.0, None, 100.0) == []                   # a fall of its size is not its stop
     assert grid.open_edges == [o]
     _declare(plug, (T0 + 900.0, -265.0, None, T0 + 890.0, T0 + 900.0, T0 + 910.0))
+    assert grid.owned(o)                                                       # not yet, at the grid's moment
+    grid.last_ts = T0 + 905.0
     assert not grid.owned(o)                                                   # the plug fell: the run is free again
     assert len(grid._pair(T0 + 905.0, 268.0, None, 100.0)) == 1 and not grid.open_edges
     back = D._Open.of(o.as_list())
