@@ -141,7 +141,33 @@ KOZOLEC = {
     },
 }
 
-SITES = {"home": HOME, "kozolec": KOZOLEC}
+# Andrej's site (2026-10-03): a SolarEdge SE17K with its M1 grid meter, which
+# reads export POSITIVE like Home's (the Energy dashboard declares it
+# inverted), and a go-e charger. Its Energy dashboard reads the charger through
+# OCPP in kW, sent every 30 s to 2 min; the go-e integration's own readings
+# come every ~5 s in W - nrg_11 the total, nrg_7-9 per phase (W), nrg_4-6 (A).
+# The hot-water heat pump (MELCloud Ecodan) has no power meter: its valve,
+# pump and tank are what show when it heats water.
+ANDREJG = {
+    "base": "https://andrejg.duckdns.org:8123",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        "meters": (
+            [f"sensor.solaredge_i2_m1_ac_{k}" for k in
+             ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
+              "voltage_an", "voltage_bn", "voltage_cn", "power_factor_a", "power_factor_b", "power_factor_c")]
+            + ["sensor.solaredge_i2_ac_power"]
+            + [f"sensor.solaredge_i2_ac_{k}" for k in
+               ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]),
+        "chargers": (
+            ["sensor.charger_power_active_import", "sensor.charger_nova_power_active_import"]
+            + [f"sensor.goe_216841_nrg_{n}" for n in (4, 5, 6, 7, 8, 9, 11)]),
+        "heat-pump": ["binary_sensor.tc_3_way_valve", "binary_sensor.tc_water_pump_1", "binary_sensor.tc_boiler",
+                      "sensor.tc_tank_temperature", "sensor.tc_daily_hot_water_energy_consumed"],
+    },
+}
+
+SITES = {"home": HOME, "kozolec": KOZOLEC, "andrejg": ANDREJG}
 
 # Entities renamed on 2026-09-28 (HA_Configs/<site>/rename-plan-2026-09-28*.json).
 # History fetched before then is under the old id and after under the new;
