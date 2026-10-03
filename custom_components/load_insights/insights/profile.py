@@ -416,8 +416,14 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             half_hi = (hi_v - centre) * shrink
             centre += shift
             lo_v, hi_v = centre - half_lo, centre + half_hi
-        hourly.append((t, min(cap, max(0.0, centre))))
-        bands.append((min(cap, max(0.0, lo_v)), min(cap, max(0.0, hi_v))))
+        centre = max(0.0, centre)
+        # The band holds the forecast. The forecast is the slot's weighted
+        # MEAN, so days add up; a rare big hour lifts a mean above the 90th
+        # percentile (Blaz's PC, Saturday 23:00: ten of twelve weeks at
+        # 7-9 Wh, one 215 Wh hour weighing 4 % - mean 17.6 Wh, p90 8.5).
+        lo_v, hi_v = min(lo_v, centre), max(hi_v, centre)
+        hourly.append((t, min(cap, centre)))
+        bands.append((min(cap, max(0.0, lo_v)), min(cap, hi_v)))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(

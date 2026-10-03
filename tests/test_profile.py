@@ -137,6 +137,23 @@ def test_no_hour_is_forecast_above_the_most_the_series_has_done():
     assert math.isclose(fc.tomorrow_kwh, sum(v for t, v in fc.hourly if t.date() == saturday), abs_tol=1e-9)
 
 
+def test_the_band_holds_the_forecast_when_one_big_hour_lifts_the_mean():
+    """Blaz's PC on Saturdays at 23:00: idle at 7 Wh but for one 215 Wh hour
+    long ago, weighing under a tenth. The forecast is the slot's mean, above
+    its 90th percentile; the band's top is now the forecast, its bottom the
+    10th percentile, and the forecast stays the mean."""
+    def pc(t):
+        return 0.215 if (t.weekday(), t.hour) == (5, 23) and t < NOW - timedelta(weeks=7) else 0.007
+    samples = weeks_of(NOW, 8, pc)
+    fc = P.forecast(samples, NOW)
+    t, v, (lo, hi) = [(t, v, b) for (t, v), b in zip(fc.hourly, fc.bands) if (t.weekday(), t.hour) == (5, 23)][0]
+    prof = P.fit_profile(samples, NOW)
+    assert math.isclose(fc.level, 1.0) and math.isclose(v, prof.slot_kwh(t), rel_tol=1e-12), (fc.level, v)
+    assert prof.slot_band(t)[1] < v, (prof.slot_band(t), v)       # the slot: mean above its p90
+    assert hi == v and math.isclose(lo, 0.007), (lo, v, hi)
+    assert all(b[0] <= x <= b[1] for (_, x), b in zip(fc.hourly, fc.bands))
+
+
 def test_weighted_quantile_is_the_inverted_cdf():
     pairs = [(1.0, 10.0), (1.0, 20.0), (1.0, 30.0), (1.0, 40.0)]
     assert P.weighted_quantile(pairs, 0.10) == 10.0
