@@ -215,6 +215,20 @@ def read_csv(paths, keep_coarse=False, say=print):
     return out
 
 
+def carried(before, row) -> bool:
+    """A row that is the recorder's start-of-window copy, not a reading:
+    fetch_history asks for windows that open on a local whole hour (each
+    day's, at 22:00:00 UTC in summer, and each chunk's), and the recorder
+    answers each with the state as of its start, stamped the start - a copy
+    of the last reading. Production drops that row from every window it
+    reads (detect.without_window_start); replayed, ~one an entity a day was
+    fed as a reading production never gets. Every UTC offset is a whole
+    number of quarter hours; every such row in the history repeats the
+    reading before it (2026-10-04: 2,869 at Home, 822 at Kozolec, 603 at
+    Andrej's, none that differ)."""
+    return row[0] % 900.0 == 0.0 and row[1] == before[1]
+
+
 def _series(paths, keep_coarse, scale):
     series = defaultdict(list)
     for eid, ts, raw in _rows(paths):
@@ -226,7 +240,7 @@ def _series(paths, keep_coarse, scale):
     out, coarse = {}, 0
     for eid, rows in series.items():
         rows.sort()
-        rows = [row for i, row in enumerate(rows) if i == 0 or row[0] != rows[i - 1][0]]
+        rows = [row for i, row in enumerate(rows) if i == 0 or row[0] != rows[i - 1][0] and not carried(rows[i - 1], row)]
         if not keep_coarse:
             rows, gone = drop_aggregates(rows)
             coarse += gone
