@@ -561,6 +561,10 @@ Kozolec measures 3 W on its own, so there the floor IS the threshold, but 1
 to 10 W leave its scored loads alone (boiler 338-339); at Home it binds only
 now and then (20 W costs 1.8 points of purity).
 
+Each meter holding several devices has its own list of its own detector's
+signatures (`Fleet.namable`, see *A load inside a meter holding several
+devices is that meter's*); a row is (meter, id), the grid's under "".
+
 A menu row's label is cut at the dialog's width, so each row is two lines:
 the label (`Signature.menu_row`'s headline) and the option's description,
 which wraps - `menu_option_descriptions` in the translations, filled from the
@@ -1020,6 +1024,50 @@ size is seen to run was built and TESTED (`ORPHAN_MARGIN`, since removed): size
 alone cannot tell an orphan from a real long run of a size other loads run
 briefly - Home's dryer lost a third of its sessions. A start should be given
 up on when the phase shows it is no longer running, not by the clock.
+
+**A load inside a meter holding several devices is that meter's (2026-10-03).**
+Anze, naming Mansarda's fridge and freezer: "if a same load is detected by
+both meters, shouldn't the reading collapse into a single device anyway?" A
+parent's run (the grid's, or a meter's others hang under) that a child meter
+holding several devices filed a session of - same moment, same size, its own
+phase (`_session_pairs`) - is that session's signature's (`Session.owner`,
+`Fleet._file_as`): the parent library grows no copy of it. A one-device
+meter's word stays identity, as before. Two exceptions, both so a name stays
+where it was given: the run's device files into a parent signature the user
+named (`Detector.device_signature`), or a name a reset carries looks like the
+run (`Detector.awaited`) - Home's Peč za glino and Inkubator sit in Hiša,
+Kompresor in the Delavnica, all named on the grid; moving a name is Anze's
+call. A name lives on any detector's signature, (meter, id) with the grid
+under "" (`Fleet.names`, `energy_by_name`, `active_by_name`, `rename`,
+`adopt`, `name_descriptors` / `carry_names` - a reset hands a meter's name
+back to that meter's detector only); its energy, hours and running are its
+own meter's sessions', its entities per NAME as ever. Naming
+(`Fleet.namable`): each meter holding several devices offers its own
+signatures under its name, the grid its own under "main"; a signature a
+read meter below saw is not offered where it was seen (that meter offers its
+own, or is the device), nor a meter's whose twin the grid filed under a name.
+Rows show the meter's own channel letters, as the detected-loads sensor's
+`meters` attribute always did (Mansarda's c is the grid's A). Measured, ten
+days 23 Sep - 2 Oct, card against the same code without it: invariance 0
+everywhere; hidden and Kozolec identical; Home fed devices 61.6 / 12.7 ->
+61.1 / 13.1 (Blaževa Soba impurity 24.2 -> 18.5, the office 43.4 / 13.4 ->
+41.7 / 10.4, the workshop boiler 9.2 -> 6.2; Susilna 12.3 -> 14.8), partition
+68.7 / 7.6 either way (Hiša 86.9 / 7.3 -> 86.3 / 5.5, Mansarda 63.4 / 3.8 ->
+59.3 / 3.5, Delavnica 64.8 / 6.0 -> 66.4 / 7.2); circuits devices 28.5 / 16.2
+-> 28.5 / 15.5, partition 58.4 / 8.7 -> 58.3 / 7.8; home-hisa fed 6.7 / 7.9
+-> 10.9 / 5.0. Fed, 3,768 grid runs (96 kWh) became the meters' own, the grid
+library 255 -> 235 signatures; the grid's signatures placed at a meter
+holding several (Hiša, Mansarda, and the four plugs the bench's ten days
+guess so) 78 (45 namable, 139 kWh) -> 47 (17, 41.5 kWh) - Mansarda's 65 W
+fragment (206 runs; Home's live #929) folds into the freezer, its 50 W one
+into the fridge. Those left are not shown: 69 % of their runs have a session
+of the circuit's own within 15 s, 58 % of their energy one of their size -
+the same loads, seen worse where the pairing failed. Open, a guess not
+traced: a grid run the circuit filed no session of no longer files with the
+ones it did (they no longer vote for its device's signature) - likely most
+of Mansarda's 4 points of capture and Susilna's 2.5 of impurity. A device
+whose runs a meter's signature took taking the rest too would be a second
+mechanism; not built.
 
 **A sub-meter's phase labels need not be the grid connection's - fixed
 (gen 14).** Home's attic 3EM ("Mansarda") calls the grid's C "b" and its A

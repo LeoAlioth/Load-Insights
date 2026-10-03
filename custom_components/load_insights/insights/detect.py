@@ -905,6 +905,10 @@ class Session:
     pair: Optional[Tuple[Optional[int], Optional[int]]] = None
     # ...and a run merged across phases, every leg's
     legs: List[tuple] = field(default_factory=list)
+    # (meter, its own session) where a meter holding several devices saw this
+    # run of its parent's: the run is that session's signature's, and the
+    # parent files none of its own - see Fleet._file_as
+    owner: Optional[tuple] = None
 
     @property
     def confidence(self) -> float:
@@ -1313,6 +1317,19 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     return total / 3600.0
 
 
+def ref_label(ref: Tuple[str, int]):
+    """A signature's (meter, id) as the sensors show it: the grid's its id,
+    as it always was, a meter's "Mansarda#11"."""
+    return f"{ref[0]}#{ref[1]}" if ref[0] else ref[1]
+
+
+def _described(orphan: dict) -> "Signature":
+    """A carried name's description as a signature to compare with (alike)."""
+    return Signature(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
+                     duration_s=orphan.get("duration_s") or 0.0, pf=orphan.get("pf"), count=1,
+                     first_seen=0.0, last_seen=0.0)
+
+
 def names_in_store(raw: dict) -> List[dict]:
     """Every named signature in a stored library, as a description.
 
@@ -1325,11 +1342,9 @@ def names_in_store(raw: dict) -> List[dict]:
     it: it then shows on the sensor as still awaiting its load, which is a
     great deal better than disappearing (2026-09-22).
     """
-    out: list = []
-    try:
-        fleet = raw.get("fleet") or {}
-        main = fleet.get("main") or raw.get("detector") or {}
-        for sig in main.get("signatures") or []:
+    def named(det: dict, tag: dict) -> list:
+        out: list = []
+        for sig in det.get("signatures") or []:
             name = sig.get("name")
             if not name:
                 continue
@@ -1338,10 +1353,20 @@ def names_in_store(raw: dict) -> List[dict]:
                         "phases": sig.get("phases") or "",
                         "power": dict(power) if isinstance(power, dict) else {},
                         "duration_s": sig.get("duration_s") or 0.0,
-                        "pf": sig.get("pf")})
-        out += [dict(o) for o in main.get("orphan_names") or [] if isinstance(o, dict) and o.get("name")]
+                        "pf": sig.get("pf"), **tag})
+        return out + [{**o, **tag} for o in det.get("orphan_names") or [] if isinstance(o, dict) and o.get("name")]
+    try:
+        fleet = raw.get("fleet") or {}
+        out = named(fleet.get("main") or raw.get("detector") or {}, {})
     except (AttributeError, TypeError, ValueError):
         return []
+    # ...and each meter's, carried with its meter (Fleet.carry_names)
+    subs = fleet.get("subs")
+    for meter, det in sorted(subs.items()) if isinstance(subs, dict) else ():
+        try:
+            out += named(det, {"meter": meter})
+        except (AttributeError, TypeError, ValueError):
+            pass
     return out
 
 
@@ -3109,9 +3134,10 @@ class Signature:
         # levels and the size the guess rests on
         return f"{line} - {guess.short}" if guess.kind else line
 
-    def detail(self, tz, parents: Optional[Dict[str, Optional[str]]] = None) -> str:
+    def detail(self, tz, parents: Optional[Dict[str, Optional[str]]] = None, meter: Optional[str] = None) -> str:
         """Markdown for the naming form, once one is picked: what it is, when
-        it runs, where it is, and how sure each of those is."""
+        it runs, where it is, and how sure each of those is - a ``meter``'s
+        own signature inside that meter, its phases the meter's channels."""
         lines = [f"**{self.describe(tz)}**", ""]
         bars = hour_histogram(self.hour_wh)
         if bars:
@@ -3131,7 +3157,8 @@ class Signature:
                          f"(confidence {guess.confidence:.2f}).")
         elif guess.because:
             lines.append(guess.because[0].capitalize() + ".")
-        lines.append(f"Where: {describe_location(self.locations, self.count, parents, self.phases)}.")
+        where = {**self.locations, meter: self.count} if meter else self.locations
+        lines.append(f"Where: {describe_location(where, self.count, parents, self.phases)}.")
         clock = " It comes back on a clock." if self.regular else ""
         lines.append(f"Confidence that this is a real repeating load: {self.evidence:.2f}.{clock}")
         if tz is not None and self.last_seen > self.first_seen:
@@ -4952,6 +4979,25 @@ class Detector:
         """Take names into a fresh library."""
         self.orphan_names = [dict(d) for d in descriptors if d.get("name")]
 
+    def awaited(self, s: Session) -> bool:
+        """Does a name a reset carries look like this run - so that filed
+        here, its signature takes the name back (_reclaim)?"""
+        if not self.orphan_names:
+            return False
+        noise = max((self.phases[p].noise for p in s.phases if p in self.phases), default=MIN_NOISE_W)
+        probe = Signature(id=-1, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s, pf=s.pf,
+                          count=1, first_seen=s.start, last_seen=s.start)
+        return any(_described(o).alike(probe, noise) for o in self.orphan_names)
+
+    def device_signature(self, s: Session) -> Optional["Signature"]:
+        """The signature this run's device would take it into, filed now -
+        None for a device not seen yet (see _device_signature)."""
+        device = self.device_of(s)
+        if device is None:
+            return None
+        found = self._input_context(s)
+        return self._device_signature(device, found[0] if found else None, (), s.phases)
+
     def _reclaim(self, sig: "Signature", noise_w: float) -> None:
         """Give a rebuilt signature back the name a reset took from it.
 
@@ -4963,11 +5009,7 @@ class Detector:
         if sig.name or not self.orphan_names:
             return
         for i, orphan in enumerate(self.orphan_names):
-            stub = Signature(id=-1, phases=orphan.get("phases") or "",
-                             power=dict(orphan.get("power") or {}),
-                             duration_s=orphan.get("duration_s") or 0.0,
-                             pf=orphan.get("pf"), count=1, first_seen=0.0, last_seen=0.0)
-            if stub.alike(sig, noise_w):
+            if _described(orphan).alike(sig, noise_w):
                 sig.name = orphan.get("name")
                 self.orphan_names.pop(i)
                 self._touch(sig.id)
@@ -6052,15 +6094,32 @@ class Fleet:
         return min(due, m.end + MATCH_PATIENCE_S)
 
     def _file_as(self, m: Session, name: str, s: Session) -> None:
-        """File the house's session ``m`` as the sub-meter session ``s`` says."""
+        """File the house's session ``m`` as the sub-meter session ``s`` says:
+        a one-device meter's sessions pick the signature its device's went
+        to (identity). A meter holding several is where the load lives (Anze,
+        2026-10-03: "if a same load is detected by both meters, shouldn't the
+        reading collapse into a single device anyway?"): it saw the load on
+        its own circuit, so the run is its session's signature's (``owner``)
+        and this library grows no copy of it - unless the user named the
+        signature the run's device files into here, or a name a reset carries
+        looks like the run: a name stays where it was given."""
         det = self.subs.get(name)
         sub_sig = det.signature_of(s) if det is not None else None
-        prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
-        if not self.holds_one_device(name):  # a circuit meter holds many loads: its sessions do not decide
-            prefer = None
+        if self.holds_one_device(name):
+            prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
+        else:
+            here = self.main.device_signature(m)
+            prefer = here.id if here is not None and here.name else None
+            if prefer is None and not self.main.awaited(m):
+                self._meter_owns(m, name, s)
+                return
         sig = self._place(m, name, prefer)
         if sig is not None and sub_sig is not None:
             self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
+
+    def _meter_owns(self, m: Session, name: str, s: Session) -> None:
+        """``m`` is meter ``name``'s session ``s``'s load's - see _file_as."""
+        m.owner = (name, s)
 
     def sub_quantum(self, name: str) -> float:
         """What a device meter can RESOLVE, as its own detector measured it
@@ -6774,6 +6833,106 @@ class Fleet:
         sig.locations[name] = sig.locations.get(name, 0) + 1
         return True
 
+    # ------------------------------------------------ names: any meter's signature may wear one
+    # A signature is (meter, id), the grid's under "": a load inside a meter
+    # holding several devices is that meter's own signature (_file_as), and
+    # named there it is a named load like any other (Anze, 2026-10-03).
+    def detectors(self) -> List[Tuple[str, "Detector"]]:
+        """Every meter's detector, the grid's under "" first, then by name."""
+        return [("", self.main)] + sorted(self.subs.items(), key=lambda kv: kv[0])
+
+    def signature(self, ref: Tuple[str, int]) -> Optional["Signature"]:
+        """The signature ``ref`` is now, merges followed; None once gone."""
+        det = self._det(ref[0])
+        return det._sig(det._current(ref[1])) if det is not None else None
+
+    def rename(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
+        det = self._det(ref[0])
+        return det is not None and det.rename(ref[1], name)
+
+    def adopt(self, ref: Tuple[str, int]) -> Optional[str]:
+        det = self._det(ref[0])
+        return det.adopt(ref[1]) if det is not None else None
+
+    def predecessor_of(self, ref: Tuple[str, int]) -> Optional["Signature"]:
+        det = self._det(ref[0])
+        return det.predecessor_of(ref[1]) if det is not None else None
+
+    def names(self) -> Dict[str, List[Tuple[str, int]]]:
+        """name -> every (meter, id) wearing it: one device, wherever it was seen."""
+        out: Dict[str, List[Tuple[str, int]]] = {}
+        for meter, det in self.detectors():
+            for name, ids in det.names().items():
+                out.setdefault(name, []).extend((meter, i) for i in ids)
+        return out
+
+    def _summed(self, per_detector) -> Dict:
+        out: Dict = {}
+        for _, det in self.detectors():
+            for k, v in per_detector(det).items():
+                out[k] = out.get(k, 0.0) + v
+        return out
+
+    def energy_by_name(self) -> Dict[str, float]:
+        """Wh each NAME has used, each signature's from its own meter's sessions."""
+        return self._summed(lambda d: d.energy_by_name())
+
+    def hourly_by_name(self, name: str) -> Dict[int, float]:
+        return dict(sorted(self._summed(lambda d: d.hourly_by_name(name)).items()))
+
+    def active_by_name(self, now_ts: float) -> Dict[str, float]:
+        """Watts on right now per NAME, each read off its own meter."""
+        return self._summed(lambda d: d.active_by_name(now_ts))
+
+    def name_descriptors(self) -> List[dict]:
+        """Every name, as a reset carries it (Detector.name_descriptors) - a
+        meter's with its meter, whose detector alone may take it back."""
+        return self.main.name_descriptors() + [{**o, "meter": n} for n, det in sorted(self.subs.items())
+                                               for o in det.name_descriptors()]
+
+    def carry_names(self, descriptors: List[dict]) -> None:
+        """Take names into a fresh fleet, each to its own meter's detector."""
+        self.main.carry_names([d for d in descriptors if not d.get("meter")])
+        for n in sorted({d["meter"] for d in descriptors if d.get("meter")}):
+            self.subs.setdefault(n, Detector()).carry_names([d for d in descriptors if d.get("meter") == n])
+
+    def namable(self, one_device, min_count: int, min_wh: float) -> Dict[str, List[Tuple[Tuple[str, int], "Signature"]]]:
+        """What a person could name, by where it lives - ``where`` -> [((meter,
+        id), signature)], biggest first by what it costs and whether its row
+        says enough to recognise it (Anze, 2026-09-18): not named yet, seen at
+        least ``min_count`` times and used ``min_wh`` (Anze, 2026-09-17: "as
+        for signatures only seen once, dont show them") - or what a named one
+        may have become, whatever its size.
+
+        Each meter offers its own signatures under its name, the grid its own
+        under "main": a load a meter below saw lives there - one holding one
+        device (``one_device``) IS that device, one holding several offers it
+        from its own library, seen alone on its circuit (Anze, 2026-10-03:
+        "shouldn't we display the most reliable sources"). A switch's stays
+        with the switch. A meter's signature whose runs the grid files under a
+        name the user gave there is that named load already (_file_as)."""
+        groups: Dict[str, list] = {}
+        for meter, det in self.detectors():
+            if meter and one_device(meter):
+                continue              # its own readings are that device (Anze, 2026-09-28)
+            twins = (self.identity.get(meter) or {}) if meter else {}
+            for s in det.signatures:
+                heir = det.predecessor_of(s.id) is not None
+                if s.name or not (heir or (s.count >= min_count and s.energy_wh >= min_wh)):
+                    continue
+                twin = self.signature(("", twins[str(s.id)])) if str(s.id) in twins else None
+                if twin is not None and twin.name:
+                    continue
+                where = most_specific(s.locations, s.count, self.parents)
+                if where == "main":
+                    where = meter or "main"
+                elif where in self.subs:
+                    continue          # a meter below that is read: its own library, or the device
+                groups.setdefault(where, []).append(((meter, s.id), s))
+        for rows in groups.values():
+            rows.sort(key=lambda r: (-(r[1].energy_wh * (0.45 + 0.55 * r[1].recognisable)), -r[1].evidence))
+        return groups
+
     def to_dict(self) -> dict:
         return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()}, **self._state()}
 
@@ -6999,7 +7158,7 @@ def clears_for_naming(worth: Sequence["Signature"], min_evidence: float,
     promise there is something to lengthen INTO, and that promise was reading
     as "this is all there is"."""
     clear = [s for s in worth
-             if s.evidence >= min_evidence or s.name or (is_heir and is_heir(s.id))]
+             if s.evidence >= min_evidence or s.name or (is_heir and is_heir(s))]
     if len(clear) < min_rows and len(clear) != len(worth):
         rest = sorted((s for s in worth if s not in clear), key=lambda s: -s.evidence)
         clear = clear + rest[:min_rows - len(clear)]

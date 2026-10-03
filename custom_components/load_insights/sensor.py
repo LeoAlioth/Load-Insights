@@ -24,7 +24,7 @@ from homeassistant.util import dt as dt_util
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
-                              most_specific, suggest_levels)
+                              most_specific, ref_label, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import Forecast
@@ -62,7 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
-    for n in sorted(detection.detector.names()):
+    for n in sorted(detection.fleet.names()):
         if detection.metered_device(n):
             # named after a meter holding one device, it IS that device:
             # the meter's readings and its forecast stand for it, and
@@ -73,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             continue
         entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
     add(entities)
-    known = set(detection.detector.names())
+    known = set(detection.fleet.names())
 
     @callback
     def _follow_names() -> None:
@@ -87,7 +87,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         going away, and leave a stale twin the next one refuses."""
         if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
             return
-        new = [n for n in detection.detector.names() if n not in known]
+        new = [n for n in detection.fleet.names() if n not in known]
         if not new:
             return
         known.update(new)
@@ -441,7 +441,8 @@ class DetectedLoadsSensor(_DetectionBase):
             ],
             "meters": {
                 name: {
-                    "signatures": [{"id": x.id, "description": x.describe(tz), "count": x.count} for x in sorted(d.signatures, key=lambda y: -y.count)],
+                    "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
+                                   for x in sorted(d.signatures, key=lambda y: -y.count)],
                     "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
                     "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
                     "active": [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])} for a in d.active(now)],
@@ -449,7 +450,7 @@ class DetectedLoadsSensor(_DetectionBase):
                 for name, d in self._runner.fleet.subs.items()
             },
             "meter_hierarchy": self._runner.parents,
-            "named_loads": self._runner.detector.names(),
+            "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
             # names whose signature a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
@@ -662,7 +663,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         return self._reading
 
     def _total(self) -> float:
-        return self._runner.detector.energy_by_name().get(self._name, 0.0) / 1000.0
+        return self._runner.fleet.energy_by_name().get(self._name, 0.0) / 1000.0
 
     @callback
     def _handle_coordinator_update(self) -> None:

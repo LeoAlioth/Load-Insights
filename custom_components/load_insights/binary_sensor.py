@@ -11,13 +11,14 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .detection import DetectionRunner
+from .insights.detect import ref_label
 from .sensor import _child_device, _forget
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     runner: DetectionRunner = entry.runtime_data.runner
     entities = []
-    for name in sorted(runner.detector.names()):
+    for name in sorted(runner.fleet.names()):
         if runner.metered_device(name):          # that device: see the sensor platform
             _forget(hass, "binary_sensor", _running_uid(entry.entry_id, name))
         else:
@@ -46,16 +47,17 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._name in self._runner.detector.active_by_name(dt_util.utcnow().timestamp())
+        return self._name in self._runner.fleet.active_by_name(dt_util.utcnow().timestamp())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        det = self._runner.detector
-        ids = det.names().get(self._name, [])
-        sigs = [s for s in det.signatures if s.id in ids]
+        fleet = self._runner.fleet
+        refs = fleet.names().get(self._name, [])
+        sigs = [s for s in (fleet.signature(r) for r in refs) if s is not None]
         return {
-            "signatures": ids,
-            "watts": round(det.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0)),
+            # the grid's by id, a meter's as "Mansarda#11"; its phases are its own meter's
+            "signatures": [ref_label(r) for r in refs],
+            "watts": round(fleet.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0)),
             "sessions_seen": sum(s.count for s in sigs),
             "phases": "".join(sorted({p for s in sigs for p in s.phases})).upper(),
         }

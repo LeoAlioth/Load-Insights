@@ -563,10 +563,17 @@ def energy(site: str, folder: str, dials: list) -> dict:
         for names in tables.values():
             names.append(name)
     by_id = {x.id: x for x in det.signatures}
+    by_id.update({f"{n}#{x.id}": x for n, d in fleet.subs.items() for x in d.signatures})   # a meter's own, see sid_of
 
     def sid_of(s):
         # the signature it stands in now, merges followed; one since evicted
         # still counts - its runs were detected and their energy written
+        if s.owner:                     # a meter's own signature's (Session.owner): "Mansarda#11"
+            name, own = s.owner
+            while own.owner:            # ...or the meter's own run is a meter's inside it
+                name, own = own.owner
+            cur = f"{name}#{fleet.subs[name]._current(own.signature_id)}" if own.signature_id is not None else None
+            return cur if cur in by_id else f"{name}#gone {own.signature_id}"
         cur = det._current(s.signature_id) if s.signature_id is not None else None
         return cur if cur in by_id else f"gone {s.signature_id}"
     sids = [sid_of(s) for s in filed]

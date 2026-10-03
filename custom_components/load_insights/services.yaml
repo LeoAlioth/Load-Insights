@@ -35,6 +35,15 @@ name_load:
         number:
           min: 0
           mode: box
+    meter:
+      name: Meter
+      description: >-
+        For a load a meter holding several devices saw - its own detector's
+        id, as the detected loads sensor lists it under that meter (Mansarda's
+        #11). Empty for one the grid saw.
+      required: false
+      selector:
+        text:
     name:
       name: Name
       description: What to call it. Loads given the same name are one device. Empty clears the name.
