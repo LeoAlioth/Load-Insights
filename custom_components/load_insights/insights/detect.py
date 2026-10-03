@@ -6092,11 +6092,15 @@ class Fleet:
         """What channel ``ch`` of meter ``name`` (a phase of the grid's, under
         "") read: in force at ``t`` (``side`` 0) - a silence being the value
         held, before its first row kept the value carried in (_sub_seed) -,
-        just before ``t`` (-1), or first at or after it (1); None without."""
+        just before ``t`` (-1), or first at or after it and not past the
+        clock (1); None without."""
         rows = (self.sub_rows.get(name) or {}).get(ch) or []
         if side > 0:
+            # ...never past the clock: the rows run to the pass's end, and a
+            # reading the clock has not reached would be there in one slicing
+            # and not in another (the unify audit, 2026-10-03)
             k = bisect.bisect_left(rows, (t, -math.inf))
-            return rows[k][1] if k < len(rows) else None
+            return rows[k][1] if k < len(rows) and rows[k][0] <= self._now else None
         k = bisect.bisect_left(rows, (t, -math.inf)) if side < 0 else bisect.bisect_right(rows, (t, math.inf))
         if k:
             return rows[k - 1][1]
