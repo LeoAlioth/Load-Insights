@@ -1,5 +1,6 @@
 """Sessions, transitions, multi-phase merging, signatures, resumability."""
 import json
+import bisect
 import random
 import sys
 from pathlib import Path
@@ -3202,29 +3203,67 @@ def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
     assert old in st.open_edges and pc in st.open_edges and rest not in st.open_edges
 
 
-def test_a_meters_total_below_a_runs_opening_size_ends_the_run_it_started():
-    """Home 09-24 05:47 UTC: Mansarda's ramping load (its channel carrying
-    grid A 88 -> 303 -> 446 W in 15 s) opened a 279 W run at the grid's first
-    step; Mansarda's ramped rise did not match it, so it was nobody's, and its
-    stop (-385 on the grid, Mansarda down to 20 W) paired with nothing that
-    size: the run went on for 37 minutes, and at 03:41 for 49. A run cannot
-    still be running on less than it started with (Anze): a meter whose own
-    rises at the start account for it ends it once its channel reads below
-    the run's opening size - its reading, kept per channel. A fall of another
-    of its loads, leaving it above, does not."""
-    f = _fleet_with_meters({"Mansarda": 0.0})
-    f.single = {"Mansarda": False}
-    mans = f.subs["Mansarda"].phases["a"]
-    mans.interval = 4.9
-    _declare(mans, (T0 + 2.0, 215.0, None, T0 - 3.0, T0 + 2.0), (T0 + 7.0, 143.0, None, T0 + 3.0, T0 + 7.0),
-             (T0 + 2219.0, -426.0, None, T0 + 2214.0, T0 + 2219.0))
-    f.sub_rows["Mansarda"] = {"a": [(T0 - 30.0, 88.0), (T0 + 2.0, 303.0), (T0 + 7.0, 446.0), (T0 + 2219.0, 20.0)]}
-    run = D._Open(since=T0, watts=279.0, var=None, levels=[(T0, 279.0)])
-    older = D._Open(since=T0 - 3600.0, watts=400.0, var=None, levels=[(T0 - 3600.0, 400.0)])
-    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is run
-    f._stops_used = {}
-    f.sub_rows["Mansarda"]["a"][-1] = (T0 + 2219.0, 300.0)                # still above the run: not its stop
-    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+def _washer_dryer_day():
+    """Home 24 Sep 03:41 UTC in outline: the AEG heat-pump washer-dryer under
+    Mansarda drying - each cycle a ~20 s ramp, ~13 min on, a couple off. Its
+    panel's channel C (= grid A, a reading every 5 s) 157 -> 404 -> 445 ->
+    465 -> 483 W over 21 s, ~487 at the end, 87 after; the next start 94 ->
+    277 -> 397 -> 435 -> 465. The grid (a reading every 2 s) is 386 W of other
+    loads plus what the panel's channel truly draws, 359 after the first
+    cycle. (grid rows, panel rows, start 1, end 1, start 2, end 2, end)."""
+    rnd = random.Random(17)
+    T = T0 + 3 * 3600.0
+    s1, e1, s2, e2 = T, T + 783.0, T + 902.0, T + 1700.0
+    pts = [(-1e9, 157.0), (s1 - 0.01, 157.0), (s1, 180.0), (s1 + 2, 337.0), (s1 + 4, 404.0), (s1 + 6, 418.0),
+           (s1 + 10, 445.0), (s1 + 14, 465.0), (s1 + 25, 483.0), (e1 - 0.01, 487.0), (e1, 87.0),
+           (s2 - 0.01, 94.0), (s2, 150.0), (s2 + 2, 277.0), (s2 + 4, 350.0), (s2 + 8, 397.0), (s2 + 13, 435.0),
+           (s2 + 23, 465.0), (e2 - 0.01, 470.0), (e2, 90.0), (1e12, 90.0)]
+
+    def draw(t):
+        k = bisect.bisect_right([x for x, _ in pts], t) - 1
+        (x0, y0), (x1, y1) = pts[k], pts[k + 1]
+        return y0 if x1 == x0 or y1 == y0 or x1 - x0 > 60 else y0 + (y1 - y0) * (t - x0) / (x1 - x0)
+    grid, panel = [], []
+    t = T - 1800.0
+    while t < T + 2400.0:
+        grid.append((t, round((386.0 if t < T + 850.0 else 359.0) + draw(t) + rnd.uniform(-2, 2), 1)))
+        t += 2.0
+    t = T - 1800.0 + 1.0
+    while t < T + 2400.0:
+        panel.append((t, round(draw(t) + rnd.uniform(-1, 1), 1)))
+        t += 5.0
+    return {"a": grid}, {"c": panel}, s1, e1, s2, e2, T + 2400.0
+
+
+def test_a_ramp_two_meters_declared_over_different_stretches_is_placed_by_the_grids_change_over_both():
+    """Home 24 Sep 05:41 local: the washer-dryer's ramp - the grid declared
+    +261 at its first plateau, Mansarda's channel +313 once settled, beyond
+    each other's tolerance, so nobody's: the run ran on 49 minutes past its
+    end at 05:54:48. Over both steps' window the grid read 543 W before and
+    ~850 after, +307: the panel's step agrees with that, the run is placed at
+    Mansarda (its own), booked at the ramp's whole size, and Anze's rule ends
+    it when the panel reads below it - at 05:54:48. The next start the same."""
+    rows, panel, s1, e1, s2, e2, end = _washer_dryer_day()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Mansarda"] = [[1.0, 15.0]] * D.LAG_MIN_SAMPLES
+    fleet.phase_votes["Mansarda"] = {"c": {"a": D.PHASE_MAP_MIN_VOTES}}
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    cuts = [s1 + 400.0, s2 + 400.0]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes(panel, cuts, end)):
+        fleet.process(part, {"Mansarda": sub}, now_ts=e, single={"Mansarda": False})
+    got = sorted(((round(s.start - s1), round(s.end - s1), round(s.energy_wh * 3600.0 / s.duration_s),
+                   (fleet.main.signature_of(s).locations.get("Mansarda", 0) if fleet.main.signature_of(s) else 0))
+                  for s in filed if s.duration_s > 120.0), key=lambda g: g[0])
+    first = [g for g in got if abs(g[0]) <= 5]
+    second = [g for g in got if abs(g[0] - (s2 - s1)) <= 5]
+    assert len(first) == 1 and abs(first[0][1] - (e1 - s1)) <= 10 and 280 <= first[0][2] <= 360 and first[0][3], got
+    assert len(second) == 1 and abs(second[0][1] - (e2 - s1)) <= 10 and 320 <= second[0][2] <= 410 and second[0][3], got
 
 
 def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():
