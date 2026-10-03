@@ -46,7 +46,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.model import LOAD_PREFIX, SiteModel
+from .insights.model import LOAD_PREFIX, SiteModel, scoped
 from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
 from .insights.series import combine, coverage, subtract_all
@@ -208,13 +208,28 @@ class InsightsCoordinator(DataUpdateCoordinator):
         complete_since, missing = coverage(series, remainder_ids) if remainder_ids else (None, [])
         labels = {d.energy: d.label for d in site.devices}
 
+        # An input linked to devices acts on those, the meters they sit in
+        # and the site (model.scoped); one linked to nothing, on everything.
+        links = opts.get(CONF_INPUT_LINKS) or {}
+        parent = {d.energy: d.included_in for d in site.devices}
+
+        def within(target: str) -> List[str]:
+            """The device a link names, and every device it sits inside."""
+            cur = (named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
+                   if target.startswith(LOAD_PREFIX) else target)
+            out: List[str] = []
+            while cur and cur not in out:
+                out.append(cur)
+                cur = parent.get(cur)
+            return out
+
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
-        fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
-            forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None, cal_signals or None
+        fit = lambda rows, signals: self.hass.async_add_executor_job(  # noqa: E731
+            forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None, signals or None
         )
-        cons_fc = await fit(consumption)
-        rem_fc = await fit(remainder) if remainder else None
+        cons_fc = await fit(consumption, cal_signals)
+        rem_fc = await fit(remainder, scoped(cal_signals, links, within, REMAINDER_KEY)) if remainder else None
 
         # --- scoring: settle what has arrived, record what is now predicted ---
         ledgers = await self._load_ledgers()
@@ -235,21 +250,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # other linked to it (fit_joint keeps each only if it adds) - and its
         # parents' too, which the device is part of (Anze, 2026-09-28: are
         # they "still taken into account by all of the parent meters?"). The
-        # site takes every input, linked or not, among its signals above;
-        # those are every device's as well.
-        links = opts.get(CONF_INPUT_LINKS) or {}
-        parent = {d.energy: d.included_in for d in site.devices}
-
-        def within(target: str) -> List[str]:
-            """The device a link names, and every device it sits inside."""
-            cur = (named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
-                   if target.startswith(LOAD_PREFIX) else target)
-            out: List[str] = []
-            while cur and cur not in out:
-                out.append(cur)
-                cur = parent.get(cur)
-            return out
-
+        # site takes every input, linked or not, among its signals above; a
+        # device, the unlinked ones and those linked to it or to a device
+        # inside it.
         linked: Dict[str, List[str]] = {}
         for eid in input_entities:
             if eid.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
@@ -274,7 +277,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 numbers.append((st_entity, means[st_entity], _read_number(self.hass, [st_entity])))
             fc = await self.hass.async_add_executor_job(
                 forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
-                cal_signals or None, [h for _, h, _ in numbers] or None, [v for _, _, v in numbers] or None,
+                scoped(cal_signals, links, within, d.energy) or None,
+                [h for _, h, _ in numbers] or None, [v for _, _, v in numbers] or None,
             )
             device_fc[d.energy] = fc
             if numbers:

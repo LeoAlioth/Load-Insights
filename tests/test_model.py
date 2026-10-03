@@ -1,5 +1,6 @@
 """The site model reads every shape the Energy dashboard has had."""
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -224,6 +225,47 @@ def test_a_metering_devices_own_temperature_goes_to_that_device_only():
     got = sorted(model.suggest_inputs(targets, candidates, [], own, devices))
     assert got == [("sensor.boiler_tank", "sensor.boiler_energy"),
                    ("sensor.room_t", "sensor.boiler_energy"), ("sensor.room_t", "sensor.charger_energy")], got
+
+
+def test_a_linked_input_acts_on_its_device_the_meters_around_it_and_the_site():
+    """Home's links (3 Oct): the workshop boiler's tank temperature acts on
+    the boiler, on Delavnica it sits in and on the site - no longer on
+    Blaz's PC; a link to a named load follows it to its meter; the motion
+    sensor and the calendar, linked to nothing, act everywhere; the
+    unmetered remainder takes only those."""
+    parent = {"sensor.blaz_pc_energy": "sensor.hisa_total_active_energy",
+              "sensor.pec_za_glino_energy": "sensor.hisa_total_active_energy",
+              "sensor.workshop_boiler_energy": "sensor.workshop_total_energy",
+              "sensor.bathroom_fan_switch_0_energy": "sensor.mansarda_total_active_energy"}
+    named = {"load:Kiln": "sensor.pec_za_glino_energy"}
+
+    def within(target):
+        cur, out = named.get(target, target), []
+        while cur and cur not in out:
+            out.append(cur)
+            cur = parent.get(cur)
+        return out
+    links = {"sensor.workshop_boiler_temperature_1": ["sensor.workshop_boiler_energy"],
+             "binary_sensor.bathroom_presence_occupancy": ["sensor.bathroom_fan_switch_0_energy"],
+             "sensor.kiln_thermocouple": ["load:Kiln"],
+             "binary_sensor.entrance_sensor_occupancy": []}
+    signals = [types.SimpleNamespace(entity=e) for e in (
+        "calendar.workday_sensor_calendar", "binary_sensor.living_room_living_area_motionaware_area",
+        "binary_sensor.entrance_sensor_occupancy", "sensor.workshop_boiler_temperature_1",
+        "binary_sensor.bathroom_presence_occupancy", "sensor.kiln_thermocouple")]
+    everywhere = ["calendar.workday_sensor_calendar", "binary_sensor.living_room_living_area_motionaware_area",
+                  "binary_sensor.entrance_sensor_occupancy"]
+
+    def takes(stat=None):
+        return [g.entity for g in model.scoped(signals, links, within, stat)]
+    assert takes() == [g.entity for g in signals]
+    assert takes("sensor.blaz_pc_energy") == everywhere
+    assert takes("remainder") == everywhere
+    assert takes("sensor.workshop_boiler_energy") == everywhere + ["sensor.workshop_boiler_temperature_1"]
+    assert takes("sensor.workshop_total_energy") == everywhere + ["sensor.workshop_boiler_temperature_1"]
+    assert takes("sensor.mansarda_total_active_energy") == everywhere + ["binary_sensor.bathroom_presence_occupancy"]
+    assert takes("sensor.hisa_total_active_energy") == everywhere + ["sensor.kiln_thermocouple"]
+    assert takes("sensor.pec_za_glino_energy") == everywhere + ["sensor.kiln_thermocouple"]
 
 
 if __name__ == "__main__":
