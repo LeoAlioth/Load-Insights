@@ -1,5 +1,6 @@
 """Sessions, transitions, multi-phase merging, signatures, resumability."""
 import json
+import bisect
 import random
 import sys
 from pathlib import Path
@@ -3129,12 +3130,12 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
         t = T0 + 300.0 + k * 600.0
         rows += [(t, 800.0), (t + 70.0, 0.5)]
     rows.append((T0 + 3500.0, 0.6))
-    f.sub_rows["Hidrofor"] = rows
+    f.sub_rows["Hidrofor"] = {"a": rows}
     f._now = T0 + 3600.0
     run = D.Session(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
     assert 0.65 <= D.energy_between(rows, run.start, run.end) / run.energy_wh <= 1.35   # the energies agree
     assert not f._energy_pairs([run])                                     # but the plug held at its start
-    f.sub_rows["Hidrofor"] = [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]   # a plug that started it
+    f.sub_rows["Hidrofor"] = {"a": [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]}   # a plug that started it
     _declare(f.subs["Hidrofor"].phases["a"], (T0 + 2.0, 84.5, None, T0 - 8.0, T0 + 2.0))
     assert f._energy_pairs([run])
 
@@ -3202,29 +3203,123 @@ def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
     assert old in st.open_edges and pc in st.open_edges and rest not in st.open_edges
 
 
+def _washer_dryer_day():
+    """Home 24 Sep 03:41 UTC in outline: the AEG heat-pump washer-dryer under
+    Mansarda drying - each cycle a ~20 s ramp, ~13 min on, a couple off. Its
+    panel's channel C (= grid A, a reading every 5 s) 157 -> 404 -> 445 ->
+    465 -> 483 W over 21 s, ~487 at the end, 87 after; the next start 94 ->
+    277 -> 397 -> 435 -> 465. The grid (a reading every 2 s) is 386 W of other
+    loads plus what the panel's channel truly draws, 359 after the first
+    cycle. (grid rows, panel rows, start 1, end 1, start 2, end 2, end)."""
+    rnd = random.Random(17)
+    T = T0 + 3 * 3600.0
+    s1, e1, s2, e2 = T, T + 783.0, T + 902.0, T + 1700.0
+    pts = [(-1e9, 157.0), (s1 - 0.01, 157.0), (s1, 180.0), (s1 + 2, 337.0), (s1 + 4, 404.0), (s1 + 6, 418.0),
+           (s1 + 10, 445.0), (s1 + 14, 465.0), (s1 + 25, 483.0), (e1 - 0.01, 487.0), (e1, 87.0),
+           (s2 - 0.01, 94.0), (s2, 150.0), (s2 + 2, 277.0), (s2 + 4, 350.0), (s2 + 8, 397.0), (s2 + 13, 435.0),
+           (s2 + 23, 465.0), (e2 - 0.01, 470.0), (e2, 90.0), (1e12, 90.0)]
+
+    def draw(t):
+        k = bisect.bisect_right([x for x, _ in pts], t) - 1
+        (x0, y0), (x1, y1) = pts[k], pts[k + 1]
+        return y0 if x1 == x0 or y1 == y0 or x1 - x0 > 60 else y0 + (y1 - y0) * (t - x0) / (x1 - x0)
+    grid, panel = [], []
+    t = T - 1800.0
+    while t < T + 2400.0:
+        grid.append((t, round((386.0 if t < T + 850.0 else 359.0) + draw(t) + rnd.uniform(-2, 2), 1)))
+        t += 2.0
+    t = T - 1800.0 + 1.0
+    while t < T + 2400.0:
+        panel.append((t, round(draw(t) + rnd.uniform(-1, 1), 1)))
+        t += 5.0
+    return {"a": grid}, {"c": panel}, s1, e1, s2, e2, T + 2400.0
+
+
+def test_a_ramp_two_meters_declared_over_different_stretches_is_placed_by_the_grids_change_over_both():
+    """Home 24 Sep 05:41 local: the washer-dryer's ramp - the grid declared
+    +261 at its first plateau, Mansarda's channel +313 once settled, beyond
+    each other's tolerance, so nobody's: the run ran on 49 minutes past its
+    end at 05:54:48. Over both steps' window the grid read 543 W before and
+    ~850 after, +307: the panel's step agrees with that, the run is placed at
+    Mansarda (its own), booked at the ramp's whole size, and Anze's rule ends
+    it when the panel reads below it - at 05:54:48. The next start the same."""
+    rows, panel, s1, e1, s2, e2, end = _washer_dryer_day()
+    fleet = D.Fleet()
+    fleet.wait_cap_s = D.METER_WAIT_CAP_S
+    fleet.meter_lag["Mansarda"] = [[1.0, 15.0]] * D.LAG_MIN_SAMPLES
+    fleet.phase_votes["Mansarda"] = {"c": {"a": D.PHASE_MAP_MIN_VOTES}}
+    filed, file = [], fleet.main._file
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+    fleet.main._file = keep
+    cuts = [s1 + 400.0, s2 + 400.0]
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes(panel, cuts, end)):
+        fleet.process(part, {"Mansarda": sub}, now_ts=e, single={"Mansarda": False})
+    got = sorted(((round(s.start - s1), round(s.end - s1), round(s.energy_wh * 3600.0 / s.duration_s),
+                   (fleet.main.signature_of(s).locations.get("Mansarda", 0) if fleet.main.signature_of(s) else 0))
+                  for s in filed if s.duration_s > 120.0), key=lambda g: g[0])
+    first = [g for g in got if abs(g[0]) <= 5]
+    second = [g for g in got if abs(g[0] - (s2 - s1)) <= 5]
+    assert len(first) == 1 and abs(first[0][1] - (e1 - s1)) <= 10 and 280 <= first[0][2] <= 360 and first[0][3], got
+    assert len(second) == 1 and abs(second[0][1] - (e2 - s1)) <= 10 and 320 <= second[0][2] <= 410 and second[0][3], got
+
+
+def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():
+    """An owned run alone on its phase follows its meter, not the phase - and
+    what the meter read at the grid's reading, not its declared level: that is
+    read ahead of the grid by the horizon and lags its own readings by its
+    sustain. A plug at 254 W declared, reading 290 then, 271 now."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    plug = f.subs["Plug"].phases["a"]
+    plug.level, plug.baseline = 271.0, 1.0
+    f.sub_rows["Plug"] = {"a": [(T0 - 60.0, 254.0), (T0 - 2.0, 291.0), (T0 + 30.0, 271.0)]}
+    assert f._meter_level("Plug", "c", T0) == 290.0
+    assert f._meter_level("Plug", "c") == 270.0                            # no moment asked: its level
+    assert f._meter_level("Plug", "c", T0 - 3600.0) == 270.0               # no reading yet: its level
+
+
+def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
+    """Home's dehumidifier plug had more of its sessions in an 18 W Hiša
+    signature (its fan alone) than in its own 263 W one, and its 20-hour
+    runs, filed where the plug's word sent them, went with the fan (09-24).
+    Asked for a run, the meter's home is the one of the run's kind."""
+    f = _fleet_with_meters({"Susilna": 0.0})
+    own = _sig(139, 263.0, 600.0, 43, phases="c")
+    own.locations.update({"Susilna": 3, "Mansarda": 4})
+    fan = _sig(618, 18.0, 600.0, 83, phases="c")
+    fan.locations.update({"Hiša": 59, "Susilna": 4})
+    f.main.signatures = [own, fan]
+    night = D.Session(phases="c", start=T0, end=T0 + 72000.0, levels={"c": [(T0, 270.0)]})
+    assert f._meter_home("Susilna") == 618                                   # most of its sessions
+    assert f._meter_home("Susilna", night) == 139                            # of this run's kind
+
+
 def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     """A run cannot still be running on less than it started with (Anze,
     2026-10-03): a meter reporting a total that holds several devices - a
     strip, or a plug its library takes for one, as Home's Susilna plug -
     ends a run it owns once its own reading after its fall is below the run's
-    size. A fall of another of its devices, leaving it above, does not."""
+    size. A fall of another of its devices, leaving it above, does not; nor
+    a run it neither owns nor rose for."""
     f = _fleet_with_meters({"Strip": 0.0})
     f.single = {"Strip": False}
     f.agnostic = {"Strip": True}
     strip = f.subs["Strip"].phases["a"]
     strip.interval = 6.0
     _declare(strip, (T0 + 2.0, 279.0, None, T0 - 4.0, T0 + 2.0), (T0 + 2219.0, -426.0, None, T0 + 2213.0, T0 + 2219.0))
-    f.sub_rows["Strip"] = [(T0 - 60.0, 167.0), (T0 + 2.0, 446.0), (T0 + 2219.0, 20.0)]
+    f.sub_rows["Strip"] = {"a": [(T0 - 60.0, 167.0), (T0 + 2.0, 446.0), (T0 + 2219.0, 20.0)]}
     run = D._Open(since=T0, watts=279.0, var=None, levels=[(T0, 279.0)], meter="Strip")
     older = D._Open(since=T0 - 3600.0, watts=400.0, var=None, levels=[(T0 - 3600.0, 400.0)])
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is run
     f._stops_used = {}
-    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 300.0)                         # still above the run: not its stop
+    f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 300.0)                    # still above the run: not its stop
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
     f._stops_used = {}
-    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 20.0)
-    run.meter = None                                                        # a run it does not own: nothing to say
-    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+    f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 20.0)
+    other = D._Open(since=T0 + 600.0, watts=279.0, var=None, levels=[(T0 + 600.0, 279.0)])
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, other], 385.0) is None   # not its: it did not rise for it
 
 
 def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
