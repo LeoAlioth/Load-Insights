@@ -5804,11 +5804,17 @@ class Fleet:
         return self.guess_one_device(name)
 
     def guess_one_device(self, name: str) -> bool:
-        """The library's shape, once it has something to say: at least
-        METER_PHASES_MIN sightings, most of them one signature. A young meter -
-        one renamed on the Energy dashboard starts again - holds several until
-        it has shown otherwise, since hiding a meter's loads is the costly
-        mistake (Kozolec's Inverter, three sightings in, looked like one)."""
+        """A meter other meters hang under holds several by definition (Home's
+        Delavnica, Kozolec's Inverter); otherwise the library's shape, once it
+        has something to say: at least METER_PHASES_MIN sightings, most of them
+        one signature. A young meter - one renamed on the Energy dashboard
+        starts again - holds several until it has shown otherwise, since hiding
+        a meter's loads is the costly mistake (Kozolec's Inverter, three
+        sightings in, looked like one). The runner asked the first part
+        itself, so a bench replay with no declarations ran Home's Hiša - 52 %
+        of its 10,125 sightings one signature - as one device (2026-10-03)."""
+        if any(p == name for p in self.parents.values()):
+            return False
         det = self.subs.get(name)
         return self._one_device(name) and sum(s.count for s in det.signatures) >= METER_PHASES_MIN
 
