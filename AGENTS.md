@@ -222,14 +222,39 @@ only) and **fed** (`SUBS=prod`, every meter production reads); the meters are
 the truth in all three, read from the history. And two circuit sites,
 `home-hisa` and `home-mansarda`: a 3EM as the main meter, scored on the device
 inside it (replayed without reactive power: the 3EMs publish no volts or amps).
+And **Andrej's site** (`andrejg`, since 2026-10-04): the house production
+builds (`bench.PROD_HOUSE`: a third of the inverter less the M1, per phase),
+one measured load - the go-e charger's own total (`sensor.goe_216841_nrg_11`, W
+every ~5 s; production's OCPP reading has 154 rows in ten days) - its partition
+the charger and Rest, hidden and fed. The charger is portable: its truth is
+masked over any charge the house did not draw (`_away`: a span at 6 A or more
+on a phase whose energy the house, half a minute before to a minute after,
+drew under half of) - over 23 Sep - 2 Oct nothing; the trip reported for 24
+Sep 14:30-16:50 does not show (every pulse there the house drew at 0.9-1.3x).
+Andrej's Rest holds a second ~10.7 kW three-phase load for hours (09-27,
+09-28, 09-29 ...), likely the second charger (`charger_nova`), unfetched.
+
+**Units** (2026-10-04): the CSVs carry no unit, and until then every reading
+was replayed as W - Home's EVBox (OCPP, `Polnilnica`, kW) was a 10.8 W
+"charger" with 0.14 kWh of truth, and fed mode handed the Fleet a meter
+production never sees. `fetch_history` now writes `units.json` beside a site's
+CSVs (each electrical entity's unit from its live state) and `replay.read_csv`
+scales by it as production does (`detect.unit_scale`); a folder of symlinks
+reads its site's. kW: Home's EVBox and Andrej's two OCPP chargers; %: the
+SolarEdge M1s' power factors (unread by the replay); everything else W, A, V,
+VA, var. Every card before e7f17b3 read Polnilnica as nothing.
 
 `card` replays every site in every mode at SLICE=0, 6 and 1 and LIVE=1, eight
-at a time, prints one figure where the slicings agree and each one's
-(0|6|1|L1) where they do not, the invariance count and how runs were closed (the pairing:
+at a time (`BENCH_PARALLEL=4` when another bench shares the Mac), prints one
+figure where the slicings agree and each one's
+(0|6|1|L1) where they do not, the share-credited pair beside them (below), the
+invariance count and how runs were closed (the pairing:
 share closed by an observed stop vs each inferred kind, how near an observed
-stop comes to its start's size, starts never closed and stops that closed
-nothing), and writes `data/scorecard/<commit>-<utc>.json`; `diff A B` compares
-two. `invariance SITE FOLDER` compares the slicings two by two - 6 vs 1, 6 vs
+stop comes to its start's size, starts never closed - apart from those a run
+took in as the rest of its ramp, absorbed (`absorb_until`) - and stops that
+closed nothing), and writes `data/scorecard/<commit>-<utc>.json` (`LABEL=x`:
+`<commit>-x-<utc>.json`); `diff A B` compares two, every move beside its noise
+band. `invariance SITE FOLDER` compares the slicings two by two - 6 vs 1, 6 vs
 LIVE=1, and 0 vs 6 on a line of its own - and lists every session one files
 and the other does not, or files with another start, end, size or signature,
 with its distance to the nearest pass boundary; the list is saved to
@@ -261,6 +286,51 @@ fed, sessions / kWh two slicings file differently: Home 6~1 9,790 of 15,813 /
 start of the same cluster, 8.1 % in a multi-close), 75 % of observed stops
 within 20 % of their start, 2.2 % of steps starts never closed and 7.6 % stops
 that closed nothing; Kozolec 88 %, 86 %, 0.9 and 6.6 %.
+
+**The noise band** (2026-10-04): the card is chaotic for small changes - a
+signature crossing the >= 50 % ownership line moves a load by its whole share
+(the hidrofor -41 in exp1), and the detector itself reacts to readings that
+should not matter. So a move is read against the band: `card NOOP=drop:N:seed`
+(each reading dropped with chance 1/N) or `NOOP=jitter:ms:seed` (each moved by
+up to +-ms) perturbs every series the replay reads, never the truth; `noise
+BASE NOOP1 ...` writes each load's spread - max less min at SLICE=6 - to
+`data/scorecard/noise-<commit>-<utc>.json`, and `diff` prints `[band~]` beside a
+move inside it, `[band!]` beyond (the newest band, or a third argument). The
+band is measured on its code: re-measure it after a change that alters the
+detector broadly.
+
+**The share-credited pair**, printed beside the headline ("share" c/i): every
+signature counts for a load by its share of the signature's energy instead of
+all-or-nothing - attributed the load's energy in every signature, rightly that
+times its share. Equal to the headline where signatures are pure, smooth
+across the line, but it measures something else where they are mixed (Home fed
+Delavnica 46.5 % captured, 86.8 % share-credited; Susilna hidden owns nothing
+and its share impurity is 96 %). Over the noise cards it trims the band's tail
+(per load, a kWh or more: capture max 26.5 -> 12.8 points, impurity 43.5 ->
+15.3) but not its middle (capture median 0.7 -> 1.4). The headline stays the
+headline: it is what a name would show; read it with the band.
+
+**Overnight baseline (2026-10-04, 77c3159, 23 Sep - 2 Oct; units fixed,
+Andrej added; `data/scorecard/77c3159-overnight-baseline-20261003T225349Z.json`,
+band `noise-77c3159-20261003T231940Z.json` over it and NOOP=drop:10000:1, 2, 3
+and jitter:1:1), capture / impurity, hidden -> circuits -> fed, every slicing
+agreeing and invariance 0:** Home's devices 19.7 / 15.9 -> 32.9 / 16.1 -> 53.9 /
+11.0 (Polnilnica, 137.42 kWh: 30.6 / 12.2 -> 37.3 / 16.5 -> 56.5 / 14.2; the
+hidrofor 62.8 / 27.2 -> 64.3 / 26.2 -> 47.0 / 17.9; the workshop boiler 3.1 ->
+85.0 -> 85.3 captured; Susilna 0 -> 0 -> 50.8 / 1.5); partition 34.6 / 16.4 ->
+53.8 / 12.1 -> 61.8 / 9.1 (Delavnica, 123.62 kWh with the EVBox out of it,
+49.2 / 24.7 -> 51.2 / 21.4 -> 46.5 / 16.3). Kozolec devices 89.3 / 3.0 -> 95.0 /
+3.2 fed, partition 86.7 / 4.4 -> 91.7 / 3.9. home-hisa 1.4 / 27.9 -> 10.9 /
+5.0, home-mansarda 39.6 / 15.1 -> 54.0 / 10.1. Andrej's charger 75.9 / 3.0 ->
+83.4 / 4.3, partition 77.2 / 13.7 -> 80.2 / 9.0. The band, points of capture /
+impurity for the site: Home devices 3.2 / 7.3, 2.6 / 1.9, 5.4 / 3.3 (hidden,
+circuits, fed), partition 0.5 / 0.9, 0.8 / 1.5, 3.5 / 1.7; Kozolec <= 0.2;
+home-hisa 0.1-2.0, home-mansarda 8 / 1-5; Andrej's charger 7.5 / 0.9 hidden,
+7.4 / 1.6 fed. Per load at Home it reaches 17-27 points of capture fed (the
+hidrofor, Susilna) and 30-44 of impurity on loads with little attributed (the
+workshop boiler hidden, the UPS fed): one reading in ten thousand dropped
+turned Home circuits' 813 signatures into 828-925, and at Kozolec moves
+nothing beyond 2 points but the water pump's partition figure (14.5).
 
 **What a meter is worth** (`energy_bench.py worth SITE`, Anze, 2026-10-02: "how
 much adding a sensor to device X improves the prediction for device Y"): none
@@ -335,6 +405,10 @@ blob, one signature of 16,876 runs and ~470 kWh holding 4-9 % of every device.
   precision 76-88 % between SLICE=4 and 8 (*A meter's cadence*, 2026-10-02).
   `card` shows each slicing's figure where they differ; a difference inside
   that spread is not a result. `invariance` lists the sessions behind it.
+- **Read a move against the noise band** (`diff` marks it, 2026-10-04). At
+  Home a single dropped reading in ten thousand moves a load up to 27 points;
+  a per-load move inside the band is not a result, and the site figures are
+  the readable ones. Kozolec's band is a fraction of a point.
 - **Point sweeps at a fixed folder.** Build tuning and hold-out folders of
   symlinks and never replay `data/history/<site>` while a fetch is writing to
   it - runs started a few seconds apart will read different days.
@@ -830,6 +904,20 @@ two sites' ten-day exports unless stated.
   1070 W hour-ahead over 1-3 Oct). Backtest scripts: scratchpad fc/ (bt.py).
 
 ### Confirmed, unfixed
+
+- **The detector reacts to readings that should not matter** (2026-10-04, the
+  noise cards on 77c3159): dropping one reading in ten thousand, or moving
+  each by up to 1 ms, changes Home's library by up to 14 % (circuits 813 ->
+  828-925 signatures, fed 1,156 -> 1,062-1,201) and a load's capture by up to
+  27 points; Kozolec's site figures move a few tenths. Two of the drop cards also broke the
+  slicing invariance - 2 sessions each in Home circuits, an office run filed to
+  #97 at SLICE=1 and #308 / #311 at SLICE=6 (09-28 08:05, 09-29 22:55 and
+  23:11; `invariance-home-circuits-77c3159-noise-drop-10000-{2,3}-*.txt`). Not
+  yet traced. Related, unfixed: each day's CSV opens with the recorder's
+  start-of-window row (a copy of the last reading, stamped 22:00:00 UTC), and
+  the replay's slices start at the first house reading (Home: 05:03:08 UTC),
+  so those copies - one an entity a day - are fed as readings production
+  never gets; at this sensitivity they may move a card too.
 
 - **Signature churn with a device per start cluster** (2026-09-30, the
   all-phase events): Home makes 1,835 signatures in ten days and keeps 237 -
