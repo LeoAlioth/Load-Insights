@@ -4992,10 +4992,18 @@ class Fleet:
     # filed house sessions no meter has placed yet: (when the last try is due, session)
     pending_main: List[tuple] = field(default_factory=list)
     pending_sub: Dict[str, List[Session]] = field(default_factory=dict)
-    # Each device's raw samples, kept long enough to answer "how much energy
-    # did you record while this was running". A meter too slow to produce a
-    # session of its own can still answer that.
-    sub_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
+    # Each device's raw samples, channel by channel, kept long enough to
+    # answer "how much energy did you record while this was running" - a
+    # meter too slow to produce a session of its own can still answer that -
+    # and what each channel read: a 3EM's phases are its own (Anze,
+    # 2026-10-03). meter -> channel -> [(ts, value)]; the total, _sub_total.
+    sub_rows: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict)
+    # ...the first moment of the total kept (the value in force at the cut,
+    # see _keep_rows), each channel's value from before its first row kept,
+    # and the totals worked out from them
+    _sub_from: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    _sub_seed: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
+    _sub_totals: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     agnostic: Dict[str, bool] = field(default_factory=dict)      # meters that report only a total
     # meter -> "p" (power) / "q" (reactive) -> [mean log of grid's step over the
     # meter's, steps] - see METER_GAIN_MIN
@@ -5311,35 +5319,65 @@ class Fleet:
         return min(ts)
 
     def _keep_rows(self, name: str, rows_by_phase: Dict[str, Sequence[Tuple[float, float]]], end: float) -> None:
-        """A meter's readings for the energy answer (_energy_pairs), its
-        channels summed - each held at its last value from the last pass
-        until it writes again, not counted as nothing from the pass's start."""
+        """A meter's readings, channel by channel, for the energy answer
+        (_energy_pairs, the channels summed - _sub_total) and for what a
+        channel read (_meter_reading). Each channel is held at its last value
+        from the last pass until it writes again, not counted as nothing from
+        the pass's start."""
         last = self._sub_last.setdefault(name, {})
         stamps = sorted({t for rows in rows_by_phase.values() for t, _ in rows})
         if not stamps:
             return
-        at = {p: 0 for p in rows_by_phase}
-        merged = []
-        for ts in stamps:
-            for p, rows in rows_by_phase.items():
-                while at[p] < len(rows) and rows[at[p]][0] <= ts:
-                    last[p] = rows[at[p]][1]
-                    at[p] += 1
-            merged.append((ts, sum(last.values())))
-        kept = self.sub_rows.get(name, [])
-        if kept and merged[0] <= kept[-1]:
-            kept = sorted(kept + merged)              # a pass that overlapped the last one
-        else:
-            kept = kept + merged
+        chans = self.sub_rows.setdefault(name, {})
+        seed = self._sub_seed.setdefault(name, {})
+        for p, rows in rows_by_phase.items():
+            if not rows:
+                continue
+            kept = chans.get(p) or []
+            if not kept and p in last:
+                seed[p] = last[p]                     # carried from before: what it held until it wrote
+            new = [(t, v) for t, v in rows]
+            chans[p] = sorted(kept + new) if kept and new[0] <= kept[-1] else kept + new   # a pass that overlapped
+            last[p] = new[-1][1]
         # Everything this pass brought, plus a tail before it. Trimming to
         # a fixed two hours looked thrifty and silently gutted the
         # backfill, whose slices are six hours long: the sessions being
         # placed were mostly older than the readings kept to place them
         # with (2026-09-19). Kept back to the oldest run or session still
         # to be placed, its idle window before it, whatever the slicing.
-        cut = min(self._oldest_asked(), merged[0][0] - SUB_SAMPLE_TAIL_S) - IDLE_WINDOW_S
-        i = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)     # with the value in force at the cut
-        self.sub_rows[name] = kept[i:]
+        cut = min(self._oldest_asked(), stamps[0] - SUB_SAMPLE_TAIL_S) - IDLE_WINDOW_S
+        frm = self._sub_from.get(name, -math.inf)
+        every = sorted({t for rows in chans.values() for t, _ in rows if t >= frm})
+        i = max(0, bisect.bisect_left(every, cut) - 1)                    # with the value in force at the cut
+        self._sub_from[name] = every[i]
+        for p, kept in chans.items():
+            j = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)
+            chans[p] = kept[j:]
+
+    def _sub_total(self, name: str) -> List[Tuple[float, float]]:
+        """The meter's channels summed at every moment any of them wrote -
+        each at its value in force then - from the first moment kept."""
+        chans = self.sub_rows.get(name) or {}
+        frm = self._sub_from.get(name, -math.inf)
+        key = (frm, tuple((p, len(r), r[-1] if r else None) for p, r in chans.items()))
+        hit = self._sub_totals.get(name)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        val = dict(self._sub_seed.get(name) or {})
+        order = list(self._sub_last.get(name) or {})          # summed in the order the channels first wrote
+        order += [p for p in list(val) + list(chans) if p not in order]
+        at = {p: 0 for p in chans}
+        out = []
+        for ts in sorted({t for rows in chans.values() for t, _ in rows if t >= frm}):
+            for p, rows in chans.items():
+                k = at[p]
+                while k < len(rows) and rows[k][0] <= ts:
+                    val[p] = rows[k][1]
+                    k += 1
+                at[p] = k
+            out.append((ts, sum(val[p] for p in order if p in val)))
+        self._sub_totals[name] = (key, out)
+        return out
 
     def _on_main(self, m: Session) -> None:
         """A house session the grid's detector handed over: it waits for the
@@ -5742,7 +5780,8 @@ class Fleet:
             span = m.duration_s
             if want <= 0 or span <= 0:
                 continue
-            for name, rows in self.sub_rows.items():
+            for name in self.sub_rows:
+                rows = self._sub_total(name)
                 if name in phases and not set(m.phases) <= set(phases[name]):
                     continue
                 # nothing the meter wrote after now, however far the pass reaches
@@ -5902,7 +5941,7 @@ class Fleet:
                         continue
                     if not one and self.agnostic.get(name):
                         # its reading once this fall settled, in the grid's terms
-                        rows = self.sub_rows.get(name) or []
+                        rows = self._sub_total(name)
                         k = bisect.bisect_right(rows, (e[4], math.inf))
                         after = rows[k - 1][1] * gain if k else None
                     for o in reversed(opens):
