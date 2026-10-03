@@ -496,6 +496,7 @@ def run(args, transform=None, say=print):
             part = [(a, rows[i - 1][1])] + part
         return part
     t = first
+    fed_last: dict = {}
     fleet.parents = dict(p.split("=", 1) for p in args.parent)
     live_from = latest - args.live_days * 86400.0 if args.live_days else math.inf
     while t <= latest:
@@ -508,10 +509,14 @@ def run(args, transform=None, say=print):
         sub_slice = {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
                      for n, byp in subs.items()}
         for n, byp in sub_slice.items():
-            merged = []                                 # this slice's phases summed...
-            for rows in byp.values():
-                merged = D._sum_series(merged, list(rows))
-            fed.setdefault(n, []).extend(merged)         # ...after the last slice's
+            last = fed_last.setdefault(n, {})           # each channel held at its last value...
+            at = {p: 0 for p in byp}
+            for ts in sorted({ts for rows in byp.values() for ts, _ in rows}):
+                for p, rows in byp.items():
+                    while at[p] < len(rows) and rows[at[p]][0] <= ts:
+                        last[p] = rows[at[p]][1]
+                        at[p] += 1
+                fed.setdefault(n, []).append((ts, sum(last.values())))   # ...across slices, as the Fleet keeps them
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
                       sub_slice, q, sub_q or None, e, agnostic, pv or None, q_quantum,
                       single={n: n in args.single for n in subs} if args.single else None,
