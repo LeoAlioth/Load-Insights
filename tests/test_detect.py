@@ -3202,12 +3202,68 @@ def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
     assert old in st.open_edges and pc in st.open_edges and rest not in st.open_edges
 
 
+def test_a_meters_total_below_a_runs_opening_size_ends_the_run_it_started():
+    """Home 09-24 05:47 UTC: Mansarda's ramping load (its channel carrying
+    grid A 88 -> 303 -> 446 W in 15 s) opened a 279 W run at the grid's first
+    step; Mansarda's ramped rise did not match it, so it was nobody's, and its
+    stop (-385 on the grid, Mansarda down to 20 W) paired with nothing that
+    size: the run went on for 37 minutes, and at 03:41 for 49. A run cannot
+    still be running on less than it started with (Anze): a meter whose own
+    rises at the start account for it ends it once its channel reads below
+    the run's opening size - its reading, kept per channel. A fall of another
+    of its loads, leaving it above, does not."""
+    f = _fleet_with_meters({"Mansarda": 0.0})
+    f.single = {"Mansarda": False}
+    mans = f.subs["Mansarda"].phases["a"]
+    mans.interval = 4.9
+    _declare(mans, (T0 + 2.0, 215.0, None, T0 - 3.0, T0 + 2.0), (T0 + 7.0, 143.0, None, T0 + 3.0, T0 + 7.0),
+             (T0 + 2219.0, -426.0, None, T0 + 2214.0, T0 + 2219.0))
+    f.sub_rows["Mansarda"] = {"a": [(T0 - 30.0, 88.0), (T0 + 2.0, 303.0), (T0 + 7.0, 446.0), (T0 + 2219.0, 20.0)]}
+    run = D._Open(since=T0, watts=279.0, var=None, levels=[(T0, 279.0)])
+    older = D._Open(since=T0 - 3600.0, watts=400.0, var=None, levels=[(T0 - 3600.0, 400.0)])
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is run
+    f._stops_used = {}
+    f.sub_rows["Mansarda"]["a"][-1] = (T0 + 2219.0, 300.0)                # still above the run: not its stop
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+
+
+def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():
+    """An owned run alone on its phase follows its meter, not the phase - and
+    what the meter read at the grid's reading, not its declared level: that is
+    read ahead of the grid by the horizon and lags its own readings by its
+    sustain. A plug at 254 W declared, reading 290 then, 271 now."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    plug = f.subs["Plug"].phases["a"]
+    plug.level, plug.baseline = 271.0, 1.0
+    f.sub_rows["Plug"] = {"a": [(T0 - 60.0, 254.0), (T0 - 2.0, 291.0), (T0 + 30.0, 271.0)]}
+    assert f._meter_level("Plug", "c", T0) == 290.0
+    assert f._meter_level("Plug", "c") == 270.0                            # no moment asked: its level
+    assert f._meter_level("Plug", "c", T0 - 3600.0) == 270.0               # no reading yet: its level
+
+
+def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
+    """Home's dehumidifier plug had more of its sessions in an 18 W Hiša
+    signature (its fan alone) than in its own 263 W one, and its 20-hour
+    runs, filed where the plug's word sent them, went with the fan (09-24).
+    Asked for a run, the meter's home is the one of the run's kind."""
+    f = _fleet_with_meters({"Susilna": 0.0})
+    own = _sig(139, 263.0, 600.0, 43, phases="c")
+    own.locations.update({"Susilna": 3, "Mansarda": 4})
+    fan = _sig(618, 18.0, 600.0, 83, phases="c")
+    fan.locations.update({"Hiša": 59, "Susilna": 4})
+    f.main.signatures = [own, fan]
+    night = D.Session(phases="c", start=T0, end=T0 + 72000.0, levels={"c": [(T0, 270.0)]})
+    assert f._meter_home("Susilna") == 618                                   # most of its sessions
+    assert f._meter_home("Susilna", night) == 139                            # of this run's kind
+
+
 def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     """A run cannot still be running on less than it started with (Anze,
     2026-10-03): a meter reporting a total that holds several devices - a
     strip, or a plug its library takes for one, as Home's Susilna plug -
     ends a run it owns once its own reading after its fall is below the run's
-    size. A fall of another of its devices, leaving it above, does not."""
+    size. A fall of another of its devices, leaving it above, does not; nor
+    a run it neither owns nor rose for."""
     f = _fleet_with_meters({"Strip": 0.0})
     f.single = {"Strip": False}
     f.agnostic = {"Strip": True}
@@ -3223,8 +3279,8 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
     f._stops_used = {}
     f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 20.0)
-    run.meter = None                                                        # a run it does not own: nothing to say
-    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
+    other = D._Open(since=T0 + 600.0, watts=279.0, var=None, levels=[(T0 + 600.0, 279.0)])
+    assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, other], 385.0) is None   # not its: it did not rise for it
 
 
 def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():

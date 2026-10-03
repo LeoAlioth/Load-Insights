@@ -1801,7 +1801,7 @@ class PhaseState:
                 o = self.open_edges[0]
                 if self.owned(o):
                     # a meter's run is what its meter reads, never what the phase does
-                    lvl = self.lib.meter_level(o.meter, self.name) if self.lib.meter_level is not None else None
+                    lvl = self.lib.meter_level(o.meter, self.name, ts) if self.lib.meter_level is not None else None
                     if lvl:
                         o.now = lvl
                 else:
@@ -5447,7 +5447,7 @@ class Fleet:
             return
         one = [p for p in sorted(self._energy_pairs([m]), key=lambda x: (x[0], x[1])) if self._one_device(p[2])]
         if one:
-            self._place(m, one[0][2], self._meter_home(one[0][2]))
+            self._place(m, one[0][2], self._meter_home(one[0][2], m))
             return
         self._place(m, None, None)
         if not self._locate(m):
@@ -5718,9 +5718,18 @@ class Fleet:
                 out[name] = known
         return out
 
-    def _meter_home(self, name: str) -> Optional[int]:
-        """The house signature most of this meter's sessions went to."""
-        best = max(self.main.signatures, key=lambda s: s.locations.get(name, 0), default=None)
+    def _meter_home(self, name: str, m: Optional[Session] = None) -> Optional[int]:
+        """The house signature most of this meter's sessions went to - of
+        those on ``m``'s phases drawing what ``m`` drew, when asked for it:
+        Home's dehumidifier plug had more of its sessions in an 18 W Hiša
+        signature (its fan running alone) than in its own 263 W one, and its
+        20-hour runs, one a night, were filed with the fan (2026-10-03)."""
+        sigs = self.main.signatures
+        if m is not None:
+            w = sum(m.power_by_phase().values())
+            sigs = [s for s in sigs if s.phases == m.phases
+                    and abs(sum(s.power.values()) - w) <= MATCH_EDGE_REL * max(w, sum(s.power.values()))]
+        best = max(sigs, key=lambda s: s.locations.get(name, 0), default=None)
         return best.id if best is not None and best.locations.get(name, 0) else None
 
     def _ready_at(self, m: Session, main_iv: float) -> float:
@@ -5911,15 +5920,17 @@ class Fleet:
         the grid's terms: a boiler rise 41 s after the IR panel's start, two
         hours earlier, let a 2 kW boiler fall close the panel's 514 W run and
         book it at 1,270 W (Kozolec 09-22 11:34, 2026-10-02).
-        A meter reporting a total that holds several devices - a strip, a
-        plug its library takes for one - ends a run it owns once its own
-        reading after its fall is below the run's size beyond the pairing
+        A meter holding several devices - a strip, a plug its library takes
+        for one, a 3EM's channel - ends a run it owns, or one nobody owns
+        that its own rises at the start account for, once what that channel
+        read after its fall is below the run's size beyond the pairing
         tolerance: the run cannot still be running on less than it started
-        with (Anze, 2026-10-03). Home, ten days: of the energy filed as
-        Susilna's 4.5 % is another load's, from 6.5. Every meter's runs ended
-        so - a 3EM's channel read off its declared levels, as it keeps no
-        readings of its own - made it 11.1 %, and the house's metered loads
-        13.0 % from 11.3: a 3EM is not asked."""
+        with (Anze, 2026-10-03). Mansarda's ramping load (its channel 88 ->
+        303 -> 446 W in 15 s) opened a 279 W run at the grid's first step,
+        nobody's; its stop (-385 on the grid, Mansarda down to 20 W) matched
+        nothing that size and the run went on for 37 minutes (Home 09-24
+        05:47). A 3EM's channel is read, not its declared level: kept per
+        channel since 2026-10-03, see _keep_rows."""
         if len(self._stops_used) > 1000:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
         for name, det in self.subs.items():
@@ -5939,11 +5950,10 @@ class Fleet:
                         # minutes at 257 W (Kozolec 09-28 13:53, 2026-10-02).
                         # Home's pump (-731 W for a plug fall of 818) passes.
                         continue
-                    if not one and self.agnostic.get(name):
-                        # its reading once this fall settled, in the grid's terms
-                        rows = self._sub_total(name)
-                        k = bisect.bisect_right(rows, (e[4], math.inf))
-                        after = rows[k - 1][1] * gain if k else None
+                    if not one:
+                        # what its channel read once this fall settled, in the grid's terms
+                        after = self._meter_reading(name, c, e[4])
+                        after = None if after is None else after * gain
                     for o in reversed(opens):
                         if one:
                             rises = [r[1] * gain for r in self._near(st, o.since - reach, o.since + reach, reach)
@@ -5951,12 +5961,21 @@ class Fleet:
                             ends = bool(rises) and -e[1] * gain >= 0.5 * max(rises)
                         else:
                             size = o.watts                  # what it settled at, not a starting surge
-                            ends = (o.meter == name and self.agnostic.get(name) and after is not None
-                                    and o.since < e[0] and after < size - grid._tol(size, max(after, 0.0)))
+                            mine = o.meter == name or (o.meter is None and self._meter_stepped(
+                                name, ph, o.since, size - grid._tol(size, size), True))
+                            ends = (mine and after is not None and o.since < e[0]
+                                    and after < size - grid._tol(size, max(after, 0.0)))
                         if ends:
                             self._stops_used[(name, e[0])] = e[0]
                             return o
         return None
+
+    def _meter_reading(self, name: str, ch: str, t: float) -> Optional[float]:
+        """What channel ``ch`` of meter ``name`` read at ``t`` - its reading in
+        force then, a silence being the value held; None before it has one."""
+        rows = (self.sub_rows.get(name) or {}).get(ch) or []
+        k = bisect.bisect_right(rows, (t, math.inf))
+        return rows[k - 1][1] if k else (self._sub_seed.get(name) or {}).get(ch)
 
     def _meter_on(self, name: str, ph: str, since: float, size: float) -> bool:
         """Does meter ``name``, whose own step started a grid run of ``size``
@@ -6022,10 +6041,14 @@ class Fleet:
                     best = (name, rise)
         return best
 
-    def _meter_level(self, name: str, ph: str) -> Optional[float]:
-        """What meter ``name`` draws above its floor now, in the grid's terms,
-        on its channels mapped to ``ph`` (every channel of a meter not mapped
-        yet) - the size of a run that is its (PhaseState.owned): Kozolec's
+    def _meter_level(self, name: str, ph: str, t: Optional[float] = None) -> Optional[float]:
+        """What meter ``name`` draws above its floor at ``t`` (its channels'
+        readings then; without ``t``, or a channel with none, its declared
+        level now), in the grid's terms, on its channels mapped to ``ph``
+        (every channel of a meter not mapped yet) - the size of a run that is
+        its (PhaseState.owned). Its declared level is read ahead of the grid
+        by the horizon and lags its own readings by its sustain; asked at the
+        grid's reading, what it read then is what was meant. Kozolec's
         Scala2 ramps 104-247 W, and its plug measures the ramp; the grid's
         level, followed while the run was alone, read a charger ramping up on
         the same phase as the Susilna plug's growth, 270 W to 5 kW (Home 09-26
@@ -6035,10 +6058,14 @@ class Fleet:
             return None
         chans = [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] or \
             [c for c, st in det.phases.items() if st.last_ts is not None]
-        known = [det.phases[c] for c in chans if det.phases[c].level is not None and det.phases[c].baseline is not None]
+        known = [c for c in chans if det.phases[c].level is not None and det.phases[c].baseline is not None]
         if not known:
             return None
-        return max(0.0, sum(st.level - st.baseline for st in known)) * self.gain(name, "p")
+        if t is not None:
+            read = [self._meter_reading(name, c, t) for c in known]
+            if all(r is not None for r in read):
+                return max(0.0, sum(r - det.phases[c].baseline for c, r in zip(known, read))) * self.gain(name, "p")
+        return max(0.0, sum(det.phases[c].level - det.phases[c].baseline for c in known)) * self.gain(name, "p")
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
