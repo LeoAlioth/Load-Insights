@@ -6,7 +6,8 @@ wave of known size and timing, to score a load no meter watches.
 
     python3 tests/energy_bench.py card [SITE ...] [DIAL=value ...]
     python3 tests/energy_bench.py invariance SITE FOLDER [DIAL=value ...]
-    python3 tests/energy_bench.py diff A.json B.json
+    python3 tests/energy_bench.py diff A.json B.json [NOISE.json]
+    python3 tests/energy_bench.py noise BASE.json NOOP1.json [NOOP2.json ...]
     python3 tests/energy_bench.py worth SITE [DIAL=value ...]
     python3 tests/energy_bench.py SITE FOLDER [DIAL=value ...] [PLANT=...] [QGATE=x] [WORTH=1] [OUT=run.json]
     python3 tests/energy_bench.py check
@@ -23,6 +24,13 @@ signature that would be named after L. A session's energy is L's where L's
 meter switched on with it (_started_with), as far as the meter drew above its
 floor while it ran (_above). Over a site: capture weighted by energy, impurity
 pooled (all wrong / all attributed).
+
+Beside them the SHARE-CREDITED pair (Anze, 2026-10-04: the >= 50 % line flips -
+one signature moved the hidrofor 41 points): every signature counts for L by
+L's share of its energy instead of all-or-nothing - as if each signature were
+named after a load drawn by its share. Attributed to L: the sum of its energy
+in every signature; rightly: each signature's L-energy times L's share of it.
+The same figures where every signature is pure; smooth across the line.
 
 Each site is scored against two truth sets (_tables), each one owner per
 signature: its DEVICES - every meter that holds no other: Home's seven plugs
@@ -45,7 +53,9 @@ card        every site (default home, kozolec, the circuits home-hisa and
             PARALLEL replays at once: one figure where the slicings agree, each
             one's (0|6|1|L1) where they do not; the slicing invariance, and how
             runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json,
-            with invariance's worklist for every site and mode beside it.
+            with invariance's worklist for every site and mode beside it;
+            LABEL=x names it <commit>-x-<utc>.json. BENCH_PARALLEL in the
+            environment sets PARALLEL.
 invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
             otherwise: every filed session one files and the other does not, or
             files differently, with how far it lies from the nearest pass
@@ -53,7 +63,15 @@ invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
             None of them is the truth: one call (SLICE=0) is today the most
             distorted - sub-meters run over everything before the grid, nothing
             is filed until the end - and should agree once the detector streams.
-diff        two card files, capture and impurity load by load.
+diff        two card files, capture and impurity load by load, each move
+            beside its NOISE BAND - the newest noise-*.json, or the one given:
+            a move inside it reads as noise (~), one beyond it as a result (!).
+noise       the noise band: cards of the same code apart only by a perturbation
+            that should mean nothing (NOOP=drop:N:seed drops each reading with
+            chance 1/N, NOOP=jitter:ms:seed moves each by up to +-ms; the truth
+            is read unperturbed), how far each load's figures spread at SLICE=6
+            - max less min over the cards - per site, mode and table; written
+            to data/scorecard/noise-<commit>-<utc>.json.
 worth       what a meter is worth (Anze, 2026-10-02: "how much adding a sensor
             to device X improves the prediction for device Y"): none fed, all
             fed, and per meter X only X fed (add-one) and all but X
@@ -112,7 +130,7 @@ CHARGE_MIN_W = 6 * 230.0   # the least an EV charges at, 6 A on one phase (IEC 6
 MODES = {"hidden": "SUBS=none", "circuits": "SUBS=circuits", "fed": "SUBS=prod"}
 SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"]}
 PAIRS = [("6", "1"), ("6", "L1"), ("0", "6")]     # the slicings invariance compares, two by two
-PARALLEL = 8               # replays at once: each is one core and ~0.1 GB
+PARALLEL = int(os.environ.get("BENCH_PARALLEL", "8"))   # replays at once: each is one core and ~0.1 GB
 MOVED_S = 60.0             # a run starting this near one of the other slicing's, same phases, is that run moved
 # what closed a run, by the function that closed it - see _instrument
 KINDS = {"_unseen_stop": "unseen stop", "<genexpr>": "multi-close", "_joint_stop": "joint stop",
@@ -186,6 +204,27 @@ def planted(plants: list):
                     s[f"{GRID}current_{ph}"] = _square(amps, ivs, more)
         return s
     return plant
+
+
+def _noop(spec: str, before=None):
+    """A perturbation that should mean nothing, for the noise band: every
+    series the replay reads (after any plant; never the truth) with, for
+    drop:N:seed, each reading but the first dropped with chance 1/N, and for
+    jitter:ms:seed, each moved by up to +-ms."""
+    kind, amount, seed = spec.split(":")
+    amount, rnd = float(amount), random.Random(int(seed))
+
+    def perturb(s):
+        s = before(s) if before else s
+        for e in sorted(s):
+            if kind == "drop":
+                s[e] = [r for i, r in enumerate(s[e]) if i == 0 or rnd.random() >= 1.0 / amount]
+            elif kind == "jitter":
+                s[e] = sorted((t + rnd.uniform(-amount, amount) / 1000.0, w) for t, w in s[e])
+            else:
+                raise SystemExit(f"NOOP={spec}: drop:N:seed or jitter:ms:seed")
+        return s
+    return perturb
 
 
 def _above(rows: list, times: list, a: float, b: float, floor: float) -> float:
@@ -427,7 +466,7 @@ def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scop
     decide: a meter whose history begins late over what it covers, a
     heuristic truth over the sessions it can judge."""
     owner = _own(per_sig, names)
-    loads, tot = {}, {"truth": 0.0, "of": 0.0, "in": 0.0}
+    loads, tot = {}, {"truth": 0.0, "of": 0.0, "in": 0.0, "sof": 0.0, "sin": 0.0}
     for n in names:
         if n not in truth or not (truth[n] >= 50.0 or n in small and truth[n] > 0):
             continue
@@ -436,17 +475,26 @@ def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scop
         mine = [(sid, sig_e[sid]) for sid, m in own.items() if m == n]
         right, of = sum(r[n] for _, r in mine), sum(r["total"] for _, r in mine)
         cap, imp = _rates(truth[n], of, right)
+        # share-credited: each signature L holds energy in, weighted by L's share of it
+        held = [r for r in sig_e.values() if r.get(n, 0.0) > 0]
+        s_of, s_in = sum(r[n] for r in held), sum(r[n] * r[n] / r["total"] for r in held)
+        s_cap, s_imp = _rates(truth[n], s_of, s_in)
         floor = floors.get(n, (0.0, 0.0))
         loads[n] = {"truth_kwh": truth[n] / 1000.0, "floor_w": floor[0], "floor_kwh": floor[1],
                     "attributed_kwh": of / 1000.0, "correct_kwh": right / 1000.0, "capture": cap, "impurity": imp,
+                    "capture_share": s_cap, "impurity_share": s_imp,
                     "sigs": sorted(([sid, r["n"], round(r["total"] / 1000.0, 2), round(r[n] / r["total"], 2)]
                                     for sid, r in mine), key=lambda x: -x[2])}
         loads[n].update(note)
         tot["truth"] += truth[n]
         tot["of"] += of
         tot["in"] += right
+        tot["sof"] += s_of
+        tot["sin"] += s_in
     cap, imp = _rates(tot["truth"], tot["of"], tot["in"]) if tot["truth"] else (None, None)
-    return {"loads": loads, "capture": cap, "impurity": imp, "truth_kwh": tot["truth"] / 1000.0,
+    s_cap, s_imp = _rates(tot["truth"], tot["sof"], tot["sin"]) if tot["truth"] else (None, None)
+    return {"loads": loads, "capture": cap, "impurity": imp, "capture_share": s_cap, "impurity_share": s_imp,
+            "truth_kwh": tot["truth"] / 1000.0,
             "attributed_kwh": tot["of"] / 1000.0, "wrong_kwh": (tot["of"] - tot["in"]) / 1000.0}, owner
 
 
@@ -602,11 +650,12 @@ def energy(site: str, folder: str, dials: list) -> dict:
     gate = next((float(d[6:]) for d in dials if d.startswith("QGATE=")), 0.0)
     out_path = next((d[4:] for d in dials if d.startswith("OUT=")), None)
     worth = any(d == "WORTH=1" for d in dials)
-    tag = (B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE=", "OUT=", "WORTH="))])
-           + (f" QGATE={gate:g}" if gate else "") + (" WORTH=1" if worth else ""))
+    noop = next((d[5:] for d in dials if d.startswith("NOOP=")), None)
+    tag = (B._apply([d for d in dials if not d.startswith(("PLANT=", "QGATE=", "OUT=", "WORTH=", "NOOP="))])
+           + (f" QGATE={gate:g}" if gate else "") + (" WORTH=1" if worth else "") + (f" NOOP={noop}" if noop else ""))
     log, undo = _instrument()
     try:
-        fleet, filed, _ = B._run(folder, site, planted(plants))
+        fleet, filed, _ = B._run(folder, site, _noop(noop, planted(plants)) if noop else planted(plants))
     finally:
         undo()
     det = fleet.main
@@ -935,7 +984,8 @@ def _fig(vals: list, signed: bool = False) -> str:
 
 def card(args: list) -> None:
     sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda", "andrejg"]
-    dials = [a for a in args if "=" in a]
+    label = next((a[6:] for a in args if a.startswith("LABEL=")), None)
+    dials = [a for a in args if "=" in a and not a.startswith("LABEL=")]
     keys = sorted([(site, mode, sl) for site in sites for mode in MODES
                    if mode != "circuits" or B.PROD_PARENTS.get(site) for sl in SLICINGS],
                   key=lambda k: (k[2] != "0", k[0] != "home"))   # the slowest first: Home in one call, ~6 min
@@ -944,6 +994,7 @@ def card(args: list) -> None:
                                     for site, mode, sl in keys])))
     took = time.time() - t0
     commit, utc = _stamp()
+    commit = f"{commit}-{label}" if label else commit
     inv, files = {}, []
     for site, mode, sl in keys:
         if sl == "0":
@@ -951,14 +1002,16 @@ def card(args: list) -> None:
                                                     (commit, utc), " ".join(dials) or "defaults")
             files.append(f)
     lines = [f"scorecard {commit} {utc}  {' '.join(dials) or 'defaults'}  - {len(keys)} replays in {took:.0f} s",
-             "capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not"]
+             "capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not;"
+             " share: the share-credited pair at SLICE=6"]
     for site in sites:
         modes = [m for m in MODES if (site, m, "0") in got]
         first = got[(site, modes[0], "0")]
         for tname in first["tables"]:
             names = sorted(first["tables"][tname]["loads"], key=lambda n: -first["tables"][tname]["loads"][n]["truth_kwh"])
             lines.append("")
-            lines.append(f"{site} - {tname} (truth, floor kWh)".ljust(48) + "".join(f" {m + ' capture':>20s} {'impurity':>20s}" for m in modes))
+            lines.append(f"{site} - {tname} (truth, floor kWh)".ljust(48)
+                         + "".join(f" {m + ' capture':>20s} {'impurity':>20s} {'share':>11s}" for m in modes))
             for name in names + ["all"]:
                 t = first["tables"][tname]["loads"].get(name)
                 row = (f"  {name:20s} {(t or first['tables'][tname])['truth_kwh']:7.2f} kWh"
@@ -969,7 +1022,9 @@ def card(args: list) -> None:
                         v = [(got[(site, m, sl)]["tables"][tname]["loads"].get(name) or {}).get(metric)
                              if t else got[(site, m, sl)]["tables"][tname][metric] for sl in SLICINGS]
                         vals.append(_fig(v))
-                    row += f" {vals[0]:>20s} {vals[1]:>20s}"
+                    six = got[(site, m, "6")]["tables"][tname]
+                    sh = [(six["loads"].get(name) or {}).get(k) if t else six.get(k) for k in ("capture_share", "impurity_share")]
+                    row += f" {vals[0]:>20s} {vals[1]:>20s} {_pct(sh[0]) + '/' + _pct(sh[1]):>11s}"
                 lines.append(row)
         if first["rest"]:
             r = first["rest"]
@@ -1083,10 +1138,62 @@ def worth(site: str, dials: list) -> None:
     print(f"\nwritten {path}")
 
 
-def diff(a_path: str, b_path: str) -> None:
-    """Capture and impurity load by load, A -> B and the change."""
+METRICS = ("capture", "impurity", "capture_share", "impurity_share")
+
+
+def _val(run: dict, tname: str, name: str, metric: str):
+    tab = run["tables"][tname]
+    return tab.get(metric) if name == "all" else (tab["loads"].get(name) or {}).get(metric)
+
+
+def noise(paths: list) -> None:
+    """The noise band - see the docstring: per site and mode, table, load and
+    metric, how far the cards spread at SLICE=6."""
+    cards = [json.loads(Path(p).read_text(encoding="utf-8")) for p in paths]
+    band: dict = {}
+    for key in cards[0]["runs"]:
+        if not key.endswith("|6") or any(key not in c["runs"] for c in cards):
+            continue
+        for tname, tab in cards[0]["runs"][key]["tables"].items():
+            for name in list(tab["loads"]) + ["all"]:
+                for m in METRICS:
+                    vs = [_val(c["runs"][key], tname, name, m) for c in cards]
+                    if all(v is not None for v in vs):
+                        band.setdefault(key[:-2], {}).setdefault(tname, {}).setdefault(name, {})[m] = max(vs) - min(vs)
+    lines = [f"noise band over {len(cards)} cards at SLICE=6, max less min, points: " + ", ".join(
+        f"{c['commit']} {' '.join(c['dials']) or 'defaults'}" for c in cards),
+        f"  {'':20s} {'capture':>8s} {'impurity':>8s}  {'share c':>8s} {'share i':>8s}   (truth kWh)"]
+    for g, tabs in band.items():
+        for tname, loads in tabs.items():
+            lines.append(f"{g} - {tname}")
+            run = cards[0]["runs"][f"{g}|6"]["tables"][tname]
+            for name, ms in sorted(loads.items(), key=lambda kv: (kv[0] == "all", -(run["loads"].get(kv[0]) or run)["truth_kwh"])):
+                lines.append(f"  {name:20s}" + "".join(f" {_pct(ms.get(m)):>8s}" + (" " if m == "impurity" else "") for m in METRICS)
+                             + f"   ({(run['loads'].get(name) or run)['truth_kwh']:.2f})")
+    print("\n".join(lines))
+    commit, utc = _stamp()
+    out = ROOT / "data" / "scorecard" / f"noise-{commit}-{utc}.json"
+    out.write_text(json.dumps({"cards": [str(p) for p in paths], "band": band}, indent=1), encoding="utf-8")
+    print(f"\nwritten {out}")
+
+
+def _moved(dv: list, band) -> str:
+    """A move beside its band: ~ inside it (noise), ! beyond it."""
+    d = max((abs(v) for v in dv if v is not None), default=None)
+    if band is None or d is None:
+        return ""
+    return f" [{100 * band:.1f}{'~' if d <= band + 1e-9 else '!'}]"
+
+
+def diff(a_path: str, b_path: str, band_path: str | None = None) -> None:
+    """Capture and impurity load by load, A -> B and the change, beside the
+    noise band."""
     A, Bj = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (a_path, b_path))
-    print(f"{A['commit']} {A['utc']} -> {Bj['commit']} {Bj['utc']}   capture / impurity %, (0|6|1|L1) where the slicings differ")
+    bands = sorted((ROOT / "data" / "scorecard").glob("noise-*.json"), key=lambda p: p.stat().st_mtime)
+    band_path = band_path or (str(bands[-1]) if bands else None)
+    band = json.loads(Path(band_path).read_text(encoding="utf-8"))["band"] if band_path else {}
+    print(f"{A['commit']} {A['utc']} -> {Bj['commit']} {Bj['utc']}   capture / impurity %, (0|6|1|L1) where the slicings differ;"
+          f" [band] the noise band, ~ a move inside it, ! beyond - {band_path or 'no noise band'}")
     groups = sorted({k.rsplit("|", 1)[0] for k in A["runs"]} & {k.rsplit("|", 1)[0] for k in Bj["runs"]})
     for g in groups:
         sls = [sl for sl in SLICINGS if f"{g}|{sl}" in A["runs"] and f"{g}|{sl}" in Bj["runs"]]
@@ -1101,7 +1208,15 @@ def diff(a_path: str, b_path: str) -> None:
                                if name != "all" else r["runs"][f"{g}|{sl}"]["tables"][tname][metric] for sl in sls]
                               for r in (A, Bj)]
                     dv = [None if a is None or b is None else b - a for a, b in zip(va, vb)]
-                    row += f"  {metric} {_fig(va):>9s} -> {_fig(vb):>9s} ({_fig(dv, True)})"
+                    row += (f"  {metric} {_fig(va):>9s} -> {_fig(vb):>9s} ({_fig(dv, True)})"
+                            + _moved(dv, band.get(g, {}).get(tname, {}).get(name, {}).get(metric)))
+                six = [_val(r["runs"][f"{g}|6"], tname, name, m) if f"{g}|6" in r["runs"] else None
+                       for r in (A, Bj) for m in METRICS[2:]]
+                if all(v is not None for v in six):
+                    dv = [six[2] - six[0], six[3] - six[1]]
+                    row += (f"  share {_pct(six[2])}/{_pct(six[3])} ({_pct(dv[0], True)}/{_pct(dv[1], True)})"
+                            + "".join(_moved([d], band.get(g, {}).get(tname, {}).get(name, {}).get(m))
+                                      for d, m in zip(dv, METRICS[2:])))
                 print(row)
         ia, ib = A["invariance"].get(g, {}), Bj["invariance"].get(g, {})
         print("  invariance " + ", ".join(f"{sl}: {ia[sl]['differ']}/{ia[sl]['kwh']:.1f} -> {ib[sl]['differ']}/{ib[sl]['kwh']:.1f}"
@@ -1142,6 +1257,20 @@ def check() -> None:
     assert tab["loads"]["Pump"]["capture"] == 0.0 and tab["loads"]["Pump"]["impurity"] is None
     assert round(tab["capture"], 2) == 0.75 and round(tab["impurity"], 3) == 0.053   # 9 of 12; 0.5 of 9.5
     assert _own(per_sig, ["Pump"]) == {}          # a truth set without the boiler: still nobody's
+    # share-credited: each signature by the load's share of it - 9000^2/9500 + 400^2/1000 right of 9400
+    assert round(b["capture_share"], 4) == 0.8686 and round(b["impurity_share"], 4) == 0.0759
+    p = tab["loads"]["Pump"]                      # nobody's signature #2 still credits it its 45 %
+    assert round(p["capture_share"], 4) == 0.106 and round(p["impurity_share"], 4) == 0.7174
+    # ...and smooth across the ownership line: 49 -> 51 % of a signature flips the headline, not the share
+    near = [_table({1: {"total": 100.0, "n": 1, "L": x}}, {"L": 100.0}, {}, ["L"])[0]["loads"]["L"] for x in (49.0, 51.0)]
+    assert near[0]["capture"] == 0.0 and near[1]["capture"] == 0.51
+    assert abs(near[1]["capture_share"] - near[0]["capture_share"]) < 0.021
+    # the no-op perturbations: a reading in N dropped (never the first), each moved by up to +-ms
+    rows = [(float(t), 1.0) for t in range(1000)]
+    dropped = _noop("drop:10:1")({"x": list(rows)})["x"]
+    assert dropped[0] == rows[0] and 850 < len(dropped) < 950
+    moved = _noop("jitter:1:1")({"x": list(rows)})["x"]
+    assert len(moved) == 1000 and all(abs(m[0] - r[0]) <= 0.001 for m, r in zip(moved, rows))
     # the remainder: the main less its meters, each held; one not heard from yet is nothing
     rest = _remainder([[(0.0, 100.0), (10.0, 300.0), (20.0, 100.0), (30.0, 100.0)]],
                       [[(0.0, 50.0), (15.0, 150.0)], [(5.0, 10.0)]])
@@ -1197,9 +1326,11 @@ if __name__ == "__main__":
         invariance(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif cmd == ["worth"] and len(sys.argv) >= 3:
         worth(sys.argv[2], sys.argv[3:])
-    elif cmd == ["diff"] and len(sys.argv) == 4:
-        diff(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) >= 3 and cmd[0] not in ("card", "invariance", "diff", "worth"):
+    elif cmd == ["diff"] and len(sys.argv) in (4, 5):
+        diff(*sys.argv[2:])
+    elif cmd == ["noise"] and len(sys.argv) >= 4:
+        noise(sys.argv[2:])
+    elif len(sys.argv) >= 3 and cmd[0] not in ("card", "invariance", "diff", "worth", "noise"):
         energy(sys.argv[1], sys.argv[2], sys.argv[3:])
     else:
         print(__doc__)
