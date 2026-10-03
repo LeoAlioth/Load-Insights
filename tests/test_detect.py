@@ -3139,6 +3139,44 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
     assert f._energy_pairs([run])
 
 
+def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
+    """Home 09-24 22:55 local: the dehumidifier on Susilna's plug had run since
+    20:00 at 254 W, the house's run of it open and the plug's (owned); a 400 W
+    workshop load dipped for 6 s, its return (+392) was split and a 286 W rest
+    opened in the dehumidifier's start cluster - its device - and was filed
+    into the device's 263 W signature, 158 minutes while the plug read 294 W
+    unchanged. 60 such runs, 3.6 kWh, in ten days: the plug, guessed a strip,
+    was never asked whether it held; the signature carried none of its
+    locations until the 20-hour run was filed at its end; and the
+    dehumidifier's runs start with a surge, in a cluster of their own. Here
+    the map places the plug nowhere, as for a meter with no votes yet. A run of the size of a run a meter holds open, started while
+    that meter held, is another load of that size: the signatures that run's
+    device went to, and those placed at the meter, are kept clear of it."""
+    f = _fleet_with_meters({"Susilna": 0.0})
+    f.phase_votes = {}                                                   # the map places it nowhere yet
+    plug = f.subs["Susilna"].phases["a"]
+    plug.interval, plug.last_ts = 5.8, T0 + 3600.0
+    _declare(plug, (T0 - 10500.0, 254.0, None, T0 - 10518.0, T0 - 10500.0))   # on since 20:00
+    f._now = T0 + 3600.0
+    grid = f.main.phases["c"]
+    owned = D._Open(since=T0 - 10500.0, watts=254.0, var=None, levels=[(T0 - 10500.0, 254.0)], cluster=163, meter="Susilna")
+    grid.open_edges = [owned]
+    home = _sig(136, 263.0, 600.0, 65, phases="c", first_seen=T0, last_seen=T0)
+    home.locations.update({"Mansarda": 7, "Vtičnice - pisarna": 2})       # as on the day: none of the plug's yet
+    other = _sig(140, 270.0, 600.0, 20, phases="c", first_seen=T0, last_seen=T0)
+    f.main.signatures = [home, other]
+    f.main.start_home = {"163": {136: 3.0}, "165": {136: 40.0}, "77": {140: 20.0}}
+    run = D.Session(phases="c", start=T0, end=T0 + 9480.0, levels={"c": [(T0, 286.0)]}, pair=(165, None))
+    assert f._held_homes(run) == [136]                                   # its level, held: not of its kind
+    big = D.Session(phases="c", start=T0, end=T0 + 600.0, levels={"c": [(T0, 1000.0)]}, pair=(77, None))
+    assert f._held_homes(big) == []                                      # not its size: nothing to say
+    owned.meter = None
+    assert f._held_homes(run) == []                                      # a run no meter holds: no word on it
+    owned.meter = "Susilna"
+    _declare(plug, (T0 + 3.0, 280.0, None, T0 - 3.0, T0 + 3.0))
+    assert f._held_homes(run) == []                                      # the plug stepped with it
+
+
 def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     """Home's plain cluster of 1 kW phase-A starts filed its runs as the
     hidrofor, its majority: a 2.3 kW load's last 1,064 W step went with them
