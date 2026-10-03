@@ -1,6 +1,7 @@
 """Sessions, transitions, multi-phase merging, signatures, resumability."""
 import json
 import bisect
+import math
 import random
 import sys
 from pathlib import Path
@@ -71,8 +72,10 @@ def test_a_load_the_reading_cannot_be_carrying_is_closed():
     closed = low._unseen_stop(T0 + 300, 100.0)                           # 900 short: no one load fits it,
     assert len(closed) == 2 and low.open_edges == [], closed             # but neither fits in 100 W at all
     big = phase(True)
-    big._unseen_stop(T0 + 300, 500.0)                                    # 500 short of 1000: nothing fits
-    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # the 600 W run cannot be in 500 W
+    big._unseen_stop(T0 + 300, 500.0)                                    # 500 short of 1000: nothing fits,
+    assert [o.watts for o in big.open_edges] == [600.0, 400.0]           # and either may have sagged into 500 W
+    big._unseen_stop(T0 + 300, 250.0)
+    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # the 600 W run cannot be in 250 W
     assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
 
 
@@ -217,7 +220,7 @@ def _fleet_filed(rows, plug, cuts, end, wait):
         filed.append(s)
     fleet.main._file = keep
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
-        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+        fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
     where = sorted((x.id, sorted(x.locations.items())) for x in fleet.main.signatures)
     return _as_filed(filed), where
 
@@ -341,7 +344,7 @@ def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float 
     fleet.main._file = keep
     cuts = [T0 + 6 * 3600.0 * k for k in range(1, 4)]
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
-        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True})
+        fleet.process(part, {"Plug": sub}, now_ts=e)
     return filed, fleet, on, off
 
 
@@ -419,7 +422,7 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
     for i in range(0, n, 300):
         j = min(i + 300, n)
         fleet.process({"a": main_a[i:j], "b": main_b[i:j]}, {"boiler": {"a": boiler[i:j]}},
-                      now_ts=main_b[j - 1][0], agnostic={"boiler": True})
+                      now_ts=main_b[j - 1][0])
     fleet.process({}, {}, now_ts=end)
     sig = fleet.main.signatures[0]
     assert sig.phases == "b", sig.phases          # the main meter knows the phase
@@ -429,11 +432,12 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
 
 def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     """The Hidrofor plug on phase A was credited a 308 + 421 W load on A and B:
-    a total-only meter is matched by size and moment alone, and that load
-    started with a pump run of about its size (Anze, 2026-09-28)."""
+    a meter the votes do not place yet is matched by its total and moment
+    alone, and that load started with a pump run of about its size (Anze,
+    2026-09-28). Its one device's phases restrict it (meter_phases); once the
+    votes place it, the map does, whatever it holds."""
     fleet = D.Fleet()
     fleet.subs["pump"] = D.Detector()
-    fleet.agnostic["pump"] = True
     # the plug's own library is one load, so it holds one device by its shape...
     fleet.subs["pump"].signatures.append(_sig(1, 880.0, 140.0, 50, first_seen=T0, last_seen=T0))
     # ...and the house has placed the pump there, on A, often enough to know
@@ -446,19 +450,22 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     fleet.pending_sub["pump"] = [D.Session("a", t, t + 140, {"a": [(t, 720.0)]}) for t in (T0 + 1000, T0 + 2000, T0 + 3000)]
     pairs = fleet._session_pairs([two, on_a, other], 5.0)
     assert [mi for _, mi, _, _ in pairs] == [1], pairs          # only the load on A
-    # declared as holding several devices, the plug takes anything that fits again
+    # declared as holding several devices, the plug not placed takes anything that fits again...
     fleet.single = {"pump": False}
     assert fleet.meter_phases() == {}
     assert sorted(mi for _, mi, _, _ in fleet._session_pairs([two, on_a, other], 5.0)) == [0, 1, 2]
+    # ...and placed on A by its votes, only what is on A, whatever it holds
+    fleet.phase_votes = {"pump": {"a": {"a": D.PHASE_MAP_MIN_VOTES}}}
+    assert [mi for _, mi, _, _ in fleet._session_pairs([two, on_a, other], 5.0)] == [1]
+    fleet.single, fleet.phase_votes = {}, {}
     # a young meter says nothing: two sightings on A are not yet a rule
-    fleet.single = {}
     fleet.main.signatures[0].locations["pump"] = 2
     assert fleet.meter_phases() == {}
     # ...and a young library is not guessed to be one device at all: Kozolec's
     # Inverter meter, the whole house, looked like one three sightings in
     fleet.subs["pump"].signatures[0].count = 3
     assert not fleet.guess_one_device("pump") and not fleet.holds_one_device("pump")
-    assert fleet._one_device("pump")            # identity keeps its benched rule
+
 
 def test_a_switch_is_a_meter_that_knows_only_when():
     """Home's bathroom floor mat starts and stops with its thermostat's heating:
@@ -1670,8 +1677,8 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
     kiln = {"a": {"a": 79, "c": 79}, "b": {"b": 23}, "c": {"c": 55, "a": 17}}
     assert D.phase_mapping(kiln, min_votes=30) == {"a": "a", "b": "b", "c": "c"}
     s = D.Session(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
-    moved = D._relabel(s, {"a": "b", "b": "c", "c": "a"})
-    assert moved.phases == "ac" and set(moved.levels) == {"c", "a"}
+    house = D.Session(phases="ac", start=0.0, end=60.0, levels={"c": [(0.0, 100.0)], "a": [(0.0, 90.0)]})
+    assert D._same_load(house, s, {"a": "b", "b": "c", "c": "a"}) and not D._same_load(house, s, {"b": "b", "c": "c"})
 
 
 def test_a_sub_meter_decides_which_signature_a_session_joins():
@@ -3270,14 +3277,22 @@ def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():
     """An owned run alone on its phase follows its meter, not the phase - and
     what the meter read at the grid's reading, not its declared level: that is
     read ahead of the grid by the horizon and lags its own readings by its
-    sustain. A plug at 254 W declared, reading 290 then, 271 now."""
+    sustain. Its change since just before the run started, not its level: a
+    plug from 1 W to 291 then, 271 now; a circuit carrying 700 W of other
+    loads, a 100 W run of its own is 100 W, not 800 (the unify audit,
+    2026-10-03). Without readings, its declared steps since."""
     f = _fleet_with_meters({"Plug": 0.0})
     plug = f.subs["Plug"].phases["a"]
-    plug.level, plug.baseline = 271.0, 1.0
-    f.sub_rows["Plug"] = {"a": [(T0 - 60.0, 254.0), (T0 - 2.0, 291.0), (T0 + 30.0, 271.0)]}
-    assert f._meter_level("Plug", "c", T0) == 290.0
-    assert f._meter_level("Plug", "c") == 270.0                            # no moment asked: its level
-    assert f._meter_level("Plug", "c", T0 - 3600.0) == 270.0               # no reading yet: its level
+    plug.interval = 10.0
+    _declare(plug, (T0 - 1.0, 290.0, None, T0 - 12.0, T0 - 2.0))
+    f.sub_rows["Plug"] = {"a": [(T0 - 60.0, 1.0), (T0 - 2.0, 291.0), (T0 + 30.0, 271.0)]}
+    assert f._meter_level("Plug", "c", T0, T0) == 290.0
+    assert f._meter_level("Plug", "c", T0 + 60.0, T0) == 270.0
+    f.sub_rows["Plug"]["a"] = [(T0 - 60.0, 701.0), (T0 - 2.0, 801.0), (T0 + 30.0, 790.0)]
+    assert f._meter_level("Plug", "c", T0 + 60.0, T0) == 89.0             # the circuit's 700 W left out
+    f.sub_rows, f._sub_seed = {}, {}
+    _declare(plug, (T0 + 600.0, -40.0, None, T0 + 590.0, T0 + 600.0))
+    assert f._meter_level("Plug", "c", T0 + 900.0, T0) == 250.0            # no readings: its steps since
 
 
 def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
@@ -3305,7 +3320,6 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     a run it neither owns nor rose for."""
     f = _fleet_with_meters({"Strip": 0.0})
     f.single = {"Strip": False}
-    f.agnostic = {"Strip": True}
     strip = f.subs["Strip"].phases["a"]
     strip.interval = 6.0
     _declare(strip, (T0 + 2.0, 279.0, None, T0 - 4.0, T0 + 2.0), (T0 + 2219.0, -426.0, None, T0 + 2213.0, T0 + 2219.0))
@@ -3320,6 +3334,160 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 20.0)
     other = D._Open(since=T0 + 600.0, watts=279.0, var=None, levels=[(T0 + 600.0, 279.0)])
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, other], 385.0) is None   # not its: it did not rise for it
+
+
+def test_a_channel_the_votes_do_not_place_yet_may_carry_any_phase():
+    """A channel's phase is what the votes say and nothing else (the unify
+    audit, 2026-10-03): with 29 votes a plug is placed nowhere and asked
+    about every phase - its rise is a step on b, its silence a hold on b,
+    though its label says "a" and its votes c - and with the 30th on c only.
+    Netting a meter's change out of a grid step needs it placed."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    f.main.phases["b"] = D.PhaseState()
+    plug = f.subs["Plug"].phases["a"]
+    plug.interval, plug.last_ts = 10.0, T0 + 900.0
+    _declare(plug, (T0 + 1.0, 300.0, None, T0 - 9.0, T0 + 1.0))
+    f.sub_rows["Plug"] = {"a": [(T0 - 60.0, 0.0), (T0 + 1.0, 300.0)]}
+    f._now = T0 + 3600.0
+    f.phase_votes = {"Plug": {"a": {"c": D.PHASE_MAP_MIN_VOTES - 1}}}
+    assert f.phase_map("Plug") == {}
+    assert f._meter_stepped("Plug", "b", T0, 150.0, True) and f._meter_on("Plug", "b", T0, 300.0)
+    assert f._meter_level("Plug", "b", T0 + 60.0, T0) == 300.0
+    assert f._meter_held("Plug", "b", T0 + 1800.0, True)                    # silent then: held, on b too
+    assert f._meter_totals("b", T0, 5.0, True) == {}                        # placed nowhere: nothing netted
+    f.phase_votes = {"Plug": {"a": {"c": D.PHASE_MAP_MIN_VOTES}}}
+    assert f.phase_map("Plug") == {"a": "c"}
+    assert not f._meter_stepped("Plug", "b", T0, 150.0, True) and not f._meter_on("Plug", "b", T0, 300.0)
+    assert f._meter_level("Plug", "b", T0 + 60.0, T0) is None and not f._meter_held("Plug", "b", T0 + 1800.0, True)
+    assert f._meter_stepped("Plug", "c", T0, 150.0, True) and f._meter_held("Plug", "c", T0 + 1800.0, True)
+    assert "Plug" in f._meter_totals("c", T0, 5.0, True)
+
+
+def test_any_meters_rise_owns_a_start_and_the_innermost_of_alike():
+    """A 3EM's channel owns a start through its rise as a plug does - the
+    kiln's legs at Hiša (Anze, 2026-10-03) - on a channel the votes have not
+    placed yet; and where a meter inside it rose alike, that meter: its
+    channel is the load's alone."""
+    f = _fleet_with_meters({})
+    grid = f.main.phases["c"]
+    _declare(grid, (T0, 500.0, None, T0 - 2.0, T0))
+    his = D.Detector()
+    for c in "abc":
+        his.phases[c] = D.PhaseState(noise=5.0, interval=10.0, last_ts=T0 + 60.0)
+    _declare(his.phases["b"], (T0 + 3.0, 495.0, None, T0 - 7.0, T0 + 3.0))
+    f.subs["Hiša"] = his
+    assert f._meter_started("c", T0, 500.0) == ("Hiša", 495.0)
+    pc = D.Detector()
+    pc.phases["a"] = D.PhaseState(noise=2.0, interval=10.0, last_ts=T0 + 60.0)
+    _declare(pc.phases["a"], (T0 + 5.0, 492.0, None, T0 - 5.0, T0 + 5.0))
+    f.subs["Blaž PC"], f.parents = pc, {"Blaž PC": "Hiša"}
+    assert f._meter_started("c", T0, 500.0) == ("Blaž PC", 492.0)
+
+
+def test_a_meters_steps_are_asked_over_the_grid_steps_span():
+    """One window for what a meter did at a grid step - the grid step's own
+    span, as the meters' totals are (Anze, 2026-10-01): a meter's span
+    already reaches its latency back, and a moment padded by its latency
+    counted it twice (the unify audit, 2026-10-03). A step of the meter's
+    that ended before the grid's began, though within its latency of it,
+    neither makes it "stepped" nor un-holds it; one overlapping does both."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    plug, grid = f.subs["Plug"].phases["a"], f.main.phases["c"]
+    plug.interval = 10.0                                                    # latency 30 s
+    _declare(grid, (T0, 300.0, None, T0 - 4.0, T0))
+    _declare(plug, (T0 - 20.0, 300.0, None, T0 - 30.0, T0 - 20.0))
+    f._now = T0 + 3600.0
+    assert not f._meter_stepped("Plug", "c", T0, 150.0, True) and f._meter_held("Plug", "c", T0, True)
+    _declare(plug, (T0 + 5.0, 300.0, None, T0 - 6.0, T0 + 5.0))
+    assert f._meter_stepped("Plug", "c", T0, 150.0, True) and not f._meter_held("Plug", "c", T0, True)
+
+
+def test_a_circuits_stop_ends_its_run_by_its_change_not_its_level():
+    """A 3EM channel carrying 700 W of other loads never reads below its 100 W
+    run's size, read absolutely: its stop ends the run once the channel is
+    back to what it read before the run started (the unify audit,
+    2026-10-03). Another load's 300 W stop, though it leaves the channel
+    below that, is not the run's: unlike it in size, and still reading
+    enough to carry it."""
+    f = _fleet_with_meters({"Hiša": 0.0})
+    ch, grid = f.subs["Hiša"].phases["a"], f.main.phases["c"]
+    ch.interval = 10.0
+    _declare(grid, (T0, 100.0, None, T0 - 2.0, T0))
+    _declare(ch, (T0 + 3.0, 100.0, None, T0 - 7.0, T0 + 3.0), (T0 + 1203.0, -300.0, None, T0 + 1193.0, T0 + 1203.0),
+             (T0 + 2403.0, -100.0, None, T0 + 2393.0, T0 + 2403.0))
+    f.sub_rows["Hiša"] = {"a": [(T0 - 60.0, 700.0), (T0 + 3.0, 800.0), (T0 + 1203.0, 500.0), (T0 + 2403.0, 400.0)]}
+    run = D._Open(since=T0, watts=100.0, var=None, levels=[(T0, 100.0)], meter="Hiša")
+    assert f._meter_stop("c", T0 + 1198.0, T0 + 1200.0, [run], 300.0) is None   # another load's stop
+    f.sub_rows["Hiša"]["a"] = [(T0 - 60.0, 700.0), (T0 + 3.0, 800.0), (T0 + 2403.0, 700.0)]
+    assert f._meter_stop("c", T0 + 2398.0, T0 + 2400.0, [run], 100.0) is run      # its own
+
+
+def test_every_meters_session_is_matched_by_its_peak_in_the_grids_terms():
+    """One match for every meter (the unify audit; Anze, 2026-10-03): per
+    phase, by the PEAK, times the meter's gain. A slow 3EM channel dilutes a
+    66 s boiler pulse's mean (1,241 W of 1,813) as Kozolec's Shelly did, and
+    still pairs by what it peaked at; a meter reading 20 % low pairs once its
+    gain is learned, and votes by it."""
+    pulse = D.Session("c", T0, T0 + 66.0, {"c": [(T0, 1813.0)]})
+    slow = D.Session("b", T0 + 5.0, T0 + 71.0, {"b": [(T0 + 5.0, 1800.0), (T0 + 30.0, 900.0)]})
+    assert abs(slow.power_by_phase()["b"] - 1813.0) > D.MATCH_POWER_REL * 1813.0       # its mean misses
+    assert D._same_load(pulse, slow, {"b": "c"}, 1.0, 60.0)
+    assert not D._same_load(pulse, slow, {"b": "a"}, 1.0, 60.0)                          # placed elsewhere
+    low = D.Session("a", T0 + 5.0, T0 + 71.0, {"a": [(T0 + 5.0, 1450.0)]})
+    assert not D._same_load(pulse, low, {}, 1.0, 60.0) and D._same_load(pulse, low, {}, 1.25, 60.0)
+    f = D.Fleet()
+    f.meter_gain["Plug"] = {"p": [math.log(1.25), D.METER_GAIN_MIN]}
+    f._vote_phases({"Plug": [low]}, 5.0, [pulse])
+    assert f.phase_votes["Plug"] == {"a": {"c": 1}}
+
+
+def test_a_meters_energy_answers_only_on_the_sessions_phases():
+    """A 3EM's energy is its channels' that may carry the session's phases,
+    in the grid's terms: its rise on a channel on another phase is another
+    load (the unify audit, 2026-10-03). Summed whole, Hiša's 2 kW on A
+    drowned its 500 W run on C."""
+    f = _fleet_with_meters({"Hiša": 0.0})
+    his = f.subs["Hiša"]
+    his.phases["a"].interval = 10.0
+    his.phases["b"] = D.PhaseState(noise=5.0, interval=10.0)
+    _declare(his.phases["a"], (T0 + 2.0, 500.0, None, T0 - 8.0, T0 + 2.0))
+    f.phase_votes = {"Hiša": {"a": {"c": D.PHASE_MAP_MIN_VOTES}, "b": {"a": D.PHASE_MAP_MIN_VOTES}}}
+    run = D.Session(phases="c", start=T0, end=T0 + 1800.0, levels={"c": [(T0, 500.0)]})
+    f._now = T0 + 3600.0
+    f.sub_rows["Hiša"] = {"a": [(T0 - 1800.0, 100.0), (T0 + 2.0, 600.0), (T0 + 1800.0, 100.0), (T0 + 3500.0, 100.0)],
+                          "b": [(T0 - 1800.0, 50.0), (T0 + 2.0, 2050.0), (T0 + 1800.0, 50.0), (T0 + 3500.0, 50.0)]}
+    assert f._energy_pairs([run])
+    f.phase_votes = {"Hiša": {"a": {"a": D.PHASE_MAP_MIN_VOTES}, "b": {"b": D.PHASE_MAP_MIN_VOTES}}}
+    assert not f._energy_pairs([run])                                     # placed on no channel of C
+
+
+def test_the_grids_reading_is_judged_house_side_by_the_fleet_each_pass():
+    """The grid's reading is the house alone where it never exports, judged
+    on its own rows each pass by the fleet - kept where a pass is too short
+    to say. A meter's is not judged: what the guard brings assumes a reading
+    many loads share (the unify audit, 2026-10-03)."""
+    f = D.Fleet()
+    rows = [(T0 + 5.0 * k, 100.0) for k in range(300)]
+    f.process({"a": rows}, {"Plug": {"a": rows}}, now_ts=T0 + 1500.0)
+    assert f.main.phases["a"].floor_zero and not f.subs["Plug"].phases["a"].floor_zero
+    f.process({"a": [(T0 + 1505.0, -80.0)]}, {}, now_ts=T0 + 1510.0)
+    assert f.main.phases["a"].floor_zero                                  # one reading says nothing
+    exporting = [(t, -500.0 if k % 50 == 0 else 100.0) for k, (t, _) in enumerate(rows)]
+    g = D.Fleet()
+    g.process({"a": exporting}, {}, now_ts=T0 + 1500.0)
+    assert not g.main.phases["a"].floor_zero
+
+
+def test_a_run_the_reading_carries_half_of_is_still_on():
+    """A load sags and is still on - as a meter's run is until its meter fell
+    by half its size: a run is ended as one the reading cannot carry only
+    once the whole reading is below half of it (Kozolec's 10.5 kW charge on
+    a phase reading far less still is)."""
+    st = D.PhaseState(noise=10.0, baseline=0.0, level=200.0, interval=5.0, floor_zero=True)
+    st.open_edges = [D._Open(since=T0, watts=300.0, var=None, levels=[(T0, 300.0)])]
+    assert st._unseen_stop(T0 + 60.0, 200.0) == [] and st.open_edges           # sagged to 200: on
+    got = st._unseen_stop(T0 + 120.0, 120.0)
+    assert len(got) == 1 and not st.open_edges                                 # under half: it cannot be
 
 
 def test_a_meter_others_hang_under_is_never_guessed_one_device():
@@ -3353,8 +3521,31 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     f.main.signatures = [home, other]
     run = D.Session(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
     assert f._held_homes(run) == [31]                                    # the plug held: not the hidrofor
+    f.single = {"Hidrofor": False}
+    assert f._held_homes(run) == [31]                                    # a circuit that held did not start it either
     _declare(f.subs["Hidrofor"].phases["a"], (T0 + 3.0, 880.0, None, T0 - 7.0, T0 + 3.0))
     assert f._held_homes(run) == []                                      # the plug started with it
+
+
+def test_a_meters_sessions_decide_identity_as_its_declaration_says():
+    """One notion of "holds one device" (Anze, 2026-10-03): a meter's
+    session decides which signature a run joins - and its energy places one
+    it has no session for - where the meter holds one device, as the user
+    declared it or, undeclared, as its library's shape says; a circuit's
+    sessions do not, whatever its library looks like."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    own = _sig(1, 300.0, 600.0, 40, first_seen=T0, last_seen=T0)
+    f.subs["Plug"].signature_of = lambda s: own
+    sub = D.Session("a", T0, T0 + 600.0, {"a": [(T0, 300.0)]})
+    run = D.Session("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]})
+    f.identity = {"Plug": {"1": 77}}
+    asked = []
+    f._place = lambda m, name, prefer: asked.append(prefer)
+    f.single = {"Plug": False}
+    f._file_as(run, "Plug", sub)
+    f.single = {"Plug": True}
+    f._file_as(run, "Plug", sub)
+    assert asked == [None, 77], asked
 
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
@@ -3534,7 +3725,7 @@ def test_a_one_device_meters_stop_ends_the_run_it_started():
     st.open_edges = [D._Open(since=T0 - 7800.0, watts=689.0, var=None, levels=[(T0 - 7800.0, 689.0)]),
                      D._Open(since=T0 - 500.0, watts=118.0, var=None, levels=[(T0 - 500.0, 118.0)]),
                      D._Open(since=T0 + 1.7, watts=909.0, var=None, levels=[(T0 + 1.7, 909.0)])]
-    _declare(st, (T0 + 73.0, -731.0, None, T0 + 69.0, T0 + 73.0))
+    _declare(st, (T0 + 1.7, 909.0, None, T0 - 2.6, T0 + 1.7), (T0 + 73.0, -731.0, None, T0 + 69.0, T0 + 73.0))
     closed = st._pair(T0 + 73.0, 731.0, None, 1115.0)
     assert [s.start for s in closed] == [T0 + 1.7], [s.start for s in closed]   # the pump's run
     assert sorted(o.watts for o in st.open_edges) == [118.0, 689.0]
@@ -3745,7 +3936,7 @@ def test_a_pause_the_plug_read_plainly_ends_its_run_and_the_restart_is_a_new_one
     end = T0 + 19 * 3600.0
     cuts = [T0 + 15 * 3600.0, T0 + 17 * 3600.0]
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
-        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+        fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
     want = [(on, p1), (r1, off1), (on2, p2), (r2, off)]                                 # the plug's own four runs
     own = sorted((s["start"], s["end"]) for s in fleet.subs["Plug"].recent if s["kwh"] > 0.005)
     assert len(own) == 4 and all(abs(a - wa) <= 10 and abs(b - wb) <= 10 for (a, b), (wa, wb) in zip(own, want)), own
@@ -3863,7 +4054,7 @@ def test_a_meters_stop_ends_its_run_only_through_a_fall_that_accounts_for_it():
     fleet.main._file = keep
     end = T0 + 11 * 3600.0
     for (part, e), (sub, _) in zip(_passes(rows, [], end), _passes({"a": plug}, [], end)):
-        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+        fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
     got = sorted(((round(s.start - e_on), round(s.duration_s), round(s.energy_wh)) for s in filed if s.duration_s > 5), key=lambda g: g[0])
     evse = [g for g in got if abs(g[0]) <= 10 and abs(g[1] - 23 * 60) <= 30]
     assert len(evse) == 1 and abs(evse[0][2] - 3588.0 * evse[0][1] / 3600.0) <= 100, got      # 23 min at 3.6 kW, not at 263 W
@@ -3906,7 +4097,7 @@ def _crowded_fleet():
     fleet.main._file = keep
     cuts = [T0 + 6 * 3600.0 * k for k in range(4, 7)]
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
-        fleet.process(part, {"Plug": sub}, now_ts=e, agnostic={"Plug": True}, single={"Plug": True})
+        fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
     return filed, fleet, on, off, small
 
 

@@ -281,7 +281,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                          update_method=self._run, always_update=False)
         self.entry = entry
         # Meters below the main one come from the Energy dashboard, resolved once
-        # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
+        # per run: {name: {"fields": {...}, "parent": name|None, ...}}
         self.submeters: Dict[str, dict] = {}
         # ...and every meter the dashboard has, those left out of detection
         # on the settings page too (see CONF_IGNORE_METERS)
@@ -290,7 +290,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # V x dI per phase: the apparent power one quantum of the amps
         # behind this role's power factor is worth. Measured, never set.
         self.q_quantum: Dict[str, float] = {}
-        self._amp_steps: Dict[str, List[float]] = {}
+        self._amp_steps: Dict[object, List[float]] = {}
+        # ...and each meter's channel's, from its own amps, the same way
+        self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
@@ -356,18 +358,16 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
                 fields = match_meter_entities(device_rows(self.hass, entry.device_id))
-            phases = [p for p in PHASES if fields.get(f"power_{p}")]
-            agnostic = False
-            if len(phases) < 2:
-                # no per-phase breakdown: the dashboard's own power sensor (or
-                # the single one found) stands in, and matching ignores phases
-                total = dev.power or (fields.get(f"power_{phases[0]}") if phases else None)
-                if not total:
+            if not any(fields.get(f"power_{p}") for p in PHASES):
+                # no per-phase reading: the dashboard's own power sensor, one
+                # channel whose label means nothing - the votes find its
+                # phase (Fleet.phase_map). A lone per-phase reading is fed
+                # under its own label, with its own reactive power
+                if not dev.power:
                     continue
-                fields = {"power_a": total}
-                agnostic = True
+                fields = {"power_a": dev.power}
             parent = by_stat.get(dev.included_in or "")
-            out[dev.label] = {"fields": fields, "agnostic": agnostic,
+            out[dev.label] = {"fields": fields,
                               "parent": parent.label if parent else None, "energy": dev.energy,
                               # None: not declared, the library's shape decides
                               "single": None if declared is None else dev.energy in declared,
@@ -985,15 +985,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 for p, target in samples.items():
                     if generation.get(p):
                         pv[p] = _align(generation[p], target)
-                for p, rows in samples.items():
-                    if p in self.fleet.main.phases:
-                        # a reading that never exports is the house alone, and
-                        # the house cannot draw less than nothing. Kept, and
-                        # saved, where a pass is too short to say: "can't tell"
-                        # read as "no" switched the guard off on every live pass.
-                        verdict = carries_generation(rows)
-                        if verdict is not None:
-                            self.fleet.main.phases[p].floor_zero = verdict is False
                 for p in list(pv):
                     verdict = carries_generation(samples[p])
                     if verdict is not None:
@@ -1009,12 +1000,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 # dashboard no longer resolves, whose detector is kept unread
                 self.fleet.horizon_skip = ({n for n, m in self.submeters.items() if m.get("horizon_skip")}
                                            | (set(self.fleet.subs) - set(self.submeters)))
-                sub_samples, sub_q, agnostic = {}, {}, {}
+                sub_samples, sub_q = {}, {}
                 for name, meter in self.submeters.items():
-                    ss, sq = await self._read(start, end, meter["fields"])
+                    ss, sq = await self._read(start, end, meter["fields"], name)
                     if ss:
                         sub_samples[name], sub_q[name] = ss, sq
-                        agnostic[name] = meter["agnostic"]
                 # the recorder's start-of-window row is a copy, not a reading - see
                 # without_window_start; the sums above needed it, the detector must not
                 samples = without_window_start(samples, start.timestamp())
@@ -1024,9 +1014,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 read = time.monotonic()
                 self.fleet.wait_cap_s = self.meter_wait_s
                 await self.hass.async_add_executor_job(
-                    self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
+                    self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
                     dict(self.q_quantum), single, switches or None, numbers or None,
-                    inputs or None,
+                    inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()},
                 )
                 self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
                                   "hours": round((end - start).total_seconds() / 3600.0, 2)}
@@ -1162,23 +1152,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     # the error bar on every factor derived from them. A
                     # power-factor entity needs no amps and carries its own
                     # precision, so it is left ungated.
-                    # ACCUMULATED across passes, never re-measured from one.
-                    # A pass reads a single minute of history, which holds
-                    # nowhere near enough changes to confirm a lattice - so
-                    # measuring per pass returned nothing and, because it
-                    # cleared first, threw away what the six-hour backfill
-                    # slices HAD learned. Resolution is a property of the
-                    # instrument; it does not expire between passes.
-                    amps = series.get(("current", phase)) or []
-                    volts = series.get(("voltage", phase)) or []
-                    if amps and volts:
-                        steps = self._amp_steps.setdefault(phase, [])
-                        steps.extend(abs(b - a) for (_, a), (_, b)
-                                     in zip(amps, amps[1:]) if b != a)
-                        del steps[:-AMP_STEP_MEMORY]
-                        dq = quantum_of_steps(steps)
-                        if dq:
-                            self.q_quantum[phase] = dq * _median([v for _, v in volts])
+                    got = self._learn_q_quantum(phase, series, phase)
+                    if got:
+                        self.q_quantum[phase] = got
                 break
         return out
 
@@ -1243,8 +1219,32 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return
         self.average_power = mean_power(previous, energy, processed_to - since)
 
-    async def _read(self, start: datetime, end: datetime, cfg: dict):
-        """(watts per phase, reactive VAr per phase) over the window.
+    def _learn_q_quantum(self, key, series: Dict[tuple, list], phase: str) -> Optional[float]:
+        """The apparent power one quantum of the amps behind a channel's
+        reactive power is worth - V x dI - the error bar on every power factor
+        derived from them; the same for the grid's channels (``key`` its
+        phase) and each meter's ((meter, channel)). A power-factor entity
+        needs no amps and carries its own precision, so it is left ungated.
+        ACCUMULATED across passes, never re-measured from one. A pass reads a
+        single minute of history, which holds nowhere near enough changes to
+        confirm a lattice - so measuring per pass returned nothing and,
+        because it cleared first, threw away what the six-hour backfill
+        slices HAD learned. Resolution is a property of the instrument; it
+        does not expire between passes."""
+        amps = series.get(("current", phase)) or []
+        volts = series.get(("voltage", phase)) or []
+        if not (amps and volts):
+            return None
+        steps = self._amp_steps.setdefault(key, [])
+        steps.extend(abs(b - a) for (_, a), (_, b) in zip(amps, amps[1:]) if b != a)
+        del steps[:-AMP_STEP_MEMORY]
+        dq = quantum_of_steps(steps)
+        return dq * _median([v for _, v in volts]) if dq else None
+
+    async def _read(self, start: datetime, end: datetime, cfg: dict, meter: Optional[str] = None):
+        """(watts per phase, reactive VAr per phase) over the window - and,
+        for a ``meter`` below the grid, what its amps resolve, as the grid's
+        (_learn_q_quantum).
 
         The VAr here is only ever derived from readings that sit on one
         device; a role whose watts and amps come from different meters gets
@@ -1262,6 +1262,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                             series.get(("var", p)), series.get(("va", p)))
             if var:
                 q[p] = var
+            got = self._learn_q_quantum((meter, p), series, p) if meter is not None else None
+            if got:
+                self.sub_q_quantum.setdefault(meter, {})[p] = got
         return samples, q
 
 
