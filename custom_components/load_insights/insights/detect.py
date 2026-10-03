@@ -330,8 +330,19 @@ EDGE_LIBRARY = 150             # clusters kept per phase and direction
 # (2026-09-30). It replaced joining the nearest cluster within +-10 %.
 # ^ EDGE_BATCH: the name this note goes by elsewhere
 # One measurement error at small steps is EDGE_NOISE_SHARE of the phase's
-# measured noise, fixed per group when it starts: a fixed 15 W suited Home
-# (whose phases' noise is 10, 35 and 114 W) and ran every small fall at quiet
+# measured noise - the QUIETEST it has measured: set at a group's first step
+# and re-binned whenever the phase's noise falls below it, never when it
+# rises (_rescale). Fixed at the first step, it was hostage to that moment:
+# on Home's 23 Sep - 2 Oct the phases' first rises came minutes after a dawn
+# seed read 372 W of noise on A and 218 W on C (10 W at night all ten days),
+# a 93 W unit merged A's starts of 12-370 W into one cluster, and every +14 W
+# creep rise "started again" and ended the 261 W run of Mansarda's
+# washer-dryer 6 s in. Down only, it settles the first quiet night and never
+# rides the daily swing (following the noise both ways was ruled out,
+# AGENTS). Home's card, hidden / circuits / fed devices 19.7/15.9 -> 33.9/16.7,
+# 32.9/16.1 -> 44.0/12.9, 53.9/11.0 -> 67.3/7.6 % capture/impurity; Kozolec
+# and Andrej identical, their units already at the floor (2026-10-04).
+# A fixed 15 W unit suited Home (whose phases' noise is 10, 35 and 114 W) and ran every small fall at quiet
 # Kozolec (10 W) into one cluster - its fridges' runs then closed at 8 % of
 # their length (75 of 248 right, against 175 at 5 W). Benched at a quarter,
 # half and all of the noise: a quarter wins at both sites - Home 82.6 / 66.4 %
@@ -4394,9 +4405,11 @@ class Detector:
         one. See EDGE_BATCH."""
         g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
         key = ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
+        noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in ph)   # a pattern: its phases' noise together
         if g not in self.edge_unit:
-            noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in ph)   # a pattern: its phases' noise together
             self.edge_unit[g] = EDGE_NOISE_SHARE * noise
+        elif EDGE_NOISE_SHARE * noise < self.edge_unit[g]:
+            self._rescale(g, EDGE_NOISE_SHARE * noise)
         unit = self.edge_unit[g]
         b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
         h = self.edge_hist.setdefault(g, {})
@@ -4438,6 +4451,30 @@ class Detector:
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _rescale(self, g: str, unit: float) -> None:
+        """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
+        old bin's weight spread evenly over the new bins it covers, and its
+        segments cut again - see EDGE_NOISE_SHARE."""
+        old, self.edge_unit[g] = self.edge_unit[g], unit
+
+        def remap(hist: dict, angled: bool = False) -> dict:
+            out: dict = {}
+            for k, w in hist.items():
+                b, ab = (int(k.split(":")[0]), ":" + k.split(":")[1]) if angled else (k, "")
+                lo, hi = (edge_scale(math.sinh(x * EDGE_BIN * EDGE_SCALE_REL) * old / EDGE_SCALE_REL, unit) / EDGE_BIN
+                          for x in (b, b + 1))
+                for j in range(math.floor(lo), math.ceil(hi)):
+                    key = f"{j}{ab}" if angled else j
+                    out[key] = out.get(key, 0.0) + w * (min(hi, j + 1) - max(lo, j)) / (hi - lo)
+            return out
+        if g in self.edge_hist:
+            self.edge_hist[g] = remap(self.edge_hist[g])
+        if g in self.edge_hist_keys:
+            self.edge_hist_keys[g] = {k: remap(row) for k, row in self.edge_hist_keys[g].items()}
+        if g in self.edge_hist_angle:
+            self.edge_hist_angle[g] = remap(self.edge_hist_angle[g], True)
+        self._segs.pop(g, None)
 
     def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
                     members: List["EdgeCluster"]) -> List["EdgeCluster"]:

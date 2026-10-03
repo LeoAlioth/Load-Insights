@@ -2835,6 +2835,41 @@ def test_steps_join_the_cluster_their_size_piles_up_in():
     assert D.valley_segments({}) == []
 
 
+def test_a_creep_rise_does_not_end_the_big_run_it_follows():
+    """Home's phase A, 24 Sep 03:41 UTC: Mansarda's washer-dryer starts +261 W
+    and creeps +42 W six seconds on. The size scale's unit had frozen at the
+    phase's first rise of the window, three minutes after a dawn seed read
+    372 W of noise - a measurement error of 93 W, against 10 W the rest of the
+    ten days - so one density segment ran 14-300 W, the creep rise was the big
+    start's own cluster "starting again", and it ended the 261 W run 6 s in
+    (2026-10-04). The unit follows the phase's quietest measured noise down
+    (EDGE_NOISE_SHARE, Detector._rescale): the run lasts to its stop, read in
+    one call or in ten-minute passes alike."""
+    rnd = random.Random(0)
+    on = [(150.0, 210.0, 1000.0)]                       # a kettle while the seed still swings
+    t = 1800.0
+    while t < 20000.0:                                  # a quiet night of small loads, 12-40 W
+        on.append((t, t + rnd.uniform(20.0, 60.0), rnd.choice((12.0, 14.0, 16.0, 20.0, 24.0, 30.0, 40.0))))
+        t += rnd.uniform(40.0, 100.0)
+    big = 15000.0
+    on += [(big, big + 600.0, 261.0), (big + 20.0, big + 600.0, 42.0)]
+    rows, t = [], T0
+    while t < T0 + 21600.0:
+        s = t - T0
+        swing = rnd.uniform(-250.0, 250.0) if s < 125.0 else rnd.uniform(-3.0, 3.0)
+        rows.append((t, 450.0 + swing + sum(w for a, b, w in on if a <= s < b)))
+        t += 5.0
+    end = T0 + 22200.0
+    whole = D.Detector().process({"a": rows}, now_ts=end)
+    det, sliced = D.Detector(), []
+    for part, e in _passes({"a": rows}, [T0 + 600.0 * k for k in range(1, 37)], end):
+        sliced += det.process(part, now_ts=e)
+    assert _as_filed(sliced) == _as_filed(whole)
+    run = [s for s in whole if abs(s.start - (T0 + big)) < 10]
+    assert run and max(s.duration_s for s in run) > 580, [(round(s.start - T0 - big), round(s.duration_s)) for s in run]
+    assert det.edge_unit["a|1"] < 5.0, det.edge_unit          # a quarter of the quiet night's 10 W, not the seed's swing
+
+
 def test_a_live_meter_carries_load_in_a_one_minute_pass():
     """Home's phase A reports every 4.3 s, so a live pass holds about 14 of its
     readings; a dead port reads zero however many there are (2026-09-30)."""
