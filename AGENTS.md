@@ -815,6 +815,15 @@ two sites' ten-day exports unless stated.
   ~400 W load: 142 -> 404 -> 465 W over 15 s) is booked at its first step and
   cannot pair with its full-size stop. Agreed meanwhile: a run placed at a
   meter is closed once that meter's total reads below the run's opening size.
+- [ ] **Back burner (forecasts, parked 2026-10-03 - detection first): an input's
+  "existence".** A sensor input's existence means "hours its history is known",
+  so a sensor whose history starts mid-window (the attic living-room
+  temperature, from 3 Aug) acts as a date marker. Since linked inputs act only
+  on their device (d016699), Attic AC's baseline stands on its July and its
+  day-ahead error rose 54 -> 145 W. Proposed: a sensor input fits only its
+  states, never its existence; calendars and binary inputs keep both. Also
+  parked: the site still forecasts worse with signals than without (1237 vs
+  1070 W hour-ahead over 1-3 Oct). Backtest scripts: scratchpad fc/ (bt.py).
 
 ### Confirmed, unfixed
 
