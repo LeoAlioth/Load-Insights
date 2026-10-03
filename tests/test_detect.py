@@ -3543,6 +3543,41 @@ def test_an_event_on_several_phases_is_placed_where_every_leg_was_one_meters():
     assert cl.where != "Hiša"
 
 
+def test_a_meters_stop_the_grid_did_not_show_ends_its_run():
+    """Home 09-22 11:20: the pump stopped (its plug -942 W) as a 3.2 kW load
+    on its phase rose by about as much - the grid declared no fall at all,
+    and the pump's 755 W run, freed by its plug's fall, stayed open two
+    hours, 1.5 kWh in the hidrofor's signature. A run a meter's own step
+    started ends at the meter's fall where the grid, read past it, showed
+    none of its own - by _meter_stop's rule, the fall asked once - if the
+    meter still shows it stopped: a pause too short for the grid is not -
+    and only a stop the meter timed, its span within the merge tolerance."""
+    f = _fleet_with_meters({"Hidrofor": 0.0})
+    plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
+    plug.interval = 10.0
+    _declare(grid, (T0, 755.0, None, T0 - 4.0, T0))
+    _declare(plug, (T0 + 1.0, 946.0, None, T0 - 9.0, T0 + 1.0), (T0 + 61.0, -942.0, None, T0 + 51.0, T0 + 61.0))
+    f.sub_rows["Hidrofor"] = {"a": [(T0 - 60.0, 1.0), (T0 + 1.0, 947.0), (T0 + 61.0, 5.0)]}
+    f._bind()
+    grid.lib, grid.name, grid.baseline, grid.level = f.main, "c", 3000.0, 3755.0
+    run = D._Open(since=T0, watts=755.0, var=None, levels=[(T0, 755.0)], meter="Hidrofor")
+    grid.open_edges = [run]
+    assert grid._meter_ended(T0 + 60.0) == []                               # the cursor starts here
+    assert grid._meter_ended(T0 + 70.0) == [] and grid.open_edges           # the grid has not read past it yet
+    f.sub_rows["Hidrofor"]["a"].append((T0 + 70.0, 950.0))                # back on after a pause the grid never showed
+    assert grid._meter_ended(T0 + 120.0) == [] and grid.open_edges
+    f.sub_rows["Hidrofor"]["a"].pop()
+    grid.ended_upto, f._stops_used = T0 + 50.0, {}
+    got = grid._meter_ended(T0 + 120.0)
+    assert len(got) == 1 and got[0].end == T0 + 61.0 and not grid.open_edges
+    assert grid._meter_ended(T0 + 200.0) == []
+    run = D._Open(since=T0, watts=755.0, var=None, levels=[(T0, 755.0)], meter="Hidrofor")
+    grid.open_edges, grid.ended_upto, f._stops_used = [run], T0 + 50.0, {}
+    plug.declared[-1] = (T0 + 61.0, -942.0, None, T0 + 1.0, T0 + 61.0)       # a fall it did not time: its span a minute
+    plug.declared_t[-1] = T0 + 61.0
+    assert grid._meter_ended(T0 + 120.0) == [] and grid.open_edges
+
+
 def test_a_meter_others_hang_under_is_never_guessed_one_device():
     """A meter with meters inside it holds several by definition - Home's
     Hiša, with Blaž PC under it, though 52 % of its sightings are one

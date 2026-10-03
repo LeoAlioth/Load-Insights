@@ -1582,6 +1582,7 @@ class PhaseState:
     # dragged the idle floor to -569 W for the rest of the day, so every
     # step after it was measured from nonsense (2026-09-18).
     floor_zero: bool = False
+    ended_upto: Optional[float] = None    # how far a meter's falls were asked about - see _meter_ended
     # this phase's own floor, so a site can ask for more or less sensitivity
     # than the default without touching the measured part
     min_noise: float = MIN_NOISE_W
@@ -1663,7 +1664,7 @@ class PhaseState:
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Session]:
-        due = self._input_ended(ts) if self.lib is not None and self.open_edges else []
+        due = self._input_ended(ts) + self._meter_ended(ts) if self.lib is not None and self.open_edges else []
         silent = self.silence_due() if not held else None
         if silent is not None and silent < ts:     # on its own; a Detector has done this already (_advance)
             due += self.stand_in(silent)
@@ -1683,6 +1684,26 @@ class PhaseState:
         of Fleet._meter_stop."""
         return bool(o.meter) and self.lib is not None and self.lib.meter_on is not None and \
             self.lib.meter_on(o.meter, self.name, o.since, o.watts)
+
+    def _meter_ended(self, ts: float) -> List[Session]:
+        """Close each run a meter's own step started whose stop that meter
+        showed and the grid did not, at the meter's fall, once the grid has
+        read past it by its own latency and the merge tolerance - see
+        Fleet._meter_ended. Each of the meter's falls is asked once."""
+        if self.lib is None or self.lib.meter_ended is None or not any(o.meter for o in self.open_edges):
+            return []
+        upto = ts - self.latency() - MERGE_TOLERANCE_S
+        frm, self.ended_upto = self.ended_upto if self.ended_upto is not None else upto, upto
+        out = []
+        while upto > frm:
+            got = self.lib.meter_ended(self.name, self.open_edges, frm, upto)
+            if got is None:
+                break
+            o, at = got
+            self.open_edges.remove(o)
+            self._remember_close(o, at)
+            out.append(self._close(o, at, o.now or o.watts, None))
+        return out
 
     def _input_ended(self, ts: float) -> List[Session]:
         """Close runs whose input has switched back and whose stop never came -
@@ -3633,6 +3654,7 @@ class Detector:
     meter_started: Optional[object] = field(default=None, repr=False, compare=False)
     # (meter, phase) -> what the meter draws above its floor now, in the grid's terms - the size of a run that is its
     meter_level: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_ended: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -5224,7 +5246,7 @@ class Fleet:
         main = self.main
         main.meter_steps, main.step_meter, main.meter_held = self._meter_steps, self._step_meter, self._meter_held
         main.meter_stop, main.meter_on = self._meter_stop, self._meter_on
-        main.meter_started, main.meter_level = self._meter_started, self._meter_level
+        main.meter_started, main.meter_level, main.meter_ended = self._meter_started, self._meter_level, self._meter_ended
 
     def _sync_views(self) -> None:
         """The fleet as a tree (Anze, 2026-10-03): every meter others hang
@@ -5240,7 +5262,7 @@ class Fleet:
         for p in [p for p in self.views if p not in tops]:
             v = self.views.pop(p)
             v.main.meter_steps = v.main.step_meter = v.main.meter_held = v.main.meter_stop = None
-            v.main.meter_on = v.main.meter_started = v.main.meter_level = None
+            v.main.meter_on = v.main.meter_started = v.main.meter_level = v.main.meter_ended = None
         for p in sorted(tops):
             v = self.views.get(p)
             if v is None:
@@ -5432,14 +5454,15 @@ class Fleet:
         """How long after a step the grid shares with it this meter has
         declared its own: the LAG_PERCENTILE of what was learned, once
         LAG_MIN_SAMPLES are; until then its latency twice over - the report,
-        then the silence that confirms it - and, where others hang under it,
-        the horizon it is read behind them (_wait_of)."""
+        then the silence that confirms it - and in either case, where others
+        hang under it, the horizon it is read behind them (_wait_of)."""
         rows = self.meter_lag.get(name) or []
+        # ...and a meter others hang under is read its own horizon behind
+        # them, which a lag learned off its own readings' times does not hold
+        # ponytail: a view's own nested views are not asked - one level of nesting at both sites
         if len(rows) >= LAG_MIN_SAMPLES:
             got = sorted(r[1] for r in rows)
-            return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
-        # ...and a meter others hang under is read its own horizon behind them
-        # ponytail: a view's own nested views are not asked - one level of nesting at both sites
+            return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))]) + self._wait_of(name)
         return 2.0 * self._latency(name) + self._wait_of(name)
 
     def _learn_lags(self, at: float) -> None:
@@ -6211,37 +6234,79 @@ class Fleet:
                         # minutes at 257 W (Kozolec 09-28 13:53, 2026-10-02).
                         # Home's pump (-731 W for a plug fall of 818) passes.
                         continue
-                    mine = []
-                    for i, o in enumerate(opens):
-                        if o.since >= e[0]:
-                            continue
-                        if o.meter != name:
-                            rises = [r[1] * gain for r in self._steps_over(name, c, ph, o.since, True)
-                                     if abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
-                            if not rises or -e[1] * gain < 0.5 * max(rises):
-                                continue
-                        mine.append((abs(-e[1] * gain - o.watts), -i, o))
-                    if not mine:
-                        continue
-                    # the one its fall accounts for best, the newest of equals:
-                    # newest first, a plug's 19 W wobble that owned a run of
-                    # its own took the dehumidifier's 300 W stop; and only
-                    # that one - a strip's older load stopping leaves its
-                    # newer one below what it read before it started
-                    o = min(mine, key=lambda x: x[:2])[2]
-                    size = o.watts                      # what it settled at, not a starting surge
-                    left = self._change_since(name, ph, c, o.since, e[4]) * gain
-                    tol = grid._tol(size, max(left, 0.0))
-                    # ...and the fall is of the run's size, or the channel
-                    # reads too little after it to carry the run at all: a
-                    # circuit's other load stopping took it below where it
-                    # stood before the run started, the run still on
-                    read = self._reading(name, c, e[4])
-                    its = (abs(-e[1] * gain - size) <= grid._tol(size, -e[1] * gain)
-                           or (read is not None and read * gain < size - tol))
-                    if left < size - tol and its:
-                        self._stops_used[(name, e[0])] = e[0]
+                    o = self._ended_by(name, c, ph, e, opens)
+                    if o is not None:
                         return o
+        return None
+
+    def _ended_by(self, name: str, c: str, ph: str, e: tuple, opens: list, still: Optional[float] = None):
+        """The open run on ``ph`` that meter ``name``'s fall ``e`` on channel
+        ``c`` ends by _meter_stop's rule - and, asked ``still``, the channel
+        still that far below where it stood then - marked used; None."""
+        gain, grid = self.gain(name, "p"), self.main.phases[ph]
+        mine = []
+        for i, o in enumerate(opens):
+            if o.since >= e[0]:
+                continue
+            if o.meter != name:
+                rises = [r[1] * gain for r in self._steps_over(name, c, ph, o.since, True)
+                         if abs(r[1] * gain - o.watts) <= grid._tol(o.watts, r[1] * gain)]
+                if not rises or -e[1] * gain < 0.5 * max(rises):
+                    continue
+            mine.append((abs(-e[1] * gain - o.watts), -i, o))
+        if not mine:
+            return None
+        # the one its fall accounts for best, the newest of equals: newest
+        # first, a plug's 19 W wobble that owned a run of its own took the
+        # dehumidifier's 300 W stop; and only that one - a strip's older load
+        # stopping leaves its newer one below what it read before it started
+        o = min(mine, key=lambda x: x[:2])[2]
+        size = o.watts                      # what it settled at, not a starting surge
+        left = self._change_since(name, ph, c, o.since, e[4]) * gain
+        tol = grid._tol(size, max(left, 0.0))
+        # ...and the fall is of the run's size, or the channel reads too
+        # little after it to carry the run at all: a circuit's other load
+        # stopping took it below where it stood before the run started, the
+        # run still on
+        read = self._reading(name, c, e[4])
+        its = (abs(-e[1] * gain - size) <= grid._tol(size, -e[1] * gain)
+               or (read is not None and read * gain < size - tol))
+        if left < size - tol and its and (
+                still is None or self._change_since(name, ph, c, o.since, still) * gain < size - tol):
+            self._stops_used[(name, e[0])] = e[0]
+            return o
+        return None
+
+    def _meter_ended(self, ph: str, opens: list, frm: float, upto: float):
+        """(run, when): a run a meter's own step started (_Open.meter) that
+        the meter's fall in (``frm``, ``upto``] ends by _meter_stop's rule -
+        the grid read past it by then, and no fall of its own took the run.
+        Home's pump stopped at 11:20:08 (its plug -942 W) as a 3.2 kW load on
+        its phase rose by about as much: the grid declared no fall, and the
+        pump's 755 W run, freed by its plug's fall, stayed open two hours -
+        1.5 kWh in the hidrofor's signature (09-22, 2026-10-03). Only if the
+        meter still shows it stopped at ``upto``: Kozolec's car charger
+        paused a minute at 15:02, too short for the grid to show, and its
+        last 55 minutes went with the pause (09-20)."""
+        for o in opens:
+            name = o.meter
+            det = self.subs.get(name) if name else None
+            if det is None:
+                continue
+            for c in self._chans(name, ph):
+                st = det.phases[c]
+                lo = bisect.bisect_right(st.declared_t, max(frm, o.since + st.latency()))
+                for e in st.declared[lo:bisect.bisect_right(st.declared_t, upto)]:
+                    # ...a stop the meter timed: one whose span - its last
+                    # reading at the old level to its first at the new - is
+                    # within the merge tolerance. The workshop boiler's
+                    # meter, writing every seven minutes, ended its runs a
+                    # quarter of an hour early, 4 kWh of 23 (Home, 2026-10-03)
+                    if (e[1] < 0 and e[4] - e[3] <= MERGE_TOLERANCE_S and (name, e[0]) not in self._stops_used
+                            and self._on_phase(name, c, e, ph)):
+                        got = self._ended_by(name, c, ph, e, opens, upto)
+                        if got is not None:
+                            return got, e[0]
         return None
 
     def _reading(self, name: str, ch: str, t: float, side: int = 0) -> Optional[float]:
@@ -6413,17 +6478,19 @@ class Fleet:
         moved for SUSTAIN_CADENCES of its cadence after the grid step - silence
         is its value held - has nothing pending, and declared no step that
         way over the grid step's span (_steps_over), on every channel that may
-        carry the phase (_chans). Too soon to tell, or a meter measured on
-        other phases: no."""
+        carry the phase (_chans). Too soon to tell - a meter others hang under
+        read its horizon behind them, not yet that far - or a meter measured
+        on other phases: no."""
         det = self.subs.get(name)
         chans = self._chans(name, ph) if det is not None else []
         if not chans:
             return False
         g = self._grid_step(ph, since)
         end = g[4] if g else since
+        read = self._now - self._wait_of(name)      # how far its own detector has read (_sync_views)
         for c in chans:
             st = det.phases[c]
-            if self._now < end + st.latency() or st.pending:
+            if read < end + st.latency() or st.pending:
                 return False
             if self._steps_over(name, c, ph, since, up):
                 return False                          # it stepped: a placement missed, not a silence
