@@ -362,8 +362,9 @@ def parse(argv):
 def run(args, transform=None, say=print):
     """Replay the exports ``args`` (see parse) through a Fleet, as production
     would have read them; ``transform`` may rebuild the series first.
-    Returns the Fleet, every session its house detector filed (in order),
-    and each sub-meter's series as the Fleet was fed it, its phases summed."""
+    Returns the Fleet, every session its house detector filed or a meter's
+    signature took (Session.owner), in order, and each sub-meter's series as
+    the Fleet was fed it, its phases summed."""
     series = read_csv(args.csv, args.keep_coarse, say)
     if transform:
         series = transform(series)
@@ -487,6 +488,12 @@ def run(args, transform=None, say=print):
         file(s, *a, **kw)
         filed.append(s)
     fleet.main._file = keep
+    owns = fleet._meter_owns
+
+    def owned(s, *a):                               # ...and every one a meter's signature takes (Session.owner)
+        owns(s, *a)
+        filed.append(s)
+    fleet._meter_owns = owned
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)

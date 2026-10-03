@@ -51,13 +51,15 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         """Name a load by its id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
         the page's bar (Anze, 2026-09-28). An empty name clears it."""
-        load_id = int(call.data["load_id"])
+        # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
+        ref = ((call.data.get("meter") or "").strip(), int(call.data["load_id"]))
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
         runner = entry.runtime_data.runner if entry is not None else None
-        was = next((s.name for s in runner.detector.signatures if s.id == load_id), None) if runner else None
-        if runner is None or not await runner.async_rename(load_id, name):
-            raise ServiceValidationError(f"No detected load has id {load_id}")
+        sig = runner.fleet.signature(ref) if runner else None
+        was = sig.name if sig is not None else None
+        if runner is None or not await runner.async_rename(ref, name):
+            raise ServiceValidationError(f"No detected load has id {ref[1]}" + (f" on {ref[0]}" if ref[0] else ""))
         # what the naming page's Done does: the entities follow the names,
         # and so do the inputs linked to the load
         rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
@@ -72,7 +74,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         wanted = (call.data.get("name") or "").strip().casefold()
         entry = _loaded(hass)
         runner = entry.runtime_data.runner if entry is not None else None
-        names = [n for n in sorted(runner.detector.names()) if not wanted or n.casefold() == wanted] if runner else []
+        names = [n for n in sorted(runner.fleet.names()) if not wanted or n.casefold() == wanted] if runner else []
         if wanted and not names:
             raise ServiceValidationError(f"No load is named {call.data.get('name')}")
         for name in names:

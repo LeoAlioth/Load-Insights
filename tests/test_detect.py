@@ -314,7 +314,8 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
     followed 3.3 kW - while the plug still read 254-285 W. A run a meter's own
     step started is that meter's until the meter shows it stopped
     (PhaseState.owned, the converse of Fleet._meter_stop). With the phase
-    quiet it always was."""
+    quiet it always was. A young plug holds several devices, so the run is
+    its own signature's (Session.owner)."""
     for busy in (False, True):
         filed, fleet, on, off = _plug_fleet(busy)
         own = [s for s in fleet.subs["Plug"].recent if s["end"] - s["start"] > 10 * 3600]
@@ -322,9 +323,8 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
         run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
         assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
         run = max(run, key=lambda s: s.duration_s)
-        sig = fleet.main.signature_of(run)
-        assert abs(run.end - off) < 120 and abs(run.energy_wh - 6000.0) < 300 and sig is not None and sig.locations.get("Plug"), (
-            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 6000.0) < 300 and _at(fleet, run, "Plug"), (
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.owner)
 
 
 def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float = 0.0, leg: float = 0.0):
@@ -336,16 +336,37 @@ def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float 
     fleet = D.Fleet()
     fleet.wait_cap_s = D.METER_WAIT_CAP_S
     fleet.meter_lag["Plug"] = [[2.0, 185.0]] * D.LAG_MIN_SAMPLES
-    filed, file = [], fleet.main._file
-
-    def keep(s, *a, **kw):
-        file(s, *a, **kw)
-        filed.append(s)
-    fleet.main._file = keep
+    filed = _keep_filed(fleet)
     cuts = [T0 + 6 * 3600.0 * k for k in range(1, 4)]
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
         fleet.process(part, {"Plug": sub}, now_ts=e)
     return filed, fleet, on, off
+
+
+def _keep_filed(fleet):
+    """Every house session the fleet files, and every one a meter's own
+    signature takes (Session.owner), in order, as the bench keeps them."""
+    filed, file, owns = [], fleet.main._file, fleet._meter_owns
+
+    def keep(s, *a, **kw):
+        file(s, *a, **kw)
+        filed.append(s)
+
+    def owned(s, *a):
+        owns(s, *a)
+        filed.append(s)
+    fleet.main._file, fleet._meter_owns = keep, owned
+    return filed
+
+
+def _at(fleet, s, meter):
+    """Is the house session ``s`` placed at ``meter``: its own signature's
+    (a meter holding several - Session.owner), or filed in a house signature
+    located there?"""
+    if s.owner:
+        return s.owner[0] == meter
+    sig = fleet.main.signature_of(s)
+    return bool(sig is not None and sig.locations.get(meter))
 
 
 def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
@@ -362,9 +383,8 @@ def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
         at_start = sorted((s for s in filed if abs(s.start - on) < 60 and "b" in s.phases), key=lambda s: -s.duration_s)
         assert len(at_start) >= 2, ("busy" if busy else "quiet", [(round(s.duration_s / 3600, 2), round(s.energy_wh)) for s in at_start])
         run, fan = at_start[0], at_start[1]
-        sig = fleet.main.signature_of(run)
-        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and sig is not None and sig.locations.get("Plug"), (
-            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and _at(fleet, run, "Plug"), (
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.owner)
         assert abs(fan.energy_wh / (fan.duration_s / 3600.0) - 48.0) < 12 and fan.duration_s >= 2 * 3600.0, (
             "busy" if busy else "quiet", round(fan.duration_s / 3600, 2), round(fan.energy_wh))
         if not busy:
@@ -422,7 +442,7 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
     for i in range(0, n, 300):
         j = min(i + 300, n)
         fleet.process({"a": main_a[i:j], "b": main_b[i:j]}, {"boiler": {"a": boiler[i:j]}},
-                      now_ts=main_b[j - 1][0])
+                      now_ts=main_b[j - 1][0], single={"boiler": True})
     fleet.process({}, {}, now_ts=end)
     sig = fleet.main.signatures[0]
     assert sig.phases == "b", sig.phases          # the main meter knows the phase
@@ -3255,18 +3275,12 @@ def test_a_ramp_two_meters_declared_over_different_stretches_is_placed_by_the_gr
     fleet.wait_cap_s = D.METER_WAIT_CAP_S
     fleet.meter_lag["Mansarda"] = [[1.0, 15.0]] * D.LAG_MIN_SAMPLES
     fleet.phase_votes["Mansarda"] = {"c": {"a": D.PHASE_MAP_MIN_VOTES}}
-    filed, file = [], fleet.main._file
-
-    def keep(s, *a, **kw):
-        file(s, *a, **kw)
-        filed.append(s)
-    fleet.main._file = keep
+    filed = _keep_filed(fleet)
     cuts = [s1 + 400.0, s2 + 400.0]
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes(panel, cuts, end)):
         fleet.process(part, {"Mansarda": sub}, now_ts=e, single={"Mansarda": False})
     got = sorted(((round(s.start - s1), round(s.end - s1), round(s.energy_wh * 3600.0 / s.duration_s),
-                   (fleet.main.signature_of(s).locations.get("Mansarda", 0) if fleet.main.signature_of(s) else 0))
-                  for s in filed if s.duration_s > 120.0), key=lambda g: g[0])
+                   _at(fleet, s, "Mansarda")) for s in filed if s.duration_s > 120.0), key=lambda g: g[0])
     first = [g for g in got if abs(g[0]) <= 5]
     second = [g for g in got if abs(g[0] - (s2 - s1)) <= 5]
     assert len(first) == 1 and abs(first[0][1] - (e1 - s1)) <= 10 and 280 <= first[0][2] <= 360 and first[0][3], got
@@ -3474,21 +3488,24 @@ def test_a_run_the_reading_carries_half_of_is_still_on():
     assert len(got) == 1 and not st.open_edges                                 # under half: it cannot be
 
 
-def _tree_fleet(hours=12):
+def _tree_fleet(hours=12, f=None, since=0):
     """Home's Hiša with Blaž PC inside it, through a Fleet in 2-hour passes:
     the PC's plug +300 W for 10 minutes every hour; Hiša's own channel the PC
     plus a 1 kW load of its own every 90 minutes and 150 W idle; the grid
-    Hiša plus 200 W. (the fleet, the PC's and Hiša's loads' starts)"""
+    Hiša plus 200 W. The hours from ``since`` to ``hours`` into ``f``, or a
+    new fleet. (the fleet)"""
     pc = lambda s: 300.0 if (s % 3600.0) >= 600.0 and (s % 3600.0) < 1200.0 else 0.0       # noqa: E731
     other = lambda s: 1000.0 if (s % 5400.0) >= 2400.0 and (s % 5400.0) < 3000.0 else 0.0  # noqa: E731
     secs = hours * 3600
-    plug = series(secs, pc, seed=1, base=0.0, noise=2.0)
-    his = series(secs, lambda s: pc(s) + other(s), seed=2, base=150.0, noise=4.0)
-    grid = series(secs, lambda s: pc(s) + other(s), seed=3, base=350.0, noise=6.0)
-    f = D.Fleet()
-    f.wait_cap_s = D.METER_WAIT_CAP_S
+    later = lambda rows: [r for r in rows if r[0] >= T0 + since * 3600]    # noqa: E731
+    plug = later(series(secs, pc, seed=1, base=0.0, noise=2.0))
+    his = later(series(secs, lambda s: pc(s) + other(s), seed=2, base=150.0, noise=4.0))
+    grid = later(series(secs, lambda s: pc(s) + other(s), seed=3, base=350.0, noise=6.0))
+    if f is None:
+        f = D.Fleet()
+        f.wait_cap_s = D.METER_WAIT_CAP_S
     f.parents = {"Blaž PC": "Hiša"}
-    cuts = [T0 + 7200.0 * k for k in range(1, hours // 2)]
+    cuts = [T0 + 7200.0 * k for k in range(since // 2 + 1, hours // 2)]
     end = T0 + secs
     for (g, e), (h, _), (p, _) in zip(_passes({"a": grid}, cuts, end), _passes({"a": his}, cuts, end),
                                       _passes({"a": plug}, cuts, end)):
@@ -3518,6 +3535,88 @@ def test_a_meter_others_hang_under_reads_them_as_the_grid_reads_every_meter():
     f.parents = {}
     f.process({}, {}, now_ts=T0 + 12 * 3600.0 + 60.0)
     assert not f.views and his.meter_stop is None and his._file_now
+
+
+def _kw(det):
+    """The 1 kW load's signatures in a detector of _tree_fleet's - its runs
+    that do not start with the PC's: every third one does, which Hiša files
+    as the PC's run and the grid as one 1.3 kW run of neither."""
+    return [x for x in det.signatures if abs(sum(x.power.values()) - 1000.0) < 150.0]
+
+
+def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
+    """Mansarda's fridge and freezer (Anze, 2026-10-03: "if a same load is
+    detected by both meters, shouldn't the reading collapse into a single
+    device anyway?"): a load a meter holding several devices saw is that
+    meter's own signature - the grid files its runs as that meter's
+    (Session.owner) and grows no copy - so it is offered in that meter's
+    list, and named there it is a named load like any other: its energy
+    and its running are the meter's own sessions'."""
+    f = _tree_fleet()
+    his = f.subs["Hiša"]
+    kw = _kw(his)
+    assert len(kw) == 1 and kw[0].count >= 4, [(x.id, x.power, x.count) for x in his.signatures]
+    assert not _kw(f.main), [(x.id, x.power, x.count) for x in _kw(f.main)]       # no copy on the grid
+    sid = kw[0].id
+    groups = f.namable(lambda m: m == "Blaž PC", 2, 50.0)
+    assert ("Hiša", sid) in [r for r, _ in groups.get("Hiša", [])], {k: [r for r, _ in v] for k, v in groups.items()}
+    # the PC holds one device: none of its signatures - its plug's or Hiša's of it - is offered
+    assert not any(m == "Blaž PC" or f.signature(r).locations.get("Blaž PC")
+                   for rows in groups.values() for r, _ in rows for m in [r[0]])
+    assert f.rename(("Hiša", sid), "Bojler")
+    assert f.names() == {"Bojler": [("Hiša", sid)]}
+    assert ("Hiša", sid) not in [r for rows in f.namable(lambda m: m == "Blaž PC", 2, 50.0).values() for r, _ in rows]
+    own = sum(r["kwh"] for r in his.recent if r["signature"] == sid) * 1000.0      # Hiša's own sessions of it
+    assert abs(f.energy_by_name()["Bojler"] - own) < 5.0 and own > 600.0, (f.energy_by_name(), own)
+    assert sum(f.hourly_by_name("Bojler").values()) == kw[0].energy_wh
+    # it runs again: what it gains is what Hiša's next session of it brought
+    _tree_fleet(15, f, since=12)
+    now = sum(r["kwh"] for r in his.recent if r["signature"] == his._current(sid)) * 1000.0
+    assert now > own + 150.0 and abs(f.energy_by_name()["Bojler"] - now) < 5.0, (f.energy_by_name(), own, now)
+    # ...and it is on while Hiša's detector holds a run of it open
+    t = T0 + 16 * 3600.0
+    his.phases["a"].open_edges = [D._Open(since=t - 60.0, watts=1000.0, var=None, levels=[(t - 60.0, 1000.0)])]
+    assert f.active_by_name(t) == {"Bojler": 1000.0}, f.active_by_name(t)
+
+
+def test_a_circuits_named_load_survives_a_restart_and_a_reset():
+    """The name is in the store with the meter's library (Fleet.to_dict), and
+    a reset carries it to that meter's detector alone, which hands it back
+    to the rebuilt signature that looks like it."""
+    f = _tree_fleet()
+    sid = _kw(f.subs["Hiša"])[0].id
+    f.rename(("Hiša", sid), "Bojler")
+    back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
+    assert back.names() == {"Bojler": [("Hiša", sid)]}
+    assert abs(back.energy_by_name()["Bojler"] - f.energy_by_name()["Bojler"]) < 0.5     # stored to 0.1 Wh an hour
+    assert [(d["name"], d.get("meter")) for d in D.names_in_store({"fleet": f.to_dict()})] == [("Bojler", "Hiša")]
+    carried = f.name_descriptors()
+    assert [(d["name"], d.get("meter")) for d in carried] == [("Bojler", "Hiša")]
+    fresh = D.Fleet()
+    fresh.wait_cap_s = D.METER_WAIT_CAP_S
+    fresh.carry_names(carried)
+    assert not fresh.main.orphan_names and [o["name"] for o in fresh.subs["Hiša"].orphan_names] == ["Bojler"]
+    _tree_fleet(f=fresh)
+    assert list(fresh.names()) == ["Bojler"] and fresh.names()["Bojler"][0][0] == "Hiša", fresh.names()
+    assert not fresh.subs["Hiša"].orphan_names
+
+
+def test_a_name_given_on_the_grid_stays_on_the_grid():
+    """Home's kiln was named on the grid's signature before its circuit's
+    own counted (Peč za glino, inside Hiša): the grid keeps filing the runs
+    its device takes into that named signature, and a reset hands the name
+    back there too - a name stays where it was given; moving it is Anze's
+    call. Hiša's own signature of it is that named load, not offered."""
+    f = D.Fleet()
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f.carry_names([{"name": "Bojler", "phases": "a", "power": {"a": 1000.0}, "duration_s": 600.0, "pf": None}])
+    _tree_fleet(f=f)
+    kw = _kw(f.main)
+    assert len(kw) == 1 and kw[0].name == "Bojler" and kw[0].count >= 4, [(x.id, x.name, x.count) for x in kw]
+    assert not f.main.orphan_names
+    his = _kw(f.subs["Hiša"])
+    groups = f.namable(lambda m: m == "Blaž PC", 2, 50.0)
+    assert his and not any(r == ("Hiša", x.id) for x in his for rows in groups.values() for r, _ in rows), groups
 
 
 def test_an_event_on_several_phases_is_placed_where_every_leg_was_one_meters():
@@ -3670,21 +3769,29 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     """One notion of "holds one device" (Anze, 2026-10-03): a meter's
     session decides which signature a run joins - and its energy places one
     it has no session for - where the meter holds one device, as the user
-    declared it or, undeclared, as its library's shape says; a circuit's
-    sessions do not, whatever its library looks like."""
+    declared it or, undeclared, as its library's shape says. A circuit's
+    session makes the run its own signature's (Session.owner) and the grid
+    files nothing - unless the grid's signature for the run's device wears
+    a name: a name stays where it was given."""
     f = _fleet_with_meters({"Plug": 0.0})
     own = _sig(1, 300.0, 600.0, 40, first_seen=T0, last_seen=T0)
     f.subs["Plug"].signature_of = lambda s: own
     sub = D.Session("a", T0, T0 + 600.0, {"a": [(T0, 300.0)]})
-    run = D.Session("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]})
+    run = D.Session("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]}, pair=(5, None))
     f.identity = {"Plug": {"1": 77}}
     asked = []
     f._place = lambda m, name, prefer: asked.append(prefer)
     f.single = {"Plug": False}
     f._file_as(run, "Plug", sub)
+    assert asked == [] and run.owner == ("Plug", sub), (asked, run.owner)       # the circuit's own
+    named = _sig(8, 300.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0, name="Kiln")
+    f.main.signatures, f.main.start_home, f.main._device_home = [named], {"5": {8: 3.0}}, None
+    run.owner = None
+    f._file_as(run, "Plug", sub)
+    assert asked == [8] and run.owner is None, (asked, run.owner)            # its device's named signature
     f.single = {"Plug": True}
     f._file_as(run, "Plug", sub)
-    assert asked == [None, 77], asked
+    assert asked == [8, 77], asked
 
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds

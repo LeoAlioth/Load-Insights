@@ -406,9 +406,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     """The site-level inputs, a device's own state sensor, and the meters."""
 
     def __init__(self) -> None:
-        self._naming_selected: int | None = None
+        self._naming_selected: tuple | None = None
         self._pending_grid: dict | None = None
-        self._naming_rows: list[int] = []      # menu position -> signature id
+        self._naming_rows: list[tuple] = []    # menu position -> (meter, signature id), the grid's under ""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
@@ -585,18 +585,20 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if not candidates:
             return await self.async_step_naming()
         shown = candidates[:NAMING_MAX_ROWS]
-        self._naming_rows = [s.id for s in shown]
+        self._naming_rows = [ref for ref, _ in shown]
 
         tz = dt_util.DEFAULT_TIME_ZONE
         now_ts = dt_util.utcnow().timestamp()
-        running = runner.detector.running_now(now_ts)
-        # the other settings each load may be of the same device as
-        partners: dict = {}
-        for group in (suggest_levels(runner.detector.signatures, runner.detector.recent)
-                      + input_groups(runner.detector.signatures)):
-            for i in group:
-                partners[i] = list(dict.fromkeys(partners.get(i, []) + [g for g in group if g != i]))
-        by_id = {s.id: s for s in runner.detector.signatures}
+        running, partners, by_ref = set(), {}, {}
+        for meter in dict.fromkeys(m for (m, _), _ in shown):
+            det = runner.fleet._det(meter)
+            running |= {(meter, i) for i in det.running_now(now_ts)}
+            by_ref.update(((meter, x.id), x) for x in det.signatures)
+            # the other settings each load may be of the same device as
+            for group in suggest_levels(det.signatures, det.recent) + input_groups(det.signatures):
+                for i in group:
+                    partners[(meter, i)] = list(dict.fromkeys(partners.get((meter, i), [])
+                                                              + [(meter, g) for g in group if g != i]))
         # What is WAITING, not what was cut off this menu. The two are not the
         # same: the list arrives already shortened to the length the user has
         # earned, so subtracting the menu from it said "0 more" to everyone -
@@ -606,15 +608,15 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                         "count": str(len(shown)),
                         "hidden": str(waiting + max(0, len(candidates) - len(shown)))}
         options = []
-        for index, sig in enumerate(shown):
+        for index, (ref, sig) in enumerate(shown):
             # Two lines: a menu row's own label is cut at the dialog's width,
             # so it carries only what tells one load from another, and the rest
             # goes in the row's description, which wraps (Anze, 2026-09-23: the
             # page "does not fit all the text").
-            label, rest = sig.menu_row(tz, now_ts, sig.id in running)
+            label, rest = sig.menu_row(tz, now_ts, ref in running)
             if sig.name:
                 label = f"{sig.name} — {label}"
-            maybe = same_device_phrase([by_id[i] for i in partners.get(sig.id, []) if i in by_id])
+            maybe = same_device_phrase([by_ref[r] for r in partners.get(ref, []) if r in by_ref])
             if maybe:
                 rest += f" · {maybe}"
             placeholders[f"load_{index}"] = label
@@ -671,12 +673,14 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         return self.async_create_entry(data=options)
 
     def _picked(self):
-        """The runner, and the load chosen from the list - or None for either."""
+        """The runner, the load chosen from the list as (meter, id), and its
+        signature - None for the runner, or the load and its signature."""
         runner = runner_of(self.config_entry)
         if runner is None:
-            return None, None
-        sid = self.__dict__.get("_naming_selected")
-        return runner, next((s for s in runner.detector.signatures if s.id == sid), None)
+            return None, None, None
+        ref = self.__dict__.get("_naming_selected")
+        sig = runner.fleet.signature(ref) if ref is not None else None
+        return runner, (ref if sig is not None else None), sig
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
         """The load that was picked, and what can be done with it.
@@ -685,13 +689,13 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         the list used to mean submitting an empty name box. As a menu, back is
         a row like any other (Anze, 2026-09-23: "when i click on an entry i
         would like a back button"), and naming is one click further in."""
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is None:
             return self.async_abort(reason="no_detection")
         if sig is None:
             return await self.async_step_naming_list()
-        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
-        helped = _helpers(self.hass, sig, runner.detector.edges)
+        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents, ref[0] or None)
+        helped = _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
         if helped:
             detail += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
         if sig.name:
@@ -700,7 +704,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         # A named load whose behaviour changed leaves its name on a
         # fingerprint nothing matches, while what replaced it sits here
         # unnamed. Offer the move where the user is already standing.
-        was = runner.detector.predecessor_of(sig.id)
+        was = runner.fleet.predecessor_of(ref)
         if was is not None and not sig.name:
             options.append("naming_adopt")
             quiet = _since(was.last_seen)
@@ -722,17 +726,18 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         hold one: the load is named exactly as that meter, which makes it
         that device (see insights.named) without a typo in the way (Anze,
         2026-09-29)."""
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is None or sig is None:
             return await self.async_step_naming_list()
         inputs = set(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
-        helped = [(eid, text) for eid, text in _helpers(self.hass, sig, runner.detector.edges) if eid in inputs]
+        helped = [(eid, text) for eid, text in _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
+                  if eid in inputs]
         if user_input is not None:
             name = chosen_name(user_input.get("name"), user_input.get("same_as_meter"))
             if not name:
                 return await self.async_step_naming_detail()
             was = sig.name
-            await runner.async_rename(sig.id, name)
+            await runner.async_rename(ref, name)
             # the options are written by Done, which rebuilds the entities too
             pending = self.__dict__.setdefault("_pending_links", {"relink": [], "link": []})
             pending["relink"].append((was, name))
@@ -761,10 +766,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_naming_forget(self, user_input: dict[str, Any] | None = None):
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is not None and sig is not None:
             was = sig.name
-            await runner.async_rename(sig.id, None)
+            await runner.async_rename(ref, None)
             self.__dict__.setdefault("_pending_links", {"relink": [], "link": []})["relink"].append((was, None))
         self._naming_selected = None
         return await self.async_step_naming_list()
@@ -772,9 +777,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_naming_adopt(self, user_input: dict[str, Any] | None = None):
         # the name moves here and leaves the old fingerprint, which keeps its
         # history but stops answering to a name nothing matches any more
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is not None and sig is not None:
-            await runner.async_adopt(sig.id)
+            await runner.async_adopt(ref)
         self._naming_selected = None
         return await self.async_step_naming_list()
 
@@ -847,7 +852,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         manager = await async_get_manager(self.hass)
         targets = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
         runner = runner_of(self.config_entry)
-        for name in sorted(runner.detector.names() if runner is not None else ()):
+        for name in sorted(runner.fleet.names() if runner is not None else ()):
             if named_load_energy(self.hass, self.config_entry, name) not in targets:
                 targets[LOAD_PREFIX + name] = f"{name} (detected load)"
         return targets
@@ -922,8 +927,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         targets = await self._link_targets()
         runner = runner_of(self.config_entry)
         meter = {}
-        for sig in runner.named() if runner is not None else ():      # biggest first
-            meter.setdefault(sig.name, most_specific(sig.locations, sig.count, runner.parents))
+        for (where, _), sig in runner.named() if runner is not None else ():      # biggest first
+            at = most_specific(sig.locations, sig.count, runner.parents)
+            meter.setdefault(sig.name, where if at == "main" and where else at)   # a meter's own: that meter
         places = {}
         for t in targets:
             if not t.startswith(LOAD_PREFIX):

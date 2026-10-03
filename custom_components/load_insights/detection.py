@@ -64,7 +64,6 @@ from .insights.detect import (
     exports_positive,
     drop_stale_load_override,
     mean_power,
-    most_specific,
     quantum_of_steps,
     clears_for_naming,
     offer_for_naming,
@@ -674,7 +673,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         async with self._lock:                # the library, between passes: a pass changes it
             if await self.async_first_statistic(entity_id) is None:
                 return None
-            seen = min((h for sig in self.detector.signatures for h in sig.hourly), default=None)
+            seen = min((h for _, det in self.fleet.detectors() for sig in det.signatures for h in sig.hourly),
+                       default=None)
             if seen is None:
                 return 0, 0.0
             covered = int(seen // 3600 * 3600) + 3600     # the first hour read is a part of one
@@ -692,7 +692,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     {entity_id}, period, None, {"state", "sum"})
             hours = (await recorded("hour", 0)).get(entity_id) or []
             fives = (await recorded("5minute", covered)).get(entity_id) or []
-            hour_rows, five_rows, shift = plan_rewrite(self.detector.hourly_by_name(name), covered, hours, fives)
+            hour_rows, five_rows, shift = plan_rewrite(self.fleet.hourly_by_name(name), covered, hours, fives)
             if not hour_rows:
                 return 0, 0.0
             # exactly what the sensor's own statistics carry, so importing
@@ -714,7 +714,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return len(hour_rows), shift
 
     async def _rewrite_named(self) -> None:
-        for name in sorted(self.detector.names()):
+        for name in sorted(self.fleet.names()):
             await self.async_backfill_statistics(name)
 
     def guess_one_device(self, name: str) -> bool:
@@ -722,78 +722,50 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
-        waiting)``, the loads under no meter first as ``"main"``, then the
+        waiting)``, each offered row ``((meter, id), signature)`` - the grid's
+        id under "" - the loads under no meter first as ``"main"``, then the
         meters by how much their loads use.
 
-        Split by the deepest meter that saw each load, so the page can be
-        taken one circuit at a time (Anze, 2026-09-25: "any way of splitting
-        the detected loads early would help with organisation and naming").
-        Until then only the loads under no meter were offered at all, and a
-        circuit meter's - Hiša's, Mansarda's - could not be named. A load seen
-        a single time may not be a load at all, and naming it teaches the
-        library nothing (Anze, 2026-09-17: "as for signatures only seen once,
-        dont show them"). Named loads have a page of their own (``named``).
-        Each group gets the length offer_for_naming earns it, and ``waiting``
-        is how many more cleared the bar than that length fits."""
-        is_heir = lambda i: self.detector.predecessor_of(i) is not None  # noqa: E731
-        named = len(self.detector.names())
+        Split by where each load lives, so the page can be taken one circuit
+        at a time (Anze, 2026-09-25: "any way of splitting the detected loads
+        early would help with organisation and naming"), and a meter's list
+        is its own detector's signatures (Fleet.namable). Named loads have a
+        page of their own (``named``). Each group gets the length
+        offer_for_naming earns it, and ``waiting`` is how many more cleared
+        the bar than that length fits."""
+        named = len(self.fleet.names())
         out = []
-        for where, worth in self._worth().items():
-            if where != "main" and self.holds_one_device(where):
-                # its own readings ARE that device: nothing in it to name
-                # (Anze, 2026-09-28: "we just use the measured data off it")
-                continue
+        for where, rows in self.fleet.namable(self.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH).items():
+            ref = {id(sig): r for r, sig in rows}
+            heirs = {id(sig) for r, sig in rows if self.fleet.predecessor_of(r) is not None}
+            worth = [sig for _, sig in rows]
             shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
-                                     NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=is_heir)
+                                     NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=lambda x: id(x) in heirs)
             if shown:
-                clear = clears_for_naming(worth, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS, is_heir)
-                out.append((where, shown, max(0, len(clear) - len(shown))))
-        out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for x in g[1])))
+                clear = clears_for_naming(worth, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS, lambda x: id(x) in heirs)
+                out.append((where, [(ref[id(x)], x) for x in shown], max(0, len(clear) - len(shown))))
+        out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for _, x in g[1])))
         return out
 
     def named(self) -> list:
-        """Every named load, biggest first, wherever it was seen."""
-        return sorted((x for x in self.detector.signatures if x.name), key=lambda x: -x.energy_wh)
+        """Every named load as ``((meter, id), signature)``, biggest first, wherever it was seen."""
+        return sorted((((m, s.id), s) for m, det in self.fleet.detectors() for s in det.signatures if s.name),
+                      key=lambda r: -r[1].energy_wh)
 
-    def _worth(self) -> Dict[str, list]:
-        """Signatures a person could name, by the meter they belong to: not
-        named yet, seen more than once, and having used enough to be worth
-        the trouble."""
-        parents = self.parents
-        # biggest first, by energy: what a load COSTS is the reason to name
-        # it, and it puts the ones worth the trouble at the top
-        # Energy alone put an anonymous 600 W something above a machine that
-        # runs every Saturday at noon. Rank by what a person can actually act
-        # on: what it costs, weighted by whether the row says enough to
-        # recognise it (Anze, 2026-09-18).
-        def rank(s):
-            return -(s.energy_wh * (0.45 + 0.55 * s.recognisable))
-        groups: Dict[str, list] = {}
-        for s in sorted(self.detector.signatures, key=lambda x: (rank(x), -x.evidence)):
-            if s.name:
-                continue
-            if ((s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH)
-                    # a load that may be what a NAMED one became belongs on
-                    # the list whatever its size: the offer to move the name
-                    # is the whole reason to open it
-                    or self.detector.predecessor_of(s.id) is not None):
-                groups.setdefault(most_specific(s.locations, s.count, parents), []).append(s)
-        return groups
-
-    async def async_adopt(self, signature_id: int) -> Optional[str]:
-        """Move a predecessor's name onto this signature, and persist -
-        between passes, as async_rename."""
+    async def async_adopt(self, ref: Tuple[str, int]) -> Optional[str]:
+        """Move a predecessor's name onto the signature (meter, id) - the
+        grid's under "" - and persist, between passes, as async_rename."""
         async with self._lock:
-            name = self.detector.adopt(signature_id)
+            name = self.fleet.adopt(ref)
             if name is None:
                 return None
             await self._persist(force=True)
         self.async_update_listeners()
         return name
 
-    async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
-        """Name a signature (or clear it) and persist at once - the caller
-        bumps the entry so the entities follow.
+    async def async_rename(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
+        """Name the signature (meter, id) - the grid's under "" - or clear it,
+        and persist at once; the caller bumps the entry so the entities follow.
 
         Without telling the entities: the bump's reload is what makes the
         name's sensors. Told here, the sensor platform added them too, and
@@ -807,7 +779,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         executor thread, and a rename landing then changed it under the pass
         (AGENTS.md, 2026-10-02)."""
         async with self._lock:
-            if not self.detector.rename(signature_id, name):
+            if not self.fleet.rename(ref, name):
                 return False
             await self._persist(force=True)      # a user action, written at once
         return True
@@ -899,7 +871,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         else:                                   # a store written before downstream meters existed
             self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
         if orphans:
-            self.fleet.main.carry_names(orphans)
+            self.fleet.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
         # before the platforms, which leave out the loads that ARE a metered
         # device; every pass resolves them again
@@ -929,9 +901,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         days are never re-read (Home, 2026-09-29: one signature, from the
         minute of the reset)."""
         async with self._lock:
-            orphans = self.fleet.main.name_descriptors() if self.fleet and not forget_names else []
+            orphans = self.fleet.name_descriptors() if self.fleet and not forget_names else []
             self.fleet = Fleet()
-            self.fleet.main.carry_names(orphans)
+            self.fleet.carry_names(orphans)
             self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
             self.last_processed = None
             self.caught_up = False
@@ -1227,7 +1199,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         few seconds, and dividing that energy by the few seconds would report
         megawatts.
         """
-        energy = self.detector.energy_by_name()
+        energy = self.fleet.energy_by_name()
         previous, since = self._energy_mark, self._mark_ts
         self._energy_mark, self._mark_ts = dict(energy), processed_to
         if since is None or processed_to <= since:
