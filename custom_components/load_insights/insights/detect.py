@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
-from .phases import phase_mapping
+from .phases import phase_mapping, support
 
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
@@ -636,6 +636,16 @@ METER_WAIT_CAP_S = 300.0
 # live, 92 credited, all of them by energy - 2026-09-23), and a plug's "a" is
 # a placeholder (the unify audit, 2026-10-03).
 PHASE_MAP_MIN_VOTES = 30
+# ...or as much energy in its votes as PHASE_MAP_MIN_VOTES of the site's
+# votes carry on average: a meter's few long runs are as much evidence as
+# many short ones (Anze, 2026-10-03: "score by both the no of events/runs and
+# by their energy"). Home's Susilna plug, a dehumidifier running 20 hours a
+# night, votes 2-4 times in ten days - 5.8 kWh, where 30 of the site's votes
+# carry 650 Wh - and never learned its phase on the count. The map one
+# measure picks must not keep less than PHASE_MAP_AGREE of the support the
+# other measure's own best map has; where neither map passes on both, the
+# channels are placed nowhere.
+PHASE_MAP_AGREE = 0.5
 # A detection on a sub-meter overrides the house meter's (Anze, 2026-09-22:
 # "a detection on a sub meter level should always override one on a higher
 # level, especially if it is the less noisy one"). Not by handing detection to
@@ -5125,6 +5135,12 @@ class Fleet:
     # meter -> its own phase label -> house phase -> sessions that matched,
     # for phase_mapping
     phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
+    # ...and the energy those sessions carried, in the grid's terms, Wh
+    phase_energy: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    # the grid's fleet, whose votes say what a typical vote carries - see
+    # PHASE_MAP_MIN_VOTES; None for the grid's own
+    _root: Optional["Fleet"] = field(default=None, repr=False, compare=False)
+    _vote_wh: Optional[tuple] = field(default=None, repr=False, compare=False)
     # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
     unfiled: List[tuple] = field(default_factory=list)
     # One fleet per meter others hang under - its main that meter's
@@ -5270,7 +5286,7 @@ class Fleet:
             v.main, v.reference = self.subs[p], False
             v.subs = {n: d for n, d in self.subs.items() if self._under(n, p)}
             v.parents, v.single, v.switch_on, v.horizon_skip = self.parents, self.single, self.switch_on, self.horizon_skip
-            v.wait_cap_s, v._now = self.wait_cap_s, self._now
+            v.wait_cap_s, v._now, v._root = self.wait_cap_s, self._now, self
 
     def _run(self, units: List[Tuple[str, "Fleet"]], streams: Dict[str, List[tuple]], meters: List[tuple],
              end: float) -> Dict[str, int]:
@@ -6671,6 +6687,7 @@ class Fleet:
             tol = self._pair_tol(name, main_iv)
             gain = self.gain(name, "p")
             votes = self.phase_votes.setdefault(name, {})
+            energy = self.phase_energy.setdefault(name, {})
             for s in sessions:
                 if len(s.levels) != 1:
                     continue
@@ -6688,25 +6705,50 @@ class Fleet:
                     (house,) = best.levels.keys()
                     row = votes.setdefault(own, {})
                     row[house] = row.get(house, 0) + 1
+                    row = energy.setdefault(own, {})
+                    row[house] = row.get(house, 0.0) + s.energy_wh * gain
 
     def phase_map(self, name: str) -> Dict[str, str]:
         """Which house phase each of the meter's channels carries, from its
         votes - worked out again only once they have changed: every grid
         step asks every meter, and the answer moves only when a session
         votes (_vote_phases). Shared, so callers read it and never write.
-        Nothing until the votes are PHASE_MAP_MIN_VOTES: a channel's label is
-        what the meter calls it - a plug's "a" a placeholder, Mansarda's
-        rotated - and taken for its phase, every plug not on A was read on A
-        from its first vote to its thirtieth (the unify audit, 2026-10-03).
-        A channel not mapped yet may carry any phase (_chans)."""
+        Nothing until the votes are PHASE_MAP_MIN_VOTES, or carry as much
+        energy as that many of the site's do (_vote_wh_needed): a channel's
+        label is what the meter calls it - a plug's "a" a placeholder,
+        Mansarda's rotated - and taken for its phase, every plug not on A was
+        read on A from its first vote to its thirtieth (the unify audit,
+        2026-10-03). A channel not mapped yet may carry any phase (_chans).
+        The map by count, unless it clearly loses on energy; else the map by
+        energy, unless it clearly loses on count (PHASE_MAP_AGREE)."""
         votes = self.phase_votes.get(name) or {}
-        if sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES:
+        energy = self.phase_energy.get(name) or {}
+        if (sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES
+                and sum(sum(r.values()) for r in energy.values()) < self._vote_wh_needed()):
             return {}
-        key = tuple((c, tuple(sorted(r.items()))) for c, r in sorted(votes.items()))
+        key = tuple((c, tuple(sorted(r.items()))) for c, r in sorted(votes.items())), \
+            tuple((c, tuple(sorted(r.items()))) for c, r in sorted(energy.items()))
         hit = self._phase_maps.get(name)
         if hit is None or hit[0] != key:
-            hit = self._phase_maps[name] = (key, phase_mapping(votes, min_votes=PHASE_MAP_MIN_VOTES))
+            by_n, by_wh = phase_mapping(votes), phase_mapping(energy)
+
+            def holds(mp):
+                return (support(votes, mp) >= PHASE_MAP_AGREE * support(votes, by_n)
+                        and support(energy, mp) >= PHASE_MAP_AGREE * support(energy, by_wh))
+            mp = by_n if holds(by_n) else by_wh if holds(by_wh) else {}
+            hit = self._phase_maps[name] = (key, mp)
         return hit[1]
+
+    def _vote_wh_needed(self) -> float:
+        """The energy PHASE_MAP_MIN_VOTES of the site's votes carry, on
+        average - the grid's fleet's, every meter's; never while the site
+        has cast fewer votes than that."""
+        root = self._root or self
+        n = sum(sum(r.values()) for v in root.phase_votes.values() for r in v.values())
+        if self._vote_wh is None or self._vote_wh[0] != n:
+            wh = sum(sum(r.values()) for v in root.phase_energy.values() for r in v.values())
+            self._vote_wh = (n, PHASE_MAP_MIN_VOTES * wh / n if n >= PHASE_MAP_MIN_VOTES else math.inf)
+        return self._vote_wh[1]
 
     def _locate(self, m: Session, final: bool = False) -> bool:
         """Credit a filed house session to the meter that saw it: the BEST
@@ -6739,7 +6781,7 @@ class Fleet:
         return {"views": {p: v._state() for p, v in self.views.items()} or None,
                 "pending_main": [[t, s.to_dict()] for t, s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
-                "phase_votes": self.phase_votes,
+                "phase_votes": self.phase_votes, "phase_energy": self.phase_energy,
                 "unfiled": [[t, s.to_dict()] for t, s in self.unfiled], "identity": self.identity,
                 "sub_last": self._sub_last, "wait": self._wait, "wait_at": self._wait_at,
                 "meter_lag": self.meter_lag, "lag_from": self._lag_from,
@@ -6764,6 +6806,8 @@ class Fleet:
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
         f.phase_votes = {n: {p: dict(r) for p, r in v.items()}
                          for n, v in (d.get("phase_votes") or {}).items()}
+        f.phase_energy = {n: {p: dict(r) for p, r in v.items()}
+                          for n, v in (d.get("phase_energy") or {}).items()}
         f.unfiled = timed(d.get("unfiled"))
         f._sub_last = {n: dict(v) for n, v in (d.get("sub_last") or {}).items()}
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
