@@ -3129,12 +3129,12 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
         t = T0 + 300.0 + k * 600.0
         rows += [(t, 800.0), (t + 70.0, 0.5)]
     rows.append((T0 + 3500.0, 0.6))
-    f.sub_rows["Hidrofor"] = rows
+    f.sub_rows["Hidrofor"] = {"a": rows}
     f._now = T0 + 3600.0
     run = D.Session(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
     assert 0.65 <= D.energy_between(rows, run.start, run.end) / run.energy_wh <= 1.35   # the energies agree
     assert not f._energy_pairs([run])                                     # but the plug held at its start
-    f.sub_rows["Hidrofor"] = [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]   # a plug that started it
+    f.sub_rows["Hidrofor"] = {"a": [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]}   # a plug that started it
     _declare(f.subs["Hidrofor"].phases["a"], (T0 + 2.0, 84.5, None, T0 - 8.0, T0 + 2.0))
     assert f._energy_pairs([run])
 
@@ -3214,15 +3214,15 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     strip = f.subs["Strip"].phases["a"]
     strip.interval = 6.0
     _declare(strip, (T0 + 2.0, 279.0, None, T0 - 4.0, T0 + 2.0), (T0 + 2219.0, -426.0, None, T0 + 2213.0, T0 + 2219.0))
-    f.sub_rows["Strip"] = [(T0 - 60.0, 167.0), (T0 + 2.0, 446.0), (T0 + 2219.0, 20.0)]
+    f.sub_rows["Strip"] = {"a": [(T0 - 60.0, 167.0), (T0 + 2.0, 446.0), (T0 + 2219.0, 20.0)]}
     run = D._Open(since=T0, watts=279.0, var=None, levels=[(T0, 279.0)], meter="Strip")
     older = D._Open(since=T0 - 3600.0, watts=400.0, var=None, levels=[(T0 - 3600.0, 400.0)])
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is run
     f._stops_used = {}
-    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 300.0)                         # still above the run: not its stop
+    f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 300.0)                    # still above the run: not its stop
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
     f._stops_used = {}
-    f.sub_rows["Strip"][-1] = (T0 + 2219.0, 20.0)
+    f.sub_rows["Strip"]["a"][-1] = (T0 + 2219.0, 20.0)
     run.meter = None                                                        # a run it does not own: nothing to say
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, run], 385.0) is None
 
