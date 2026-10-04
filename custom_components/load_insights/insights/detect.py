@@ -1727,6 +1727,7 @@ class PhaseState:
     declared_t: List[float] = field(default_factory=list, repr=False, compare=False)   # their times, for bisect
     steady_ts: Optional[float] = field(default=None, repr=False, compare=False)   # its last reading at the held level
     steady_before: Optional[float] = field(default=None, repr=False, compare=False)   # ...and the update's before that
+    pv_last: Optional[float] = field(default=None, repr=False, compare=False)   # the array at its last reading
     held_drops: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # a ramp placed at a meter by its whole window (Fleet._window_size): the
     # rises declared inside it up to here are that run's, not runs of their own
@@ -1878,6 +1879,16 @@ class PhaseState:
             same = self.last_ts is not None and ts - self.last_ts <= SAME_UPDATE_S
             self._moved = moved or (same and self._moved)
             self.last_ts = ts
+        # The array moved under this reading by its noise or more: what the
+        # reading does then is the array's timing as much as the house - the
+        # grid meter and the inverter are not read at one moment (Andrej's M1
+        # takes two thirds of each change of the inverter's at once, the rest
+        # a poll later) - so it teaches neither the idle noise nor the floor.
+        # Andrej's house moved 13 W a reading by day where the inverter moved,
+        # 4.7 where it did not (2026-10-04, exp12).
+        sun_moving = pv is not None and self.pv_last is not None and abs(pv - self.pv_last) >= self.noise
+        if pv is not None and not held:
+            self.pv_last = pv
         if self.floor_zero and w < -GLITCH_FLOOR_W:
             return []                 # a house cannot draw less than nothing; skip it
         if not held:
@@ -1937,7 +1948,7 @@ class PhaseState:
                 else:
                     # a drop held since it started is not it sagging - see HELD_DROPS
                     o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
-            if self.level is not None and abs(self.level) >= self.rel_floor:
+            if self.level is not None and abs(self.level) >= self.rel_floor and not sun_moving:
                 wander = abs(w - prev_w) if prev_w is not None else abs(w - self.level)
                 self.rel_diffs.append(wander / abs(self.level))
                 del self.rel_diffs[:-NOISE_WINDOW]
@@ -1951,7 +1962,7 @@ class PhaseState:
                 del self.q_recent[:-Q_RECENT_SAMPLES]
             if pv is not None:
                 self.pv_level = pv if self.pv_level is None else self.pv_level + SLOW_FOLLOW * (pv - self.pv_level)
-            if not self.open_edges:
+            if not self.open_edges and not sun_moving:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
@@ -2027,8 +2038,8 @@ class PhaseState:
             self.q_recent = [new_q]
         if new_pv is not None:
             self.pv_level = new_pv
-        if _is_the_sun(step, pv_step):
-            return []
+        if not self.floor_zero and _is_the_sun(step, pv_step):
+            return []                 # (a house-side reading the array is in: the sun cancels there)
         quality = self._step_quality(step, held, since, new_level - step)
         self.last_step_ts = since
         # its span: when the change can have happened - from the last moment

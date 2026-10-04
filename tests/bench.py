@@ -235,6 +235,10 @@ def _prod_house(s: dict, key=None, site: str = "home") -> dict:
         build = lambda: {p: D.combine([(rows, sign), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}  # noqa: E731
         for p, rows in (R._cached(key, build) if key else build()).items():
             s[SITES[site]["main"][p]] = rows
+            # what the inverter added to each reading, the detector's array as
+            # production hands it over (replay's "|array"; detection._derive_load)
+            grid_at = D._align(m1[p], rows)
+            s[SITES[site]["main"][p] + "|array"] = [(t, w - sign * grid_at[t]) for t, w in rows if t in grid_at]
     return s
 
 

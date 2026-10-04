@@ -53,7 +53,7 @@ around them are dimensionless *counts* of those measurements:
 | measured per reading | where it comes from |
 |---|---|
 | `PhaseState.quantum` | `measure_quantum` — a low percentile of its changes, confirmed against a lattice |
-| `PhaseState.noise` | median deviation while idle |
+| `PhaseState.noise` | median deviation while idle - and the array, where it is in the reading, holding still (exp12) |
 | `PhaseState.interval` | its cadence: the 10th percentile of the gaps after a reading that moved (`CADENCE_GAPS`), stored with the phase |
 | `PhaseState.q_quantum` | `V x dI` from the amps behind the power factor |
 | `Signature.pf_mad` / `power_mad` / `duration_mad` | spread across sightings |
@@ -1400,6 +1400,33 @@ meant to catch this and cannot work on recorder data: Home Assistant only record
 inverter at 0 W all night looks hours stale and every night sample is dropped
 (the kiln fell from 347 sessions to 119). `COMBINE_SETTLE_S` keeps only the
 last reading of each burst instead, which needs no judgement about freshness.
+
+**...and the two are not read at one moment** (exp12, 2026-10-04). Polled
+together, the M1 reports part of each change of the inverter's a poll later:
+least squares of its moves on the inverter's over ten days, Andrej 66 % at
+once, 22 % at the next 5 s poll, 8 % the poll before; Home 77-80 % at once,
+17-19 % 2 s later. So every cloud shows in the house as a load for a reading,
+and a ramp holds a phantom while it lasts: by day where the inverter moved
+Andrej's house moved 13 W a reading (4.7 where it did not; Home 19-23 against
+5-14), and the idle noise learned from those moves sat at 12.5-14.5 W by day
+against 10 at night (Home's A 14.5 / 10). Of the house steps declared by day,
+the grid meter itself moved less than half of 11 % at Andrej (613 of 5,651)
+and 3.7 % at Home (1,222 of 32,899), the inverter the rest; at night 8 and 11.
+Kept: the detector is handed what the inverters add to each phase of a house
+built from them (`detection.array_in_house`, the bench's `|array` series) and
+learns neither its idle noise, its relative noise nor its floor from a reading
+the array moved under by the noise or more. Card, SLICE=6, capture / impurity,
+three paired draws (plain, drop:10000:1, :2), mean move [band]: Home fed
+devices +2.2 / -1.8 [2.2 / 1.0], partition +1.1 / -1.6 [0.8 / 0.8], hidden
++1.8 / -0.5 and +1.4 / -0.2 [1.7 / 2.5, 1.0 / 1.9], circuits +1.9 / -0.4 and
++2.0 / +0.7; Andrej's charger -2.0 / -0.8 hidden, -2.1 / +0.6 fed [0.9 / 1.9,
+0.7 / 1.5] - a trade, Andrej's capture lost in every draw, its impurity
+inside the band; Kozolec and the circuit sites read no inverter. Tried and dropped (patch
+`exp12-dials.patch`): reading the inverter late by its measured share of a
+poll (`_read_late`, 0.30 at Andrej, 0.22 at Home; the house's moves fall by a
+third, the day noise to the night's, but the card moves inside its band); a
+house step declared only where the grid meter moved its way (a sun ramp under
+a real step looks the same - Andrej +3.5 to +4.5 impurity).
 
 **The bench read a slightly different input than production at Home.** The
 replay read Anze's template sensor; production sums grid and inverter itself.
