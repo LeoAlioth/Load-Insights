@@ -2403,6 +2403,10 @@ class PhaseState:
                 self.open_edges.remove(o)
                 self._remember_close(o, at)
                 return [self._close(o, at, watts, var, direct=True)]
+            if self.lib.meter_read is not None and self.lib.meter_read(self.name, e[0], watts, False, self.last_ts):
+                # ...or its readings show this fall, declared or not: the
+                # device's own dip or taper, its run going on - see Fleet._meter_read
+                return []
         if self.lib is not None and self.stop_cluster is not None:
             got = self._pair_by_model(at, watts, var)
             if got is not None:
@@ -3802,6 +3806,8 @@ class Detector:
     meter_ended: Optional[object] = field(default=None, repr=False, compare=False)
     # (meter, phase, run, until) -> Wh a run a meter holding one device owns drew, by its levels, or None
     meter_wh: Optional[object] = field(default=None, repr=False, compare=False)
+    # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
+    meter_read: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -4346,6 +4352,17 @@ class Detector:
                     if m["watts"] - found[1] < max(st.noise_at(), MATCH_EDGE_REL * m["watts"]):
                         m["open"].meter = found[0]
             self.edge_at.setdefault(m["ph"], []).append((m["since"], cluster.id, m["watts"]))
+        for m in members if self.meter_read is not None else []:
+            st = self.phases.get(m["ph"])
+            if not m["open"].meter and st is not None and m["open"] in st.open_edges and \
+                    self.meter_read(m["ph"], m["since"], m["watts"], True, st.last_ts):
+                # a rise its one-device meter's readings show, declared or
+                # not, while a run it owns there is on: that run's, not a run
+                # beside it - Home's EVBox dipped for one 10 s reading 22
+                # times in a charge, its own detector declaring nothing, and
+                # every return opened a 2.15 kW run of its own, ~14 kWh booked
+                # beside the charge (09-25, 2026-10-04) - see Fleet._meter_read
+                st.open_edges.remove(m["open"])
         return cluster, members
 
     def _split_rise(self, m: dict) -> None:
@@ -5441,7 +5458,7 @@ class Fleet:
         main.meter_steps, main.step_meter, main.meter_held = self._meter_steps, self._step_meter, self._meter_held
         main.meter_stop, main.meter_on = self._meter_stop, self._meter_on
         main.meter_started, main.meter_level, main.meter_ended = self._meter_started, self._meter_level, self._meter_ended
-        main.meter_wh = self._meter_wh
+        main.meter_wh, main.meter_read = self._meter_wh, self._meter_read
 
     def _sync_views(self) -> None:
         """The fleet as a tree (Anze, 2026-10-03): every meter others hang
@@ -5458,6 +5475,7 @@ class Fleet:
             v = self.views.pop(p)
             v.main.meter_steps = v.main.step_meter = v.main.meter_held = v.main.meter_stop = None
             v.main.meter_on = v.main.meter_started = v.main.meter_level = v.main.meter_ended = v.main.meter_wh = None
+            v.main.meter_read = None
         for p in sorted(tops):
             v = self.views.get(p)
             if v is None:
@@ -6662,6 +6680,45 @@ class Fleet:
         inner = [n for n in alike if not any(self._under(o, n) for o in alike if o != n)] or alike
         name = max(inner, key=lambda n: took[n])
         return name, took[name]
+
+    def _meter_read(self, ph: str, since: float, size: float, up: bool, t: Optional[float] = None) -> Optional[str]:
+        """The meter holding one device that owns a run open on grid phase
+        ``ph`` (_Open.meter), started before the grid's step at ``since`` and
+        on (_meter_on) both before the step and at the grid's moment ``t``
+        after it - the run carried through it -, whose readings show that
+        step - two of them, over the step's span widened by the meter's
+        latency, ``size`` apart that way in the grid's terms, within the
+        pairing tolerance - whether or not its own detector declared it. The
+        device's dip,
+        return or taper, not another load's step: a one-reading dip is under
+        the meter's sustain, so its detector declares nothing, while the
+        grid's faster cadence declares both edges (Home's EVBox 09-25, 3.45 ->
+        1.30 -> 3.43 kW in one 10 s reading, 22 times in a charge). On before
+        it too: a 65 W wobble Kozolec's EVSE rose by at 3.4 kW, still open
+        after the charger stopped, took its restart for its own and booked
+        it from the wobble's base, 0.4 of 3.9 kWh (10-01 15:2x)."""
+        grid = self.main.phases.get(ph)
+        if grid is None:
+            return None
+        g = self._grid_step(ph, since)
+        a, b = (g[3], g[4]) if g else (since, since)
+        for o in grid.open_edges:
+            name = o.meter
+            if not name or name not in self.subs or o.since >= a or not self.holds_one_device(name) \
+                    or not self._meter_on(name, ph, o.since, o.watts, a) \
+                    or not self._meter_on(name, ph, o.since, o.watts, t):
+                continue
+            k, lat = self.gain(name, "p"), self._latency(name)
+            for c in self._chans(name, ph):
+                rows = (self.sub_rows.get(name) or {}).get(c) or []
+                lo, hi = bisect.bisect_right(rows, (a - lat, math.inf)), bisect.bisect_right(rows, (b + lat, math.inf))
+                vals = [v for tv, v in rows[max(lo - 1, 0):hi] if tv <= self._now]
+                for i, x in enumerate(vals):
+                    for y in vals[i + 1:]:
+                        d = (y - x if up else x - y) * k
+                        if d > 0 and abs(d - size) <= grid._tol(size, d):
+                            return name
+        return None
 
     def _meter_level(self, name: str, ph: str, t: float, since: float) -> Optional[float]:
         """What meter ``name`` draws at ``t`` more than just before the run

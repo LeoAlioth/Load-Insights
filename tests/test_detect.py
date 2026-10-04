@@ -426,6 +426,54 @@ def test_two_runs_one_device_meter_owns_at_once_share_what_it_draws():
         assert abs(sum(s.energy_wh for s in runs) - 5667.0) < 100, ("busy" if busy else "quiet", got)
 
 
+def test_a_dip_its_one_device_meter_reads_once_is_the_charge_not_a_run_beside_it():
+    """Home's EVBox dipped from 3.45 to 1.30 kW for a single 10 s reading 22
+    times in one charge: under its sustain, its own detector declared
+    nothing, the grid declared both edges, and every return opened a 2.15 kW
+    run no meter owned, booked until the next dip closed it - ~14 kWh beside
+    a 29.8 kWh charge (09-25, 2026-10-04). A grid step the one-device meter's
+    readings show at the same moment, while a run it owns is on there, is
+    that run's (Fleet._meter_read): the dip no stop, the return no start.
+    Here 1.25 kW for a minute, then 3.45 kW for four hours with a 15 s dip
+    every half hour: what the charger drew, in the runs its meter owns."""
+    for busy in (False, True):
+        rnd = random.Random(13)
+        on, up, off = T0 + 3600.0, T0 + 3670.0, T0 + 3670.0 + 4 * 3600.0
+        dips = [up + 1200.0 + 1800.0 * k for k in range(8)]
+        end = off + 3600.0
+
+        def draw(t):
+            if not on <= t < off:
+                return 0.0
+            if t < up:
+                return 1255.0
+            return 1300.0 if any(d <= t < d + 15.0 for d in dips) else 3450.0
+        plug = [(T0 + 2.0 + 10.0 * k, round(draw(T0 + 2.0 + 10.0 * k) + rnd.uniform(-5, 5), 1))
+                for k in range(int((end - T0) / 10.0))]
+        grid, t = [], T0
+        while t < end:
+            w = 400.0 + rnd.uniform(-5, 5) + draw(t)
+            if busy:
+                s = t - T0
+                w += 150.0 if (s + 737.0) % 1800.0 < 600.0 else 0.0
+                w += 95.0 if (s + 101.0) % 420.0 < 200.0 else 0.0
+            grid.append((t, round(w, 1)))
+            t += 2.5
+        fleet = D.Fleet()
+        fleet.wait_cap_s = D.METER_WAIT_CAP_S
+        fleet.single = {"Charger": True}
+        fleet.meter_lag["Charger"] = [[2.0, 20.0]] * D.LAG_MIN_SAMPLES
+        filed = _keep_filed(fleet)
+        cuts = [T0 + 3600.0 * k for k in range(1, 7)]
+        for (part, e), (sub, _) in zip(_passes({"b": grid}, cuts, end), _passes({"a": plug}, cuts, end)):
+            fleet.process(part, {"Charger": sub}, now_ts=e)
+        drew = (1255.0 * (up - on) + 3450.0 * (off - up) - 2150.0 * 15.0 * len(dips)) / 3600.0
+        got = [(round(s.start - T0), round(s.end - T0), round(s.energy_wh), bool(s.wh)) for s in filed if s.energy_wh > 20]
+        runs = [s for s in filed if on - 30 < s.start < off and max(w for lv in s.levels.values() for _, w in lv) >= 250.0]
+        assert not [s for s in runs if s.start > up + 60], ("busy" if busy else "quiet", got)    # no return a run
+        assert abs(sum(s.energy_wh for s in runs) - drew) < 0.03 * drew, ("busy" if busy else "quiet", round(drew), got)
+
+
 def _keep_filed(fleet):
     """Every house session the fleet files, and every one a meter's own
     signature takes (Session.owner), in order, as the bench keeps them."""
