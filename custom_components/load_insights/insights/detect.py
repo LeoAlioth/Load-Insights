@@ -5287,6 +5287,8 @@ class Fleet:
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
+    # meter -> (phase, run, closed at) of the runs it owned the last day - see _meter_wh
+    _owned_runs: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
     wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
     # how far behind its meters the grid is read now, and the MODEL_REFRESH_S
     # step of the clock it was worked out at - see _horizon
@@ -6683,45 +6685,91 @@ class Fleet:
 
     def _meter_wh(self, name: str, ph: str, o: "_Open", at: float) -> Optional[float]:
         """What run ``o`` on grid phase ``ph``, which meter ``name`` owns, drew
-        until ``at``, Wh: its own size until its meter steps again, then that
-        size scaled by what the meter's declared levels have changed by since
-        just before its rise for the run (_steps_over), against the rise - so
-        a leg of a three-phase charge a total-only meter reads takes its
-        share. The meter's levels, not its readings: a spike never became a
-        level (raw readings integrated booked an 88 W, 13 s run at 1,040 W -
-        exp2, 2026-10-03). Only a meter holding one device (holds_one_device):
-        a circuit's change since is every load in it. None without the rise
-        or its levels.
+        until ``at``, Wh: what the meter's declared levels have changed by
+        since just before its rise for the run (_steps_over), in the grid's
+        terms (gain) - its whole rise from the run's start. The meter's
+        levels, not its readings: a spike never became a level (raw readings
+        integrated booked an 88 W, 13 s run at 1,040 W - exp2, 2026-10-03).
+        Only a meter holding one device (holds_one_device): a circuit's
+        change since is every load in it. None without the rise or its levels.
         Booked by its levels, a one-level run is the mean of its start and
         stop, or the smaller: Home's EVBox started a charge at 8.0 kW, drew
         10.6 for most of it and tapered at its end; Kozolec's water pump
-        drifts 104-247 W."""
+        drifts 104-247 W.
+        Every run the meter owns at a moment shares what it draws then, by
+        their sizes - a leg of a three-phase charge a total-only meter reads
+        its share: the meter's change since just before the lowest of them
+        rose. Each booked at the meter's whole level, Home's EVBox's 09-25
+        charge - a run its +1,255 W start opened beside ones its +736, +585
+        and +661 W rises opened later and smaller ones down to 10 W - was
+        booked 39.6 kWh for the 29.8 it drew (2026-10-04). The lowest, not the
+        oldest: a 53 W wobble Kozolec's EVSE rose by at 3.5 kW was still open
+        when the charger stopped and started again, and the restart, read from
+        the wobble's base, was booked 65 Wh for 3.1 kWh (09-28 15:18). In the
+        grid's terms by the meter's gain, not by the lowest run's start
+        against its rise: a 92 W run the EVSE's 3.58 kW rise came with booked
+        a 3.6 kW charge beside it at 132 Wh (09-30 14:00), and a run that
+        started at the grid's first plateau of a ramp (Kozolec 09-30 09:30,
+        2,545 W of the EVSE's 3,529) books what the meter drew, 5.83 kWh for
+        5.8, not 4.18."""
         det = self.subs.get(name)
         if det is None or o.watts <= 0 or not self.holds_one_device(name):
             return None
-        was, cur, marks = {}, {}, []
+        mine = self._run_levels(name, ph, o, at)
+        if mine is None:
+            return None
+        kept = self._owned_runs.setdefault(name, [])
+        kept[:] = [r for r in kept if r[2] > at - MAX_OPEN_S]
+        runs = [(o, mine)]
+        for p, x, end in [(p, x, math.inf) for p, st in self.main.phases.items() for x in st.open_edges] + kept:
+            if x is o or x.meter != name or x.since >= at or end <= o.since:
+                continue
+            got = self._run_levels(name, p, x, min(end, at))
+            if got is not None and set(got[2]) & set(mine[2]):
+                runs.append((x, got, end))
+        kept.append((ph, o, at))
+        cuts = sorted({o.since, at} | {t for x, lv, *end in runs for t in (x.since, *end, *(m[0] for m in lv[1]))
+                                         if o.since < t < at})
+
+        def level(lv, t):                     # the run's meter change in force at t
+            return lv[1][bisect.bisect_right(lv[1], (t, math.inf)) - 1][1]
+        wh, gain = 0.0, self.gain(name, "p")
+        for t0, t1 in zip(cuts, cuts[1:]):
+            now = [r for r in runs if r[0].since <= t0 and (r[0] is o or r[2] > t0)]
+            low = min(now, key=lambda r: (r[1][3], r[0].since))
+            w = level(low[1], t0) * gain * o.watts / sum(r[0].watts for r in now)
+            wh += max(0.0, w) * (t1 - t0)
+        return wh / 3600.0
+
+    def _run_levels(self, name: str, ph: str, o: "_Open", until: float):
+        """(the rise of meter ``name`` for run ``o`` on grid phase ``ph``,
+        [(when, the meter's change since just before that rise)] from the run's
+        start - its rise, then each of its declared levels after the rise and
+        before ``until`` -, the channels read, what they read just before the
+        rise), in the meter's own terms, over its channels that may carry the
+        phase (_chans); None without the rise or its levels."""
+        det = self.subs[name]
+        was, cur, marks, chans = {}, {}, [], []
         for c in self._chans(name, ph):
             st = det.phases[c]
             ups = self._steps_over(name, c, ph, o.since, True)
             if not ups or any(len(e) < 7 for e in ups):
                 continue
+            chans.append(c)
             first, last = min(ups, key=lambda e: e[0]), max(ups, key=lambda e: e[0])
             was[c] = first[6] - first[1]                 # the channel just before the run's rise
             cur[c] = last[6] - was[c]
             lo = bisect.bisect_right(st.declared_t, last[0])
-            marks += [(e[0], c, e[6] - was[c]) for e in st.declared[lo:bisect.bisect_left(st.declared_t, at)]
+            marks += [(e[0], c, e[6] - was[c]) for e in st.declared[lo:bisect.bisect_left(st.declared_t, until)]
                       if len(e) > 6]
         rise = sum(cur.values())
         if rise <= 0:
             return None
-        wh, t, w = 0.0, o.since, o.watts
+        out = [(o.since, rise)]
         for ts, c, change in sorted(marks):
-            if ts > t:
-                wh += w * (ts - t)
-                t = ts
             cur[c] = change
-            w = max(0.0, o.watts * sum(cur.values()) / rise)
-        return (wh + w * max(0.0, at - t)) / 3600.0
+            out.append((max(ts, o.since), sum(cur.values())))
+        return rise, out, chans, sum(was.values())
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
