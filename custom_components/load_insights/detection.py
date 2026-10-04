@@ -229,10 +229,19 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
 
 def meter_devices(hass: HomeAssistant, device_id: str) -> List[str]:
     """The device and the devices that hang off it (via_device_id) - see
-    device_rows."""
+    device_rows.
+
+    Looked for among the devices of the meter's own config entries:
+    `registry.devices` used as a mapping (`.values()` too) is deprecated from
+    Home Assistant 2026.9 and breaks in 2027.9, and iterating it yields device
+    ids rather than entries before 2026.9 - this helper reads the same on both."""
     ids = [device_id]
     try:
-        ids += [d.id for d in dr.async_get(hass).devices.values() if d.via_device_id == device_id]
+        devices = dr.async_get(hass)
+        meter = devices.async_get(device_id)
+        ids += dict.fromkeys(d.id for entry_id in (meter.config_entries if meter else ())
+                             for d in dr.async_entries_for_config_entry(devices, entry_id)
+                             if d.via_device_id == device_id)
     except Exception:                        # a registry we cannot read is not fatal
         pass
     return ids
