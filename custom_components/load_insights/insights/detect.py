@@ -342,7 +342,14 @@ EDGE_SCALE_REL = 0.02          # ponytail: fixed; the phase's voltage spread is 
 EDGE_BIN = 0.25
 EDGE_KERNEL = 1.0
 EDGE_TAU_S = 10 * 86400.0
-EDGE_RECUT = 32                # steps into a group before its segments are cut again
+# The histogram is cut at its valleys again at every step, the step in it. ^
+# EDGE_RECUT: cut every 32 steps instead (or when a step fell outside every
+# segment), the cuts were counted from the group's first step, so one step
+# dropped or added moved every later cut, and a step near a valley went to
+# another cluster for the rest of the replay: Home hidden, over five replays
+# apart only by a reading in 10,000 dropped or 1 ms of jitter, read 13.2-25.2 %
+# impurity over its devices, cut at every step 18.2-19.3 (2026-10-04). A card
+# takes a quarter longer (504 -> 651 s).
 # A start is an ALL-PHASE EVENT: rises on different phases within this many
 # seconds, the smallest at least EVENT_BALANCE of the largest, are one event,
 # clustered on their phase pattern and total size. Home's three-phase
@@ -3708,7 +3715,7 @@ class Detector:
     _rejudge: Set[int] = field(default_factory=set, repr=False, compare=False)
     _rejudge_all: bool = field(default=True, repr=False, compare=False)
     # per phase|direction|inputs: bin -> recency-weighted steps, and when it
-    # last faded - see EDGE_BATCH; its segments are cut again every EDGE_RECUT
+    # last faded - see EDGE_BATCH; its segments, cut at every step (EDGE_RECUT)
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
@@ -3734,7 +3741,6 @@ class Detector:
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
-    _recut: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
@@ -4455,11 +4461,7 @@ class Detector:
         if angle is not None:
             ab = int(math.floor(angle / EDGE_ANGLE_BIN))
             ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
-        segs = self._segs.get(g)
-        if segs is None or self._recut.get(g, 0) >= EDGE_RECUT or not any(lo <= b <= hi for lo, hi in segs):
-            segs = self._segs[g] = valley_segments(h)
-            self._recut[g] = 0
-        self._recut[g] += 1
+        segs = self._segs[g] = valley_segments(h)      # with this step in it - see EDGE_RECUT
         plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
         if seg is None:
