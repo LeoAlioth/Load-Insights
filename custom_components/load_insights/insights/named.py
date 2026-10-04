@@ -33,6 +33,16 @@ def chosen_name(typed: Optional[str], picked: Optional[str]) -> Optional[str]:
     return picked or (typed or "").strip() or None
 
 
+def regrouped(before: Dict[str, list], after: Dict[str, list]) -> List[str]:
+    """The names whose signatures changed between two ``Fleet.names()`` - a
+    rename, an adoption or a forgetting - that still exist: the name given,
+    and the one it was taken from while other signatures still wear it.
+    Their energy meters' statistics hold the old signatures' history until
+    rewritten (Inkubator, moved from the grid's #6 to Hiša's #14 on
+    2026-10-04, read ~0 kWh a day until backfilled by hand)."""
+    return sorted(n for n, refs in after.items() if set(refs) != set(before.get(n, ())))
+
+
 def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dict],
                  fives: List[dict]) -> Tuple[List[dict], List[dict], float]:
     """The statistics a named load's energy meter should hold for the hours
