@@ -1989,6 +1989,8 @@ class PhaseState:
         for k, part in enumerate(parts):
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
                                     surge if k == len(parts) - 1 else 0.0, new_level, quality)
+        if step < 0:
+            closed += self._floor_stop(since, new_level)
         return closed
 
     def latency(self) -> float:
@@ -2091,13 +2093,45 @@ class PhaseState:
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
         self.stop_cluster, self.stop_q = None, None
         closed += self._unseen_stop(since, new_level)
-        if self.open_edges and new_level <= self.baseline + self.noise:
-            # back at the idle floor, so whatever was still open has stopped
-            # without us seeing it go. Holding those starts open would have
-            # them pair with an unrelated load hours later, and meanwhile
-            # count as running. A run its meter still shows on stays.
-            self.open_edges = [o for o in self.open_edges if self.owned(o)]
         return closed
+
+    def _floor_stop(self, at: float, new_level: float) -> List[Session]:
+        """A fall back to the idle floor: whatever was still open has stopped,
+        and closes here. Held open, those starts would pair with an unrelated
+        load hours later; dropped, as they were until 2026-10-04, they left no
+        session at all - 1,212 runs and 17 kWh in Home's ten days, hidden, and
+        the washer-dryer's 03:56 and 05:47 cycles of 24 Sep (+282 W creeping
+        to ~395, stopping -394 against 282 + 21 + 14 open: no pairing, no
+        multi-close). The runs the fall's unpaired part covers - largest first
+        while it still covers them, as a multi-close takes them - close at
+        their share of it by their size (followed, or their start); the rest
+        at their own size, as the conservation stop closes a run the reading
+        cannot carry (_unseen_stop); closing only the covered ones (298 of the
+        1,212) left Home's hidden and fed cards where they were. Once per
+        declared fall, after all its parts paired
+        (SPLIT_BY_METERS): from the first part, the drop had taken runs the
+        rest would have closed. A run its meter still shows on stays, and one
+        the fall itself opened (a share the other way)."""
+        if not self.open_edges or new_level > self.baseline + self.noise:
+            return []
+        gone = [o for o in self.open_edges if not self.owned(o) and o.since < at]
+        unpaired = [d for d in self.held_drops if d[0] == at]
+        left = fall = sum(d[1] for d in unpaired)
+        size = {id(o): o.now if o.now and o.now > 0 else o.watts for o in gone}   # what it was followed to, or its start
+        taken = []
+        for o in sorted(gone, key=lambda o: -size[id(o)]):
+            if left > 0 and size[id(o)] <= left + self._tol(size[id(o)], left):
+                taken.append(o)
+                left -= size[id(o)]
+        self.open_edges = [o for o in self.open_edges if o not in gone]
+        if taken:
+            self.held_drops = [d for d in self.held_drops if d not in unpaired]
+        whole = sum(size[id(o)] for o in taken)
+        out = []
+        for o in gone:                     # all out before any closes - see Detector.resolve_rise
+            self._remember_close(o, at)
+            out.append(self._close(o, at, size[id(o)] * fall / whole if o in taken else o.watts, None))
+        return sorted(out, key=lambda x: x.start)
 
     @property
     def rel_floor(self) -> float:
