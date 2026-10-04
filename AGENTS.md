@@ -1165,10 +1165,10 @@ where they agree, else the smaller: Home's EVBox began a charge at 1,262 W -
 its ramp's first plateau - and drew 3.48 kW for 8.5 hours (09-25 18:57), booked
 10.7 of the 29.3 kWh it drew. A run a meter holding one device owns
 (`_Open.meter`, `holds_one_device`) is now booked (`Session.wh`, per phase,
-stored; `energy_wh` and the hourly statistics read it) at its own size until
-its meter steps again, then at that size scaled by the meter's declared level
-against just before its rise - a leg of a three-phase charge a total-only
-meter reads takes its share. Declared levels (each `declared` step carries the
+stored; `energy_wh` and the hourly statistics read it) at the meter's declared
+level against just before its rise, in the grid's terms by the meter's gain
+(8637651; it was the run's start scaled by that level against the rise).
+Declared levels (each `declared` step carries the
 level it stepped to), not readings: a spike never became a level (exp2's raw
 integral booked an 88 W, 13 s run at 1,040 W). A circuit's change is every
 load in it, so one-device meters only. Where the run ends does not change (a
@@ -1186,6 +1186,34 @@ devices 92.9 / 8.0 -> 98.7 / 9.0). Following a run alone on its phase at the
 phase's level above its floor was benched and left out: the grid's floor holds
 cycling loads, and Home's hidden Hiša lost right energy as fast as wrong
 (73.9 / 19.2 -> 63.9 / 11.3).
+
+**Every run a one-device meter owns at a moment shares what it draws (exp9,
+8637651), and a step the meter's readings show is its run's (ebfe46f).**
+Two runs a meter owned at once - a charge's start and a later rise of it the
+meter's step was all of, or a 10-68 W wobble - were each booked at the
+meter's whole level: the EVBox's 09-25 charge 39.6 kWh of owned runs for 29.8
+drawn (the fixed scorer, 9b7c69c, counts the second as wrong). The meter's
+change since just before the LOWEST of the runs it owns at a moment (open, or
+closed in the last day, `Fleet._owned_runs`) is split among them by their
+starts' sizes; the lowest, not the oldest, since a wobble opened at 3.5 kW and
+left open read a restart from its own base (Kozolec 09-28 15:18, 65 Wh of 3.1
+kWh). A one-reading dip is under a meter's sustain: its detector declares
+nothing, the grid's faster cadence declares both edges, and the EVBox's 22
+dips in that charge each closed a run by size and opened a 2.15 kW run no
+meter owned (~14 kWh beside it). `Fleet._meter_read`: a grid step a one-device
+meter's readings show - two of them over the step's span and the meter's
+latency, the step's size apart in the grid's terms - while a run it owns is
+on there before and after it is that run's: a fall no stop, a rise no run.
+Fed, against the night's baseline under the fixed scorer: Home devices 61.2 /
+9.2 -> 64.1 / 8.6 (the EVBox 65.3 / 8.8 -> 71.8 / 8.9), Kozolec 91.9 / 5.5 ->
+91.6 / 1.6 (the EVSE 98.2 / 6.8 -> 97.4 / 1.0); the 09-25 charge booked 51.7
+-> 30.5 kWh for 29.8. Left as patches in the overnight log (Exp 9): a
+three-phase event whose legs' sum a one-device meter's total rise was all of
+owned by it, leg by leg (#43 - the EVBox +1.6 / -0.3 but the hidrofor's 2-leg
+starts taken too, its impurity 13.6 -> 27.5 %; a ramp's first plateaus, 09-29
+20:24's 8.75 kW of legs against the meter's 10.46, are outside the tolerance),
+and exp8's "on until the meter shows it off" on top (neutral at Home now, +0.3
+impurity at Kozolec).
 
 **A load inside a meter holding several devices is that meter's (2026-10-03).**
 Anze, naming Mansarda's fridge and freezer: "if a same load is detected by
