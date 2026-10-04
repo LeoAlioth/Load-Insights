@@ -1025,6 +1025,33 @@ alone cannot tell an orphan from a real long run of a size other loads run
 briefly - Home's dryer lost a third of its sessions. A start should be given
 up on when the phase shows it is no longer running, not by the clock.
 
+**A fall to the idle floor closes what was open (2026-10-04,
+`PhaseState._floor_stop`).** Until then such a fall DROPPED every run still
+open, with no session at all - nearly all of the card's "starts never
+closed": the grid's detector, SLICE=6, Home 1,212 / 1,183 / 907 runs (16.9 /
+15.2 / 12.9 kWh at their start size) hidden / circuits / fed, Kozolec 40 / 12,
+home-hisa 399 / 388, home-mansarda 73 / 71, Andrej 161 / 169; the meters' own
+detectors, fed, Home 649 runs and 81 kWh (the EVBox's tapering charges 41, the
+Hiša 3EM 13, Susilna's 20-hour dehumidifier runs 12, Mansarda 11), Kozolec 60
+/ 3.4, Andrej's go-e 17 / 5.8. Mostly short and small (median 61 W, 42 s at
+Home), a few hours long. Now the runs the fall's unpaired part covers close at
+their share of it, the rest at their own size, as the conservation stop
+closes a run the reading cannot carry; "starts never closed" is 0.0 % at every
+site. Card against 9aa31bf, the effect in three paired cards (the plain one
+and NOOP=drop:10000:1 and :2 on both sides): Home's capture up in every mode
+and replicate (devices hidden 33.9 / 16.7 -> 36.1 / 16.3, circuits 44.0 / 12.9
+-> 49.6 / 10.1, fed 67.3 / 7.6 -> 70.9 / 6.6; partition 49.8 / 16.5 -> 51.4 /
+16.4, 62.1 / 9.0 -> 65.1 / 7.0, 73.4 / 6.9 -> 77.2 / 6.8), its impurity flat on
+average; Andrej fed the go-e 83.4 / 4.3 -> 92.8 / 7.7 (+3.4 impurity in all
+three, the Rest's 13.6 -> 6.1); Kozolec +0.1 impurity; kiln and mat unchanged;
+invariance 0. Closing only the covered runs (298 of Home's 1,212 hidden) moved
+Home's hidden card nowhere. The washer-dryer's 03:56 and 05:47 cycles of
+24 Sep (hidden) are filed, at 282 W for 548 s and 279 W for 55 s. Still open:
+a run its stop went unseen hours before the floor is booked to the floor
+(Mansarda's own detector, 09-29 21:14, a 1,439 W run 107 min, 2.6 kWh); the
+idle floor itself moves where a fall finds nothing open (Home A's base 1,818 W
+on 09-28 evening).
+
 **A load inside a meter holding several devices is that meter's (2026-10-03).**
 Anze, naming Mansarda's fridge and freezer: "if a same load is detected by
 both meters, shouldn't the reading collapse into a single device anyway?" A

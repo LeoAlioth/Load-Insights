@@ -2870,6 +2870,37 @@ def test_a_creep_rise_does_not_end_the_big_run_it_follows():
     assert det.edge_unit["a|1"] < 5.0, det.edge_unit          # a quarter of the quiet night's 10 W, not the seed's swing
 
 
+def test_runs_open_at_a_fall_to_the_idle_floor_close_there():
+    """Home's phase A, 24 Sep 04:05 UTC: Mansarda's washer-dryer starts +282 W
+    and creeps to ~395 W below the step threshold while small loads run beside
+    it, so no run is followed; it stops -394 W, back to the idle floor. The
+    fall fits no run and no multi-close (282 + 21 + 14 against 394), and the
+    idle-floor drop discarded every run still open - no session at all
+    (2026-10-04). A fall to the floor means what was on went off: the runs
+    still open close at it, read in one call or in ten-minute passes alike."""
+    rnd = random.Random(0)
+    small, big, stop = (1000.0, 60.0), 1500.0, 4000.0
+    rows, t = [], T0
+    while t < T0 + 6000.0:
+        s = t - T0
+        w = 450.0 + rnd.uniform(-2.0, 2.0)
+        if small[0] <= s < stop:
+            w += small[1]
+        if big <= s < stop:
+            w += 200.0 + min(100.0, 0.04 * (s - big))   # +200 W, then 100 W more over 2500 s, unseen
+        rows.append((t, w))
+        t += 5.0
+    end = T0 + 6600.0
+    whole = D.Detector().process({"a": rows}, now_ts=end)
+    det, sliced = D.Detector(), []
+    for part, e in _passes({"a": rows}, [T0 + 600.0 * k for k in range(1, 11)], end):
+        sliced += det.process(part, now_ts=e)
+    assert _as_filed(sliced) == _as_filed(whole)
+    got = [(round(s.start - T0), round(s.end - T0), round(s.energy_wh, 1)) for s in whole]
+    for since in (small[0], big):
+        assert any(abs(s.start - (T0 + since)) < 10 and abs(s.end - (T0 + stop)) < 10 for s in whole), got
+
+
 def test_a_live_meter_carries_load_in_a_one_minute_pass():
     """Home's phase A reports every 4.3 s, so a live pass holds about 14 of its
     readings; a dead port reads zero however many there are (2026-09-30)."""
