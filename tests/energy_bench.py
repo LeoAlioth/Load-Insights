@@ -267,29 +267,41 @@ def _started_with(rows: list, times: list, s) -> bool:
     return first > 0 and peak - before >= 0.5 * first
 
 
-def _free(taken: list, a: float, b: float) -> list:
-    """The parts of [a, b] that no interval of ``taken`` - sorted and disjoint,
-    see _take - covers. By bisection: the boiler's 750 runs made a scan of
-    every interval per session the dearest part of a replay (46 s)."""
-    out, t = [], a
-    for x, y in taken[max(bisect.bisect_right(taken, (a, float("inf"))) - 1, 0):]:
-        if x >= b:
-            break
-        if y <= t:
-            continue
+def _credit(left: list, rows: list, times: list, floor: float, a: float, b: float, booked: float) -> float:
+    """The meter's energy (above ``floor``) a session over [a, b] booked at
+    ``booked`` Wh is credited, every moment of the meter credited once in
+    all: ``left`` - sorted, disjoint (x, y, share) - holds the share of the
+    meter's energy over [x, y] no session has been credited yet, 1 where no
+    interval lies. The session is credited min(booked, what is left over its
+    span) and takes that same share of every moment of it, leaving the rest
+    to the next - so the credit never exceeds what the meter drew. Until
+    2026-10-04 a session took its span only when credited 80 % of what was
+    left there: one booked under what the meter drew took nothing, and a
+    longer run over the same moments was credited them again - Home's EVBox
+    sessions 142.7 kWh of its 137.4 fed, Kozolec's EVSE 102.6 % (9020ea9).
+    By bisection: the boiler's 750 runs made a scan of every interval per
+    session the dearest part of a replay (46 s)."""
+    i = max(bisect.bisect_right(left, (a, float("inf"))) - 1, 0)
+    if i < len(left) and left[i][1] <= a:
+        i += 1
+    j, t, parts = i, a, []
+    while j < len(left) and left[j][0] < b:
+        x, y, f = left[j]
         if x > t:
-            out.append((t, x))
-        t = max(t, y)
+            parts.append((t, x, 1.0))
+        parts.append((max(x, a), min(y, b), f))
+        t, j = y, j + 1
     if t < b:
-        out.append((t, b))
-    return out
-
-
-def _take(taken: list, parts: list) -> None:
-    """Add ``parts`` - from _free, so disjoint from everything in it - to
-    ``taken``, keeping it sorted."""
-    for part in parts:
-        taken.insert(bisect.bisect_left(taken, part), part)
+        parts.append((t, b, 1.0))
+    got = sum(f * _above(rows, times, x, y, floor) for x, y, f in parts if f > 0)
+    credit = min(got, booked)
+    if credit <= 0:
+        return 0.0
+    keep = 1.0 - credit / got
+    head = [(left[i][0], a, left[i][2])] if i < j and left[i][0] < a else []
+    tail = [(b, left[j - 1][1], left[j - 1][2])] if i < j and left[j - 1][1] > b else []
+    left[i:j] = head + [(x, y, f * keep) for x, y, f in parts] + tail
+    return credit
 
 
 def _overlap(ivs: list, a: float, b: float) -> float:
@@ -701,13 +713,13 @@ def energy(site: str, folder: str, dials: list) -> dict:
         gated = 0.0
         # a meter's energy is credited ONCE: two runs of one load overlapping in
         # time each took the meter's whole draw over their span - Kozolec's car
-        # charger scored 128.9 % capture (2026-10-02). Shortest run first, and
-        # only a run that accounts for most of the meter's energy over its span
-        # takes those moments: a boiler pulse takes its own minute before a
-        # four-hour charge that happened to start with a pulse can take the
-        # boiler's whole afternoon, while a pulse that starts as the EVSE ramps
-        # back up is a bystander on the EVSE's meter and takes nothing from it.
-        taken = {name: [] for name in devices}      # each meter's moments already credited
+        # charger scored 128.9 % capture (2026-10-02). Shortest run first, each
+        # taking what it is credited of every moment it spans (_credit): a
+        # boiler pulse takes its own minute before a four-hour charge that
+        # happened to start with a pulse can take the boiler's whole afternoon,
+        # and a pulse that starts as the EVSE ramps back up takes only its own
+        # energy's share of the EVSE's minute.
+        left = {name: [] for name in devices}       # each meter's moments, the share not yet credited
         for k in sorted(range(len(filed)), key=lambda k: (filed[k].end - filed[k].start, filed[k].start)):
             s, sid = filed[k], sids[k]
             if s.energy_wh <= 0 or not keep(s):
@@ -721,14 +733,10 @@ def energy(site: str, folder: str, dials: list) -> dict:
             for name, rows in devices.items():
                 if not _started_with(rows, times[name], s):
                     continue
-                free = _free(taken[name], s.start, s.end)
-                got_wh = sum(_above(rows, times[name], a, b, floors[name][0]) for a, b in free)
-                if got_wh > 0:
-                    credit = min(got_wh, s.energy_wh)
+                credit = _credit(left[name], rows, times[name], floors[name][0], s.start, s.end, s.energy_wh)
+                if credit > 0:
                     row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
-                    if credit >= 0.8 * got_wh:
-                        _take(taken[name], free)
             for name, watts, _, ivs in PLANTS:
                 ov = _overlap(ivs, s.start, s.end)
                 if ov > 0:
@@ -1244,6 +1252,19 @@ def check() -> None:
     assert _started_with(restart, [r[0] for r in restart], S)
     S.start = 50.0                                                     # mid-run, no restart near: not started here
     assert not _started_with(restart, [r[0] for r in restart], S)
+    # a meter's moments credited once, whatever the sessions overlapping them
+    # were booked at: 3 kW for an hour, 3 kWh. A run booked under what the meter
+    # drew over its span takes that share of each moment and leaves the rest, so
+    # a longer run over them is not credited them again (the old rule: 3.5 kWh)
+    meter = [(0.0, 0.0), (100.0, 3000.0), (3700.0, 0.0)]
+    mt, left = [r[0] for r in meter], []
+    got = [round(_credit(left, meter, mt, 0.0, a, b, wh), 2) for a, b, wh in (
+        (100.0, 1000.0, 500.0),       # booked 500 of the 750 Wh under it: takes 2/3 of each moment
+        (500.0, 600.0, 1000.0),       # inside it: the third left of those 100 s
+        (1000.0, 2000.0, 900.0),      # all of its 833 Wh
+        (100.0, 3700.0, 3000.0),      # the rest of the hour, not its 3 kWh
+        (100.0, 3700.0, 3000.0))]     # ...and nothing to a second one over it
+    assert got == [500.0, 27.78, 833.33, 1638.89, 0.0] and round(sum(got), 6) == round(_above(meter, mt, 0, 3700, 0.0), 6) == 3000
     # the floor: 5 W for 900 s, 1005 W for 100 s - the level of a tenth of the time
     wh, floor, floor_wh = _truth([(0.0, 5.0), (900.0, 1005.0), (1000.0, 5.0)])
     assert floor == 5.0 and round(wh, 2) == 27.78 and round(floor_wh, 2) == 1.39
