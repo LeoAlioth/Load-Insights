@@ -694,25 +694,24 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
             self.hass, self._backfill_when_new(), f"{DOMAIN} backfill {self.entity_id}")
 
     async def _backfill_when_new(self) -> None:
-        """A new meter's statistics start at its first recorded hour, and the
-        Energy dashboard with them, though detection saw the load for days
-        before it was named. So a meter with no hour of its own yet - one just
-        named - is backfilled once it has one: tried each time Home Assistant
-        has compiled statistics, every five minutes, until its first hour is
-        in (the event fires before the compile commits, so the hour may only
-        show five minutes on). An older meter is rewritten now if a rename,
-        adoption or forgetting changed its name's signatures since - this is
-        the reload that follows one (Inkubator moved, Kompresor joined by
-        #63: their meters kept the old signatures' history) - and is
-        otherwise load_insights.backfill_statistics' to fill."""
-        if await self._runner.async_first_statistic(self.entity_id) is not None:
-            if self._name in self._runner.rewrite_due:
-                await self._runner.async_backfill_statistics(self._name)
+        """A meter is held against what detection credits its load with as it
+        is added - at a start, and at the reload every naming makes - and
+        every hour from then on (DetectionRunner._check_named). A new meter's
+        statistics start at its first recorded hour, and the Energy dashboard
+        with them, though detection saw the load for days before it was
+        named. So a meter with no hour of its own yet - one just named - is
+        backfilled once it has one: tried each time Home Assistant has
+        compiled statistics, every five minutes, until its first hour is in
+        (the event fires before the compile commits, so the hour may only
+        show five minutes on); as is one added while history is re-read, once
+        the re-read is done."""
+        if await self._runner.async_backfill_statistics(self._name, force=False) is not None:
             return
         done = asyncio.Event()
 
         async def compiled(_event) -> None:
-            if not done.is_set() and await self._runner.async_backfill_statistics(self._name) is not None:
+            if not done.is_set() and \
+                    await self._runner.async_backfill_statistics(self._name, force=False) is not None:
                 done.set()
 
         remove = self.hass.bus.async_listen(EVENT_RECORDER_5MIN_STATISTICS_GENERATED, compiled)
