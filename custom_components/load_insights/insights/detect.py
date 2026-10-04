@@ -960,6 +960,9 @@ class Session:
     # run of its parent's: the run is that session's signature's, and the
     # parent files none of its own - see Fleet._file_as
     owner: Optional[tuple] = None
+    # phase -> Wh it drew, where its meter followed it (PhaseState._close,
+    # Fleet._meter_wh); a phase without is booked at its levels
+    wh: Dict[str, float] = field(default_factory=dict)
 
     @property
     def confidence(self) -> float:
@@ -1017,7 +1020,10 @@ class Session:
 
     @property
     def energy_wh(self) -> float:
-        return sum(p * self.duration_s for p in self.power_by_phase().values()) / 3600.0
+        if not self.wh:
+            return sum(p * self.duration_s for p in self.power_by_phase().values()) / 3600.0
+        return sum(self.wh[ph] if ph in self.wh else p * self.duration_s / 3600.0
+                   for ph, p in self.power_by_phase().items())
 
     @property
     def max_w(self) -> float:
@@ -1032,7 +1038,8 @@ class Session:
                 "pf_mad": self.pf_mad, "surge_w": self.surge_w,
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()},
-                "pair": list(self.pair) if self.pair else None, "legs": [list(x) for x in self.legs]}
+                "pair": list(self.pair) if self.pair else None, "legs": [list(x) for x in self.legs],
+                "wh": dict(self.wh)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -1043,7 +1050,7 @@ class Session:
                    samples=d.get("samples", 0), low=d.get("low"), high=d.get("high"),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()},
                    pair=tuple(d["pair"]) if d.get("pair") else None,
-                   legs=[tuple(x) for x in d.get("legs") or []])
+                   legs=[tuple(x) for x in d.get("legs") or []], wh=dict(d.get("wh") or {}))
 
 
 # ------------------------------------------------------------------ per-phase tracker
@@ -2016,9 +2023,11 @@ class PhaseState:
         quality = self._step_quality(step, held, since, new_level - step)
         self.last_step_ts = since
         # its span: when the change can have happened - from the last moment
-        # the old level is known to have held, to the first reading it settled on
+        # the old level is known to have held, to the first reading it settled
+        # on - and the level it stepped to: the meter's own record of what it
+        # read, spikes never in it (see Fleet._meter_wh)
         self.declared.append((since, step, step_q, old_side if old_side is not None else self.span_start(first_off),
-                              held[0][0] if held else since, ts))
+                              held[0][0] if held else since, ts, new_level))
         self.declared_t.append(since)
         if len(self.declared) > 4000:
             del self.declared[:1000]
@@ -2600,12 +2609,18 @@ class PhaseState:
         stop_q = self.stop_q if self.stop_q is not None else QUALITY_UNSEEN_STOP
         agree = abs(o.watts - watts) / max(o.watts, abs(watts), 1e-9)
         f_pair = min(1.0, max(0.0, 1.0 - agree / (2.0 * MATCH_EDGE_REL)))
+        # what it drew where a meter holding one device owns it, by that
+        # meter's levels - its levels are its size, not its energy (Home's
+        # EVBox started at 8 kW, charged at 10.6 and tapered, 2026-10-04)
+        wh = (self.lib.meter_wh(o.meter, self.name, o, at)
+              if o.meter and self.lib is not None and self.lib.meter_wh is not None else None)
         return Session(phases="", start=o.since, end=at, levels={"": levels},
                        quality=min(o.q, stop_q) * f_pair,
                        surge_w=o.surge,
                        pf=_pf_from(levels[0][1], q),
                        pf_mad=_pf_spread(levels[0][1], q, self.q_quantum),
-                       samples=self._span(o.since, at), low=o.lo, high=o.hi, pair=pair)
+                       samples=self._span(o.since, at), low=o.lo, high=o.hi, pair=pair,
+                       wh={"": wh} if wh is not None else {})
 
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
         """(since, watts) of everything believed to be running on this phase."""
@@ -3181,8 +3196,11 @@ class Signature:
         run over the first is another device of its size. Counting both put
         1.96 kWh in one hour into Home's 635 W floor mat, more than the whole
         of Hiša used in it (2026-09-29)."""
-        watts = sum(s.power_by_phase().values())
-        if watts <= 0 or s.end <= s.start:
+        if s.end <= s.start:
+            return
+        # what it drew, where its meter followed it (Session.wh), else its levels
+        watts = s.energy_wh * 3600.0 / (s.end - s.start) if s.wh else sum(s.power_by_phase().values())
+        if watts <= 0:
             return
         for start, end in _uncovered(s.start, s.end, self.runs[:-1]):
             t = start
@@ -3782,6 +3800,8 @@ class Detector:
     # (meter, phase) -> what the meter draws above its floor now, in the grid's terms - the size of a run that is its
     meter_level: Optional[object] = field(default=None, repr=False, compare=False)
     meter_ended: Optional[object] = field(default=None, repr=False, compare=False)
+    # (meter, phase, run, until) -> Wh a run a meter holding one device owns drew, by its levels, or None
+    meter_wh: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -3880,6 +3900,8 @@ class Detector:
         for fph, s in got:
             s.phases = fph
             s.levels = {fph: s.levels.pop("")}
+            if "" in s.wh:
+                s.wh = {fph: s.wh.pop("")}
             self.held.append(s)
         if got:
             self._held_due = None
@@ -4055,10 +4077,11 @@ class Detector:
     def _combine(g: List[Session]) -> Session:
         if len(g) == 1:
             return g[0]
-        levels = {}
+        levels, wh = {}, {}
         pfs = []
         for m in g:
             levels.update(m.levels)
+            wh.update(m.wh)
             if m.pf is not None:
                 pfs.append(m.pf)
         return Session(phases="".join(sorted(levels)), start=min(m.start for m in g), end=max(m.end for m in g),
@@ -4066,7 +4089,7 @@ class Detector:
                        quality=min(m.quality for m in g),
                        surge_w=sum(m.surge_w for m in g),
                        pf_mad=max((m.pf_mad for m in g if m.pf is not None), default=0.0),
-                       legs=[m.pair for m in g if m.pair])
+                       legs=[m.pair for m in g if m.pair], wh=wh)
 
     def _input_context(self, s: Session):
         """The rarest of the settings' rare values in force halfway through
@@ -5416,6 +5439,7 @@ class Fleet:
         main.meter_steps, main.step_meter, main.meter_held = self._meter_steps, self._step_meter, self._meter_held
         main.meter_stop, main.meter_on = self._meter_stop, self._meter_on
         main.meter_started, main.meter_level, main.meter_ended = self._meter_started, self._meter_level, self._meter_ended
+        main.meter_wh = self._meter_wh
 
     def _sync_views(self) -> None:
         """The fleet as a tree (Anze, 2026-10-03): every meter others hang
@@ -5431,7 +5455,7 @@ class Fleet:
         for p in [p for p in self.views if p not in tops]:
             v = self.views.pop(p)
             v.main.meter_steps = v.main.step_meter = v.main.meter_held = v.main.meter_stop = None
-            v.main.meter_on = v.main.meter_started = v.main.meter_level = v.main.meter_ended = None
+            v.main.meter_on = v.main.meter_started = v.main.meter_level = v.main.meter_ended = v.main.meter_wh = None
         for p in sorted(tops):
             v = self.views.get(p)
             if v is None:
@@ -6656,6 +6680,48 @@ class Fleet:
         if not chans:
             return None
         return max(0.0, sum(self._change_since(name, ph, c, since, t) for c in chans)) * self.gain(name, "p")
+
+    def _meter_wh(self, name: str, ph: str, o: "_Open", at: float) -> Optional[float]:
+        """What run ``o`` on grid phase ``ph``, which meter ``name`` owns, drew
+        until ``at``, Wh: its own size until its meter steps again, then that
+        size scaled by what the meter's declared levels have changed by since
+        just before its rise for the run (_steps_over), against the rise - so
+        a leg of a three-phase charge a total-only meter reads takes its
+        share. The meter's levels, not its readings: a spike never became a
+        level (raw readings integrated booked an 88 W, 13 s run at 1,040 W -
+        exp2, 2026-10-03). Only a meter holding one device (holds_one_device):
+        a circuit's change since is every load in it. None without the rise
+        or its levels.
+        Booked by its levels, a one-level run is the mean of its start and
+        stop, or the smaller: Home's EVBox started a charge at 8.0 kW, drew
+        10.6 for most of it and tapered at its end; Kozolec's water pump
+        drifts 104-247 W."""
+        det = self.subs.get(name)
+        if det is None or o.watts <= 0 or not self.holds_one_device(name):
+            return None
+        was, cur, marks = {}, {}, []
+        for c in self._chans(name, ph):
+            st = det.phases[c]
+            ups = self._steps_over(name, c, ph, o.since, True)
+            if not ups or any(len(e) < 7 for e in ups):
+                continue
+            first, last = min(ups, key=lambda e: e[0]), max(ups, key=lambda e: e[0])
+            was[c] = first[6] - first[1]                 # the channel just before the run's rise
+            cur[c] = last[6] - was[c]
+            lo = bisect.bisect_right(st.declared_t, last[0])
+            marks += [(e[0], c, e[6] - was[c]) for e in st.declared[lo:bisect.bisect_left(st.declared_t, at)]
+                      if len(e) > 6]
+        rise = sum(cur.values())
+        if rise <= 0:
+            return None
+        wh, t, w = 0.0, o.since, o.watts
+        for ts, c, change in sorted(marks):
+            if ts > t:
+                wh += w * (ts - t)
+                t = ts
+            cur[c] = change
+            w = max(0.0, o.watts * sum(cur.values()) / rise)
+        return (wh + w * max(0.0, at - t)) / 3600.0
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
         """Did meter ``name`` hold its value through a step on grid phase
