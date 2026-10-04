@@ -476,7 +476,8 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `QUANTUM_LATTICE_TOL` | 0.25 | how close to a whole multiple a change must be | ratio | 0.1–0.4 | as above; without the lattice check Home got 37/38/58 W phantom floors |
 | `QUANTUM_LATTICE_SHARE` | 0.9 | share of changes that must sit on the lattice | ratio | 0.7–0.98 | as above |
 | `MIN_NOISE_W` | 10 | floor under measured noise; also the user's min-step setting | physical/policy | 5–80 (UI offers 5–80) | not tested |
-| `NOISE_MAD_FACTOR` | 4.0 | measured noise = this × median idle deviation | count | 2–6 | not tested |
+| `NOISE_MAD_FACTOR` | 3.0 | measured noise = this × median idle deviation | count | 2–6 | 3 / 4 / 5 on ten days (2026-10-01, see the constant's note) |
+| `NOISE_WINDOW` / `REL_REFRESH_S` | 240 / 300 s | the noise is the median of the last 240 idle moves at every reading (`_slide`); the relative noise the median of its last 240, worked out every 300 s of the readings' clock | count / budget | — | **a fix (2026-10-04, exp4)**: in blocks of 120 counted from the first reading, one reading dropped moved every later block - see *The detector reacts to readings that should not matter*. 300 s against 3600 s and slid at every move, Home circuits only |
 | `NOISE_REL_CAP` | 0.05 | ceiling on relative noise, so a bad signal cannot call itself all noise | ratio | 0.02–0.1 | not tested |
 | `NOISE_REL_FLOOR_FACTOR` | **1.5** | level above which relative noise is measured, in units of `max(quantum, noise) / NOISE_REL_CAP` | count | 1–4 | **swept**: Kozolec's best absolute floor (300 W at 10 W noise) and Home's best factor both back-solve to 1.5. Replaced a flat 300 W |
 | `GLITCH_FLOOR_W` | 200 | a house reading this far below zero is skipped as a glitch | physical | 50–500 | not tested |
@@ -576,7 +577,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `EDGE_LAG_REACH_S` / `EDGE_LAG_BIN_S` / `EDGE_LAG_MIN` / `EDGE_WINDOW_DEFAULT_S` | 60 s / 2 s / 50 / 10 s | how far either side of an edge an input's change is looked for, the lag histogram's bins, the changes seen before a lag is believed (`lag_window`: a peak 4x the even spread), and the window before that | s | — | not swept; Home's thermostat learned (-11, 0) s from 17k edges, the mat's edges at -5.8 +- 1.7 s |
 | `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction, the weakest evicted as a new one is born (at a pass's end until 2026-10-02) | count | — | not swept; Home used ~400 in all |
 | `EDGE_NOISE_SHARE` / `EDGE_SCALE_REL` | **0.25** / 0.02 | one measurement error on the edge-size scale: this share of the phase's measured noise at small steps, this share of the step at large | ratio | 0.25–1 | **swept 0.25 / 0.5 / 1 (2026-09-30)**: Home 82.6/66.4 vs 80.9/61.3 vs 76.3/50.2, pump 1153 / 915 / 410, Kozolec fridges 188 / 154 / 81. A fixed 15 W ran every small fall at Kozolec into one cluster |
-| `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / `EDGE_RECUT` | 1.0 / 0.25 / 10 d / 32 | smoothing of the size histogram (in measurement errors), its bin, how fast it fades, how many steps before its valleys are cut again | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled) |
+| `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / ~~`EDGE_RECUT`~~ | 1.0 / 0.25 / 10 d / every step (32 steps until 2026-10-04) | smoothing of the size histogram (in measurement errors), its bin, how fast it fades; its valleys are cut again at every step, the step in it | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled). Every 32 steps counted from the group's first, a step dropped moved every later cut (exp4); on the clock (600 / 3600 s) as robust but 3-5 points less pure at Home hidden |
 | `EDGE_ANGLE` (`EDGE_ANGLE_BIN` 3°, `EDGE_ANGLE_KERNEL` 6°) | **off** | the step's reactive angle, atan2(dQ, dP), as a second clustering dimension: within a size segment, steps are cut again at the valleys of their angle density, so a pump (~35°) and a heater (0°) of one size are two kinds of edge | switch | — | **not yet measurable**: only a SIGNED var gives the angle, and Home's grid meter signs it only from 2026-09-30 07:57 - ten days of it exist from about 2026-10-10 (Kozolec's Victron and the 3EMs are unsigned). Synthetic test only (900 W at 0 and at 630 var: one cluster off, two on). Bench it on Home's ten days then, against the purity, the pump (its cluster shares A with the compressor's leg) and the kiln, whose legs read 0.866 with opposite-signed var |
 | `PAIR_MIN_RUNS` / `ABOVE_CHANCE_ODDS` | 8 / 100 | a pair is accepted once it has this many runs and a Chernoff bound puts the odds of its count by chance under 1 in `ABOVE_CHANCE_ODDS` - from the run that makes it (worked out once a pass until 2026-10-02) | count | — | **replaced shares of 30 % and 20 % (2026-09-30)**: mat hours outside heating 21.7 -> 11.5; odds 10, 100 and 1000 identical. `LINK_MIN` and the device union-find went with the all-phase events (a device is its start cluster) |
 | `EVENT_WINDOW_INTERVALS` / `EVENT_BALANCE` | 3 / 0.2 | rises on different phases within this many of the slowest phase's reading intervals, the smallest at least this share of the largest, are ONE start event, clustered on their phase pattern and total size | count / ratio | 2–4 / 0.2–0.5 | measured on Home's ten days: at 2 intervals the compressor's three-leg event never formed, at 3 it did (70 steps, a cluster of 28), at 4 little more; the pump gets a false companion within 5 s 1 % of the time; 0.2 / 0.5 / 0.9 balance alike offline. In cadences since 2026-10-02 (3.3 s at Home by day, 6 s on the median): 5.5 - about the old seconds - on 66f190a cost purity 78.2 → 76.0 %, the kiln and pump unchanged |
@@ -905,19 +906,28 @@ two sites' ten-day exports unless stated.
 
 ### Confirmed, unfixed
 
-- **The detector reacts to readings that should not matter** (2026-10-04, the
-  noise cards on 77c3159): dropping one reading in ten thousand, or moving
-  each by up to 1 ms, changes Home's library by up to 14 % (circuits 813 ->
-  828-925 signatures, fed 1,156 -> 1,062-1,201) and a load's capture by up to
-  27 points; Kozolec's site figures move a few tenths. Two of the drop cards also broke the
-  slicing invariance - 2 sessions each in Home circuits, an office run filed to
-  #97 at SLICE=1 and #308 / #311 at SLICE=6 (09-28 08:05, 09-29 22:55 and
-  23:11; `invariance-home-circuits-77c3159-noise-drop-10000-{2,3}-*.txt`). Not
-  yet traced. Related, unfixed: each day's CSV opens with the recorder's
-  start-of-window row (a copy of the last reading, stamped 22:00:00 UTC), and
-  the replay's slices start at the first house reading (Home: 05:03:08 UTC),
-  so those copies - one an entity a day - are fed as readings production
-  never gets; at this sensitivity they may move a card too.
+- **The detector reacts to readings that should not matter - partly fixed**
+  (2026-10-04, the noise cards on 77c3159; traced and fixed in exp4, the
+  overnight log): dropping one reading in ten thousand, or moving each by up
+  to 1 ms, changed Home's library by up to 14 % (circuits 813 -> 828-925
+  signatures) and a load's capture by up to 27 points. Two root causes, both
+  a schedule counted in readings or steps from the first, so one more or less
+  moved it for good: the noise and relative noise re-measured in blocks of 120
+  moves (now the median at every reading, and on the clock - `NOISE_WINDOW`,
+  `REL_REFRESH_S`), and the size histogram cut every 32 steps (now at every
+  step - `EDGE_RECUT`). Traced on Home circuits, a reading in 10,000 dropped:
+  steps differing 23,439 -> ~1,000, sessions only one replay filed 146 -> 14
+  kWh, filed into another signature 36.6 -> 3.6 kWh. Left: (1) a mark counted
+  in cadences falls on a beat meter's readings (the 3EMs write on whole
+  seconds; three cadences of 5.003 s = 15.009 s against readings 15.002-15.012
+  s after a change) - a half or a tenth of a cadence's slack fixes it under
+  jitter and costs Home hidden 2-5 points of impurity, not kept
+  (`exp4-fragility-beat-slack.patch`); (2) the noise learns only while no run
+  is open, so a run one replay keeps open freezes it at another value for
+  hours; (3) the library's caps (200 signatures, 150 edges a group) evict by a
+  ranking a small difference reorders, and each eviction refounds a load
+  (without the cap, sessions in another signature 7.5 -> 3.7 kWh). The start-of-window
+  copies the replay fed as readings are dropped since 0005337.
 
 - **Signature churn with a device per start cluster** (2026-09-30, the
   all-phase events): Home makes 1,835 signatures in ten days and keeps 237 -
