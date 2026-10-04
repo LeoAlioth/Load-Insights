@@ -794,6 +794,19 @@ INPUT_EVIDENCE = 1
 # are exactly the ones energy matching answers best.
 IDLE_WINDOW_S = 900.0
 MATCH_PF_TOL = 0.15
+# Once a day is over, its runs are booked again with what the whole day
+# shows (exp15, AGENTS' "daily retroactive repair pass") - see Fleet._repair
+# and _cap_day: on each phase no detector's runs of the day are booked over
+# what the phase drew above the day's floor - the level it held
+# REPAIR_FLOOR_SHARE of the day, by time, as the scorecard measures a meter's
+# idle floor - and REPAIR_SLACK_NOISE of its measured noise. The repair waits
+# REPAIR_WAIT_S past the day's end on the readings' clock, so the day's last
+# runs are filed: a house run waits for its meters at most MATCH_PATIENCE_S,
+# the grid is read at most METER_WAIT_CAP_S behind them.
+REPAIR_DAY_S = 86400.0
+REPAIR_FLOOR_SHARE = 0.1
+REPAIR_SLACK_NOISE = 2.0
+REPAIR_WAIT_S = MATCH_PATIENCE_S + METER_WAIT_CAP_S
 
 
 def pf_tolerance(a_mad: float, b_mad: float) -> float:
@@ -3850,6 +3863,12 @@ class Detector:
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
+    # the day's runs this detector filed or a meter took, and the readings it
+    # stepped, for the day's repair (Fleet._repair), kept from when its fleet
+    # first read (_day_from, None: kept by no one); never persisted
+    _day_from: Optional[float] = field(default=None, repr=False, compare=False)
+    _day_log: List[Session] = field(default_factory=list, repr=False, compare=False)
+    _day_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, repr=False, compare=False)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -3913,6 +3932,8 @@ class Detector:
         """One reading, once everything due before it is done (_advance)."""
         self._clock = ts if self._clock is None else max(self._clock, ts)
         qm, pvm = self._q.get(ph) or {}, self._pv.get(ph) or {}
+        if self._day_from is not None:
+            self._day_rows.setdefault(ph, []).append((ts, w))
         self._closed(ph, self.phases[ph].process(ts, w, qm.get(ts), pvm.get(ts)))
 
     def finish(self, samples, latest: float, oldest: Optional[float] = None) -> List[Session]:
@@ -4209,6 +4230,8 @@ class Detector:
             best.last_ep = episode
         s.signature_id = best.id
         self._touch(best.id)
+        if self._day_from is not None:
+            self._day_log.append(s)
         for pair in ([s.pair] if s.pair else []) + list(s.legs):
             if pair and pair[0] is not None:
                 row = self.start_home.setdefault(str(pair[0]), {})
@@ -5391,6 +5414,10 @@ class Fleet:
     _view_states: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # meter -> its signature id -> the house signature its sessions joined
     identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # the start of the first day not yet repaired, on the readings' clock -
+    # see _repair; never persisted: after a restart the day it began in is
+    # repaired with what was logged since
+    _repaired_to: Optional[float] = field(default=None, repr=False, compare=False)
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
                 main_q=None, sub_q=None, now_ts: Optional[float] = None,
@@ -5478,6 +5505,11 @@ class Fleet:
         for _, f in units:
             if f._wait_at is None:
                 f._wait_at = math.floor(first / MODEL_REFRESH_S)
+        if self._repaired_to is None:
+            tz = self.main.tz_offset_s
+            self._repaired_to = (first + tz) // REPAIR_DAY_S * REPAIR_DAY_S - tz
+        for _, det in self.detectors():
+            det._day_from = self._repaired_to
         done = self._run(units, streams, meters, end)
         for name, f in units:
             left: Dict[str, list] = {}
@@ -5580,6 +5612,10 @@ class Fleet:
                           ((f._wait_at + 1) * MODEL_REFRESH_S, 1, 5, k)):
                     if c is not None and (best is None or c < best):
                         best = c
+            if self._repaired_to is not None:
+                c = (self._repaired_to + REPAIR_DAY_S + REPAIR_WAIT_S, 1, 6, 0)
+                if best is None or c < best:
+                    best = c
             at, cls, rank = best[:3]
             if at > end or (cls == 1 and at >= end):
                 return at_
@@ -5619,10 +5655,29 @@ class Fleet:
                         f._insort(f._unvoted, (s.end + MATCH_PATIENCE_S, name, True, s))
                     else:
                         f._vote(name, s)
+                elif rank == 6:
+                    self._repair(self._repaired_to, self._repaired_to + REPAIR_DAY_S)
+                    self._repaired_to += REPAIR_DAY_S
                 else:
                     f._learn_lags(at)
                     f._wait, f._wait_at = f._horizon(), math.floor(at / MODEL_REFRESH_S)
                     self._dues = {}                   # every meter's latency may have moved
+
+    def _repair(self, a: float, b: float) -> None:
+        """The day [a, b) is over: its runs booked again with what the whole
+        day shows - every detector's against its own readings, one measure
+        for every meter (_cap_day, see REPAIR_FLOOR_SHARE). Bounded: one
+        day's runs and readings, once a day; each detector lets go of its
+        runs that started before ``b`` and its readings from before it."""
+        for _, det in self.detectors():
+            log = [s for s in det._day_log if a <= s.start < b]
+            det._day_log = [s for s in det._day_log if s.start >= b]
+            rows = {}
+            for ph, rr in det._day_rows.items():
+                rows[ph] = rr[max(bisect.bisect_left(rr, (a, -math.inf)) - 1, 0):]
+                det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b, -math.inf)) - 1, 0):]
+            if log:
+                _cap_day(det, log, rows, a, b)
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own
@@ -6325,6 +6380,8 @@ class Fleet:
     def _meter_owns(self, m: Session, name: str, s: Session) -> None:
         """``m`` is meter ``name``'s session ``s``'s load's - see _file_as."""
         m.owner = (name, s)
+        if self.main._day_from is not None:
+            self.main._day_log.append(m)
 
     def sub_quantum(self, name: str) -> float:
         """What a device meter can RESOLVE, as its own detector measured it
@@ -7351,6 +7408,106 @@ class Fleet:
             ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
             *((k, {p: {t: x for t, x in v} for p, v in (carry.get(k) or {}).items()}) for k in ("q", "pv"))) if v}
         return f
+
+
+def _booked(s: Session, ph: str) -> List[Tuple[float, float, float]]:
+    """A run's draw on ``ph`` as booked, [(from, to, W)]: its levels, scaled
+    to the Wh it is booked at (Session.energy_wh's for the phase)."""
+    lv = s.levels.get(ph) or []
+    ends = [x[0] for x in lv[1:]] + [s.end]
+    segs = [(max(t, s.start), min(e, s.end), w) for (t, w), e in zip(lv, ends) if w > 0 and min(e, s.end) > max(t, s.start)]
+    drew = sum((t1 - t0) * w for t0, t1, w in segs) / 3600.0
+    want = s.wh[ph] if ph in s.wh else s.power_by_phase().get(ph, 0.0) * s.duration_s / 3600.0
+    return [(t0, t1, w * want / drew) for t0, t1, w in segs] if drew > 0 and want > 0 else []
+
+
+def _hour_of(t: float, tz: float) -> int:
+    """The clock hour ``t`` falls in, as Signature.hourly keys it."""
+    return int(t - (t + tz) % 3600.0)
+
+
+def _unbook(sig: "Signature", by_hour: Dict[int, float], tz: float) -> None:
+    """Take Wh off a signature's hours, the hour-of-day and the weekday charts
+    with them - never below nothing: what it spread was its runs' union."""
+    for hour, wh in by_hour.items():
+        if wh <= 0:
+            continue
+        if hour in sig.hourly:
+            sig.hourly[hour] = max(0.0, sig.hourly[hour] - wh)
+        loc = hour + tz
+        h, d = int(loc % 86400.0 // 3600.0), int((loc // 86400.0 + 3) % 7)   # 1970-01-01 was a Thursday
+        sig.hour_wh[h] = max(0.0, sig.hour_wh[h] - wh)
+        sig.day_wh[d] = max(0.0, sig.day_wh[d] - wh)
+
+
+def _floor_of(rows: Sequence[Tuple[float, float]], a: float, b: float, share: float) -> Optional[float]:
+    """The level ``rows`` held at least ``share`` of [a, b), by time."""
+    held = sorted((w, min(t2, b) - max(t1, a)) for (t1, w), (t2, _) in zip(rows, list(rows[1:]) + [(b, 0.0)])
+                  if min(t2, b) > max(t1, a))
+    span = sum(d for _, d in held)
+    acc = 0.0
+    for w, d in held:
+        acc += d
+        if acc >= share * span:
+            return w
+    return None
+
+
+def _cap_day(det: "Detector", log: List[Session], rows: Dict[str, list], a: float, b: float) -> None:
+    """The day's repair: on each phase, the day's runs never booked over what
+    the phase drew above the day's floor (_floor_of, REPAIR_FLOOR_SHARE) and
+    its noise (REPAIR_SLACK_NOISE). At each moment the excess is taken from
+    the runs then on that no meter measured (Session.wh) before the measured
+    ones, the one open longest first; each run's Wh on the phase, and its
+    signature's hours, are what is left. A run booked at an EV charge's start
+    for the whole tapering charge, or open hours past its stop until a floor
+    fall (#16, #23, #26), keeps what the phase carried of it. Never adds: a
+    run whose stop came too early keeps what it was booked (#37)."""
+    tz = det.tz_offset_s
+    for ph, rr in sorted(rows.items()):
+        floor = _floor_of(rr, a, b, REPAIR_FLOOR_SHARE) if rr else None
+        runs = [s for s in log if ph in s.levels]
+        if floor is None or not runs:
+            continue
+        st = det.phases.get(ph)
+        slack = REPAIR_SLACK_NOISE * max(st.noise if st is not None else 0.0, MIN_NOISE_W)
+        measured = [ph in s.wh for s in runs]
+        ev = sorted((t, up, k, w) for k, s in enumerate(runs) for t0, t1, w in _booked(s, ph)
+                    for t, up in ((t0, 1), (t1, 0)))
+        times = [t for t, _ in rr]
+        pts = sorted(set(times) | {e[0] for e in ev})
+        active: Dict[int, float] = {}
+        off: Dict[int, Dict[int, float]] = {}
+        ie = 0
+        for u, v in zip(pts, pts[1:]):
+            while ie < len(ev) and ev[ie][0] <= u:
+                _, up, k, w = ev[ie]
+                ie += 1
+                active[k] = active.get(k, 0.0) + (w if up else -w)
+                if active[k] <= 1e-9:
+                    del active[k]
+            j = bisect.bisect_right(times, u) - 1
+            if not active or j < 0:
+                continue
+            over = sum(active.values()) - max(rr[j][1] - floor + slack, 0.0)
+            hour = _hour_of(u, tz)
+            # the runs no meter measured before the measured ones, and of each
+            # the one open longest first: the longer a run has gone without
+            # its stop, the likelier it went unseen
+            for k in sorted(active, key=lambda k: (measured[k], runs[k].start, k)):
+                if over <= 0:
+                    break
+                take = min(over, active[k])
+                row = off.setdefault(k, {})
+                row[hour] = row.get(hour, 0.0) + take * (v - u) / 3600.0
+                over -= take
+        for k, by_hour in sorted(off.items()):
+            s = runs[k]
+            was = s.wh[ph] if ph in s.wh else s.power_by_phase().get(ph, 0.0) * s.duration_s / 3600.0
+            s.wh[ph] = max(0.0, was - sum(by_hour.values()))
+            sig = det.signature_of(s) if s.owner is None else None
+            if sig is not None:
+                _unbook(sig, by_hour, tz)
 
 
 def _peaks(s: Session) -> Dict[str, float]:

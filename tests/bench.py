@@ -576,6 +576,63 @@ def _fridge_runs(folder: str) -> list:
     return runs
 
 
+KITCHEN_FRIDGE_POWER = "sensor.hisa_phase_c_active_power"
+
+
+def _kitchen_fridge_runs(folder: str) -> list:
+    """Home's kitchen fridge (~65 W for 25-30 min every ~1.5 h on Hiša's
+    phase C) as Hiša's 3EM shows it beneath the incubator's ~60 W pulses of
+    ~30 s (2026-10-04, overnight #64) - no detector involved: the reading's
+    2-minute minimum envelope (each reading's least within a minute either
+    side, which every incubator gap reaches) rises 45-100 W over its median
+    of the 1-4 minutes before, held 2-8 minutes on, and falls back under
+    0.4 of that rise 10-60 minutes later. Starts and ends are the raw
+    readings around the envelope's moves, good to an incubator pulse.
+    Returns (start, end, step)."""
+    import collections as co
+    import statistics as st
+    rows = R.read_csv([folder], False).get(KITCHEN_FRIDGE_POWER) or []
+    times = [t for t, _ in rows]
+    env, dq, j = [], co.deque(), 0
+    for t, _ in rows:
+        while j < len(rows) and rows[j][0] <= t + 60.0:
+            while dq and rows[dq[-1]][1] >= rows[j][1]:
+                dq.pop()
+            dq.append(j)
+            j += 1
+        while rows[dq[0]][0] < t - 60.0:
+            dq.popleft()
+        env.append(rows[dq[0]][1])
+
+    def med(a, b):
+        i, k = bisect.bisect_left(times, a), bisect.bisect_right(times, b)
+        return st.median(env[i:k]) if k > i else None
+    runs, i, n = [], 1, len(rows)
+    while i < n:
+        t = times[i]
+        base = med(t - 240, t - 60)
+        lvl = med(t + 120, t + 480) if base is not None and env[i] - base >= 40 else None
+        if lvl is None or not 45 <= lvl - base <= 100:
+            i += 1
+            continue
+        step, end, k = lvl - base, None, i
+        while k < n and times[k] - t <= 3600:
+            if times[k] - t >= 300 and env[k] - base < 0.4 * step:
+                end = times[k]
+                break
+            k += 1
+        if end is None or end - t < 600:
+            i += 1
+            continue
+        a = bisect.bisect_left(times, t - 120)
+        last = max((m for m in range(a, i + 1) if rows[m][1] - base <= 0.4 * step), default=a)
+        b = bisect.bisect_left(times, end - 120)
+        first = next((m for m in range(b, k + 1) if rows[m][1] - base <= 0.4 * step), k)
+        runs.append((times[min(last + 1, i)], times[first], step))
+        i = k + 1
+    return runs
+
+
 def fridge(folder: str, dials) -> None:
     """What the detector filed for Kozolec's two fridges, against their runs
     in the raw reading: how many it caught at the right moment, how long it

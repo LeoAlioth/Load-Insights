@@ -41,7 +41,11 @@ and, named in REST, what is left of the main without them (Home's Delavnica,
 Kozolec's and Andrej's Rest) - everything the main meter reads, once. Andrej's
 site (andrejg) is one meter, the go-e charger's own total, its truth masked
 over any charge the house did not draw - a portable unit charging elsewhere
-(PORTABLE, _away).
+(PORTABLE, _away). Home and home-hisa add a table of their own, fridge: the
+kitchen fridge under the incubator on Hiša's C (overnight #64) - a HEURISTIC
+truth, bench._kitchen_fridge_runs' runs off the 3EM's minimum envelope, each
+credited to the session starting within KITCHEN_RUN_S of it, scored over every
+session (a pulse beside it takes its overlap's share, never the signature).
 
 Modes (bench.py's SUBS): hidden (SUBS=none - no meter fed, the main-meter
 estimate), circuits (SUBS=circuits - only the meters others hang under, Home's
@@ -140,6 +144,8 @@ CEILING = "Ceiling fan"    # Home's CasaFan Eco Neo III 132 - MODELLED truth, se
 CEILING_W = (0.0, 2.3, 3.5, 6.3, 11.2, 18.3, 27.0)   # its watts at speed 0-6 (Anze, 2026-10-02)
 FRIDGE_RUN_S = 30.0        # Kozolec's fridges - HEURISTIC truth: a run is the session starting this near it
 FRIDGES = "Fridges"        # ...both as one load, a table of its own: two look-alikes are as good as one (Anze)
+KITCHEN = "Kitchen fridge" # Home's, under the incubator on Hiša's C - HEURISTIC truth (bench._kitchen_fridge_runs), a table of its own
+KITCHEN_RUN_S = 60.0       # ...a run is the session starting this near it: its start is good to an incubator pulse
 WORTH_FED = {"home": ["Bathroom fan"]}   # worth's meters beyond PROD_SUBS
 WORTH_PARALLEL = 4         # worth's replays at once
 
@@ -527,15 +533,22 @@ def _fridges(folder: str) -> dict:
     return dict(out)
 
 
-def _run_credit(sessions: list, runs: dict) -> dict:
+def _kitchen(folder: str) -> dict:
+    """Home's kitchen fridge, which no meter reads - HEURISTIC truth: its runs
+    under the incubator (bench._kitchen_fridge_runs), each at its rise held
+    over the run. name -> [(start, end, Wh)]."""
+    return {KITCHEN: [(t0, t1, step * (t1 - t0) / 3600.0) for t0, t1, step in B._kitchen_fridge_runs(folder)]}
+
+
+def _run_credit(sessions: list, runs: dict, reach: float = FRIDGE_RUN_S) -> dict:
     """id(session) -> [(load, Wh)]: each run of ``runs`` (load -> [(start,
     end, Wh)]) credited to the session starting nearest it within
-    FRIDGE_RUN_S that overlaps it, as much of its energy as that covers."""
+    ``reach`` that overlaps it, as much of its energy as that covers."""
     at = B._near(sessions)
     out = collections.defaultdict(list)
     for name, rs in runs.items():
         for t0, t1, wh in rs:
-            near = [s for s in at(t0, FRIDGE_RUN_S) if s.start < t1 and s.end > t0]
+            near = [s for s in at(t0, reach) if s.start < t1 and s.end > t0]
             if near:
                 s = min(near, key=lambda s: abs(s.start - t0))
                 out[id(s)].append((name, wh * _overlap([(t0, t1)], s.start, s.end) / (t1 - t0)))
@@ -674,13 +687,16 @@ def energy(site: str, folder: str, dials: list) -> dict:
     devices, rest = measured(folder, site, worth)
     tables = _tables(site)
     runs = _fridges(folder) if worth and site == "kozolec" else {}
+    kitchen = _kitchen(folder) if site in ("home", "home-hisa") else {}
     tables["devices"] += ([CEILING] if CEILING in devices else []) + sorted(runs)
     truth, floors = {}, {}
     for name, rows in devices.items():
         truth[name], w, wh = _truth(rows)
         floors[name] = (w, wh / 1000.0)
-    for name, rs in runs.items():
+    for name, rs in [*runs.items(), *kitchen.items()]:
         truth[name], floors[name] = sum(wh for *_, wh in rs), (0.0, 0.0)
+    if kitchen:
+        tables["fridge"] = [KITCHEN]
     times = {name: [r[0] for r in rows] for name, rows in devices.items()}
     for name, watts, _, ivs in PLANTS:
         truth[name] = watts * sum(b - a for a, b in ivs) / 3600.0
@@ -703,6 +719,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         return cur if cur in by_id else f"gone {s.signature_id}"
     sids = [sid_of(s) for s in filed]
     run_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], runs)
+    kitchen_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], kitchen, KITCHEN_RUN_S)
 
     def attribute(keep=lambda s: True):
         """(per signature: its energy, runs and each load's share; each
@@ -742,7 +759,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
                 if ov > 0:
                     row[name] = row.get(name, 0.0) + min(watts * ov / 3600.0, s.energy_wh)
                     credited[name].append(s)
-            for name, wh in run_wh.get(id(s), ()):
+            for name, wh in [*run_wh.get(id(s), ()), *kitchen_wh.get(id(s), ())]:
                 row[name] = row.get(name, 0.0) + min(wh, s.energy_wh)
                 credited[name].append(s)
             if id(s) in run_wh:       # the fridges as one load, too

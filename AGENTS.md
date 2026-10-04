@@ -897,6 +897,20 @@ two sites' ten-day exports unless stated.
   16:00 - the "filed while a meter held a run of that size" count was the
   in-stream alternative); a share a rise gave to a plug whose phase was not yet
   mapped (Blaževa Soba's PC took 107 W of a phase-A rise from another phase).
+  **Explored (exp15, 2026-10-04; overnight log):** built as `Fleet._repair`, a
+  due on the readings' clock 25 min past each local midnight (slicing
+  invariant by construction): every detector's runs of the day are booked no
+  higher than its phase drew above the day's floor (the level held a tenth of
+  the day, by time) - the excess off the runs no meter measured, the one open
+  longest first - and their signatures' hours with them; the hourly
+  statistics check then rewrites the named loads' hours. Impurity down at
+  every site (Andrej hidden 9.7 -> 7.3, Kozolec hidden 4.0 -> 2.2, Home fed
+  devices 8.6 -> 6.7) for about a point of capture. The two candidates
+  above, re-checked with the day's meters, moved 5 runs in ten days (the
+  stream's held-meter and phase tests already catch them), and re-filing
+  into where a device files at the day's end moved none. The kitchen fridge
+  under the incubator (#64) is beyond a re-pairing: its steps are never
+  declared (they hit the declared ones at chance).
 - [ ] **Discuss: multi-step pairing** - a start that ramps in steps (Mansarda's
   ~400 W load: 142 -> 404 -> 465 W over 15 s) is booked at its first step and
   cannot pair with its full-size stop. Agreed meanwhile: a run placed at a

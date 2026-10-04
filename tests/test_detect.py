@@ -4704,5 +4704,63 @@ def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
         assert moved <= 30, (seed, moved)
 
 
+def test_the_days_repair_gives_back_what_the_phase_never_drew():
+    """The day's repair (exp15): a 1 kW run whose stop went unseen is booked
+    for an hour while the phase carried it half of it; a 500 W run a meter
+    measured beside it is left whole. The excess comes off the unmeasured
+    run and off its signature's hours, and what the phase carried stays."""
+    det = D.Detector()
+    det.phases["a"].noise = 10.0
+    loose, held = _sig(1, 1000.0), _sig(2, 500.0)
+    det.signatures = [loose, held]
+    hour = int(T0 // 3600 * 3600) + 3600
+    a = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]}, signature_id=1)
+    b = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 500.0)]}, signature_id=2,
+                  wh={"a": 500.0})
+    loose.hourly, held.hourly = {hour: 1000.0}, {hour: 500.0}
+    loose.hour_wh[int(hour % 86400 // 3600)] = 1000.0
+    day = hour - 7200.0
+    rows = [(day, 200.0)] + [(hour + k * 10.0, 200.0 + 500.0 + (1000.0 if k < 180 else 0.0)) for k in range(360)]
+    rows += [(hour + 3600.0 + k * 60.0, 200.0) for k in range(1200)]       # the rest of the day at the floor
+    D._cap_day(det, [a, b], {"a": rows}, day, day + 86400.0)
+    assert abs(a.energy_wh - 510.0) < 1.0, a.energy_wh          # half an hour of it, and twice the noise for 30 min
+    assert b.energy_wh == 500.0
+    assert abs(loose.hourly[hour] - 510.0) < 1.0 and held.hourly[hour] == 500.0, (loose.hourly, held.hourly)
+    assert abs(loose.hour_wh[int(hour % 86400 // 3600)] - 510.0) < 1.0
+    # ...and of two unmeasured runs the one open longer gives first: it is
+    # the likelier to have stopped unseen
+    old = D.Session(phases="a", start=hour - 600, end=hour + 3600, levels={"a": [(hour - 600, 1000.0)]})
+    new = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]})
+    rows = [(day, 200.0), (hour - 600, 1200.0), (hour, 2200.0), (hour + 1800, 1200.0), (hour + 3600, 200.0)]
+    D._cap_day(det, [old, new], {"a": rows}, day, day + 86400.0)
+    assert abs(new.energy_wh - 1000.0) < 1.0 and abs(old.energy_wh - 1000.0 / 6 - 510.0) < 1.0, (old.energy_wh, new.energy_wh)
+
+
+def test_the_days_repair_runs_once_a_day_on_the_readings_clock():
+    """The repair waits for the day's end on the readings' clock, whatever
+    the passes; each detector then lets the day's runs and readings go, so
+    it holds one day at most - read in one call or by the hour, the same."""
+    def run(step):
+        rows = series(3 * 86400.0, kiln(period=5400.0, on=1200.0, watts=800.0), seed=3)
+        fleet, filed = D.Fleet(), []
+        file = fleet.main._file
+
+        def keep(s, *x, **kw):
+            file(s, *x, **kw)
+            filed.append(s)
+        fleet.main._file = keep
+        end = rows[-1][0] + 1.0
+        for part, e in _passes({"a": rows}, [T0 + k * step for k in range(1, int(3 * 86400 / step))], end):
+            fleet.process(part, {}, now_ts=e)
+        return fleet, filed
+    fleet, filed = run(3 * 86400.0)
+    _, sliced = run(3600.0)
+    assert _as_filed(filed) == _as_filed(sliced)
+    days = int(fleet._repaired_to // 86400) - int(T0 // 86400)
+    assert days == 3, days       # T0 is 1,600 s into a day: three days' ends and their wait passed, not a fourth
+    assert all(s.start >= fleet._repaired_to for s in fleet.main._day_log)
+    assert fleet.main._day_rows["a"][1][0] >= fleet._repaired_to
+
+
 if __name__ == "__main__":
     run_main(globals())
