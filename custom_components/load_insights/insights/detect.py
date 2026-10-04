@@ -6374,7 +6374,14 @@ class Fleet:
                 self._meter_owns(m, name, s)
                 return
         sig = self._place(m, name, prefer)
-        if sig is not None and sub_sig is not None:
+        # ...and the device stays where its meter's word put it while that
+        # signature stands: a run a guard kept out of it (another phase, a
+        # meter that held through its start) is not where the device lives.
+        # Home's hidrofor: one 998 W, eight-minute run kept out of its
+        # signature went to a 1 kW phase-A one, and the pump's next 102 runs
+        # followed it there (09-30 12:29, 2026-10-04)
+        home = self.main._current(prefer) if prefer is not None else None
+        if sig is not None and sub_sig is not None and (home is None or self.main._sig(home) is None or sig.id == home):
             self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
 
     def _meter_owns(self, m: Session, name: str, s: Session) -> None:

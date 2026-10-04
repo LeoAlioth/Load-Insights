@@ -4014,6 +4014,38 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     f._file_as(run, "Plug", sub)
     assert asked == [8, 77], asked
 
+def test_a_run_kept_out_of_its_meters_signature_does_not_move_where_the_device_lives():
+    """Home's hidrofor (09-30 12:29, 2026-10-04): a 998 W, eight-minute run
+    its plug's session sent to the pump's signature was kept out of it and
+    filed in a 1 kW phase-A one; the meter's identity followed it there, and
+    so did the pump's next 102 runs. The device stays where its meter's word
+    put it while that signature stands: a run filed where it was sent leaves
+    it, and only one sent to a signature that is gone moves it."""
+    f = _fleet_with_meters({"Plug": 0.0})
+    f.single = {"Plug": True}
+    own = _sig(1, 900.0, 60.0, 40, first_seen=T0, last_seen=T0)
+    f.subs["Plug"].signature_of = lambda s: own
+    sub = D.Session("a", T0, T0 + 60.0, {"a": [(T0, 900.0)]})
+    pump = _sig(4, 900.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    other = _sig(25, 1000.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    f.main.signatures = [pump, other]
+    f.identity = {"Plug": {"1": 4}}
+    went, asked = [25, 4, 25], []
+
+    def place(m, name, prefer):                      # the filing's own say, the guards' included
+        asked.append(prefer)
+        return f.main._sig(went.pop(0))
+    f._place = place
+    run = D.Session("c", T0, T0 + 60.0, {"c": [(T0, 900.0)]})
+    f._file_as(run, "Plug", sub)                     # sent to #4, kept out of it, filed in #25
+    assert f.identity["Plug"]["1"] == 4, f.identity
+    f._file_as(run, "Plug", sub)                     # filed where it was sent
+    assert f.identity["Plug"]["1"] == 4 and asked == [4, 4], (f.identity, asked)
+    f.main.signatures, f.main._by_sig = [other], None    # the pump's signature gone
+    f._file_as(run, "Plug", sub)
+    assert f.identity["Plug"]["1"] == 25, f.identity
+
+
 def test_a_circuit_meter_explains_only_what_its_own_sub_meters_did_not():
     """Blaž PC inside Hiša: the PC's declared step counts once, and Hiša adds
     only what else inside it changed - the pieces of a grid step do not overlap."""
