@@ -106,6 +106,10 @@ DETECTION_SLICE_HOURS = 6
 # detection itself, which costs under a millisecond per pass. An hour caps
 # what an ungraceful shutdown can lose; a clean one always writes.
 SAVE_MAX_INTERVAL_S = 3600.0
+# The year of hours confident unnamed loads keep (Signature.older) is written
+# daily: it only changes as hours age out of the library's window, and losing
+# a day of them to a crash only shortens what a later name is carried.
+HISTORY_SAVE_INTERVAL_S = 86400.0
 # How far behind the detector may be before the naming page will show its
 # library. A backfill part way through holds whatever happened in the first
 # few days, and rows that change under the reader are worse than no rows.
