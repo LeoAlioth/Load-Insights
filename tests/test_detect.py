@@ -386,6 +386,46 @@ def test_a_run_its_one_device_meter_owns_is_booked_at_what_the_meter_drew():
         assert abs(run[0].energy_wh - 5350.0) < 60, ("busy" if busy else "quiet", got)
 
 
+def test_two_runs_one_device_meter_owns_at_once_share_what_it_draws():
+    """Home's EVBox began a charge at +1,255 W and stepped up +2.2 kW a
+    minute later, each step its meter's own, so each opened a run the meter
+    owns - and each was booked at the meter's whole level: 39.6 kWh for a
+    29.8 kWh charge (09-25, 2026-10-04). Every run a meter holding one device
+    owns at a moment shares what it draws then, by their sizes (Fleet._meter_wh).
+    Here 1 kW for ten minutes, then 3 kW for an hour and fifty: 5,667 Wh in
+    all the runs of it together, on a quiet phase and a busy one."""
+    for busy in (False, True):
+        rnd = random.Random(7)
+        on, up, off = T0 + 3600.0, T0 + 4200.0, T0 + 10800.0
+        end = off + 3600.0
+
+        def draw(t):
+            return 0.0 if not on <= t < off else 3000.0 if t >= up else 1000.0
+        plug = [(T0 + 2.0 + 10.0 * k, round(draw(T0 + 2.0 + 10.0 * k) + rnd.uniform(-5, 5), 1))
+                for k in range(int((end - T0) / 10.0))]
+        grid, t = [], T0
+        while t < end:
+            w = 400.0 + rnd.uniform(-5, 5) + draw(t)
+            if busy:
+                s = t - T0
+                w += 150.0 if (s + 737.0) % 1800.0 < 600.0 else 0.0
+                w += 95.0 if (s + 101.0) % 420.0 < 200.0 else 0.0
+            grid.append((t, round(w, 1)))
+            t += 5.0
+        fleet = D.Fleet()
+        fleet.wait_cap_s = D.METER_WAIT_CAP_S
+        fleet.single = {"Charger": True}
+        fleet.meter_lag["Charger"] = [[2.0, 20.0]] * D.LAG_MIN_SAMPLES
+        filed = _keep_filed(fleet)
+        cuts = [T0 + 3600.0 * k for k in range(1, 5)]
+        for (part, e), (sub, _) in zip(_passes({"b": grid}, cuts, end), _passes({"a": plug}, cuts, end)):
+            fleet.process(part, {"Charger": sub}, now_ts=e)
+        got = [(round(s.start - T0), round(s.end - T0), round(s.energy_wh)) for s in filed if s.energy_wh > 20]
+        runs = [s for s in filed if on - 30 < s.start < off and max(w for lv in s.levels.values() for _, w in lv) >= 500.0]
+        assert len(runs) >= 2, ("busy" if busy else "quiet", got)             # two runs, each the meter's
+        assert abs(sum(s.energy_wh for s in runs) - 5667.0) < 100, ("busy" if busy else "quiet", got)
+
+
 def _keep_filed(fleet):
     """Every house session the fleet files, and every one a meter's own
     signature takes (Session.owner), in order, as the bench keeps them."""
