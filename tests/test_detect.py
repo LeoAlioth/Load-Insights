@@ -4281,7 +4281,12 @@ def test_a_pause_the_plug_read_plainly_ends_its_run_and_the_restart_is_a_new_one
     on the one 2.2 kW fall there (Anze: one session end was missed). A
     plateau the next reading leaves is a level once it held for the latency,
     and a total-only plug's declared fall ends its run though the map does
-    not place it: four runs, each the plug's."""
+    not place it: four runs, each the plug's. The charger's runs are those of
+    a kilowatt or more: the plug's own detector also opens 12-34 W runs on the
+    charger's +-20 W wander before that plateau's relative noise is learnt, and
+    since a fall to the idle floor closes what was open (d707840) one left open
+    is booked to the 17:57 off, 33-66 Wh - with that commit alone on 9 of 12
+    draws of this fixture's wander, the test's own draw passing by chance."""
     rows, plug, (on, p1, r1, off1, on2, p2, r2, off) = _charger_day()
     fleet = D.Fleet()
     fleet.wait_cap_s = D.METER_WAIT_CAP_S
@@ -4297,7 +4302,7 @@ def test_a_pause_the_plug_read_plainly_ends_its_run_and_the_restart_is_a_new_one
     for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
         fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
     want = [(on, p1), (r1, off1), (on2, p2), (r2, off)]                                 # the plug's own four runs
-    own = sorted((s["start"], s["end"]) for s in fleet.subs["Plug"].recent if s["kwh"] > 0.005)
+    own = sorted((s["start"], s["end"]) for s in fleet.subs["Plug"].recent if s["max_w"] >= 1000.0)
     assert len(own) == 4 and all(abs(a - wa) <= 10 and abs(b - wb) <= 10 for (a, b), (wa, wb) in zip(own, want)), own
     big = sorted((s for s in filed if s.energy_wh > 10.0), key=lambda s: s.start)
     got = [(s.start, s.start + s.duration_s, fleet.main.signature_of(s).locations.get("Plug", 0) if fleet.main.signature_of(s) else 0) for s in big]
@@ -4527,6 +4532,64 @@ def test_a_meter_stop_the_grid_has_not_read_to_is_not_netted_into_a_rise_before_
     grid.last_ts = T0 + 12.0
     parts = f.main.metered_parts("c", T0, 942.0)
     assert len(parts) == 2 and abs(parts[0] + 2996.0) < 1.0, parts           # read to it, no step of its own: netted
+
+
+def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_were():
+    """The noise is the median of the last NOISE_WINDOW idle moves at every
+    reading (_slide), the relative noise the median of its last NOISE_WINDOW
+    worked out once every REL_REFRESH_S of the readings' clock. Re-measured in
+    blocks - every 120 moves over the last 240, counted from the first - one
+    reading dropped moved every later block's edges for good: Home circuits,
+    one reading in 10,000 dropped, ran at another noise for 38 % of phase A's
+    steps and another relative noise for 87 % from the hour of the first drop
+    (2026-10-04). Here a 30 W load cycling at the noise beside a 1.5 kW one:
+    in blocks the noise ended at 29.5 and 34.4 W with and without the 51st
+    reading, and the last five hours had a session less."""
+    big, small = kiln(period=900.0, on=120.0, watts=1500.0), kiln(period=300.0, on=100.0, watts=30.0)
+    full = series(6 * 3600, lambda s: big(s) + small(s), seed=3)
+    runs = []
+    for rows in (full, full[:50] + full[51:]):          # the 51st reading, four minutes in, gone
+        det = D.Detector()
+        closed = det.process({"a": rows}, now_ts=rows[-1][0] + 60.0)
+        st = det.phases["a"]
+        runs.append((st.noise, st.noise_rel, [(s.start, s.end, round(s.energy_wh, 3)) for s in closed
+                                              if s.start > T0 + 3600.0]))
+    assert runs[0] == runs[1], (runs[0][:2], runs[1][:2], len(runs[0][2]), len(runs[1][2]))
+
+
+def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
+    """A group's step sizes are cut at their valleys again at every step,
+    the step in them (EDGE_RECUT). Cut every 32 steps, the cuts were counted
+    from the group's first step, so one step dropped or added moved every
+    later cut, and a step near a valley went to another cluster for the rest
+    of the replay: Home hidden, five cards apart only by a reading in 10,000
+    dropped or 1 ms of jitter, read 13.2-25.2 % impurity over its devices
+    (2026-10-04)."""
+    rnd = random.Random(3)
+    det = D.Detector()
+    det.phases["a"].noise = 20.0
+    for k in range(300):
+        size = max(30.0, rnd.gauss(*rnd.choice([(300.0, 20.0), (420.0, 25.0), (900.0, 40.0)])))
+        det._classify_step("a", T0 + 97.0 * k, size, None, 0.0)
+        assert det._segs["a|1"] == D.valley_segments(det.edge_hist["a|1"]), k
+
+
+def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
+    """...and so a step gone missing moves only the steps whose cluster it
+    decides: of 1,459 steps after it, at most 17 over twenty draws, against
+    up to 362 cut every 32 steps (2026-10-04)."""
+    def clusters(steps):
+        det = D.Detector()
+        det.phases["a"].noise = 20.0
+        born = {}
+        return {t: born.setdefault(det._classify_step("a", t, w, None, 0.0).id, t) for t, w in steps}
+    for seed in range(20):
+        rnd = random.Random(seed)
+        sizes = [(300.0, 20.0), (420.0, 25.0), (900.0, 40.0), (1200.0, 50.0)]
+        steps = [(T0 + 97.0 * k, max(30.0, rnd.gauss(*rnd.choice(sizes)))) for k in range(1500)]
+        a, b = clusters(steps), clusters(steps[:40] + steps[41:])
+        moved = sum(1 for t, _ in steps[41:] if a[t] != b[t])
+        assert moved <= 30, (seed, moved)
 
 
 if __name__ == "__main__":
