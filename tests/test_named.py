@@ -93,6 +93,33 @@ def test_a_shared_name_is_the_sum_of_its_signatures():
     assert [(r["start"], r["sum"]) for r in rows] == [(NOW - 2 * H, 0.1), (NOW - H, 0.175)]
 
 
+def test_a_name_whose_signatures_change_is_rewritten():
+    # 2026-10-04: Inkubator moved from the grid's #6 to Hiša's #14, Kompresor
+    # took #63; both meters kept the old signatures' history until
+    # load_insights.backfill_statistics was run by hand
+    fleet = D.Fleet()
+    fleet.subs["Hiša"] = D.Detector()
+    for det, i, name, heir in ((fleet.main, 5, "Kompresor", None), (fleet.main, 6, "Inkubator", None),
+                               (fleet.main, 7, "Sock Eater", None), (fleet.main, 8, "Sock Eater", None),
+                               (fleet.main, 9, "Washer", 10), (fleet.main, 10, None, None),
+                               (fleet.main, 63, None, None), (fleet.subs["Hiša"], 14, None, None)):
+        det.signatures.append(D.Signature(id=i, phases="a", power={"a": 100.0}, duration_s=60.0, pf=None,
+                                          count=1, first_seen=0, last_seen=0, name=name, successor_id=heir))
+
+    def rewritten(change):
+        before = fleet.names()
+        change()
+        return named.regrouped(before, fleet.names())
+
+    assert rewritten(lambda: fleet.rename(("Hiša", 14), "Inkubator")) == ["Inkubator"]   # moved...
+    assert rewritten(lambda: fleet.rename(("", 6), None)) == ["Inkubator"]               # ...off the grid's
+    assert rewritten(lambda: fleet.rename(("", 63), "Kompresor")) == ["Kompresor"]       # joined
+    assert rewritten(lambda: fleet.adopt(("", 10))) == ["Washer"]
+    assert rewritten(lambda: fleet.rename(("", 8), "Kiln")) == ["Kiln", "Sock Eater"]    # and what it left
+    assert rewritten(lambda: fleet.rename(("", 7), "Dryer")) == ["Dryer"]   # Sock Eater gone with its meter
+    assert rewritten(lambda: fleet.rename(("", 7), "Dryer")) == []          # nothing changed
+
+
 def test_the_reading_counts_only_what_detection_gains():
     step = named.carry_reading
     r, seen = step(None, None, 25.0, True)                     # new: starts where detection is

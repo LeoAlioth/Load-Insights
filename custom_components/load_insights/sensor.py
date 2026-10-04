@@ -700,9 +700,14 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         named - is backfilled once it has one: tried each time Home Assistant
         has compiled statistics, every five minutes, until its first hour is
         in (the event fires before the compile commits, so the hour may only
-        show five minutes on). An older meter is
-        load_insights.backfill_statistics' to fill."""
+        show five minutes on). An older meter is rewritten now if a rename,
+        adoption or forgetting changed its name's signatures since - this is
+        the reload that follows one (Inkubator moved, Kompresor joined by
+        #63: their meters kept the old signatures' history) - and is
+        otherwise load_insights.backfill_statistics' to fill."""
         if await self._runner.async_first_statistic(self.entity_id) is not None:
+            if self._name in self._runner.rewrite_due:
+                await self._runner.async_backfill_statistics(self._name)
             return
         done = asyncio.Event()
 

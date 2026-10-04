@@ -70,7 +70,7 @@ from .insights.detect import (
 )
 from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
-from .insights.named import metered_device, one_device_meters, plan_rewrite
+from .insights.named import metered_device, one_device_meters, plan_rewrite, regrouped
 
 if TYPE_CHECKING:
     from .coordinator import InsightsCoordinator   # which imports this module
@@ -310,6 +310,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # re-reading history from scratch - after a reset, or with nothing
         # stored: what the library gains is old, not new energy
         self.refiling = False
+        # names whose signatures a rename, adoption or forgetting changed:
+        # each one's energy meter is rewritten once the reload that follows
+        # has added it (NamedLoadEnergy._backfill_when_new). Stored, so
+        # a restart before then still does it
+        self.rewrite_due: set = set()
         self.last_run: Optional[datetime] = None
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
@@ -661,6 +666,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         Returns (hours written, kWh they differ from what was recorded) -
         (0, 0.0) when there is nothing to do - or None while the meter has no
         hour of its own yet. Running it again writes the same."""
+        self.rewrite_due.discard(name)        # written from the library as it is now
         meter = self.metered_device(name)
         if meter:
             _LOGGER.info("Not backfilling %s: it is the metered device %s, whose own readings are its history",
@@ -756,9 +762,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         """Move a predecessor's name onto the signature (meter, id) - the
         grid's under "" - and persist, between passes, as async_rename."""
         async with self._lock:
+            before = self.fleet.names()
             name = self.fleet.adopt(ref)
             if name is None:
                 return None
+            self.rewrite_due.update(regrouped(before, self.fleet.names()))
             await self._persist(force=True)
         self.async_update_listeners()
         return name
@@ -779,8 +787,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         executor thread, and a rename landing then changed it under the pass
         (AGENTS.md, 2026-10-02)."""
         async with self._lock:
+            before = self.fleet.names()
             if not self.fleet.rename(ref, name):
                 return False
+            self.rewrite_due.update(regrouped(before, self.fleet.names()))
             await self._persist(force=True)      # a user action, written at once
         return True
 
@@ -813,6 +823,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return {"fleet": self.fleet.to_dict(),
                 "last_processed": self.last_processed.isoformat() if self.last_processed else None,
                 "refiling": self.refiling,
+                "rewrite": sorted(self.rewrite_due),
                 "generation": DETECTOR_GENERATION}
 
     @property
@@ -879,6 +890,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         self.refiling = bool(raw.get("refiling")) or self.last_processed is None
+        self.rewrite_due = set(raw.get("rewrite") or ())
         if not self.enabled:
             return
         self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
