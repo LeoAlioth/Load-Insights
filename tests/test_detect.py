@@ -4443,5 +4443,40 @@ def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_we
     assert runs[0] == runs[1], (runs[0][:2], runs[1][:2], len(runs[0][2]), len(runs[1][2]))
 
 
+def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
+    """A group's step sizes are cut at their valleys again at every step,
+    the step in them (EDGE_RECUT). Cut every 32 steps, the cuts were counted
+    from the group's first step, so one step dropped or added moved every
+    later cut, and a step near a valley went to another cluster for the rest
+    of the replay: Home hidden, five cards apart only by a reading in 10,000
+    dropped or 1 ms of jitter, read 13.2-25.2 % impurity over its devices
+    (2026-10-04)."""
+    rnd = random.Random(3)
+    det = D.Detector()
+    det.phases["a"].noise = 20.0
+    for k in range(300):
+        size = max(30.0, rnd.gauss(*rnd.choice([(300.0, 20.0), (420.0, 25.0), (900.0, 40.0)])))
+        det._classify_step("a", T0 + 97.0 * k, size, None, 0.0)
+        assert det._segs["a|1"] == D.valley_segments(det.edge_hist["a|1"]), k
+
+
+def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
+    """...and so a step gone missing moves only the steps whose cluster it
+    decides: of 1,459 steps after it, at most 17 over twenty draws, against
+    up to 362 cut every 32 steps (2026-10-04)."""
+    def clusters(steps):
+        det = D.Detector()
+        det.phases["a"].noise = 20.0
+        born = {}
+        return {t: born.setdefault(det._classify_step("a", t, w, None, 0.0).id, t) for t, w in steps}
+    for seed in range(20):
+        rnd = random.Random(seed)
+        sizes = [(300.0, 20.0), (420.0, 25.0), (900.0, 40.0), (1200.0, 50.0)]
+        steps = [(T0 + 97.0 * k, max(30.0, rnd.gauss(*rnd.choice(sizes)))) for k in range(1500)]
+        a, b = clusters(steps), clusters(steps[:40] + steps[41:])
+        moved = sum(1 for t, _ in steps[41:] if a[t] != b[t])
+        assert moved <= 30, (seed, moved)
+
+
 if __name__ == "__main__":
     run_main(globals())
