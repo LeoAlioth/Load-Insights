@@ -1146,9 +1146,46 @@ invariance 0. Closing only the covered runs (298 of Home's 1,212 hidden) moved
 Home's hidden card nowhere. The washer-dryer's 03:56 and 05:47 cycles of
 24 Sep (hidden) are filed, at 282 W for 548 s and 279 W for 55 s. Still open:
 a run its stop went unseen hours before the floor is booked to the floor
-(Mansarda's own detector, 09-29 21:14, a 1,439 W run 107 min, 2.6 kWh); the
-idle floor itself moves where a fall finds nothing open (Home A's base 1,818 W
-on 09-28 evening).
+(Mansarda's own detector, 09-29 21:14, a 1,439 W run 107 min, 2.6 kWh) - a
+guard benched 2026-10-04 (the fall must carry the run, else it ends at the
+first declared level under half its size) moved Home's card nowhere or a
+little down in three paired cards, and also cut tapers (EV charges); its
+stop-sized form (a fall of half its size reached that level) within 0.4
+points in two paired cards - left out, patch and numbers in the overnight log
+(exp6); the idle floor itself moves where a fall finds nothing
+open (Home A's base 1,818 W on 09-28 evening), and a meter's own detector can
+seed it wrong: Susilna's plug seeded 301 W with the dehumidifier on, so its
+floor stops fire on 10 W wobbles of the 270 W run (its own runs hold 35 % of
+its energy).
+
+**A run its one-device meter owns is booked at what the meter drew
+(2026-10-04, `Fleet._meter_wh`).** A session's energy is its levels times
+their lengths, and a one-level run is booked at the mean of its start and stop
+where they agree, else the smaller: Home's EVBox began a charge at 1,262 W -
+its ramp's first plateau - and drew 3.48 kW for 8.5 hours (09-25 18:57), booked
+10.7 of the 29.3 kWh it drew. A run a meter holding one device owns
+(`_Open.meter`, `holds_one_device`) is now booked (`Session.wh`, per phase,
+stored; `energy_wh` and the hourly statistics read it) at its own size until
+its meter steps again, then at that size scaled by the meter's declared level
+against just before its rise - a leg of a three-phase charge a total-only
+meter reads takes its share. Declared levels (each `declared` step carries the
+level it stepped to), not readings: a spike never became a level (exp2's raw
+integral booked an 88 W, 13 s run at 1,040 W). A circuit's change is every
+load in it, so one-device meters only. Where the run ends does not change (a
+taper below its size less the pairing tolerance still ends it, `_ended_by`).
+Card against d707840 - only fed moves, hidden and circuits identical; the
+same moves in two paired NOOP replicates: Home fed devices 70.9 / 6.6 ->
+81.5 / 6.2 (the EVBox 74.3 / 6.9 -> 96.0 / 6.2, the hidrofor 73.8 / 11.6 ->
+76.6 / 13.2, the office 58.1 / 12.8 -> 54.4 / 11.5), partition 77.2 / 6.8 ->
+82.0 / 6.6; Kozolec fed 95.0 / 3.2 -> 94.8 / 2.7 (its water pump 80.7 -> 96.6 %
+captured). The grid's runs of 1 kW or more the EVBox switched on with, fed:
+86.2 kWh booked against the 113.8 the meter drew over them -> 113.3. Not
+reached: runs no meter owns (hidden, circuits) and meters holding several
+(bench.PROD_SINGLE does not declare Andrej's go-e; declared, a replay's fed
+devices 92.9 / 8.0 -> 98.7 / 9.0). Following a run alone on its phase at the
+phase's level above its floor was benched and left out: the grid's floor holds
+cycling loads, and Home's hidden Hiša lost right energy as fast as wrong
+(73.9 / 19.2 -> 63.9 / 11.3).
 
 **A load inside a meter holding several devices is that meter's (2026-10-03).**
 Anze, naming Mansarda's fridge and freezer: "if a same load is detected by
