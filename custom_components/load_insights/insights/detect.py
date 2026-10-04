@@ -866,6 +866,39 @@ def _median(xs: Sequence[float]) -> float:
     return statistics.median(xs) if xs else 0.0
 
 
+NOISE_WINDOW = 240     # the moves the noise is the median of at every reading (_slide), and the relative noise
+# The relative noise is the median of its last NOISE_WINDOW moves, worked out
+# again once every REL_REFRESH_S of the readings' clock. In blocks of 120 moves
+# counted from the first, one reading dropped moved every later block for good
+# (see _slide); the median at every move, as the noise is, made Home circuits'
+# devices 2 points less pure (17.7 % impurity against 15.8 over five cards
+# apart only by a reading in 10,000 dropped or 1 ms of jitter); on the clock,
+# every 300 s 16.8 % and 33.7 % captured, every 3600 s 16.0 and 31.6 with the
+# spread of the blocks back (14.1-17.3 against 16.4-17.0; 2026-10-04).
+REL_REFRESH_S = 300.0
+
+
+def _slide(window: List[float], ordered: List[float], x: float, size: int) -> float:
+    """``x`` into a window of the last ``size`` values and into its sorted
+    copy (rebuilt where the two disagree, after a restore); returns the
+    window's median. A measure that is the median of the last ``size``
+    values at EVERY value forgets a reading that went missing once it has
+    slid past; re-measured in blocks - every 120 values, over the last 240 -
+    the blocks' edges are counted from the first value, and one reading
+    more or less moved every edge for good: dropped one reading in 10,000,
+    Home's phase A ran at another noise for 38 % of its steps and another
+    relative noise for 87 %, from the hour of the first drop on (2026-10-04).
+    The noise's; the relative noise is worked out on the clock (REL_REFRESH_S)."""
+    window.append(x)
+    if len(ordered) != len(window) - 1:
+        ordered[:] = sorted(window[:-1])
+    bisect.insort(ordered, x)
+    if len(window) > size:
+        del ordered[bisect.bisect_left(ordered, window.pop(0))]
+    n = len(ordered)
+    return ordered[n // 2] if n % 2 else 0.5 * (ordered[n // 2 - 1] + ordered[n // 2])
+
+
 # ------------------------------------------------------------------ sessions
 @dataclass
 class Session:
@@ -1670,6 +1703,8 @@ class PhaseState:
     rel_diffs: List[float] = field(default_factory=list)
     seed: List[float] = field(default_factory=list)
     idle_diffs: List[float] = field(default_factory=list)
+    _rel_tick: Optional[int] = field(default=None, repr=False, compare=False)
+    _idle_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
@@ -1871,10 +1906,11 @@ class PhaseState:
             if self.level is not None and abs(self.level) >= self.rel_floor:
                 wander = abs(w - prev_w) if prev_w is not None else abs(w - self.level)
                 self.rel_diffs.append(wander / abs(self.level))
-                if len(self.rel_diffs) >= 240:
-                    self.noise_rel = min(NOISE_REL_CAP,
-                                         NOISE_MAD_FACTOR * _median(self.rel_diffs))
-                    self.rel_diffs = self.rel_diffs[-120:]
+                del self.rel_diffs[:-NOISE_WINDOW]
+                tick = math.floor(ts / REL_REFRESH_S)
+                if len(self.rel_diffs) >= NOISE_WINDOW and tick != self._rel_tick:
+                    self.noise_rel = min(NOISE_REL_CAP, NOISE_MAD_FACTOR * _median(self.rel_diffs))
+                    self._rel_tick = tick
             if q is not None:
                 self.q_level = q if self.q_level is None else self.q_level + SLOW_FOLLOW * (q - self.q_level)
                 self.q_recent.append(q)
@@ -1893,11 +1929,10 @@ class PhaseState:
                 # under-reported rather than booked as a load it is not.
                 if abs(w - self.baseline) <= self.noise_at(self.baseline):
                     self.level = self.baseline
-                self.idle_diffs.append(abs(w - prev_w) if prev_w is not None
-                                       else abs(w - self.baseline))
-                if len(self.idle_diffs) >= 240:
-                    self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * _median(self.idle_diffs))
-                    self.idle_diffs = self.idle_diffs[-120:]
+                mid = _slide(self.idle_diffs, self._idle_sorted,
+                             abs(w - prev_w) if prev_w is not None else abs(w - self.baseline), NOISE_WINDOW)
+                if len(self.idle_diffs) >= NOISE_WINDOW:
+                    self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * mid)
             return []
 
         self.pending.append((ts, w, q, pv))
@@ -2532,7 +2567,7 @@ class PhaseState:
                 "min_noise": self.min_noise, "noise_rel": self.noise_rel,
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
-                "idle_diffs": self.idle_diffs[-120:], "pending": [list(x) for x in self.pending],
+                "idle_diffs": list(self.idle_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
                 "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag,
                 "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}

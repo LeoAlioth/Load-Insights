@@ -4420,5 +4420,28 @@ def test_a_meter_stop_the_grid_has_not_read_to_is_not_netted_into_a_rise_before_
     assert len(parts) == 2 and abs(parts[0] + 2996.0) < 1.0, parts           # read to it, no step of its own: netted
 
 
+def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_were():
+    """The noise is the median of the last NOISE_WINDOW idle moves at every
+    reading (_slide), the relative noise the median of its last NOISE_WINDOW
+    worked out once every REL_REFRESH_S of the readings' clock. Re-measured in
+    blocks - every 120 moves over the last 240, counted from the first - one
+    reading dropped moved every later block's edges for good: Home circuits,
+    one reading in 10,000 dropped, ran at another noise for 38 % of phase A's
+    steps and another relative noise for 87 % from the hour of the first drop
+    (2026-10-04). Here a 30 W load cycling at the noise beside a 1.5 kW one:
+    in blocks the noise ended at 29.5 and 34.4 W with and without the 51st
+    reading, and the last five hours had a session less."""
+    big, small = kiln(period=900.0, on=120.0, watts=1500.0), kiln(period=300.0, on=100.0, watts=30.0)
+    full = series(6 * 3600, lambda s: big(s) + small(s), seed=3)
+    runs = []
+    for rows in (full, full[:50] + full[51:]):          # the 51st reading, four minutes in, gone
+        det = D.Detector()
+        closed = det.process({"a": rows}, now_ts=rows[-1][0] + 60.0)
+        st = det.phases["a"]
+        runs.append((st.noise, st.noise_rel, [(s.start, s.end, round(s.energy_wh, 3)) for s in closed
+                                              if s.start > T0 + 3600.0]))
+    assert runs[0] == runs[1], (runs[0][:2], runs[1][:2], len(runs[0][2]), len(runs[1][2]))
+
+
 if __name__ == "__main__":
     run_main(globals())
