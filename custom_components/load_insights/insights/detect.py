@@ -775,6 +775,15 @@ INPUT_MIN_COVERAGE = 0.5
 # the ten days it was already seen rather than starting at the naming
 # (Anze, 2026-09-29).
 HOURLY_KEEP_S = 11 * 86400.0
+# ...and past that, for a year, the hours of an unnamed load confident enough
+# to be named one day - seen this often, using this much in all, with the
+# naming page's evidence bar (DEFAULT_MIN_EVIDENCE) - so naming it brings its
+# year onto its meter, not ten days (Anze, 2026-10-04). Signature.older,
+# stored apart from the library; a named load's history is its meter's.
+OLDER_MIN_COUNT = 10
+OLDER_MIN_WH = 500.0
+OLDER_MIN_EVIDENCE = 0.7
+OLDER_KEEP_S = 365 * 86400.0
 # A load that runs in one value of a setting is taken as a real load of
 # that device: its runs being loose about time counts no more against it.
 # 0 is off.
@@ -2698,6 +2707,9 @@ class Signature:
     born_judged: bool = False
     # hour start (epoch s) -> Wh used in it - see HOURLY_KEEP_S
     hourly: Dict[int, float] = field(default_factory=dict)
+    # ...and the hours aged out of it that a confident unnamed load keeps -
+    # see OLDER_KEEP_S. Not in to_dict: the runner stores them apart
+    older: Dict[int, float] = field(default_factory=dict)
     # edge cluster id -> how many of its runs used it, as their "start", as a
     # "step" part way through, or as their "stop" - see EDGE_LAG_REACH_S
     edges: Dict[str, Dict[int, float]] = field(default_factory=dict)
@@ -2815,8 +2827,9 @@ class Signature:
 
     def swallow(self, other: "Signature") -> None:
         """Take another signature's sightings into this one, by weight."""
-        for hour, wh in other.hourly.items():
-            self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
+        for mine, theirs in ((self.hourly, other.hourly), (self.older, other.older)):
+            for hour, wh in theirs.items():
+                mine[hour] = mine.get(hour, 0.0) + wh
         for role, used in other.edges.items():
             mine = self.edges.setdefault(role, {})
             for cid, n in used.items():
@@ -3218,9 +3231,22 @@ class Signature:
                 hour = int(t - into)
                 self.hourly[hour] = self.hourly.get(hour, 0.0) + wh
                 t += step
-        cut = s.end - HOURLY_KEEP_S
-        for hour in [h for h in self.hourly if h < cut]:
-            del self.hourly[hour]
+        self.age(s.end)
+
+    def age(self, now: float) -> None:
+        """Let the hours HOURLY_KEEP_S has passed leave ``hourly``: into
+        ``older`` while this is an unnamed load confident enough to be named
+        one day (OLDER_MIN_*), else gone; and ``older`` past a year gone."""
+        cut = now - HOURLY_KEEP_S
+        gone = [h for h in self.hourly if h < cut]
+        keep = gone and not self.name and self.count >= OLDER_MIN_COUNT and \
+            self.energy_wh >= OLDER_MIN_WH and self.evidence >= OLDER_MIN_EVIDENCE
+        for hour in gone:
+            wh = self.hourly.pop(hour)
+            if keep:
+                self.older[hour] = self.older.get(hour, 0.0) + wh
+        for hour in [h for h in self.older if h < now - OLDER_KEEP_S]:
+            del self.older[hour]
 
     def describe(self, tz, now: Optional[float] = None, running: bool = False) -> str:
         """Words for the naming page: '6.1 kW on phases A and C, runs ~80 s,
@@ -5190,7 +5216,9 @@ class Detector:
         more. Its ENERGY comes along, as carried_wh rather than folded into
         the hour and weekday charts: the meter must not step backwards when a
         name moves, or Home Assistant reads it as a reset, while the charts
-        should still describe this behaviour rather than an average of two."""
+        should still describe this behaviour rather than an average of two.
+        Its hours by the clock come along too, so the name's statistics keep
+        the old fingerprint's days (insights.named.plan_rewrite)."""
         old = self.predecessor_of(signature_id)
         if old is None or not old.name:
             return None
@@ -5199,6 +5227,10 @@ class Detector:
         if heir is None:
             return None
         heir.carried_wh += old.energy_wh
+        for mine, theirs in ((heir.hourly, old.hourly), (heir.older, old.older)):
+            for hour, wh in theirs.items():
+                mine[hour] = mine.get(hour, 0.0) + wh
+            theirs.clear()
         old.name, old.successor_id = None, None
         self._touch(old.id)
         self.rename(signature_id, name)
@@ -5295,6 +5327,7 @@ class Fleet:
     # the readings' clock all meters are read on: the meters' own, the grid
     # wait_cap_s behind them (see process); how far every meter's readings reach
     _now: float = field(default=0.0, repr=False, compare=False)
+    _aged_to: float = field(default=0.0, repr=False, compare=False)   # the hour Signature.age last swept to
     # sub-meter sessions waiting to vote on their channel's phase: (when, meter, past the patience, session) - see _vote_blocked
     _unvoted: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # house sessions handed over lately, (when, session): what a meter's session votes against
@@ -5447,6 +5480,15 @@ class Fleet:
         for name, det in self.subs.items():
             if name not in self.views:
                 det.finish(sub_samples.get(name) or {}, end)
+        # once an hour, every signature's hours age as a run filed now would
+        # age them: one that stopped running still lets its hours go - into
+        # older, kept for naming it one day - rather than keeping its last
+        # days in hourly, before the statistics' window, until it runs again
+        if self._now // 3600 > self._aged_to // 3600:
+            self._aged_to = self._now
+            for _, det in self.detectors():
+                for sig in det.signatures:
+                    sig.age(self._now)
 
     def _units(self) -> List[Tuple[str, "Fleet"]]:
         """The grid's fleet under "", then each meter's others hang under, by name."""
@@ -7158,6 +7200,40 @@ class Fleet:
 
     def hourly_by_name(self, name: str) -> Dict[int, float]:
         return dict(sorted(self._summed(lambda d: d.hourly_by_name(name)).items()))
+
+    def take_older(self, name: str) -> Dict[int, float]:
+        """hour start -> Wh the signatures wearing ``name`` kept from before
+        they were named (Signature.older), now theirs no longer: their meter
+        is owed it once, before its window."""
+        out: Dict[int, float] = {}
+        for _, det in self.detectors():
+            for sig in det.signatures:
+                if sig.name == name:
+                    for hour, wh in sig.older.items():
+                        out[hour] = out.get(hour, 0.0) + wh
+                    sig.older = {}
+        return out
+
+    def older_to_dict(self) -> dict:
+        """Every signature's older hours, meter -> id -> hour -> Wh: stored
+        apart from the library, which a year of hours would swell."""
+        out: Dict[str, dict] = {}
+        for meter, det in self.detectors():
+            for sig in det.signatures:
+                hours = {str(h): round(wh, 1) for h, wh in sig.older.items() if wh >= 0.05}
+                if hours:
+                    out.setdefault(meter, {})[str(sig.id)] = hours
+        return out
+
+    def load_older(self, d: dict) -> None:
+        """Hand stored older hours back, each to what its signature is now -
+        merged into another since they were stored, or gone with it."""
+        for meter, sigs in (d or {}).items():
+            for sid, hours in sigs.items():
+                sig = self.signature((meter, int(sid)))
+                if sig is not None:
+                    for h, wh in hours.items():
+                        sig.older[int(h)] = sig.older.get(int(h), 0.0) + float(wh)
 
     def active_by_name(self, now_ts: float) -> Dict[str, float]:
         """Watts on right now per NAME, each read off its own meter."""

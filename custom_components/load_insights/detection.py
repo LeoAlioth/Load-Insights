@@ -10,13 +10,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
@@ -44,6 +44,7 @@ from .const import (
     DOMAIN,
 )
 from .insights.detect import (
+    HOURLY_KEEP_S,
     METER_WAIT_CAP_S,
     SWITCH_MEMORY_S,
     combine,
@@ -70,7 +71,8 @@ from .insights.detect import (
 )
 from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
-from .insights.named import metered_device, one_device_meters, plan_rewrite, regrouped
+from .insights.named import (first_change, metered_device, one_device_meters, plan_carry, plan_rewrite,
+                             vanished_into)
 
 if TYPE_CHECKING:
     from .coordinator import InsightsCoordinator   # which imports this module
@@ -310,17 +312,20 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # re-reading history from scratch - after a reset, or with nothing
         # stored: what the library gains is old, not new energy
         self.refiling = False
-        # names whose signatures a rename, adoption or forgetting changed:
-        # each one's energy meter is rewritten once the reload that follows
-        # has added it (NamedLoadEnergy._backfill_when_new). Stored, so
-        # a restart before then still does it
-        self.rewrite_due: set = set()
+        # name -> the statistic ids of the names that vanished into it
+        # (_carry_vanished), whose history its meter is owed before the
+        # window - once, as soon as it has an hour (async_backfill_statistics).
+        # Stored, so a restart before then still carries it
+        self.carries: Dict[str, List[str]] = {}
         self.last_run: Optional[datetime] = None
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
+        # the hours confident unnamed loads keep past the window
+        # (Signature.older), apart from the library they would swell
+        self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
@@ -653,7 +658,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         rows = rows.get(statistic_id)
         return float(rows[0]["start"]) if rows else None
 
-    async def async_backfill_statistics(self, name: str) -> Optional[Tuple[int, float]]:
+    async def async_backfill_statistics(self, name: str, force: bool = True) -> Optional[Tuple[int, float]]:
         """Write what detection saw of a named load, hour by hour, over its
         energy meter's statistics - long-term and five-minute alike - for the
         hours detection watched, about ten days: the days before it was named
@@ -663,65 +668,167 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         detected entities for the time it has the data for"). See
         plan_rewrite.
 
+        Before that window, first, what the meter is owed from elsewhere,
+        once: the history of the names that vanished into this one
+        (``carries``) and the hours its signatures kept from before they were
+        named (Signature.older) - see plan_carry.
+
+        Not ``force``d - the hourly check, a named load's sensor added - it
+        writes only where the meter is off what detection saw, from the first
+        hour that is (first_change), and nothing while history is re-read:
+        the re-read's end rewrites every name.
+
         Returns (hours written, kWh they differ from what was recorded) -
         (0, 0.0) when there is nothing to do - or None while the meter has no
-        hour of its own yet. Running it again writes the same."""
-        self.rewrite_due.discard(name)        # written from the library as it is now
+        hour of its own yet, or not forced while history is re-read. Running
+        it again writes the same."""
         meter = self.metered_device(name)
         if meter:
             _LOGGER.info("Not backfilling %s: it is the metered device %s, whose own readings are its history",
                          name, meter)
             return 0, 0.0
+        if self.refiling and not force:
+            return None
         entity_id = er.async_get(self.hass).async_get_entity_id(
             "sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
         if entity_id is None:
             return 0, 0.0
         async with self._lock:                # the library, between passes: a pass changes it
-            if await self.async_first_statistic(entity_id) is None:
-                return None
-            seen = min((h for _, det in self.fleet.detectors() for sig in det.signatures for h in sig.hourly),
-                       default=None)
-            if seen is None:
-                return 0, 0.0
-            covered = int(seen // 3600 * 3600) + 3600     # the first hour read is a part of one
             recorder = get_instance(self.hass)
+
+            def recorded(period, since, statistic_id=entity_id):
+                return recorder.async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, dt_util.utc_from_timestamp(since), None,
+                    {statistic_id}, period, None, {"state", "sum"})
+
+            async def window():
+                # the row before the window and every one since - one read an
+                # hour; from the meter's first where it has none there:
+                # younger than the window, or a gap in its rows
+                rows = (await recorded("hour", covered - 3600)).get(entity_id) or []
+                if rows and rows[0]["start"] < covered:
+                    return rows
+                return (await recorded("hour", 0)).get(entity_id) or []
+            covered = self._covered_from()
+            if covered is None:
+                return None if await self.async_first_statistic(entity_id) is None else (0, 0.0)
+            hours = await window()
+            if not hours:
+                return None
             meta = await recorder.async_add_executor_job(
                 functools.partial(rec_stats.get_metadata, self.hass, statistic_ids={entity_id}))
             unit = meta[entity_id][1]["unit_of_measurement"] if entity_id in meta else None
             if unit != UnitOfEnergy.KILO_WATT_HOUR:
                 _LOGGER.warning("Not backfilling %s: %s keeps its statistics in %s, not kWh", name, entity_id, unit)
                 return 0, 0.0
-
-            def recorded(period, since):
-                return recorder.async_add_executor_job(
-                    rec_stats.statistics_during_period, self.hass, dt_util.utc_from_timestamp(since), None,
-                    {entity_id}, period, None, {"state", "sum"})
-            hours = (await recorded("hour", 0)).get(entity_id) or []
-            fives = (await recorded("5minute", covered)).get(entity_id) or []
-            hour_rows, five_rows, shift = plan_rewrite(self.fleet.hourly_by_name(name), covered, hours, fives)
-            if not hour_rows:
+            owed = self.carries.get(name) or []
+            extra: Dict[int, float] = {}
+            for statistic_id in owed:
+                last = 0.0                    # a meter's sum starts at 0 before its first row
+                for r in (await recorded("hour", 0, statistic_id)).get(statistic_id) or []:
+                    if r["start"] >= covered:
+                        break
+                    extra[r["start"]] = extra.get(r["start"], 0.0) + r["sum"] - last
+                    last = r["sum"]
+            older = self.fleet.take_older(name)
+            for hour, wh in older.items():
+                extra[hour] = extra.get(hour, 0.0) + wh / 1000.0
+            if owed or older:
+                self.carries.pop(name, None)
+                # taken before it is written: a restart in between loses it
+                # rather than carrying it twice
+                await self._persist(force=True)
+            if extra:
+                every = (await recorded("hour", 0)).get(entity_id) or []
+                fives = (await recorded("5minute", min(extra))).get(entity_id) or []
+                hour_rows, five_rows, shift = plan_carry(extra, covered, every, fives)
+                await self._write_statistics(entity_id, unit, hour_rows, five_rows, covered, shift)
+                _LOGGER.info("Carried %.2f kWh onto %s (%s) from before %s: %s", shift, name, entity_id,
+                             dt_util.utc_from_timestamp(covered).isoformat(),
+                             ", ".join(owed + ([f"{len(older)} hours kept from before it was named"] if older else [])))
+                hours = await window()
+            hourly = self.fleet.hourly_by_name(name)
+            hour_rows, _, shift = plan_rewrite(hourly, covered, hours, [])
+            start = hour_rows[0]["start"] if force and hour_rows else first_change(hour_rows, hours)
+            if start is None:
                 return 0, 0.0
-            # exactly what the sensor's own statistics carry, so importing
-            # changes nothing about them but the rows
-            metadata = {"has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
-                        "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit}
-            for table, rows in ((Statistics, hour_rows), (StatisticsShortTerm, five_rows)):
-                recorder.async_import_statistics(metadata, [
-                    {"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
-                    for r in rows], table)
-            # the hour being recorded, and any compiled since the rows were read
-            recorder.async_adjust_statistics(
-                entity_id, dt_util.utc_from_timestamp(hour_rows[-1]["start"] + 3600), shift, unit)
-            await recorder.async_block_till_done()   # written before another run reads
-        _LOGGER.info("Rewrote %s (%s): %d hours and %d five-minute rows from %s, %.2f kWh %s than recorded",
-                     name, entity_id, len(hour_rows), len(five_rows),
-                     dt_util.utc_from_timestamp(hour_rows[0]["start"]).isoformat(), abs(shift),
-                     "more" if shift >= 0 else "less")
+            # five-minute rows from the first hour written: those before it
+            # agree with their hours already
+            fives = (await recorded("5minute", start)).get(entity_id) or []
+            _, five_rows, _ = plan_rewrite(hourly, covered, hours, fives)
+            hour_rows = [r for r in hour_rows if r["start"] >= start]
+            # ...and the hour being recorded, and any compiled since the rows were read
+            await self._write_statistics(entity_id, unit, hour_rows, five_rows, hour_rows[-1]["start"] + 3600, shift)
+        _LOGGER.log(logging.INFO if force else logging.DEBUG,
+                    "Rewrote %s (%s): %d hours and %d five-minute rows from %s, %.2f kWh %s than recorded",
+                    name, entity_id, len(hour_rows), len(five_rows),
+                    dt_util.utc_from_timestamp(hour_rows[0]["start"]).isoformat(), abs(shift),
+                    "more" if shift >= 0 else "less")
         return len(hour_rows), shift
+
+    def _covered_from(self) -> Optional[int]:
+        """The first whole hour of the statistics' window: the first hour the
+        library read, never further back than HOURLY_KEEP_S - before it some
+        signatures' hours have aged out (Signature.age) and others not, and
+        a name's meter would be written short of them, every hour. None
+        before anything is filed."""
+        seen = min((h for _, det in self.fleet.detectors() for sig in det.signatures for h in sig.hourly),
+                   default=None)
+        if seen is None:
+            return None
+        since = max(seen, dt_util.utcnow().timestamp() - HOURLY_KEEP_S)
+        return int(since // 3600 * 3600) + 3600     # the first hour read is a part of one
+
+    async def _write_statistics(self, entity_id: str, unit: str, hour_rows: List[dict], five_rows: List[dict],
+                                shift_from: float, shift: float) -> None:
+        """Write rows over a named load's meter's statistics, and raise every
+        row from ``shift_from`` on by ``shift``: async_adjust_statistics moves
+        the five-minute rows as well as the hours (recorder's
+        adjust_statistics), so the two tables keep agreeing."""
+        recorder = get_instance(self.hass)
+        # exactly what the sensor's own statistics carry, so importing
+        # changes nothing about them but the rows
+        metadata = {"has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
+                    "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit}
+        for table, rows in ((Statistics, hour_rows), (StatisticsShortTerm, five_rows)):
+            recorder.async_import_statistics(metadata, [
+                {"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
+                for r in rows], table)
+        recorder.async_adjust_statistics(entity_id, dt_util.utc_from_timestamp(shift_from), shift, unit)
+        await recorder.async_block_till_done()   # written before another run reads
 
     async def _rewrite_named(self) -> None:
         for name in sorted(self.fleet.names()):
             await self.async_backfill_statistics(name)
+
+    @callback
+    def _hour_compiled(self, _event) -> None:
+        self.entry.async_create_background_task(self.hass, self._check_named(), f"{DOMAIN} check statistics")
+
+    async def _check_named(self) -> None:
+        """Each hour Home Assistant has compiled, every named load's meter is
+        held against what detection credits it with now, and rewritten where
+        it is off (async_backfill_statistics, unforced): a name moved, joined,
+        adopted or forgotten, detection merging a load into a named one, a run
+        filed into the hours it ran in rather than the one it closed in - one
+        check for them all, instead of a hook in each.
+
+        Its window ends at the hour just compiled, read once the compile is in
+        (the event fires before it commits). No margin is left before it: a
+        run still open is in neither the meter's reading - which counts runs
+        as they close - nor in hourly, so it never makes them differ. What
+        can is a run counted after the window's end but filed inside it, and
+        right after the hour there is next to none. A margin would make that
+        the rule: every run across its edge, counted after it and filed
+        before, would be written into the hours before and counted again
+        after - then taken back an hour later, every hour. A check at another
+        moment - a sensor added at a start or a reload, the service - counts
+        twice what was counted since the hour began but filed before it,
+        until this check the hour after."""
+        await get_instance(self.hass).async_block_till_done()
+        for name in sorted(self.fleet.names()):
+            if not self.metered_device(name):
+                await self.async_backfill_statistics(name, force=False)
 
     def guess_one_device(self, name: str) -> bool:
         return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
@@ -766,7 +873,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             name = self.fleet.adopt(ref)
             if name is None:
                 return None
-            self.rewrite_due.update(regrouped(before, self.fleet.names()))
+            self._carry_vanished(before)
             await self._persist(force=True)
         self.async_update_listeners()
         return name
@@ -790,9 +897,26 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             before = self.fleet.names()
             if not self.fleet.rename(ref, name):
                 return False
-            self.rewrite_due.update(regrouped(before, self.fleet.names()))
+            self._carry_vanished(before)
             await self._persist(force=True)      # a user action, written at once
         return True
+
+    def _carry_vanished(self, before: Dict[str, list]) -> None:
+        """After a rename or an adoption: a name that vanished into another
+        (vanished_into) leaves that name's meter its own meter's history, by
+        statistic id, and whatever it was owed itself - carried before the
+        window once (async_backfill_statistics). The meter it leaves keeps its
+        statistics as they are. A name only told apart by case or spaces is
+        the same meter (load_uid), which owes itself nothing."""
+        after = self.fleet.names()
+        registry = er.async_get(self.hass)
+        for into, gone in vanished_into(before, after).items():
+            for name in gone:
+                uid = load_uid(self.entry.entry_id, "energy", name)
+                eid = registry.async_get_entity_id("sensor", DOMAIN, uid)
+                own = [eid] if eid and uid != load_uid(self.entry.entry_id, "energy", into) else []
+                self.carries[into] = self.carries.get(into, []) + self.carries.pop(name, []) + own
+        self.carries = {n: ids for n, ids in self.carries.items() if n in after and ids}
 
     async def _persist(self, force: bool = False) -> None:
         """Write the state, but not on every pass.
@@ -814,17 +938,24 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         now = dt_util.utcnow().timestamp()
         due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
         if force or due:
+            # the older hours first: a reset's empty ones are never left
+            # beside the library they would no longer match
+            await self._history.async_save(self._older())
             await self._store.async_save(self._snapshot())
             self._saved_at = now
         else:
+            self._history.async_delay_save(self._older, SAVE_MAX_INTERVAL_S)
             self._store.async_delay_save(self._snapshot, SAVE_MAX_INTERVAL_S)
 
     def _snapshot(self) -> dict:
         return {"fleet": self.fleet.to_dict(),
                 "last_processed": self.last_processed.isoformat() if self.last_processed else None,
                 "refiling": self.refiling,
-                "rewrite": sorted(self.rewrite_due),
+                "carry": self.carries,
                 "generation": DETECTOR_GENERATION}
+
+    def _older(self) -> dict:
+        return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
 
     @property
     def behind_s(self) -> Optional[float]:
@@ -890,9 +1021,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
         self.refiling = bool(raw.get("refiling")) or self.last_processed is None
-        self.rewrite_due = set(raw.get("rewrite") or ())
+        self.carries = {n: list(ids) for n, ids in (raw.get("carry") or {}).items()}
+        if raw:                                  # this library, not one dropped for an older generation
+            older = await self._history.async_load() or {}
+            if older.get("generation") == DETECTOR_GENERATION:
+                self.fleet.load_older(older.get("older"))
         if not self.enabled:
             return
+        self.entry.async_on_unload(
+            self.hass.bus.async_listen(EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, self._hour_compiled))
         self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
         self.hass.async_create_task(self.async_refresh())
 
@@ -914,6 +1051,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         minute of the reset)."""
         async with self._lock:
             orphans = self.fleet.name_descriptors() if self.fleet and not forget_names else []
+            if forget_names:
+                self.carries = {}               # owed to names that are gone
             self.fleet = Fleet()
             self.fleet.carry_names(orphans)
             self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()

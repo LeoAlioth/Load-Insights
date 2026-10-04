@@ -33,14 +33,88 @@ def chosen_name(typed: Optional[str], picked: Optional[str]) -> Optional[str]:
     return picked or (typed or "").strip() or None
 
 
-def regrouped(before: Dict[str, list], after: Dict[str, list]) -> List[str]:
-    """The names whose signatures changed between two ``Fleet.names()`` - a
-    rename, an adoption or a forgetting - that still exist: the name given,
-    and the one it was taken from while other signatures still wear it.
-    Their energy meters' statistics hold the old signatures' history until
-    rewritten (Inkubator, moved from the grid's #6 to Hiša's #14 on
-    2026-10-04, read ~0 kWh a day until backfilled by hand)."""
-    return sorted(n for n, refs in after.items() if set(refs) != set(before.get(n, ())))
+# How far a meter's recorded sum may sit from what plan_rewrite would write
+# before the hourly check rewrites it, in kWh: the Energy dashboard's last
+# digit for these meters (suggested_display_precision 2). The library keeps
+# each hour to 0.1 Wh, which over the window's ~260 hours drifts a few Wh at
+# most, so a restart's rounding alone never rewrites a meter.
+REWRITE_TOLERANCE_KWH = 0.01
+
+
+def first_change(rows: List[dict], hours: List[dict], tolerance: float = REWRITE_TOLERANCE_KWH) -> Optional[int]:
+    """The first hour plan_rewrite's ``rows`` would change, or None when the
+    meter already says what detection saw: an hour it has no row for, or
+    whose recorded sum is more than ``tolerance`` kWh off. Sums are running
+    totals, so an hour filed into the wrong one shows here as much as a
+    total that drifted (the shift is the last hour's difference). The rows
+    before it stay as recorded, and five-minute rows with them."""
+    recorded = {int(r["start"]): r["sum"] for r in hours}
+    return next((r["start"] for r in rows
+                 if r["start"] not in recorded or abs(r["sum"] - recorded[r["start"]]) > tolerance), None)
+
+
+def vanished_into(before: Dict[str, list], after: Dict[str, list]) -> Dict[str, List[str]]:
+    """name -> the names a rename or an adoption left with no signature,
+    every one of whose signatures now wears that name - between two
+    ``Fleet.names()``: a load named after another named one joins it, a
+    name given a new one is renamed. Their meters' older history belongs
+    to it now. One whose signatures went partly elsewhere, or were
+    forgotten, is in nothing: its history cannot be split."""
+    wears = {ref: name for name, refs in after.items() for ref in refs}
+    out: Dict[str, List[str]] = {}
+    for name, refs in sorted(before.items()):
+        now = {wears.get(ref) for ref in refs}
+        if name not in after and len(now) == 1 and None not in now:
+            out.setdefault(now.pop(), []).append(name)
+    return out
+
+
+def plan_carry(extra_kwh: Dict[int, float], covered_from: int, hours: List[dict],
+               fives: List[dict]) -> Tuple[List[dict], List[dict], float]:
+    """A named load's meter's statistics before the window, with energy from
+    elsewhere added: a name that vanished into it (vanished_into: the
+    differences of its meter's recorded sum), the hours a signature kept
+    from before it was named (Signature.older).
+
+    ``extra_kwh`` is hour start (epoch s) -> kWh, only what is before
+    ``covered_from`` counted - plan_rewrite writes the window from the
+    library; ``hours`` and ``fives`` the meter's rows as plan_rewrite takes
+    them. Each recorded row's sum gains what was added up to its hour, each
+    five-minute row its hour's share pro rata, as plan_rewrite shares them,
+    so the two tables still agree. An hour before the meter's first row - it
+    is newer than what is carried - is made as plan_rewrite makes one;
+    a gap between rows stays one, the next row's sum carrying it.
+
+    Returns the hour rows and five-minute rows to write, and ``shift``: what
+    every row from ``covered_from`` on is raised by. Added each time it
+    runs - the runner carries each source once."""
+    by_hour: Dict[int, float] = {}
+    for hour, kwh in extra_kwh.items():
+        start = int(hour // 3600 * 3600)          # a half-hour time zone's hours onto UTC's
+        if start < covered_from:
+            by_hour[start] = by_hour.get(start, 0.0) + kwh
+    if not hours or not by_hour:
+        return [], [], 0.0
+    recorded = {int(r["start"]): r for r in hours}
+    first_own = int(hours[0]["start"])
+    added, at_end, hour_rows = 0.0, {}, []
+    for h in range(min(by_hour), covered_from, 3600):
+        added += by_hour.get(h, 0.0)
+        at_end[h] = added
+        rec = recorded.get(h)
+        if rec is not None:
+            hour_rows.append({"start": h, "state": rec["state"], "sum": rec["sum"] + added})
+        elif h < first_own:
+            hour_rows.append({"start": h, "state": added, "sum": added})
+    five_rows = []
+    for r in fives:
+        h = int(r["start"] // 3600 * 3600)
+        if h in at_end:
+            used = by_hour.get(h, 0.0)
+            share = min(1.0, (r["start"] + 300 - h) / 3600.0)
+            five_rows.append({"start": r["start"], "state": r["state"],
+                              "sum": r["sum"] + at_end[h] - used + used * share})
+    return hour_rows, five_rows, added
 
 
 def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dict],
