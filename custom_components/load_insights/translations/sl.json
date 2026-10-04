@@ -398,7 +398,7 @@
     "services": {
         "backfill_statistics": {
             "name": "Prepiši zgodovino energije bremena",
-            "description": "Čez statistiko energijskega senzorja poimenovanega bremena - urno in petminutno - zapiše ure, ki jih je videlo zaznavanje, kolikor daleč nazaj jih ima, okoli deset dni, da nadzorna plošča Energija pokaže njegovo preteklost in nič od tega, kar sta iz nje naredila ponastavitev zaznavanja ali prva pojavitev senzorja: Home Assistant odčitek, ki se pojavi z več dnevi v sebi ali pade, šteje kot energijo tiste ure. Breme, poimenovano zdaj, se dopolni samo, približno uro kasneje. Ure pred desetimi dnevi ostanejo, kot so bile zabeležene, ponoven zagon pa zapiše isto.",
+            "description": "Čez statistiko energijskega senzorja poimenovanega bremena - urno in petminutno - zapiše ure, ki jih je videlo zaznavanje, kolikor daleč nazaj jih ima, okoli deset dni, da nadzorna plošča Energija pokaže njegovo preteklost in nič od tega, kar sta iz nje naredila ponastavitev zaznavanja ali prva pojavitev senzorja: Home Assistant odčitek, ki se pojavi z več dnevi v sebi ali pade, šteje kot energijo tiste ure. Zaznavanje to stori samo vsako uro, kjer se statistika poimenovanega bremena razlikuje od tega, kar mu zdaj pripisuje. Ure pred desetimi dnevi ostanejo, kot so bile zabeležene, le ime, v katero je bilo združeno drugo ime, enkrat dobi starejšo zgodovino tega imena, breme, poimenovano zdaj, pa ure, ki jih je hranilo od prej. Ponoven zagon zapiše isto.",
             "fields": {
                 "name": {
                     "name": "Ime",

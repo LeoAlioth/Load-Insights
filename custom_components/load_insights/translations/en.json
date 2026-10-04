@@ -398,7 +398,7 @@
     "services": {
         "backfill_statistics": {
             "name": "Rewrite a load's energy history",
-            "description": "Write the hours detection saw of a named load - as far back as it has them, about ten days - over its energy sensor's statistics, hourly and five-minute alike, so the Energy dashboard shows its past, and none of what a detection reset or the sensor's first appearance made of it: Home Assistant counts a reading that appears with days in it, or drops, as that hour's energy. A load named now is filled by itself about an hour later. The hours before the ten days stay as recorded, and running it again writes the same.",
+            "description": "Write the hours detection saw of a named load - as far back as it has them, about ten days - over its energy sensor's statistics, hourly and five-minute alike, so the Energy dashboard shows its past, and none of what a detection reset or the sensor's first appearance made of it: Home Assistant counts a reading that appears with days in it, or drops, as that hour's energy. Detection does this by itself every hour, wherever a named load's statistics are off what it credits the load with now. The hours before the ten days stay as recorded, except that a name another name was joined into gains that name's older history, and a load named now the hours it kept from before, once. Running it again writes the same.",
             "fields": {
                 "name": {
                     "name": "Name",

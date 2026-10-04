@@ -40,6 +40,7 @@ from .const import (
     CONF_METER_WAIT,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
+    HISTORY_SAVE_INTERVAL_S,
     SAVE_MAX_INTERVAL_S,
     DOMAIN,
 )
@@ -307,6 +308,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._energy_mark: Dict[str, float] = {}
         self._mark_ts: Optional[float] = None
         self._saved_at: Optional[float] = None
+        self._history_saved_at: Optional[float] = None
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         # re-reading history from scratch - after a reset, or with nothing
@@ -937,14 +939,19 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         """
         now = dt_util.utcnow().timestamp()
         due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
-        if force or due:
-            # the older hours first: a reset's empty ones are never left
-            # beside the library they would no longer match
+        # the older hours first: a reset's empty ones are never left beside
+        # the library they would no longer match. Daily, not hourly - a year
+        # of them is ~1.5 MB at Home, and a crash loses only hours that would
+        # have been carried, never carries one twice (a carry forces a write)
+        if force or self._history_saved_at is None or now - self._history_saved_at >= HISTORY_SAVE_INTERVAL_S:
             await self._history.async_save(self._older())
+            self._history_saved_at = now
+        else:
+            self._history.async_delay_save(self._older, HISTORY_SAVE_INTERVAL_S)
+        if force or due:
             await self._store.async_save(self._snapshot())
             self._saved_at = now
         else:
-            self._history.async_delay_save(self._older, SAVE_MAX_INTERVAL_S)
             self._store.async_delay_save(self._snapshot, SAVE_MAX_INTERVAL_S)
 
     def _snapshot(self) -> dict:
