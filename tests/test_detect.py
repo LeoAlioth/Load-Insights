@@ -1711,6 +1711,30 @@ def test_a_summed_reading_keeps_only_the_last_of_each_burst():
     assert len(D.combine([(night, 1.0), (quiet, 1.0)], settle_s=0.3)) == len(night)
 
 
+def test_the_idle_noise_is_not_learned_while_the_array_moves_under_the_reading():
+    """A house built from a grid meter and an inverter that are not read at
+    one moment wanders with every cloud: here 30 % of each change of the
+    array's shows a poll before the meter has it. Learned from those moves,
+    the idle noise rose with the sun (Andrej by day 12.5-14.5 W, 10 at night)
+    and so did the floor's footing; learned only while the array holds still,
+    it is the house's own (2026-10-04, exp12)."""
+    rnd = random.Random(2)
+    n = 3000
+    sun = [0.0] * 600 + [1500.0] * 2400
+    for k in range(601, n):                    # morning: a hazy sky on one phase, 20-30 W a poll
+        sun[k] = sun[k - 1] + rnd.choice([1, -1]) * rnd.uniform(20.0, 30.0)
+    rows = [(T0 + DT * k, 300.0 + rnd.choice([-1.0, 0.0, 1.0]) + 0.3 * (sun[k] - sun[k - 1] if k else 0.0))
+            for k in range(n)]
+    det = D.Detector()
+    det.phases["a"].floor_zero = True
+    det.process({"a": rows}, None, T0 + DT * n, {"a": {t: s for (t, _), s in zip(rows, sun)}})
+    assert det.phases["a"].noise <= D.MIN_NOISE_W + 1e-9, det.phases["a"].noise
+    blind = D.Detector()                       # the array not handed over: its moves are the reading's
+    blind.phases["a"].floor_zero = True
+    blind.process({"a": rows}, None, T0 + DT * n)
+    assert blind.phases["a"].noise > 2 * D.MIN_NOISE_W, blind.phases["a"].noise
+
+
 def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
     """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
     records fewer, so a running mean of its gaps came out 7.1 s against the

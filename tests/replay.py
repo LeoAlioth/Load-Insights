@@ -400,6 +400,8 @@ def run(args, transform=None, say=print):
     series = read_csv(args.csv, args.keep_coarse, say)
     if transform:
         series = transform(series)
+    # what an inverter added to a reading built with it (bench._prod_house): its array for the detector
+    arrays = {k[:-len("|array")]: series.pop(k) for k in list(series) if k.endswith("|array")}
     if not series:
         raise SystemExit("no numeric rows found - is this a History panel export?")
     fields = guess_roles(series, say)
@@ -464,7 +466,10 @@ def run(args, transform=None, say=print):
             bucket = pv.setdefault(p, {})
             for ts, watts in D._align(rows, samples[p]).items():
                 bucket[ts] = bucket.get(ts, 0.0) + watts
-    for p in list(pv):
+    for p in phases:
+        if fields[f"power_{p}"] in arrays:
+            pv[p] = dict(arrays[fields[f"power_{p}"]])     # in the reading: kept, never left out below
+    for p in [p for p in pv if fields[f"power_{p}"] not in arrays]:
         verdict = D.carries_generation(samples[p])
         say(f"   array shows in phase {p.upper()}: {verdict}")
         if verdict is False:

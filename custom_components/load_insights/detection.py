@@ -308,6 +308,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
         self.pv_visible: Dict[str, bool] = {}
+        # what the inverters added to each phase of a house built from them
+        # (_derive_load), as of each of its readings: the array IN the reading
+        self.array_in_house: Dict[str, Dict[float, float]] = {}
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
@@ -443,6 +446,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         An explicit reading still wins where someone has one that already IS
         the house - a dedicated CT, or the template sensors Anze built before
         this existed."""
+        self.array_in_house = {}
         override = {f"power_{p}": self.config.get(f"power_{p}") for p in PHASES}
         if any(override.values()):
             samples, _ = await self._read(start, end, {k: v for k, v in override.items() if v})
@@ -473,6 +477,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             per_phase = [(rows[p], sign) for rows, sign in terms if rows.get(p)]
             if per_phase:
                 out[p] = combine(per_phase, settle_s=COMBINE_SETTLE_S)
+            added = [(rows[p], sign) for rows, sign in inverters if rows.get(p)]
+            if grid_rows and added and out.get(p):
+                # the detector learns its idle noise and floor only while this holds still
+                self.array_in_house[p] = _align(combine(added), out[p])
         return {p: rows for p, rows in out.items() if rows}
 
     async def _grid_sign(self, grid_rows: Dict[str, list],
@@ -1145,6 +1153,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                         self.pv_visible[p] = verdict
                     if self.pv_visible.get(p) is False:
                         pv.pop(p)         # this reading never sees the sun; leave its steps alone
+                for p, arr in self.array_in_house.items():
+                    if p in samples:
+                        pv[p] = arr       # ...but a house built with the inverter added has it in
                 await self._refresh_submeters()
                 for name, meter in self.all_submeters.items():
                     if meter.get("ignored"):
