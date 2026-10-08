@@ -3679,15 +3679,21 @@ def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[
     ``sd`` is the smoothing in bins - the size histogram's by default."""
     if not hist:
         return []
-    sd = sd or EDGE_KERNEL / EDGE_BIN
-    reach, kernel = _kernel(sd)
+    reach, kernel = _kernel(sd or EDGE_KERNEL / EDGE_BIN)
     lo, hi = min(hist) - reach, max(hist) + reach
     dens = [0.0] * (hi - lo + 1)
     for b, w in hist.items():
         base = b - lo - reach
         for k, kw in enumerate(kernel):
             dens[base + k] += w * kw
-    floor = 0.1 * kernel[reach]                 # a tenth of one step's own peak
+    return _valley_cuts(dens, lo, kernel[reach])
+
+
+def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int]]:
+    """valley_segments' cut of a density whose first slot is bin ``lo``, a
+    kernel of ``peak`` at its centre."""
+    hi = lo + len(dens) - 1
+    floor = 0.1 * peak                          # a tenth of one step's own peak
     segs, start = [], None
     for i, v in enumerate(dens):
         inside = v >= floor
@@ -3873,6 +3879,8 @@ class Detector:
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
+    # each group's size density between steps: [the histogram, its keys' order, first bin, density] - see _valleys
+    _dens: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
     # the day's runs this detector filed or a meter took, and the readings it
     # stepped, for the day's repair (Fleet._repair), kept from when its fleet
@@ -4612,6 +4620,8 @@ class Detector:
                     if hist[k] < 1e-3:
                         del hist[k]
             self.edge_hist_at[g] = since
+            self._dens.pop(g, None)                    # every weight moved: worked out afresh
+        added = b not in h
         h[b] = h.get(b, 0.0) + 1.0
         if key:
             row = hk.setdefault(key, {})
@@ -4619,7 +4629,7 @@ class Detector:
         if angle is not None:
             ab = int(math.floor(angle / EDGE_ANGLE_BIN))
             ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
-        segs = self._segs[g] = valley_segments(h)      # with this step in it - see EDGE_RECUT
+        segs = self._segs[g] = self._valleys(g, h, b, added)      # with this step in it - see EDGE_RECUT
         plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
         if seg is None:
@@ -4633,6 +4643,43 @@ class Detector:
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _valleys(self, g: str, h: Dict[int, float], b: int, added: bool) -> List[Tuple[int, int]]:
+        """valley_segments(h) just after a step was added to bin ``b`` (a new
+        bin if ``added``), the density kept between steps: only its slots
+        within the kernel's reach of ``b`` can have moved, and each is summed
+        again over its bins in the histogram's own order - the very sums a
+        full pass makes, so the segments are the same to the bit. A fade, a
+        re-binned or replaced histogram is worked out afresh. A full pass over
+        every bin on each of 127,000 steps was 2 1/2 min of a Home replay."""
+        reach, kernel = _kernel(EDGE_KERNEL / EDGE_BIN)
+        st = self._dens.get(g)
+        if st is None or st[0] is not h:
+            lo, hi = min(h) - reach, max(h) + reach
+            dens = [0.0] * (hi - lo + 1)
+            for k, w in h.items():
+                base = k - lo - reach
+                for j, kw in enumerate(kernel):
+                    dens[base + j] += w * kw
+            st = self._dens[g] = [h, {k: i for i, k in enumerate(h)}, lo, dens]
+        else:
+            _, order, lo, dens = st
+            if added:
+                order[b] = len(order)                 # a new key comes last in the dict
+            if b - reach < lo:
+                dens[:0] = [0.0] * (lo - (b - reach))
+                lo = st[2] = b - reach
+            if b + reach > lo + len(dens) - 1:
+                dens.extend([0.0] * (b + reach - (lo + len(dens) - 1)))
+            near = sorted((k for k in range(b - 2 * reach, b + 2 * reach + 1) if k in h), key=order.__getitem__)
+            for i in range(b - reach, b + reach + 1):
+                v = 0.0
+                for k in near:
+                    j = i - k + reach
+                    if 0 <= j < len(kernel):
+                        v += h[k] * kernel[j]
+                dens[i - lo] = v
+        return _valley_cuts(st[3], st[2], kernel[reach])
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
