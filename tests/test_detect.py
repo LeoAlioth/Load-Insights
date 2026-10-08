@@ -4719,6 +4719,30 @@ def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
         assert det._segs["a|1"] == D.valley_segments(det.edge_hist["a|1"]), k
 
 
+def test_the_kept_density_is_the_full_pass_to_the_bit():
+    """_valleys keeps a group's size density between steps and sums again only
+    the slots the step can move, in the histogram's order: every slot, and so
+    every cut, is what a full pass over the histogram makes - through new bins
+    past either end, bins stepped again and a histogram put in its place."""
+    rnd = random.Random(5)
+    det = D.Detector()
+    reach, kernel = D._kernel(D.EDGE_KERNEL / D.EDGE_BIN)
+    h = {}
+    for k in range(2000):
+        if k % 500 == 499:
+            h = {b: w * 0.9 for b, w in h.items()}                     # re-binned: another dict
+        b = rnd.randint(-40, 400) if rnd.random() < 0.2 or not h else rnd.choice(list(h))
+        added = b not in h
+        h[b] = h.get(b, 0.0) + rnd.choice([1.0, 0.37])
+        assert det._valleys("a|1", h, b, added) == D.valley_segments(h), k
+        lo = min(h) - reach
+        full = [0.0] * (max(h) + reach - lo + 1)
+        for bb, w in h.items():
+            for j, kw in enumerate(kernel):
+                full[bb - lo - reach + j] += w * kw
+        assert det._dens["a|1"][2:] == [lo, full], k
+
+
 def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
     """...and so a step gone missing moves only the steps whose cluster it
     decides: of 1,459 steps after it, at most 17 over twenty draws, against
