@@ -3659,6 +3659,20 @@ def edge_scale(watts: float, unit_w: float) -> float:
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
 
 
+_KERNELS: Dict[float, Tuple[int, List[float]]] = {}
+
+
+def _kernel(sd: float) -> Tuple[int, List[float]]:
+    """valley_segments' Gaussian of ``sd`` bins, normalised: (reach, weights)."""
+    got = _KERNELS.get(sd)
+    if got is None:
+        reach = int(4 * sd) + 1
+        kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
+        total = sum(kernel)
+        got = _KERNELS[sd] = (reach, [k / total for k in kernel])
+    return got
+
+
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
     smoothed density: (first bin, last bin) of each, where anything is.
@@ -3666,10 +3680,7 @@ def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[
     if not hist:
         return []
     sd = sd or EDGE_KERNEL / EDGE_BIN
-    reach = int(4 * sd) + 1
-    kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
-    total = sum(kernel)
-    kernel = [k / total for k in kernel]
+    reach, kernel = _kernel(sd)
     lo, hi = min(hist) - reach, max(hist) + reach
     dens = [0.0] * (hi - lo + 1)
     for b, w in hist.items():
@@ -5403,6 +5414,9 @@ class Fleet:
     # PHASE_MAP_MIN_VOTES; None for the grid's own
     _root: Optional["Fleet"] = field(default=None, repr=False, compare=False)
     _vote_wh: Optional[tuple] = field(default=None, repr=False, compare=False)
+    # every vote cast on this fleet, counted - what phase_map's and
+    # _vote_wh_needed's caches are kept by
+    _votes_rev: int = field(default=0, repr=False, compare=False)
     # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
     unfiled: List[tuple] = field(default_factory=list)
     # One fleet per meter others hang under - its main that meter's
@@ -7164,6 +7178,7 @@ class Fleet:
                     row[house] = row.get(house, 0) + 1
                     row = energy.setdefault(own, {})
                     row[house] = row.get(house, 0.0) + s.energy_wh * gain
+                    self._votes_rev += 1
 
     def phase_map(self, name: str) -> Dict[str, str]:
         """Which house phase each of the meter's channels carries, from its
@@ -7180,32 +7195,42 @@ class Fleet:
         energy, unless it clearly loses on count (PHASE_MAP_AGREE)."""
         votes = self.phase_votes.get(name) or {}
         energy = self.phase_energy.get(name) or {}
+        # Kept while neither these votes nor the site's (_vote_wh_needed) have
+        # changed: _votes_rev counts every vote cast, and the very dicts are
+        # held, so tables put in place of them are read afresh. Rebuilding a
+        # key from every vote to check was most of 26 million calls a Home
+        # replay makes - 4 1/2 min of a 14 min profile.
+        root = self._root or self
+        rev = (self._votes_rev, root._votes_rev)
+        hit = self._phase_maps.get(name)
+        if hit is not None and hit[0] is votes and hit[1] is energy and hit[2] == rev:
+            return hit[3]
         if (sum(sum(r.values()) for r in votes.values()) < PHASE_MAP_MIN_VOTES
                 and sum(sum(r.values()) for r in energy.values()) < self._vote_wh_needed()):
-            return {}
-        key = tuple((c, tuple(sorted(r.items()))) for c, r in sorted(votes.items())), \
-            tuple((c, tuple(sorted(r.items()))) for c, r in sorted(energy.items()))
-        hit = self._phase_maps.get(name)
-        if hit is None or hit[0] != key:
+            mp = {}
+        else:
             by_n, by_wh = phase_mapping(votes), phase_mapping(energy)
 
             def holds(mp):
                 return (support(votes, mp) >= PHASE_MAP_AGREE * support(votes, by_n)
                         and support(energy, mp) >= PHASE_MAP_AGREE * support(energy, by_wh))
             mp = by_n if holds(by_n) else by_wh if holds(by_wh) else {}
-            hit = self._phase_maps[name] = (key, mp)
-        return hit[1]
+        if votes or energy:
+            self._phase_maps[name] = (votes, energy, rev, mp)
+        return mp
 
     def _vote_wh_needed(self) -> float:
         """The energy PHASE_MAP_MIN_VOTES of the site's votes carry, on
         average - the grid's fleet's, every meter's; never while the site
         has cast fewer votes than that."""
         root = self._root or self
-        n = sum(sum(r.values()) for v in root.phase_votes.values() for r in v.values())
-        if self._vote_wh is None or self._vote_wh[0] != n:
+        key = (root.phase_votes, root.phase_energy, root._votes_rev)
+        got = self._vote_wh
+        if got is None or got[0] is not key[0] or got[1] is not key[1] or got[2] != key[2]:
+            n = sum(sum(r.values()) for v in root.phase_votes.values() for r in v.values())
             wh = sum(sum(r.values()) for v in root.phase_energy.values() for r in v.values())
-            self._vote_wh = (n, PHASE_MAP_MIN_VOTES * wh / n if n >= PHASE_MAP_MIN_VOTES else math.inf)
-        return self._vote_wh[1]
+            got = self._vote_wh = key + (PHASE_MAP_MIN_VOTES * wh / n if n >= PHASE_MAP_MIN_VOTES else math.inf,)
+        return got[3]
 
     def _locate(self, m: Session, final: bool = False) -> bool:
         """Credit a filed house session to the meter that saw it: the BEST
