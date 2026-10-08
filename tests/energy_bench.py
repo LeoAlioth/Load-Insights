@@ -53,11 +53,13 @@ two 3EMs) and fed (SUBS=prod - every meter production reads). The meters are
 the truth in every mode, read from the history.
 
 card        every site (default home, kozolec, the circuits home-hisa and
-            home-mansarda, and andrejg) in every mode at SLICE=0, 6 and 1 and LIVE=1,
-            PARALLEL replays at once: one figure where the slicings agree, each
-            one's (0|6|1|L1) where they do not; the slicing invariance, and how
-            runs were closed (the pairing). Written to data/scorecard/<commit>-<utc>.json,
-            with invariance's worklist for every site and mode beside it;
+            home-mansarda, and andrejg) in every mode at SLICE=6, PARALLEL replays
+            at once, and how runs were closed (the pairing). SLICINGS=all replays
+            each at SLICE=0, 6 and 1 and LIVE=1 too - one figure where the
+            slicings agree, each one's (0|6|1|L1) where they do not, and the
+            slicing invariance with its worklist for every site and mode beside
+            the card; since 2026-10-02 they agree, so once in a while is enough.
+            Written to data/scorecard/<commit>-<utc>.json;
             LABEL=x names it <commit>-x-<utc>.json. BENCH_PARALLEL in the
             environment sets PARALLEL.
 invariance  the slicings two by two (PAIRS), fed unless a SUBS= dial says
@@ -1010,9 +1012,13 @@ def _fig(vals: list, signed: bool = False) -> str:
 def card(args: list) -> None:
     sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda", "andrejg"]
     label = next((a[6:] for a in args if a.startswith("LABEL=")), None)
-    dials = [a for a in args if "=" in a and not a.startswith("LABEL=")]
+    # One slicing - since 2026-10-02 they file the same sessions (AGENTS.md),
+    # so the other three only cost three replays each. SLICINGS=all replays
+    # every one and counts what they file differently.
+    slicings = list(SLICINGS) if "SLICINGS=all" in args else ["6"]
+    dials = [a for a in args if "=" in a and not a.startswith(("LABEL=", "SLICINGS="))]
     keys = sorted([(site, mode, sl) for site in sites for mode in MODES
-                   if mode != "circuits" or B.PROD_PARENTS.get(site) for sl in SLICINGS],
+                   if mode != "circuits" or B.PROD_PARENTS.get(site) for sl in slicings],
                   key=lambda k: (k[2] != "0", k[0] != "home"))   # the slowest first: Home in one call, ~6 min
     t0 = time.time()
     got = dict(zip(keys, _parallel([(site, _folder(site), [MODES[mode]] + SLICINGS[sl] + _site_dials(site) + dials)
@@ -1023,15 +1029,16 @@ def card(args: list) -> None:
     inv, files = {}, []
     for site, mode, sl in keys:
         if sl == "0":
-            _, inv[f"{site}|{mode}"], f = _worklists(site, mode, {s: got[(site, mode, s)] for s in SLICINGS},
+            _, inv[f"{site}|{mode}"], f = _worklists(site, mode, {s: got[(site, mode, s)] for s in slicings},
                                                     (commit, utc), " ".join(dials) or "defaults")
             files.append(f)
     lines = [f"scorecard {commit} {utc}  {' '.join(dials) or 'defaults'}  - {len(keys)} replays in {took:.0f} s",
-             "capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not;"
-             " share: the share-credited pair at SLICE=6"]
+             ("capture / impurity %, one figure where SLICE=0, 6, 1 and LIVE=1 agree, each one's (0|6|1|L1) where not;"
+              if len(slicings) > 1 else "capture / impurity % at SLICE=6 (SLICINGS=all for every slicing);")
+             + " share: the share-credited pair at SLICE=6"]
     for site in sites:
-        modes = [m for m in MODES if (site, m, "0") in got]
-        first = got[(site, modes[0], "0")]
+        modes = [m for m in MODES if (site, m, slicings[0]) in got]
+        first = got[(site, modes[0], slicings[0])]
         for tname in first["tables"]:
             names = sorted(first["tables"][tname]["loads"], key=lambda n: -first["tables"][tname]["loads"][n]["truth_kwh"])
             lines.append("")
@@ -1045,7 +1052,7 @@ def card(args: list) -> None:
                     vals = []
                     for metric in ("capture", "impurity"):
                         v = [(got[(site, m, sl)]["tables"][tname]["loads"].get(name) or {}).get(metric)
-                             if t else got[(site, m, sl)]["tables"][tname][metric] for sl in SLICINGS]
+                             if t else got[(site, m, sl)]["tables"][tname][metric] for sl in slicings]
                         vals.append(_fig(v))
                     six = got[(site, m, "6")]["tables"][tname]
                     sh = [(six["loads"].get(name) or {}).get(k) if t else six.get(k) for k in ("capture_share", "impurity_share")]
@@ -1057,8 +1064,9 @@ def card(args: list) -> None:
                          f"{r['main_kwh'] - r['meters_kwh']:.2f} kWh; its series integrates to {r['rest_kwh']:.2f} kWh")
             if site in PORTABLE:
                 lines.append(f"  {PORTABLE[site]} away, its truth masked: {_away_s(r.get('away'))}")
-        lines.append("  invariance, sessions / kWh two slicings file differently: " + "   ".join(
-            f"{m}: " + ", ".join(f"{k} {v['differ']}/{v['kwh']:.1f}" for k, v in inv[f"{site}|{m}"].items()) for m in modes))
+        if inv:
+            lines.append("  invariance, sessions / kWh two slicings file differently: " + "   ".join(
+                f"{m}: " + ", ".join(f"{k} {v['differ']}/{v['kwh']:.1f}" for k, v in inv[f"{site}|{m}"].items()) for m in modes))
         lines.append("  pairing at SLICE=6 - closes, observed stops within 10/20 % of their start, median off; never closed "
                      "(absorbed into a ramp) / closed nothing, % of steps")
         for m in modes:

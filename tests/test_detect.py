@@ -3918,6 +3918,7 @@ def test_a_channels_phase_is_learned_from_the_count_or_the_energy_of_its_votes()
     f.phase_energy["Odd"] = {"a": {"c": 30.0, "b": 3000.0}}
     assert f.phase_map("Odd") == {}                                  # the count says c, the energy b
     f.phase_votes["Odd"]["a"]["b"] = 20
+    f._votes_rev += 1                                                # as _vote_phases counts each vote it casts
     assert f.phase_map("Odd") == {"a": "b"}                          # the energy's, the count not clearly against
     back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
     assert back.phase_energy == f.phase_energy and back.phase_map("Susilna") == {"a": "c"}

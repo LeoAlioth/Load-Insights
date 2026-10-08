@@ -244,11 +244,13 @@ reads its site's. kW: Home's EVBox and Andrej's two OCPP chargers; %: the
 SolarEdge M1s' power factors (unread by the replay); everything else W, A, V,
 VA, var. Every card before e7f17b3 read Polnilnica as nothing.
 
-`card` replays every site in every mode at SLICE=0, 6 and 1 and LIVE=1, eight
-at a time (`BENCH_PARALLEL=4` when another bench shares the Mac), prints one
-figure where the slicings agree and each one's
-(0|6|1|L1) where they do not, the share-credited pair beside them (below), the
-invariance count and how runs were closed (the pairing:
+`card` replays every site in every mode at SLICE=6, eight at a time
+(`BENCH_PARALLEL=4` when another bench shares the Mac); `card SLICINGS=all`
+replays each at SLICE=0, 6 and 1 and LIVE=1 as well - four times the replays -
+and prints one figure where the slicings agree and each one's (0|6|1|L1) where
+they do not, with the invariance count (since 2026-10-02 they agree, so that is
+a check now and then, not every card). Either way it prints the share-credited
+pair (below) and how runs were closed (the pairing:
 share closed by an observed stop vs each inferred kind, how near an observed
 stop comes to its start's size, starts never closed - apart from those a run
 took in as the rest of its ramp, absorbed (`absorb_until`) - and stops that
