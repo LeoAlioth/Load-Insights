@@ -5742,8 +5742,11 @@ class Fleet:
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own
-        fleet's horizon where others hang under it, none where none do."""
-        v = self.views.get(name)
+        fleet's horizon where others hang under it, none where none do. The
+        views all live with the grid's fleet (_sync_views), so a view asks
+        there too: a meter two levels down is waited for through the one
+        between."""
+        v = (self._root or self).views.get(name)
         return v._wait if v is not None else 0.0
 
     def _hand(self, name: str, s: Session) -> None:
@@ -5841,7 +5844,6 @@ class Fleet:
         rows = self.meter_lag.get(name) or []
         # ...and a meter others hang under is read its own horizon behind
         # them, which a lag learned off its own readings' times does not hold
-        # ponytail: a view's own nested views are not asked - one level of nesting at both sites
         if len(rows) >= LAG_MIN_SAMPLES:
             got = sorted(r[1] for r in rows)
             return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))]) + self._wait_of(name)
