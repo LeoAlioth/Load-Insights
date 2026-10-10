@@ -18,7 +18,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_BATTERY_CAPACITY_ENTITY, DOMAIN
 from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
@@ -51,10 +51,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # waits for it (2026-09-29), and each shows unavailable until it lands.
     site = SiteModel.from_prefs((await async_get_manager(hass)).data)
     # The state of charge is only forecastable where the Energy dashboard
-    # gives both a battery SOC and a capacity. A site with no battery was
+    # gives a battery SOC and a capacity (or a capacity sensor is set). A site with no battery was
     # getting the sensor anyway, permanently unavailable (Anze,
     # 2026-09-17), so it is created only where it can have a value.
-    if site.battery_soc and site.battery_capacity_kwh:
+    if site.battery_soc and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
         entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
     else:
         _forget(hass, "sensor", f"{entry.entry_id}_battery_soc_forecast")

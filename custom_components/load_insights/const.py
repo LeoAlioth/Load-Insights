@@ -21,6 +21,10 @@ CONF_CALENDAR_ENTITIES = "calendar_entities"
 # irradiance, an occupancy sensor. Fitted like a calendar and kept only if it
 # explains something.
 CONF_INPUT_ENTITIES = "input_entities"
+# A Wh/kWh sensor for the battery's usable capacity (installed Ah x state of
+# health x nominal volts), taking over from the Energy dashboard's fixed figure
+# while it reads, so the pack's ageing follows.
+CONF_BATTERY_CAPACITY_ENTITY = "battery_capacity_entity"
 # input -> what it is linked to: Energy dashboard devices, or LOAD_PREFIX + a
 # named load. Every input counts for the site; a link adds a device (and every
 # device it sits inside), whose next hours a number then nudges. Before

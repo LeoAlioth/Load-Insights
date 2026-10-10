@@ -4,7 +4,7 @@ from __future__ import annotations
 import functools
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -19,10 +19,12 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from homeassistant.const import UnitOfTemperature
-from homeassistant.util.unit_conversion import TemperatureConverter
+from homeassistant.const import UnitOfEnergy, UnitOfTemperature
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util.unit_conversion import EnergyConverter, TemperatureConverter
 
 from .const import (
+    CONF_BATTERY_CAPACITY_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_INPUT_ENTITIES,
@@ -123,6 +125,21 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # only scored when its hour arrives, up to a week later.
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.scoring")
         self._ledgers: Optional[Dict[str, Ledger]] = None
+        self._capacity_kwh: Optional[float] = None  # the capacity sensor's last good reading
+
+    def _battery_capacity(self) -> Optional[float]:
+        """The capacity sensor's kWh, held at its last good reading while it is
+        unreadable; None (the dashboard's figure stands) before it has read."""
+        eid = self.config_entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)
+        st = self.hass.states.get(eid) if eid else None
+        try:
+            kwh = EnergyConverter.convert(float(st.state), st.attributes.get("unit_of_measurement"),
+                                          UnitOfEnergy.KILO_WATT_HOUR)
+        except (AttributeError, TypeError, ValueError, HomeAssistantError):
+            kwh = None
+        if kwh is not None and kwh > 0:
+            self._capacity_kwh = kwh
+        return self._capacity_kwh
 
     async def _load_ledgers(self) -> Dict[str, Ledger]:
         if self._ledgers is None:
@@ -157,6 +174,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
             raise UpdateFailed("the Energy dashboard has no grid source configured")
+        capacity = self._battery_capacity()
+        if capacity:
+            site = replace(site, battery_capacity_kwh=capacity)
 
         now = dt_util.now()
         start = now - timedelta(weeks=HISTORY_WEEKS)
