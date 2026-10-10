@@ -41,6 +41,7 @@ from .const import (
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
+    CONF_BATTERY_CAPACITY_ENTITY,
     DEFAULT_NAME,
     DOMAIN,
 )
@@ -357,6 +358,11 @@ def _single_weather_entity(hass) -> str | None:
     return ids[0] if len(ids) == 1 else None
 
 
+# What the inputs page (and the first form) owns.
+_INPUT_KEYS = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES,
+               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY)
+
+
 def _inputs_schema(defaults: dict) -> dict:
     return {
         vol.Optional(CONF_WEATHER_ENTITY, description={"suggested_value": defaults.get(CONF_WEATHER_ENTITY)}):
@@ -366,6 +372,7 @@ def _inputs_schema(defaults: dict) -> dict:
             selector.EntitySelector(selector.EntitySelectorConfig(domain="calendar", multiple=True)),
         vol.Optional(CONF_INPUT_ENTITIES, description={"suggested_value": defaults.get(CONF_INPUT_ENTITIES) or []}):
             selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
+        **_entity(CONF_BATTERY_CAPACITY_ENTITY, defaults, "energy_storage"),
     }
 
 
@@ -386,7 +393,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             data = {CONF_NAME: user_input[CONF_NAME]}
-            options = {k: v for k, v in user_input.items() if k in (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES, CONF_INPUT_ENTITIES) and v}
+            options = {k: v for k, v in user_input.items() if k in _INPUT_KEYS and v}
             return self.async_create_entry(title=data[CONF_NAME], data=data, options=options)
 
         s = site.summary()
@@ -836,7 +843,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # Everything else is another page's and is carried over whole - it
             # kept only the device map and detection, so saving this page
             # erased the inverters and the naming revision (2026-09-28).
-            owned = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES, CONF_INPUT_ENTITIES)
+            owned = _INPUT_KEYS
             keep = {k: v for k, v in self.config_entry.options.items() if k not in owned}
             kept = set(user_input.get(CONF_INPUT_ENTITIES) or [])
             keep[CONF_INPUT_LINKS] = {k: v for k, v in (keep.get(CONF_INPUT_LINKS) or {}).items() if k in kept}

@@ -9,14 +9,16 @@
                     "weather_entity": "Vremenska entiteta",
                     "outdoor_temperature_entity": "Senzor zunanje temperature",
                     "calendar_entities": "Koledarji",
-                    "input_entities": "Drugi vhodi"
+                    "input_entities": "Drugi vhodi",
+                    "battery_capacity_entity": "Senzor kapacitete baterije"
                 },
                 "data_description": {
                     "name": "Prikazano kot naprava, ki združuje senzorje napovedi.",
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
                     "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
-                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede."
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede.",
+                    "battery_capacity_entity": "Neobvezno. Senzor (Wh ali kWh) z uporabno kapaciteto baterije - na primer vgrajeni Ah x zdravje baterije x nazivna napetost iz BMS, da velikost sledi staranju baterije. Dokler daje vrednost, nadomesti kapaciteto, vpisano na nadzorni plošči Energija; ko ni na voljo, velja njegova zadnja vrednost."
                 }
             }
         },
@@ -95,13 +97,15 @@
                     "weather_entity": "Vremenska entiteta",
                     "outdoor_temperature_entity": "Senzor zunanje temperature",
                     "calendar_entities": "Koledarji",
-                    "input_entities": "Drugi vhodi"
+                    "input_entities": "Drugi vhodi",
+                    "battery_capacity_entity": "Senzor kapacitete baterije"
                 },
                 "data_description": {
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
                     "outdoor_temperature_entity": "Iz svoje statistike da temperature preteklih tednov. Skupaj z vremensko entiteto omogoča, da se napoved odzove na mrzla in vroča obdobja; senzor, katerega temperatura za porabo ni pomembna, se samodejno prezre.",
                     "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
-                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti, termostat. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede. Bere jih tudi zaznavanje porabnikov: stikalo, ogrevanje termostata ali karkoli drugega, kar se vklaplja in izklaplja, pove, kdaj breme teče, število pa se primerja s tem, kako dolgo in kako pogosto bremena tečejo."
+                    "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti, termostat. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede. Bere jih tudi zaznavanje porabnikov: stikalo, ogrevanje termostata ali karkoli drugega, kar se vklaplja in izklaplja, pove, kdaj breme teče, število pa se primerja s tem, kako dolgo in kako pogosto bremena tečejo.",
+                    "battery_capacity_entity": "Neobvezno. Senzor (Wh ali kWh) z uporabno kapaciteto baterije - na primer vgrajeni Ah x zdravje baterije x nazivna napetost iz BMS, da velikost sledi staranju baterije. Dokler daje vrednost, nadomesti kapaciteto, vpisano na nadzorni plošči Energija; ko ni na voljo, velja njegova zadnja vrednost."
                 }
             },
             "detection": {

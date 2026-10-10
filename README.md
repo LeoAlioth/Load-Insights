@@ -209,8 +209,10 @@ power where that is known.
 
 That model does not know your charge policy, tariff arbitrage or reserves, so
 it answers "if the battery simply follows the house", which is what most
-sites do most of the time. Without a state of charge or a capacity on the
-dashboard no battery is simulated, and the net is reported before it -
+sites do most of the time. The capacity is the dashboard's, or a *Battery
+capacity sensor* (Wh or kWh, inputs page) that follows the pack's ageing.
+Without a state of charge or a capacity no battery is simulated, and the net
+is reported before it -
 `battery_modelled` says which. `hours_with_pv_forecast` says how far the PV
 forecast reached; beyond it the hours are treated as sunless, so a two-day PV
 forecast leaves the rest of the week reading as pure consumption.
