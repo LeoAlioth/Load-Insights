@@ -12,8 +12,7 @@ NOW = 1_790_000_000 // H * H          # an hour start
 
 
 def test_a_load_named_after_a_one_device_meter_is_that_device():
-    meters = named.one_device_meters({"Hidrofor": True, "Hiša": False, "Water Pump": True})
-    assert meters == ["Hidrofor", "Water Pump"]
+    meters = ["Hidrofor", "Water Pump"]                                    # the meters holding one device
     assert named.metered_device("Hidrofor", meters) == "Hidrofor"
     assert named.metered_device("  water pump ", meters) == "Water Pump"   # case and spaces
     assert named.metered_device("Hiša", meters) is None                     # holds several

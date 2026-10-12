@@ -120,11 +120,11 @@ def build(consumption: Sequence[Sample], pv: Optional[Dict[float, float]] = None
                 # what reaches the pack is less than what is offered to it
                 stored = min(offered * charge_eff, max(0.0, capacity_kwh - level))
                 level += stored
-                battery = -(stored / charge_eff if charge_eff else 0.0)
+                battery = -(stored / charge_eff)
             else:                                    # deficit: discharge
                 wanted = net_before
                 # and more leaves the pack than arrives at the house
-                drawn = min(wanted / discharge_eff if discharge_eff else 0.0,
+                drawn = min(wanted / discharge_eff,
                             max(0.0, level))
                 level -= drawn
                 battery = drawn * discharge_eff

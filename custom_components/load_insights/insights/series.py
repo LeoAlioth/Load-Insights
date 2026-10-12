@@ -59,15 +59,13 @@ def subtract_all(base: Sequence[Sample], parts: Dict[str, Sequence[Sample]], ids
     for t, v in base:
         k = t.timestamp()
         total = 0.0
-        ok = True
         for m, first in maps:
             if first is None or k < first:
                 continue            # not yet metered: nothing to subtract
             if k not in m:
-                ok = False          # metered by then but this hour is missing
-                break
+                break               # metered by then but this hour is missing
             total += m[k]
-        if ok:
+        else:
             out.append((t, max(0.0, v - total)))
     return out
 

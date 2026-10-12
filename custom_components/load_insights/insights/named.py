@@ -20,12 +20,6 @@ def metered_device(name: Optional[str], meters: Iterable[str]) -> Optional[str]:
     return next((m for m in meters if key and _key(m) == key), None)
 
 
-def one_device_meters(meters: Dict[str, bool]) -> List[str]:
-    """meter name -> holds one device, as the names a load may be the same
-    as: what the naming page offers under "Same device as"."""
-    return sorted(m for m, one in meters.items() if one)
-
-
 def chosen_name(typed: Optional[str], picked: Optional[str]) -> Optional[str]:
     """The name the naming page gives: a meter picked from the list, exactly
     as the meter is called, over whatever was typed; else the typed name;
@@ -41,16 +35,16 @@ def chosen_name(typed: Optional[str], picked: Optional[str]) -> Optional[str]:
 REWRITE_TOLERANCE_KWH = 0.01
 
 
-def first_change(rows: List[dict], hours: List[dict], tolerance: float = REWRITE_TOLERANCE_KWH) -> Optional[int]:
+def first_change(rows: List[dict], hours: List[dict]) -> Optional[int]:
     """The first hour plan_rewrite's ``rows`` would change, or None when the
     meter already says what detection saw: an hour it has no row for, or
-    whose recorded sum is more than ``tolerance`` kWh off. Sums are running
+    whose recorded sum is more than REWRITE_TOLERANCE_KWH off. Sums are running
     totals, so an hour filed into the wrong one shows here as much as a
     total that drifted (the shift is the last hour's difference). The rows
     before it stay as recorded, and five-minute rows with them."""
     recorded = {int(r["start"]): r["sum"] for r in hours}
     return next((r["start"] for r in rows
-                 if r["start"] not in recorded or abs(r["sum"] - recorded[r["start"]]) > tolerance), None)
+                 if r["start"] not in recorded or abs(r["sum"] - recorded[r["start"]]) > REWRITE_TOLERANCE_KWH), None)
 
 
 def vanished_into(before: Dict[str, list], after: Dict[str, list]) -> Dict[str, List[str]]:
@@ -66,6 +60,27 @@ def vanished_into(before: Dict[str, list], after: Dict[str, list]) -> Dict[str, 
         now = {wears.get(ref) for ref in refs}
         if name not in after and len(now) == 1 and None not in now:
             out.setdefault(now.pop(), []).append(name)
+    return out
+
+
+def _hour(t: float) -> int:
+    """The hour ``t`` falls in, as UTC counts them."""
+    return int(t // 3600 * 3600)
+
+
+def _fives(fives: List[dict], at_end: Dict[int, float], by_hour: Dict[int, float],
+           on_recorded: bool) -> List[dict]:
+    """The five-minute rows of the hours in ``at_end`` (hour -> the sum at its
+    end): each its hour's ``by_hour`` pro rata, on its recorded sum where
+    ``on_recorded`` (plan_carry), on nothing else (plan_rewrite)."""
+    out = []
+    for r in fives:
+        h = _hour(r["start"])
+        if h in at_end:
+            used = by_hour.get(h, 0.0)
+            share = min(1.0, (r["start"] + 300 - h) / 3600.0)
+            out.append({"start": r["start"], "state": r["state"],
+                        "sum": (r["sum"] if on_recorded else 0.0) + at_end[h] - used + used * share})
     return out
 
 
@@ -90,7 +105,7 @@ def plan_carry(extra_kwh: Dict[int, float], covered_from: int, hours: List[dict]
     runs - the runner carries each source once."""
     by_hour: Dict[int, float] = {}
     for hour, kwh in extra_kwh.items():
-        start = int(hour // 3600 * 3600)          # a half-hour time zone's hours onto UTC's
+        start = _hour(hour)                       # a half-hour time zone's hours onto UTC's
         if start < covered_from:
             by_hour[start] = by_hour.get(start, 0.0) + kwh
     if not hours or not by_hour:
@@ -106,15 +121,7 @@ def plan_carry(extra_kwh: Dict[int, float], covered_from: int, hours: List[dict]
             hour_rows.append({"start": h, "state": rec["state"], "sum": rec["sum"] + added})
         elif h < first_own:
             hour_rows.append({"start": h, "state": added, "sum": added})
-    five_rows = []
-    for r in fives:
-        h = int(r["start"] // 3600 * 3600)
-        if h in at_end:
-            used = by_hour.get(h, 0.0)
-            share = min(1.0, (r["start"] + 300 - h) / 3600.0)
-            five_rows.append({"start": r["start"], "state": r["state"],
-                              "sum": r["sum"] + at_end[h] - used + used * share})
-    return hour_rows, five_rows, added
+    return hour_rows, _fives(fives, at_end, by_hour, on_recorded=True), added
 
 
 def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dict],
@@ -150,7 +157,7 @@ def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dic
     end = int(hours[-1]["start"]) + 3600
     by_hour: Dict[int, float] = {}
     for hour, wh in hourly_wh.items():
-        start = int(hour // 3600 * 3600)          # a half-hour time zone's hours onto UTC's
+        start = _hour(hour)                       # a half-hour time zone's hours onto UTC's
         if covered_from <= start < end:
             by_hour[start] = by_hour.get(start, 0.0) + wh / 1000.0
     recorded = {int(r["start"]): r for r in hours}
@@ -165,14 +172,7 @@ def plan_rewrite(hourly_wh: Dict[int, float], covered_from: int, hours: List[dic
         rec = recorded.get(h)
         hour_rows.append({"start": h, "state": rec["state"] if rec else total, "sum": total})
         at_end[h] = total
-    five_rows = []
-    for r in fives:
-        h = int(r["start"] // 3600 * 3600)
-        if h in at_end:
-            used = by_hour.get(h, 0.0)
-            share = min(1.0, (r["start"] + 300 - h) / 3600.0)
-            five_rows.append({"start": r["start"], "state": r["state"], "sum": at_end[h] - used + used * share})
-    return hour_rows, five_rows, total - hours[-1]["sum"]
+    return hour_rows, _fives(fives, at_end, by_hour, on_recorded=False), total - hours[-1]["sum"]
 
 
 def carry_reading(reported: Optional[float], seen: Optional[float], now: float,
