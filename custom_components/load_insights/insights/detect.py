@@ -4157,9 +4157,7 @@ class Detector:
             self.signatures.append(best)
             best.absorb(s, tz)
             best.count = 1
-            prev = None
         else:
-            prev = best.last_start
             best.absorb(s, tz)
         for name, rows in self.inputs.items():
             # the setting halfway through the run: a washer's heater starts
@@ -6544,7 +6542,6 @@ class Fleet:
         grid's change over both (_window_size)."""
         if len(self._stops_used) > 1000:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
-        grid = self.main.phases[ph]
         for name, det in self.subs.items():
             gain = self.gain(name, "p")
             for c in self._chans(name, ph):
