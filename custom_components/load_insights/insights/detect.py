@@ -502,9 +502,6 @@ SETTLE_SHARE = 0.3
 # energy (Home purity 77.3 / wconc 57.5 % without against 76.1 / 55.4 with, but
 # the bench has no stepped load in it; 2026-09-30).
 HELD_DROPS = 8
-# Bench dial (2026-10-12): the multi-close below is the only close that does not
-# _remember_close its runs, so the corroboration (recent_closed) never sees them.
-MULTI_CLOSE_REMEMBERS = False
 # One device never runs twice at once: a rise of a cluster while an older run
 # that started with the same cluster is still open means that older run ended
 # unseen - it is closed after its pair's usual length, or at the new start if
@@ -2516,9 +2513,8 @@ class PhaseState:
         if len(taken) >= 2 and abs(left) <= self._tol(watts, watts):
             # all out before any closes - see Detector.resolve_rise
             gone = [self.open_edges.pop(i) for i in sorted(taken, reverse=True)]
-            if MULTI_CLOSE_REMEMBERS:
-                for o in gone:
-                    self._remember_close(o, at)
+            for o in gone:                    # remembered like every other close (2026-10-12)
+                self._remember_close(o, at)
             return sorted((self._close(o, at, o.watts, None) for o in gone), key=lambda x: x.start)
         if self.open_edges and HELD_DROPS:            # 0: none held (the bench's off)
             self.held_drops.append((at, watts, self.stop_cluster))
