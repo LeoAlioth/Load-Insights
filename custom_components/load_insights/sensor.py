@@ -22,7 +22,7 @@ from .const import CONF_BATTERY_CAPACITY_ENTITY, DOMAIN
 from homeassistant.util import dt as dt_util
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner, device_uid, load_uid
+from .detection import DetectionRunner, device_uid, load_uid, loaded
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
                               most_specific, ref_label, suggest_levels)
 from .insights.model import SiteModel
@@ -305,7 +305,7 @@ class DeviceForecastSensor(ForecastPowerSensor):
         # produced nine unnamed devices instead of merging, so it is out until
         # it can be tested against a live registry rather than reasoned about.
         self._attr_device_info = _child_device(
-            coordinator.hass, entry, f"device_{device.energy}", device.label, "Device forecast"
+            entry, f"device_{device.energy}", device.label, "Device forecast"
         )
 
     def _forecast(self) -> Optional[Forecast]:
@@ -347,7 +347,7 @@ class DeviceForecastSensor(ForecastPowerSensor):
         return attrs
 
 
-def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:
+def _child_device(entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:
     """A device of its own, pointed at the site device by the registry id.
 
     ``via_device_id`` rather than the ``via_device`` tuple: the tuple form is
@@ -358,9 +358,9 @@ def _child_device(hass, entry: ConfigEntry, key: str, name: str, model: str) -> 
         manufacturer="Load Insights",
         model=model,
     )
-    loaded = getattr(entry, "runtime_data", None)
-    if loaded is not None:
-        info["via_device_id"] = loaded.site_device_id
+    rt = loaded(entry)
+    if rt is not None:
+        info["via_device_id"] = rt.site_device_id
     return info
 
 
@@ -623,7 +623,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         super().__init__(runner, entry, "named_load_power")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "power", name)
-        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -654,7 +654,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         super().__init__(runner, entry, "named_load_energy")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
-        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
         self._reading: Optional[float] = None
         self._seen: Optional[float] = None
 

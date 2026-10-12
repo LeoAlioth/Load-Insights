@@ -35,7 +35,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .coordinator import InsightsCoordinator, InsightsData
-from .detection import DetectionRunner
+from .detection import DetectionRunner, loaded
 from .insights.detect import describe_location, edge_story, lag_window, location_confidence, most_specific
 
 HORIZON_SAMPLE = 24        # hours of the horizon worth dumping; the rest is more of the same
@@ -147,14 +147,14 @@ def _detection(runner) -> dict:
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """The whole picture, for a bug report or a question about a number."""
-    loaded = getattr(entry, "runtime_data", None)
-    coordinator: InsightsCoordinator | None = loaded.coordinator if loaded is not None else None
-    runner: DetectionRunner | None = loaded.runner if loaded is not None else None
+    rt = loaded(entry)
+    coordinator: InsightsCoordinator | None = rt.coordinator if rt is not None else None
+    runner: DetectionRunner | None = rt.runner if rt is not None else None
     data: InsightsData | None = coordinator.data if coordinator else None
 
     out: dict[str, Any] = {
         "config": {"data": dict(entry.data), "options": _jsonable(dict(entry.options)),
-                   "version": entry.version, "minor_version": getattr(entry, "minor_version", None)},
+                   "version": entry.version, "minor_version": entry.minor_version},
     }
     if data is None:
         # Setup no longer waits for the first forecast (2026-09-29), so this

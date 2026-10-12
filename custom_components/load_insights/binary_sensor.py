@@ -43,7 +43,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
         self._name = name
         self._attr_translation_key = "named_load_running"
         self._attr_unique_id = _running_uid(entry.entry_id, name)
-        self._attr_device_info = _child_device(runner.hass, entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
 
     @property
     def is_on(self) -> bool:

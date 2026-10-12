@@ -20,6 +20,7 @@ from .const import (
     SOURCE_GENERATOR,
     SOURCE_NONE,
 )
+from .detection import loaded
 from .insights.classify import _fmt_w
 from .insights.detect import most_specific
 from .insights.scoring import LEADS_H
@@ -34,9 +35,9 @@ def _when(value: Optional[datetime]) -> str:
 
 def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
     """Markdown for the overview page."""
-    loaded = getattr(entry, "runtime_data", None)
-    coordinator = loaded.coordinator if loaded is not None else None
-    runner = loaded.runner if loaded is not None else None
+    rt = loaded(entry)
+    coordinator = rt.coordinator if rt is not None else None
+    runner = rt.runner if rt is not None else None
     # what the grid page says is connected; unsaid (or the old "auto"), the utility
     kind = (entry.options.get(CONF_DETECTION) or {}).get(CONF_SOURCE_KIND)
     lines: list[str] = []
