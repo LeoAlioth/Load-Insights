@@ -21,6 +21,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 from __future__ import annotations
 
 import bisect
+import functools
 import math
 import operator
 import statistics
@@ -87,7 +88,7 @@ GLITCH_FLOOR_W = 200.0
 # (5.9 h of the mat outside its heating, against 1.8); at 3 the load was seen
 # whole and crowded the groups (Home purity 71.0 %, 10.2 kWh wrongly placed).
 # Ten days, 2026-10-01 - see the experiments branch's commit for the table.
-NOISE_MAD_FACTOR = 3.0              # under test with EDGE_BY_METER: Anze wants the 65 W load seen (2026-10-01)
+NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: Anze wants the 65 W load seen (2026-10-01)
 # The noise is re-learned from how far the reading MOVES between samples, as
 # the seed measures it, not from how far it sits from the level. A load
 # cycling just inside the band - Hiša's phase C, 65 W every 25-50 s - sat
@@ -1037,6 +1038,10 @@ class Session:
         return sum(self.wh[ph] if ph in self.wh else p * self.duration_s / 3600.0
                    for ph, p in self.power_by_phase().items())
 
+    def phase_wh(self, ph: str) -> float:
+        """Its Wh on ``ph``: as booked, else its power there over its length."""
+        return self.wh[ph] if ph in self.wh else self.power_by_phase().get(ph, 0.0) * self.duration_s / 3600.0
+
     @property
     def max_w(self) -> float:
         return sum(max((w for _, w in lv), default=0.0) for lv in self.levels.values())
@@ -1639,13 +1644,9 @@ class _Open:
     @classmethod
     def of(cls, raw) -> "_Open":
         since, watts, var = raw[0], raw[1], raw[2]
-        levels = [tuple(x) for x in (raw[3] if len(raw) > 3 else [])] or [(since, watts)]
-        return cls(since=since, watts=watts, var=var, levels=levels,
-                   lo=raw[4] if len(raw) > 4 else None,
-                   hi=raw[5] if len(raw) > 5 else None,
-                   surge=raw[6] if len(raw) > 6 else 0.0,
-                   cluster=raw[7] if len(raw) > 7 else None,
-                   meter=raw[8] if len(raw) > 8 else None)
+        levels = [tuple(x) for x in raw[3]] or [(since, watts)]
+        return cls(since=since, watts=watts, var=var, levels=levels, lo=raw[4], hi=raw[5],
+                   surge=raw[6], cluster=raw[7], meter=raw[8] if len(raw) > 8 else None)
 
 
 @dataclass
@@ -1714,9 +1715,6 @@ class PhaseState:
     recent_closed: List[Tuple[float, float, float]] = field(default_factory=list, repr=False, compare=False)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False)
-    # the steps this pass committed: (since, watts, VAr, surge) - the
-    # detector files them as edges. Never persisted.
-    steps: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # the detector whose edge library and pair models this phase asks, its
     # name, and the cluster of the fall being paired. Set each pass.
     lib: Optional[object] = field(default=None, repr=False, compare=False)
@@ -1808,9 +1806,7 @@ class PhaseState:
             if got is None:
                 break
             o, at = got
-            self.open_edges.remove(o)
-            self._remember_close(o, at)
-            out.append(self._close(o, at, o.now or o.watts, None))
+            out.append(self._end(o, at, o.now or o.watts))
         return out
 
     def _input_ended(self, ts: float) -> List[Session]:
@@ -1822,9 +1818,7 @@ class PhaseState:
                 continue
             at = self.lib.input_end(o.cluster, o.since, ts)
             if at is not None:
-                self.open_edges.remove(o)
-                self._remember_close(o, at)
-                out.append(self._close(o, at, o.now or o.watts, None))
+                out.append(self._end(o, at, o.now or o.watts))
         return out
 
     def _process(self, ts: float, w: float, q: Optional[float] = None,
@@ -2067,6 +2061,11 @@ class PhaseState:
             closed += self._floor_stop(since, new_level)
         return closed
 
+    def declared_at(self, since: float) -> Optional[tuple]:
+        """The step declared exactly at ``since``, if one was."""
+        k = bisect.bisect_left(self.declared_t, since - 0.01)
+        return self.declared[k] if k < len(self.declared) and abs(self.declared[k][0] - since) <= 0.01 else None
+
     def latency(self) -> float:
         """How long after a moment this reading's data about it is complete -
         how long a new level must go uncontradicted to be confirmed, a
@@ -2159,9 +2158,7 @@ class PhaseState:
                 # meter's, the thirteenth joins them
                 old = next((x for x in self.open_edges if not self.owned(x)), None)
                 if old is not None:
-                    self.open_edges.remove(old)
-                    self._remember_close(old, since)
-                    ended.append(self._close(old, since, old.now or old.watts, None))
+                    ended.append(self._end(old, since, old.now or old.watts))
             return ended
         self.stop_cluster, self.stop_q = cid, quality
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
@@ -2301,9 +2298,7 @@ class PhaseState:
             # Kozolec's pond EVSE a fifth of its charging)
             arose = short - max(0.0, o.short0)
             if abs(size - arose) <= self._tol(size, arose):
-                self.open_edges.remove(o)
-                self._remember_close(o, at)
-                return [self._close(o, at, size, None)]
+                return [self._end(o, at, size)]
         # A shortfall nothing fits still rules out any run bigger ON ITS OWN
         # than the whole reading: it cannot be on. Kozolec's 10.5 kW run held
         # 289 min on a phase reading far less, and took 50 kWh (Anze,
@@ -2329,9 +2324,7 @@ class PhaseState:
             # meter and an inverter combined; Susilna 09-27 19:05)
             if o not in self.open_edges:
                 continue                  # closed meanwhile - see Detector.resolve_rise
-            self.open_edges.remove(o)
-            self._remember_close(o, at)
-            out.append(self._close(o, at, o.watts, None))
+            out.append(self._end(o, at, o.watts))
         return out
 
     def end_older(self, cid: int, since: float, keep: "_Open") -> List[Session]:
@@ -2339,16 +2332,21 @@ class PhaseState:
         cluster on this phase, at its usual length if one is known."""
         out = []
         for o in [o for o in self.open_edges if o.cluster == cid and o is not keep and not self.owned(o)]:
-            self.open_edges.remove(o)
             usual = self.lib.usual_length(cid) if self.lib is not None else None
             at = min(since, o.since + usual) if usual else since
-            self._remember_close(o, at)
-            out.append(self._close(o, at, o.now or o.watts, None))
+            out.append(self._end(o, at, o.now or o.watts))
         return out
 
     def _remember_close(self, o, at: float) -> None:
         self.recent_closed.append((o.since, o.watts, at))
         self.recent_closed = [c for c in self.recent_closed if at - c[2] <= 60.0]
+
+    def _end(self, o: _Open, at: float, watts: float, var: Optional[float] = None,
+             direct: bool = False) -> Session:
+        """Take this run out of open_edges and close it at `at`."""
+        self.open_edges.remove(o)
+        self._remember_close(o, at)
+        return self._close(o, at, watts, var, direct)
 
     def _declare_surge(self, first: float, new_level: float) -> float:
         """How far a start's FIRST reading towered over the level it settled
@@ -2423,9 +2421,7 @@ class PhaseState:
             e = self.declared[-1]
             o = self.lib.meter_stop(self.name, e[3], e[4], self.open_edges, watts)
             if o is not None:
-                self.open_edges.remove(o)
-                self._remember_close(o, at)
-                return [self._close(o, at, watts, var, direct=True)]
+                return [self._end(o, at, watts, var, direct=True)]
             if self.lib.meter_read is not None and self.lib.meter_read(self.name, e[0], watts, False, self.last_ts):
                 # ...or its readings show this fall, declared or not: the
                 # device's own dip or taper, its run going on - see Fleet._meter_read
@@ -2436,11 +2432,9 @@ class PhaseState:
                 return got
         hint, self.close_hint = self.close_hint, None
         if hint is not None:
-            for i, o in enumerate(self.open_edges):
+            for o in self.open_edges:
                 if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
-                    self.open_edges.pop(i)
-                    self._remember_close(o, at)
-                    return [self._close(o, at, watts, var, direct=True)]
+                    return [self._end(o, at, watts, var, direct=True)]
                 if o is hint and o.watts - watts > self._tol(o.watts, watts):
                     # the vouched-for leg stopped; the rest is the load that
                     # started with it, and it is still running
@@ -2475,8 +2469,8 @@ class PhaseState:
                 o = self.open_edges[i]
                 if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
                     continue
-                k = bisect.bisect_left(self.declared_t, o.since - 0.01)
-                rose = self.declared[k][1] if k < len(self.declared) and abs(self.declared[k][0] - o.since) <= 0.01 else 0.0
+                e = self.declared_at(o.since)
+                rose = e[1] if e is not None else 0.0
                 if rose > o.watts and abs(rose - watts) <= self._tol(rose, watts):
                     cands.append((i, abs(rose - watts), self._tol(rose, watts)))
                     break
@@ -2484,9 +2478,7 @@ class PhaseState:
             best_gap = min(g for _, g, _ in cands)
             band = PAIR_TIE_BAND * max(t for _, _, t in cands)
             i = max(i for i, g, _ in cands if g <= best_gap + band)   # newest of the tied
-            o = self.open_edges.pop(i)
-            self._remember_close(o, at)
-            return [self._close(o, at, watts, var, direct=True)]
+            return [self._end(self.open_edges[i], at, watts, var, direct=True)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if not self.owned(o) and o.watts - watts > self._tol(o.watts, watts) and (
@@ -2555,9 +2547,7 @@ class PhaseState:
             for t, w, _ in sorted(pick):
                 level -= w
                 o.levels.append((t, level))
-            self.open_edges.pop(i)
-            self._remember_close(o, at)
-            return [self._close(o, at, watts, var)]
+            return [self._end(o, at, watts, var)]
         return None
 
     def _pair_by_model(self, at: float, watts: float, var: Optional[float]) -> Optional[List[Session]]:
@@ -2586,9 +2576,7 @@ class PhaseState:
                 best = (score, i)
         if best is None:
             return None
-        o = self.open_edges.pop(best[1])
-        self._remember_close(o, at)
-        return [self._close(o, at, watts, var, direct=True)]
+        return [self._end(self.open_edges[best[1]], at, watts, var, direct=True)]
 
     def _span(self, since: float, until: float) -> int:
         """How many meter samples a run of that length was measured over, from
@@ -2676,7 +2664,7 @@ class PhaseState:
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
                    step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    idle_diffs=list(d.get("idle_diffs") or []),
-                   pending=[tuple(list(x) + [None] * (4 - len(x))) for x in d.get("pending") or []],
+                   pending=[tuple(x) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
                    raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),
                    floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
@@ -3317,11 +3305,11 @@ class Signature:
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
-                   inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or d.get("stages") or {}).items()},
+                   inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or {}).items()},
                    born_in=d.get("born_in"),
                    takes_in=list(d.get("takes_in") or []), apart=list(d.get("apart") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
-                   born_judged=d.get("born_judged", d.get("stage_judged", False)),
+                   born_judged=d.get("born_judged", False),
                    hourly={int(h): float(wh) for h, wh in (d.get("hourly") or {}).items()},
                    edges={role: {int(c): float(n) for c, n in used.items()}
                           for role, used in (d.get("edges") or {}).items()})
@@ -3604,18 +3592,24 @@ def edge_scale(watts: float, unit_w: float) -> float:
     return math.asinh(EDGE_SCALE_REL * watts / unit_w) / EDGE_SCALE_REL
 
 
-_KERNELS: Dict[float, Tuple[int, List[float]]] = {}
+def _bin(watts: float, unit_w: float) -> int:
+    """The size density's bin a step of ``watts`` falls in - see EDGE_BATCH."""
+    return int(math.floor(edge_scale(watts, unit_w) / EDGE_BIN))
 
 
+def _group(ph: str, up: bool, where: str) -> str:
+    """The size density's key: phase, direction and the meter it happened under."""
+    return f"{ph}|{int(up)}" + (f"|{where}" if where else "")
+
+
+@functools.cache
 def _kernel(sd: float) -> Tuple[int, List[float]]:
-    """valley_segments' Gaussian of ``sd`` bins, normalised: (reach, weights)."""
-    got = _KERNELS.get(sd)
-    if got is None:
-        reach = int(4 * sd) + 1
-        kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
-        total = sum(kernel)
-        got = _KERNELS[sd] = (reach, [k / total for k in kernel])
-    return got
+    """valley_segments' Gaussian of ``sd`` bins, normalised: (reach, weights).
+    Shared between calls: never change what it returns."""
+    reach = int(4 * sd) + 1
+    kernel = [math.exp(-0.5 * (k / sd) ** 2) for k in range(-reach, reach + 1)]
+    total = sum(kernel)
+    return reach, [k / total for k in kernel]
 
 
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
@@ -3950,19 +3944,13 @@ class Detector:
 
     def next_due(self) -> Optional[tuple]:
         """(when, what, phase) of the first thing due - see _advance."""
-        best = None
-        for ph, st in self.phases.items():
-            d = st.silence_due()
-            if d is not None and (best is None or d < best[0]):
-                best = (d, 0, ph)
+        cands = [(d, 0, ph) for ph, st in self.phases.items() for d in [st.silence_due()] if d is not None]
         if self._pending:
-            d = min(x["since"] for x in self._pending) + self.event_wait()
-            if best is None or d < best[0]:
-                best = (d, 1, None)
+            cands.append((min(x["since"] for x in self._pending) + self.event_wait(), 1, None))
         d = self._held_next()
-        if d is not None and (best is None or d < best[0]):
-            best = (d, 2, None)
-        return best
+        if d is not None:
+            cands.append((d, 2, None))
+        return min(cands, key=lambda c: c[0], default=None)     # the first of a tie, as before
 
     def fire(self, due: tuple) -> None:
         d, kind, ph = due
@@ -4533,7 +4521,7 @@ class Detector:
         above chance - the floor mat's +630 W with its thermostat, beside a
         look-alike's +630 W with nothing - and otherwise the segment's plain
         one. See EDGE_BATCH."""
-        g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
+        g = _group(ph, up, where)
         key = ",".join(f"{n}={k}" for n, k in sorted(keyed.items()) if k)
         noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in ph)   # a pattern: its phases' noise together
         if g not in self.edge_unit:
@@ -4541,7 +4529,7 @@ class Detector:
         elif EDGE_NOISE_SHARE * noise < self.edge_unit[g]:
             self._rescale(g, EDGE_NOISE_SHARE * noise)
         unit = self.edge_unit[g]
-        b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
+        b = _bin(size, unit)
         h = self.edge_hist.setdefault(g, {})
         hk = self.edge_hist_keys.setdefault(g, {})
         ha = self.edge_hist_angle.setdefault(g, {})
@@ -4571,7 +4559,7 @@ class Detector:
         if seg is None:
             return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain), where
         members = [c for c in kind if c.where == where
-                   and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
+                   and seg[0] <= _bin(c.watts, unit) <= seg[1]]
         if angle is not None:
             members = self._same_angle(ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
@@ -4659,7 +4647,7 @@ class Detector:
         return [c for c in members if c.angle is None
                 or band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
-    def _likely_meter(self, ph: str, up: bool, size: float, since: Optional[float] = None) -> str:
+    def _likely_meter(self, ph: str, up: bool, size: float, since: float) -> str:
         """Where a step no meter placed most likely happened: the meter whose
         cluster at this size has seen more steps than the plain one there, or
         nowhere. A meter misses a step now and then - a late report, a reading
@@ -4671,16 +4659,16 @@ class Detector:
         2.2 kW load on Home's phase B joined the workshop boiler's cluster 69
         times, 6.2 kWh, while the boiler's meter read 0 W for hours."""
         def busiest(where: str) -> float:
-            g = f"{ph}|{int(up)}" + (f"|{where}" if where else "")
+            g = _group(ph, up, where)
             unit, segs = self.edge_unit.get(g), self._segs.get(g)
             if not unit or not segs:
                 return 0.0
-            b = int(math.floor(edge_scale(size, unit) / EDGE_BIN))
+            b = _bin(size, unit)
             seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
             if seg is None:
                 return 0.0
             return max((c.count for c in self._kinds.get((ph, up), []) if c.where == where
-                        and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]), default=0.0)
+                        and seg[0] <= _bin(c.watts, unit) <= seg[1]), default=0.0)
         plain = busiest("")
         held = (lambda w: since is not None and self.meter_held is not None and self.meter_held(w, ph, since, up))
         best = max(((busiest(w), w) for w in {c.where for c in self._kinds.get((ph, up), [])} if w and not held(w)),
@@ -5302,9 +5290,9 @@ class Detector:
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
-        det.input_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("input_time") or d.get("stage_time") or {}).items()}
-        det.input_until = {n: float(t) for n, t in (d.get("input_until") or d.get("stage_until") or {}).items()}
-        det.input_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("input_episodes") or d.get("stage_episodes") or {}).items()}
+        det.input_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("input_time") or {}).items()}
+        det.input_until = {n: float(t) for n, t in (d.get("input_until") or {}).items()}
+        det.input_episodes = {n: {v: float(c) for v, c in row.items()} for n, row in (d.get("input_episodes") or {}).items()}
         det.edges = [EdgeCluster.from_dict(x) for x in d.get("edges") or []]
         det.edge_hist = {g: {int(b): float(w) for b, w in h.items()} for g, h in (d.get("edge_hist") or {}).items()}
         det.edge_hist_at = {g: float(t) for g, t in (d.get("edge_hist_at") or {}).items()}
@@ -5322,6 +5310,17 @@ class Detector:
                 det._pending.append({"since": since, "ph": ph, "watts": watts, "var": var, "surge": surge,
                                      "open": opens[i]})
         return det
+
+
+# what a fleet's main detector asks it - each Fleet._<hook> - see Fleet._bind
+_HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_stop", "meter_on", "meter_started",
+          "meter_level", "meter_ended", "meter_wh", "meter_read")
+
+
+def _lag_of(lags) -> float:
+    """The LAG_PERCENTILE of a meter's learned lags, never below 0."""
+    got = sorted(lags)
+    return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
 
 
 # ------------------------------------------------------------------ the fleet: main meter + downstream meters
@@ -5539,11 +5538,8 @@ class Fleet:
 
     def _bind(self) -> None:
         """This fleet's main detector asks it what the meters inside did."""
-        main = self.main
-        main.meter_steps, main.step_meter, main.meter_held = self._meter_steps, self._step_meter, self._meter_held
-        main.meter_stop, main.meter_on = self._meter_stop, self._meter_on
-        main.meter_started, main.meter_level, main.meter_ended = self._meter_started, self._meter_level, self._meter_ended
-        main.meter_wh, main.meter_read = self._meter_wh, self._meter_read
+        for hook in _HOOKS:
+            setattr(self.main, hook, getattr(self, "_" + hook))
 
     def _sync_views(self) -> None:
         """The fleet as a tree (Anze, 2026-10-03): every meter others hang
@@ -5558,9 +5554,8 @@ class Fleet:
         tops = {p for n, p in self.parents.items() if p and n in self.subs and p in self.subs}
         for p in [p for p in self.views if p not in tops]:
             v = self.views.pop(p)
-            v.main.meter_steps = v.main.step_meter = v.main.meter_held = v.main.meter_stop = None
-            v.main.meter_on = v.main.meter_started = v.main.meter_level = v.main.meter_ended = v.main.meter_wh = None
-            v.main.meter_read = None
+            for hook in _HOOKS:
+                setattr(v.main, hook, None)
         for p in sorted(tops):
             v = self.views.get(p)
             if v is None:
@@ -5588,34 +5583,24 @@ class Fleet:
         isub = 0
         fleets = [f for _, f in units]
         while True:
-            best = None
-            for k, (name, f) in enumerate(units):
-                i = at_[name]
-                if i < len(streams[name]):
-                    c = (max(streams[name][i][0] + f._wait, self._now), 0, 0, k)
-                    if best is None or c < best:
-                        best = c
-            if isub < len(meters) and (best is None or (meters[isub][0], 0, 1) < best):
-                best = (meters[isub][0], 0, 1)
+            cands = [(max(streams[name][at_[name]][0] + f._wait, self._now), 0, 0, k)
+                     for k, (name, f) in enumerate(units) if at_[name] < len(streams[name])]
+            if isub < len(meters):
+                cands.append((meters[isub][0], 0, 1))
             for name in self._names:
                 if name not in self._dues:
                     self._dues[name] = self._det(name).next_due()
                 d = self._dues[name]
                 if d is not None:
-                    c = (d[0] + self._wait, 1, 0) if not name else (d[0] + self._wait_of(name), 1, 1, name)
-                    if best is None or c < best:
-                        best = c
+                    cands.append((d[0] + self._wait, 1, 0) if not name else (d[0] + self._wait_of(name), 1, 1, name))
             for k, f in enumerate(fleets):
-                for c in ((f.unfiled[0][0], 1, 2, k) if f.unfiled else None,
-                          (f.pending_main[0][0], 1, 3, k) if f.pending_main else None,
-                          (f._unvoted[0][0], 1, 4, k) if f._unvoted else None,
-                          ((f._wait_at + 1) * MODEL_REFRESH_S, 1, 5, k)):
-                    if c is not None and (best is None or c < best):
-                        best = c
+                cands += [c for c in ((f.unfiled[0][0], 1, 2, k) if f.unfiled else None,
+                                      (f.pending_main[0][0], 1, 3, k) if f.pending_main else None,
+                                      (f._unvoted[0][0], 1, 4, k) if f._unvoted else None,
+                                      ((f._wait_at + 1) * MODEL_REFRESH_S, 1, 5, k)) if c is not None]
             if self._repaired_to is not None:
-                c = (self._repaired_to + REPAIR_DAY_S + REPAIR_WAIT_S, 1, 6, 0)
-                if best is None or c < best:
-                    best = c
+                cands.append((self._repaired_to + REPAIR_DAY_S + REPAIR_WAIT_S, 1, 6, 0))
+            best = min(cands, default=None)               # the first of a tie, as the strict < kept
             at, cls, rank = best[:3]
             if at > end or (cls == 1 and at >= end):
                 return at_
@@ -5784,8 +5769,7 @@ class Fleet:
         # ...and a meter others hang under is read its own horizon behind
         # them, which a lag learned off its own readings' times does not hold
         if len(rows) >= LAG_MIN_SAMPLES:
-            got = sorted(r[1] for r in rows)
-            return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))]) + self._wait_of(name)
+            return _lag_of(r[1] for r in rows) + self._wait_of(name)
         return 2.0 * self._latency(name) + self._wait_of(name)
 
     def _learn_lags(self, at: float) -> None:
@@ -5849,8 +5833,7 @@ class Fleet:
             rows = self.meter_lag.get(name) or []
             lag = 0.0
             if len(rows) >= LAG_MIN_SAMPLES:
-                got = sorted(r[0] for r in rows)
-                lag = max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
+                lag = _lag_of(r[0] for r in rows)
             for st in det.phases.values():
                 st.lag = lag
 
@@ -5919,8 +5902,7 @@ class Fleet:
         grid, det = self.main.phases.get(ph), self.subs.get(name)
         if grid is None or det is None:
             return None
-        k = bisect.bisect_left(grid.declared_t, since - 0.01)
-        mine = grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
+        mine = grid.declared_at(since)
         chans = self._mapped(name, ph)
         if mine is None or not chans:
             return None
@@ -5991,17 +5973,13 @@ class Fleet:
             self._unvoted.remove(row)
             self._vote(row[1], row[3])
 
-    def _vote_tol(self, name: str) -> float:
-        main_iv = self._interval("")
-        return self._pair_tol(name, main_iv)
-
     def _vote_blocked(self, name: str, s: Session) -> bool:
         """Could the grid still hand over a session that started with the
         meter's ``s`` - a run still open, or waiting for a partner leg? A
         vote takes the start and the size, never the end: a grid run that
         stops late is still the one (09-25 11:02 at Kozolec: the IR panel's
         house session closed after the panel's and its vote went unheard)."""
-        tol = self._vote_tol(name)
+        tol = self._pair_tol(name)
         main = self.main
         return (any(abs(o.since - s.start) <= tol for st in main.phases.values() for o in st.open_edges)
                 or any(abs(m.start - s.start) <= tol for m in main.held)
@@ -6030,7 +6008,7 @@ class Fleet:
         """When a meter's session just handed over votes: once the grid has
         been read far enough to have handed over its own session of the same
         load - the grid's wait behind, plus the two meters' tolerance."""
-        return self._now + self._wait + self._vote_tol(name)
+        return self._now + self._wait + self._pair_tol(name)
 
     def _decide(self, m: Session) -> None:
         """File a house session done waiting (_ready_at), with its sub-meter
@@ -6346,8 +6324,8 @@ class Fleet:
         pass's end, as before, a meter that went quiet kept the session
         waiting for whatever the pass's end brought."""
         due = m.end
-        for name, det in self.subs.items():
-            iv = max((st.interval for st in det.phases.values()), default=0.0)
+        for name in self.subs:
+            iv = self._interval(name)
             if not iv or 2.0 * iv > m.duration_s:
                 continue
             due = max(due, m.end + self._pair_tol(name, main_iv)
@@ -6680,8 +6658,7 @@ class Fleet:
         grid = self.main.phases.get(ph)
         if grid is None:
             return None
-        k = bisect.bisect_left(grid.declared_t, since - 0.01)
-        return grid.declared[k] if k < len(grid.declared) and abs(grid.declared[k][0] - since) <= 0.01 else None
+        return grid.declared_at(since)
 
     def _steps_over(self, name: str, c: str, ph: str, since: float, up: Optional[bool] = None) -> List[tuple]:
         """Channel ``c`` of meter ``name``'s declared steps (``up``'s way,
@@ -6980,6 +6957,8 @@ class Fleet:
         noise = main.phases[ph].noise_at()
         main.placement_window = None
         took, windows = {}, {}
+        slack = lambda x: math.hypot(noise, noise_m) + METER_CAL_SLACK * x               # noqa: E731 - this meter's, x the size
+        ramp = lambda win: abs(abs(win[3]) - abs(win[0])) <= slack(abs(win[0]))         # noqa: E731 - see _window_size
         for n, (d, raw, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
             if d is None:                   # all of the grid's step over the union of both spans
                 if not self._meter_stepped(n, ph, since, 0.5 * size, up):
@@ -6988,11 +6967,9 @@ class Fleet:
                 # ...and the ramp's whole size where the grid's first plateau
                 # was only part of it - see _window_size
                 win = self._window_size(n, ph, since, up, size)
-                tol = math.hypot(noise, noise_m) + METER_CAL_SLACK * size
-                if win is not None and (win[0] > 0) == up and abs(win[0]) - size > tol and \
-                        abs(abs(win[3]) - abs(win[0])) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * abs(win[0]):
+                if win is not None and (win[0] > 0) == up and abs(win[0]) - size > slack(size) and ramp(win):
                     windows[n] = win
-            elif d and (d > 0) == up and abs(abs(d) - size) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * size:
+            elif d and (d > 0) == up and abs(abs(d) - size) <= slack(size):
                 took[n] = (d, raw, noise_m, conf)
             elif d and (d > 0) == up:
                 # unlike in size, but the two may have declared one ramp over
@@ -7003,9 +6980,7 @@ class Fleet:
                 # was the boiler's by the boiler's window), the window at
                 # least the step
                 win = self._window_size(n, ph, since, up, size)
-                tol = math.hypot(noise, noise_m) + METER_CAL_SLACK * size
-                if win is not None and (win[0] > 0) == up and abs(win[0]) >= size - tol and \
-                        abs(abs(win[3]) - abs(win[0])) <= math.hypot(noise, noise_m) + METER_CAL_SLACK * abs(win[0]):
+                if win is not None and (win[0] > 0) == up and abs(win[0]) >= size - slack(size) and ramp(win):
                     took[n], windows[n] = (win[0], None, noise_m, conf), win
         inner = [n for n in took if not any(self._under(o, n) for o in took if o != n)]
         if not inner:
@@ -7402,9 +7377,7 @@ class Fleet:
             return f
         f.main = Detector.from_dict(d.get("main"))
         f.subs = {n: Detector.from_dict(v) for n, v in (d.get("subs") or {}).items()}
-        # (when, session); a store from before the one clock held sessions alone: due at once
-        timed = lambda rows: [(x[0], Session.from_dict(x[1])) if isinstance(x, list) else (0.0, Session.from_dict(x))  # noqa: E731
-                              for x in rows or []]
+        timed = lambda rows: [(t, Session.from_dict(x)) for t, x in rows or []]  # noqa: E731 - (when, session)
         f.pending_main = timed(d.get("pending_main"))
         f.pending_sub = {n: [Session.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
         f.phase_votes = {n: {p: dict(r) for p, r in v.items()}
@@ -7416,8 +7389,7 @@ class Fleet:
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
         f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
         f._lag_from = d.get("lag_from")
-        f._unvoted = [(r[0], r[1], bool(r[2]) if len(r) > 3 else False, Session.from_dict(r[-1]))
-                      for r in d.get("unvoted") or []]
+        f._unvoted = [(t, n, bool(final), Session.from_dict(x)) for t, n, final, x in d.get("unvoted") or []]
         f._recent_main = [(t, Session.from_dict(x)) for t, x in d.get("recent_main") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
@@ -7436,7 +7408,7 @@ def _booked(s: Session, ph: str) -> List[Tuple[float, float, float]]:
     ends = [x[0] for x in lv[1:]] + [s.end]
     segs = [(max(t, s.start), min(e, s.end), w) for (t, w), e in zip(lv, ends) if w > 0 and min(e, s.end) > max(t, s.start)]
     drew = sum((t1 - t0) * w for t0, t1, w in segs) / 3600.0
-    want = s.wh[ph] if ph in s.wh else s.power_by_phase().get(ph, 0.0) * s.duration_s / 3600.0
+    want = s.phase_wh(ph)
     return [(t0, t1, w * want / drew) for t0, t1, w in segs] if drew > 0 and want > 0 else []
 
 
@@ -7522,7 +7494,7 @@ def _cap_day(det: "Detector", log: List[Session], rows: Dict[str, list], a: floa
                 over -= take
         for k, by_hour in sorted(off.items()):
             s = runs[k]
-            was = s.wh[ph] if ph in s.wh else s.power_by_phase().get(ph, 0.0) * s.duration_s / 3600.0
+            was = s.phase_wh(ph)
             s.wh[ph] = max(0.0, was - sum(by_hour.values()))
             sig = det.signature_of(s) if s.owner is None else None
             if sig is not None:

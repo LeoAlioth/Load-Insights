@@ -1032,10 +1032,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 "library again, keeping %d name(s) to re-attach", len(orphans)
             )
             raw = {}
-        if raw.get("fleet"):
-            self.fleet = Fleet.from_dict(raw.get("fleet"))
-        else:                                   # a store written before downstream meters existed
-            self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
+        self.fleet = Fleet.from_dict(raw.get("fleet"))
         if orphans:
             self.fleet.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
