@@ -65,6 +65,7 @@
 
 ### Removed
 
+- **A number input is no longer learned against how long and how often a load runs.** The regression behind the naming page's "Runs N % longer for each degree..." line explained almost nothing on the bench (r² 0.00-0.05) and is gone (Anze). A number input still counts for the forecast, and steps still record its value as they happen.
 - **The "How often to look" setting is gone.** Load detection reads the meter every minute, as it did by default: a slower pace bought only latency, never accuracy, since the same recorded steps are found either way. A value an older version stored is ignored.
 - **The `load_insights.refresh` action is gone.** The site device's *Refresh forecasts* button does the same, and in an automation `homeassistant.update_entity` on any Load Insights forecast sensor recomputes every forecast.
 - **"Work it out from the data" is gone from the grid connection's *What is connected*.** It never worked anything out - nothing read the AC input to decide - so it always meant the utility grid. Choose *Generator* or *Nothing - off grid* where that is what is there; a site left on it reads as the utility, as it always did.

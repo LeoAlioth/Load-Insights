@@ -2628,61 +2628,17 @@ def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
 
 
 
-def test_a_number_that_drives_a_load_is_learned_against_it():
-    """A fridge runs longer and starts sooner the warmer its room: the run
-    length and the gap are learned against the number at each start, and
-    once it is believed the spread it explains stops counting against the
-    load (Anze, 2026-09-28: "positively or negatively correlated to their
-    frequency and runtime")."""
-    det = D.Detector()
-    rnd = random.Random(3)
-    t, rows, temps = T0, [], []
-    room = 20.0
-    for _ in range(60):
-        room = min(30.0, max(15.0, room + rnd.uniform(-2.5, 2.5)))   # a room drifts
-        temps.append((t - 60.0, room))
-        on = 600.0 * (1.04 ** (room - 20.0))            # +4 % a degree
-        off = 3000.0 * (0.97 ** (room - 20.0))          # and sooner again
-        for _ in range(int(on // DT)):
-            rows.append((t, 380.0 + rnd.uniform(-3, 3))); t += DT
-        for _ in range(int(off // DT)):
-            rows.append((t, 300.0 + rnd.uniform(-3, 3))); t += DT
-    plain = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
-    det.drivers = {"sensor.room": temps}
-    det.process({"a": rows}, now_ts=t)
-    plain.process({"a": rows}, now_ts=t)
-    sig = max(det.signatures, key=lambda x: x.count)
-    per_unit, r2, weight = sig.driver_effect("sensor.room")
-    assert 0.02 <= per_unit <= 0.06 and r2 > 0.8, (per_unit, r2)
-    gap_unit, gap_r2, _ = sig.driver_effect("sensor.room", "g")
-    assert gap_unit < 0 and gap_r2 > 0.3, (gap_unit, gap_r2)
-    assert sig.strongest_driver()[0] == "sensor.room"
-    # what the number explains is not the load being loose about time
-    same = max(plain.signatures, key=lambda x: x.count)
-    assert sig.evidence > same.evidence, (sig.evidence, same.evidence)
-    back = D.Signature.from_dict(json.loads(json.dumps(sig.to_dict())))
-    assert back.driver_effect("sensor.room")[1] > 0.8
-    # and a young load is not believed yet
-    young = _sig(99, 80.0, 600.0, first_seen=T0, last_seen=T0)
-    for i in range(10):
-        young.note_driver("sensor.room", "d", 15.0 + i, 600.0 * 1.04 ** i)
-    assert young.strongest_driver() is None
-
-
-
 def test_what_a_switch_and_a_number_taught_follows_a_rename():
     fleet = D.Fleet()
     sig = _sig(1, 635.0, 130.0, 10, phases="c", first_seen=T0, last_seen=T0)
     sig.locations = {D.SWITCH_PREFIX + "climate.t": 6, "Hiša": 10}
-    sig.note_driver("sensor.floor", "d", 20.0, 130.0)
     fleet.main.signatures.append(sig)
     fleet.switch_on[D.SWITCH_PREFIX + "climate.t"] = {T0: None}
-    fleet.main.drivers["sensor.floor"] = [(T0, 20.0)]
+    fleet.main.numbers["sensor.floor"] = [(T0, 20.0)]
     fleet.rename_entities({"climate.t": "climate.termostat", "sensor.floor": "sensor.tla"})
     assert sig.locations == {D.SWITCH_PREFIX + "climate.termostat": 6, "Hiša": 10}
-    assert list(sig.drivers) == ["sensor.tla"]
     assert list(fleet.switch_on) == [D.SWITCH_PREFIX + "climate.termostat"]
-    assert list(fleet.main.drivers) == ["sensor.tla"]
+    assert list(fleet.main.numbers) == ["sensor.tla"]
 
 
 
@@ -2888,7 +2844,7 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
         b = a + step
         fleet.process({"c": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
                       switches={"climate.mat": [(on, off if off < b else None) for on, off in spans if on < b and off > a - D.SWITCH_MEMORY_S]},
-                      drivers={"sensor.room": [r for r in temps if a - D.SWITCH_MEMORY_S <= r[0] < b]})
+                      numbers={"sensor.room": [r for r in temps if a - D.SWITCH_MEMORY_S <= r[0] < b]})
         a = b
     det = fleet.main
     assert D.lag_window(det.lag_hist["climate.mat"]), det.lag_hist

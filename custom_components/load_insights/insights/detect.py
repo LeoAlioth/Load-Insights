@@ -723,16 +723,6 @@ SWITCH_END_SHARE = 0.25
 # ...and how far back its on-periods - and a number's readings - are kept:
 # past the longest a session waits, counted from the oldest reading a pass brings.
 SWITCH_MEMORY_S = 4 * 3600.0
-# A number that may DRIVE a load - a fridge's room temperature, the weather -
-# is learned against each load: how its run length and the gap between its
-# starts follow the number's value when a run starts, a regression of their
-# logarithms, recency-weighted over ABSORB_WINDOW. It is believed once a load
-# has this many runs behind it and the number explains this share of the
-# spread; then the run length's spread that the number does NOT explain is
-# what counts as its tightness (Anze, 2026-09-28: "positively or negatively
-# correlated to their frequency and runtime").
-DRIVER_MIN_RUNS = 30
-DRIVER_MIN_R2 = 0.25
 # A setting a device reports - a washer's cycle phase, a fan's speed - is
 # learned against each load: the value it had while the load ran, against
 # what that value's share of the time would give by chance (Anze,
@@ -2706,10 +2696,6 @@ class Signature:
     interval_s: Optional[float] = None   # running mean START-to-start spacing ("every 5 min")
     last_start: Optional[float] = None
     locations: Dict[str, int] = field(default_factory=dict)   # submeter name -> sessions also seen there
-    # number -> {"d": run-length stats, "g": start-gap stats}, each
-    # [weight, sum x, sum x2, sum y, sum y2, sum xy] with y a logarithm - see
-    # DRIVER_MIN_RUNS
-    drivers: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # setting -> {"n": value -> runs seen in it, "e": value -> runs chance
     # would put there}, both recency-weighted - see INPUT_MIN_RUNS
     inputs: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
@@ -2874,10 +2860,6 @@ class Signature:
                 for v, x in (row.get(key) or {}).items():
                     mine[key][v] = mine[key].get(v, 0.0) + x
             mine["t"] = {"at": max((mine.get("t") or {}).get("at", 0.0), (row.get("t") or {}).get("at", 0.0))}
-        for name, row in other.drivers.items():
-            mine = self.drivers.setdefault(name, {"d": [0.0] * 6, "g": [0.0] * 6})
-            for key in ("d", "g"):
-                mine[key] = [x + y for x, y in zip(mine[key], row.get(key) or [0.0] * 6)]
         a, b = self.count, other.count
         n = a + b
         if n <= 0:
@@ -2970,15 +2952,6 @@ class Signature:
         self._spread(s, tz)
         self.count += 1
 
-    def note_driver(self, name: str, key: str, x: float, y: float) -> None:
-        """One run's length ("d") - or the gap before it ("g") - seen with
-        the number at ``x``."""
-        acc = self.drivers.setdefault(name, {"d": [0.0] * 6, "g": [0.0] * 6})[key]
-        keep = 1.0 - 1.0 / ABSORB_WINDOW
-        ly = math.log(y)
-        for i, v in enumerate((1.0, x, x * x, ly, ly * ly, x * ly)):
-            acc[i] = acc[i] * keep + v
-
     def note_input(self, name: str, value: str, shares: Dict[str, float], ts: float) -> None:
         """One run, at ``ts``, seen while the setting ``name`` read ``value``;
         ``shares`` is each value's share of the time as it stands. Weighted by
@@ -3035,28 +3008,6 @@ class Signature:
             got = self.input_of(name)
             if got and (best is None or got[2] > best[3]):
                 best = (name, *got)
-        return best
-
-    def driver_effect(self, name: str, key: str = "d") -> Optional[Tuple[float, float, float]]:
-        """(share change per unit of the number, r², weight) for run length
-        ("d") or the gap between starts ("g"); None until anything is known."""
-        acc = (self.drivers.get(name) or {}).get(key)
-        if not acc or acc[0] <= 1.0:
-            return None
-        w, sx, sxx, sy, syy, sxy = acc
-        vx, vy, cxy = sxx / w - (sx / w) ** 2, syy / w - (sy / w) ** 2, sxy / w - (sx / w) * (sy / w)
-        if vx <= 1e-12 or vy <= 1e-12:
-            return None
-        return math.exp(cxy / vx) - 1.0, (cxy * cxy) / (vx * vy), w
-
-    def strongest_driver(self, key: str = "d"):
-        """(name, share per unit, r²) of the number explaining the most, once
-        believed - see DRIVER_MIN_RUNS - or None."""
-        best = None
-        for name in self.drivers:
-            eff = self.driver_effect(name, key)
-            if eff and eff[2] >= DRIVER_MIN_RUNS and eff[1] >= DRIVER_MIN_R2 and (best is None or eff[1] > best[2]):
-                best = (name, eff[0], eff[1])
         return best
 
     @property
@@ -3160,10 +3111,6 @@ class Signature:
         legs = max(len(self.phases), 1)
         tight_w = 1.0 - min(1.0, (self.power_mad / max(abs(self.watts) / legs, 1.0)) / 0.15)
         spread = self.duration_mad
-        driver = self.strongest_driver("d")
-        if driver:
-            # what the number explains is not the load being loose about time
-            spread *= max(0.0, 1.0 - driver[2]) ** 0.5
         tight_d = 1.0 - min(1.0, (spread / max(self.duration_s, 1.0)) / 0.5)
         tied = self.strongest_input() if INPUT_EVIDENCE else None
         if tied:
@@ -3349,7 +3296,6 @@ class Signature:
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1),
-                "drivers": {n: {k: [round(x, 4) for x in v] for k, v in row.items()} for n, row in self.drivers.items()},
                 "inputs": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
@@ -3371,7 +3317,6 @@ class Signature:
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
-                   drivers={n: {k: list(v) for k, v in row.items()} for n, row in (d.get("drivers") or {}).items()},
                    inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or d.get("stages") or {}).items()},
                    born_in=d.get("born_in"),
                    takes_in=list(d.get("takes_in") or []), apart=list(d.get("apart") or []), born_ep=d.get("born_ep", 0.0),
@@ -3788,10 +3733,10 @@ class Detector:
     orphan_names: List[dict] = field(default_factory=list)
     next_id: int = 1
     tz_offset_s: float = 0.0
-    # number -> sorted [(ts, value)], each held until the next - see
-    # DRIVER_MIN_RUNS; fed by the fleet, not persisted
-    drivers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
-    # setting -> sorted [(ts, value)], fed by the fleet like drivers; and
+    # number -> sorted [(ts, value)], each held until the next: a step
+    # records the value in force (EdgeCluster.values); fed by the fleet, not persisted
+    numbers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
+    # setting -> sorted [(ts, value)], fed by the fleet like numbers; and
     # setting -> value -> seconds in it (recency-weighted), with how far that
     # has been counted - these two persisted
     inputs: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict)
@@ -4228,15 +4173,6 @@ class Detector:
         else:
             prev = best.last_start
             best.absorb(s, tz)
-        for name, rows in self.drivers.items():
-            # the run by the number as it started; the gap before it by the
-            # number halfway through it - what the room was while it waited
-            for key, at, y in (("d", s.start, s.duration_s),
-                               ("g", (s.start + prev) / 2.0 if prev is not None else None,
-                                s.start - prev if prev is not None else 0.0)):
-                i = bisect.bisect_right(rows, (at, math.inf)) - 1 if at is not None else -1
-                if i >= 0 and y > 0:
-                    best.note_driver(name, key, rows[i][1], y)
         for name, rows in self.inputs.items():
             # the setting halfway through the run: a washer's heater starts
             # as its wash phase does, a moment either side of the change
@@ -5486,7 +5422,7 @@ class Fleet:
                 main_q_quantum: Optional[Dict[str, float]] = None,
                 single: Optional[Dict[str, bool]] = None,
                 switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
-                drivers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
+                numbers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
                 inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None,
                 sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None) -> None:
         """A pass over every meter's new readings, on ONE clock (2026-10-02).
@@ -5513,7 +5449,7 @@ class Fleet:
                     known[on] = off
             for on in [t for t, off in known.items() if off is not None and off < keep]:
                 del known[on]                  # a span still on is never forgotten
-        for store, fed, cast in ((self.main.drivers, drivers, float), (self.main.inputs, inputs, str)):
+        for store, fed, cast in ((self.main.numbers, numbers, float), (self.main.inputs, inputs, str)):
             for name, rows in (fed or {}).items():
                 held = dict(store.get(name) or [])
                 held.update((float(t), cast(v)) for t, v in rows)
@@ -5538,7 +5474,7 @@ class Fleet:
             # every detector is told what the meters inside it did, and what
             # the switches and settings did
             f._bind()
-            f.main.signals, f.main.drivers, f.main.inputs = signals, self.main.drivers, self.main.inputs
+            f.main.signals, f.main.numbers, f.main.inputs = signals, self.main.numbers, self.main.inputs
             if name:
                 f._keep_rows("", sub_samples.get(name) or {}, end)
                 for n in f.subs:
@@ -6137,7 +6073,7 @@ class Fleet:
 
     def rename_entities(self, renames: Dict[str, str]) -> None:
         """Follow renamed entities: what a switch was credited and when it was
-        on, and what each load learned against a number, go with the entity."""
+        on, and what each load learned in a setting, go with the entity."""
         pairs = [(a, b) for old, new in renames.items()
                  for a, b in ((old, new), (SWITCH_PREFIX + old, SWITCH_PREFIX + new))]
         for det in [self.main, *self.subs.values()]:
@@ -6146,15 +6082,14 @@ class Fleet:
                 for a, b in pairs:
                     if a in sig.locations:
                         sig.locations[b] = sig.locations.get(b, 0) + sig.locations.pop(a)
-                    for held in (sig.drivers, sig.inputs):
-                        if a in held:
-                            held[b] = held.pop(a)
+                    if a in sig.inputs:
+                        sig.inputs[b] = sig.inputs.pop(a)
                     # "setting=value" markers name the setting's entity
                     if sig.born_in and sig.born_in.startswith(a + "="):
                         sig.born_in = b + sig.born_in[len(a):]
                     sig.takes_in = [b + t[len(a):] if t.startswith(a + "=") else t for t in sig.takes_in]
             for a, b in pairs:
-                for held in (det.drivers, det.inputs, det.input_time, det.input_until, det.lag_hist):
+                for held in (det.numbers, det.inputs, det.input_time, det.input_until, det.lag_hist):
                     if a in held:
                         held[b] = held.pop(a)
                 for c in det.edges:
@@ -6211,7 +6146,7 @@ class Fleet:
                     evs.append((t, f"{prev}→{v}"))
                 prev = v
             events[name] = evs
-        return events, self.main.drivers
+        return events, self.main.numbers
 
     def _edges_of(self, m: Session) -> List[Tuple[str, tuple]]:
         """The edges a house session started, stepped and stopped with, as

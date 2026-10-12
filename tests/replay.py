@@ -580,7 +580,7 @@ def run(args, transform=None, say=print):
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
-                      drivers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
+                      numbers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
                       inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None)
         t = e
     return fleet, filed, {k: sorted(v) for k, v in fed.items() if v}

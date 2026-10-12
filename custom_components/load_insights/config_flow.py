@@ -200,18 +200,6 @@ def _helpers(hass, sig, edges=()) -> list:
         eid, value, share, lift = tied
         out.append((eid, f"Runs while {label(eid)[0]} is {value}: {share:.0%} of its runs, "
                          f"{lift:.0f} times what chance would give"))
-    for key in ("d", "g"):
-        found = sig.strongest_driver(key)
-        if found is None:
-            continue
-        eid, per_unit, r2 = found
-        name, st = label(eid)
-        unit = (st.attributes.get("unit_of_measurement") if st is not None else None) or "unit"
-        way = ("longer" if per_unit > 0 else "shorter") if key == "d" else ("longer" if per_unit > 0 else "less")
-        what = "Runs" if key == "d" else "Waits"
-        tail = "" if key == "d" else " between runs"
-        out.append((eid, f"{what} {abs(per_unit) * 100:.0f} % {way}{tail} for each {unit} {name} is higher "
-                         f"- that explains {r2:.0%} of how much it varies"))
     return out
 
 
