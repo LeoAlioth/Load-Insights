@@ -243,7 +243,7 @@ def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
     return {**options, "input_links": links}
 
 
-def scoped(signals, links: dict, within, stat: Optional[str] = None) -> list:
+def scoped(signals, links: dict, within, stat: Optional[str]) -> list:
     """The signals the forecast of ``stat`` takes (Anze, 2026-10-03). An
     input linked to nothing acts on every forecast. One linked to devices
     acts on those, on every meter they sit inside - ``within(target)``, the

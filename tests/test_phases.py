@@ -349,19 +349,17 @@ def test_one_line_found_on_another_phase_swaps_with_the_line_that_had_it():
                 other = next(k for k, v in cur.items() if v == found)
                 want[other], want[line] = cur[line], found
                 votes = {line: {p: 20.0 if p == found else 2.0 for p in "ABC"}}
-                got = D.phase_mapping(votes, "ABC", 6.0, current=cur)
+                got = D.phase_mapping(votes, "ABC", current=cur)
                 assert got == want, (cur, line, found, got)
                 cases += 1
     assert cases == 54
 
 
-def test_a_tie_or_too_little_evidence_keeps_what_is_believed_now():
+def test_a_tie_keeps_what_is_believed_now():
     cur = {"l1": "B", "l2": "C", "l3": "A"}
-    assert D.phase_mapping({"l1": {"A": 5.0, "B": 5.0}}, "ABC", 6.0, current=cur) == cur, "tie"
-    assert D.phase_mapping({"l1": {"A": 5.0}}, "ABC", 6.0, current=cur) == cur, "too few"
-    assert D.phase_mapping({"l1": {"A": 6.0}}, "ABC", 6.0, current=cur) == {"l1": "A", "l2": "C", "l3": "B"}
+    assert D.phase_mapping({"l1": {"A": 5.0, "B": 5.0}}, "ABC", current=cur) == cur, "tie"
+    assert D.phase_mapping({"l1": {"A": 6.0}}, "ABC", current=cur) == {"l1": "A", "l2": "C", "l3": "B"}
     # with no prior, each channel's own label is the belief
-    assert D.phase_mapping({"b": {"c": 3}}, min_votes=30) == {"b": "b"}
     assert D.phase_mapping({"b": {"c": 3}}) == {"b": "c"}
 
 

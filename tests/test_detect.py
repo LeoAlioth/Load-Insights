@@ -1863,12 +1863,11 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
     coincide with - as a permutation, so a two-phase load cannot tie - and
     its own labels stand until there is evidence (2026-09-23)."""
     rotated = {"a": {"b": 20}, "b": {"c": 60, "b": 2}, "c": {"a": 64}}
-    assert D.phase_mapping(rotated, min_votes=30) == {"a": "b", "b": "c", "c": "a"}
-    assert D.phase_mapping({"b": {"c": 3}}, min_votes=30) == {"b": "b"}, "too little evidence"
+    assert D.phase_mapping(rotated) == {"a": "b", "b": "c", "c": "a"}
     # the kiln steps on house A and C at once: channel a ties between them
     # alone, and the permutation settles it with the other channels
     kiln = {"a": {"a": 79, "c": 79}, "b": {"b": 23}, "c": {"c": 55, "a": 17}}
-    assert D.phase_mapping(kiln, min_votes=30) == {"a": "a", "b": "b", "c": "c"}
+    assert D.phase_mapping(kiln) == {"a": "a", "b": "b", "c": "c"}
     s = D.Session(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
     house = D.Session(phases="ac", start=0.0, end=60.0, levels={"c": [(0.0, 100.0)], "a": [(0.0, 90.0)]})
     assert D._same_load(house, s, {"a": "b", "b": "c", "c": "a"}) and not D._same_load(house, s, {"b": "b", "c": "c"})

@@ -581,6 +581,8 @@ def _instrument():
     def close(st, o, at, watts, var=None, direct=False):
         s = close0(st, o, at, watts, var, direct)
         f = sys._getframe(1)
+        if f.f_code.co_name == "_end":            # PhaseState._end: the closer is its caller
+            f = f.f_back
         name = f.f_code.co_name
         kind = ("observed" if direct else "too big" if name == "_unseen_stop" and "out" in f.f_locals
                 else KINDS.get(name, name))

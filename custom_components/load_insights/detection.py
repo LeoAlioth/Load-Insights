@@ -72,7 +72,7 @@ from .insights.detect import (
 )
 from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
-from .insights.named import (first_change, metered_device, one_device_meters, plan_carry, plan_rewrite,
+from .insights.named import (first_change, metered_device, plan_carry, plan_rewrite,
                              vanished_into)
 
 if TYPE_CHECKING:
@@ -684,7 +684,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     def device_meters(self) -> List[str]:
         """The meters detection reads that hold one device, by name."""
-        return one_device_meters({m: self.holds_one_device(m) for m in self.submeters})
+        return sorted(m for m in self.submeters if self.holds_one_device(m))
 
     async def async_first_statistic(self, statistic_id: str) -> Optional[float]:
         """When a statistic's first long-term row starts (epoch s), or None

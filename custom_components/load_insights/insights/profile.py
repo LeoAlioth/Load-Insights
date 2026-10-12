@@ -119,14 +119,6 @@ class Profile:
             out.append((t, v if v is not None else 0.0))
         return out
 
-    def predict_bands(self, start: datetime, hours: int) -> List[tuple]:
-        """(p10, p90) per horizon hour."""
-        out = []
-        for t in hour_buckets(floor_hour(start), hours):
-            b = self.slot_band(t)
-            out.append((0.0, 0.0) if b is None else (b[0], b[1]))
-        return out
-
 
 def _weight(now: datetime, k: float) -> float:
     """How much the hour starting at ``k`` counts: halving every HALF_LIFE_WEEKS."""
@@ -216,11 +208,8 @@ def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
     actual = 0.0
     expected = 0.0
     hours = 0
-    for t, v in samples:
-        if v is None or not (start <= t.timestamp() < end):
-            continue
-        e = profile.slot_kwh(t)
-        if e is None:
+    for t, k, v, e, _ in _settled(samples, now, profile):
+        if k < start:
             continue
         e = max(0.0, e + response.delta((temps or {}).get(t.timestamp()))) * (multipliers or {}).get(t.timestamp(), 1.0)
         actual += v
@@ -392,7 +381,8 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     cut = floor_hour(now).timestamp()
     cap = max((max(0.0, v) for t, v in samples if v is not None and t.timestamp() < cut), default=float("inf"))
     base = profile.predict(now, horizon_hours)
-    base_bands = profile.predict_bands(now, horizon_hours)
+    base_bands = [(0.0, 0.0) if b is None else (b[0], b[1])         # (p10, p90) per horizon hour
+                  for b in (profile.slot_band(t) for t in hour_buckets(floor_hour(now), horizon_hours))]
     hourly = []
     bands = []
     with_temp = 0

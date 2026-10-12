@@ -131,7 +131,7 @@ def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Op
     def score(idx):
         fits = [_fit_lead_joint(rows, idx, [means[i] for i in idx], h) for h in range(LEADS)]
         expl = [f[1] if f else 0.0 for f in fits]
-        return max(expl) if expl else 0.0, fits
+        return max(expl), fits           # LEADS of them
 
     kept: List[int] = []
     best_gain, best_fits = 0.0, None
