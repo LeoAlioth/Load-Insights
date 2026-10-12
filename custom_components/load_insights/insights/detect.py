@@ -398,10 +398,6 @@ EVENT_BALANCE = 0.2
 # reading has no angle and is cut by size alone.
 EDGE_ANGLE_BIN = 3.0           # degrees
 EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
-# ...widened to this many times the step's own angle uncertainty, atan(noise / size):
-# a 50 W step's angle is +-11 deg at 10 var of noise, a 1 kW step's under 1 (Anze,
-# 2026-10-12). Bench dial; 0 keeps the fixed kernel.
-EDGE_ANGLE_SIGMAS = 0.0
 # A house step that meters below it stepped with at the same moment is
 # several steps: each meter's own share (less its sub-meters', see
 # _meter_steps), and the rest. Kozolec's boiler pulses 1.9 kW about
@@ -4577,7 +4573,7 @@ class Detector:
         members = [c for c in kind if c.where == where
                    and seg[0] <= int(math.floor(edge_scale(c.watts, unit) / EDGE_BIN)) <= seg[1]]
         if angle is not None:
-            members = self._same_angle(ha, seg, angle, members, self._angle_kernel(ph, size))
+            members = self._same_angle(ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
             mine = [c for c in members if c.same_signals(keyed)]
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
@@ -4645,15 +4641,8 @@ class Detector:
         if g in self.edge_hist_angle:
             self.edge_hist_angle[g] = remap(self.edge_hist_angle[g], True)
 
-    def _angle_kernel(self, ph: str, size: float) -> float:
-        """The angle smoothing for a step of ``size`` on ``ph``: EDGE_ANGLE_KERNEL,
-        or EDGE_ANGLE_SIGMAS times its angle's uncertainty where that is wider -
-        the legs' noise added in quadrature, as their var is."""
-        noise = math.sqrt(sum((self.phases[p].noise or 0.0) ** 2 for p in ph if p in self.phases))
-        return max(EDGE_ANGLE_KERNEL, EDGE_ANGLE_SIGMAS * math.degrees(math.atan2(noise, max(size, 1e-9))))
-
     def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
-                    members: List["EdgeCluster"], kernel: float = EDGE_ANGLE_KERNEL) -> List["EdgeCluster"]:
+                    members: List["EdgeCluster"]) -> List["EdgeCluster"]:
         """The size segment's clusters whose reactive angle lies in the step's
         own band of the segment's angle density - see EDGE_ANGLE_BIN."""
         col: Dict[int, float] = {}
@@ -4662,7 +4651,7 @@ class Detector:
             if seg[0] <= int(sb) <= seg[1]:
                 col[int(ab)] = col.get(int(ab), 0.0) + w
         ab = int(math.floor(angle / EDGE_ANGLE_BIN))
-        band = next(((lo, hi) for lo, hi in valley_segments(col, kernel / EDGE_ANGLE_BIN)
+        band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
                      if lo <= ab <= hi), (ab, ab))
         # a cluster from before the angle was measured has none yet: it still
         # matches, and takes its angle from the steps it now gets - so a saved
