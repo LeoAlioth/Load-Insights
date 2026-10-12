@@ -157,7 +157,9 @@ ANDREJG = {
         "meters": (
             [f"sensor.solaredge_i2_m1_ac_{k}" for k in
              ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
-              "voltage_an", "voltage_bn", "voltage_cn", "power_factor_a", "power_factor_b", "power_factor_c")]
+              "voltage_an", "voltage_bn", "voltage_cn", "power_factor_a", "power_factor_b", "power_factor_c",
+              # recorded from 2026-10-08 21:35 UTC: the meter's own, signed reactive power
+              "reactive_power_a", "reactive_power_b", "reactive_power_c")]
             + ["sensor.solaredge_i2_ac_power"]
             + [f"sensor.solaredge_i2_ac_{k}" for k in
                ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]),
