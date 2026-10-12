@@ -29,10 +29,10 @@ from .sensor import on_site
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coordinator: InsightsCoordinator = entry.runtime_data.coordinator
-    entities: list[ButtonEntity] = [RefreshButton(hass, entry, coordinator)]
+    entities: list[ButtonEntity] = [RefreshButton(entry, coordinator)]
     runner: DetectionRunner = entry.runtime_data.runner
     if runner.enabled:
-        entities.append(ResetDetectionButton(hass, entry, runner))
+        entities.append(ResetDetectionButton(entry, runner))
     add(entities)
 
 
@@ -45,7 +45,7 @@ class RefreshButton(_Base):
     """Recompute every forecast now instead of on the hour - for checking
     whether a change to an input took effect."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: InsightsCoordinator) -> None:
+    def __init__(self, entry: ConfigEntry, coordinator: InsightsCoordinator) -> None:
         super().__init__(entry, "refresh")
         self._coordinator = coordinator
 
@@ -56,7 +56,7 @@ class RefreshButton(_Base):
 class ResetDetectionButton(_Base):
     """Forget the signature library and start the meter's backfill again."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner) -> None:
+    def __init__(self, entry: ConfigEntry, runner: DetectionRunner) -> None:
         super().__init__(entry, "reset_detection")
         self._runner = runner
 

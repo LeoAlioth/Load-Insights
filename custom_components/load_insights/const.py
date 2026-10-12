@@ -49,8 +49,8 @@ CONF_GRID_DEVICE = "grid_device"
 # subtraction artefact. Home did exactly that: the load reading was a
 # template of house consumption while the volts and amps came off the grid
 # meter, and the reactive power derived from the pair turned 121 signatures
-# into 199 in a single day (Anze, 2026-09-18).
-ROLE_PREFIX = {"load": "", "grid": "grid_"}
+# into 199 in a single day (Anze, 2026-09-18). The load's own set has no prefix.
+GRID_PREFIX = "grid_"
 # Inverters, as a LIST from the start: one site already has two - a SolarEdge
 # cabled to a Deye hybrid's load port - and retrofitting a list onto a
 # single-inverter config would be a migration across every site.

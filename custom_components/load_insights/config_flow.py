@@ -12,12 +12,12 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import callback
-from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, selector
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, floor_registry as fr, selector
 
 from .const import (
     CONF_GRID_DEVICE,
     CONF_LAYOUT,
-    ROLE_PREFIX,
+    GRID_PREFIX,
     CONF_INVERTERS,
     CONF_INV_DEVICE,
     CONF_INV_INPUT_PREFIX,
@@ -57,7 +57,7 @@ NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carr
 NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
-from .detection import device_rows, meter_devices, named_load_energy, runner_of
+from .detection import area_id, device_rows, meter_devices, named_load_energy, runner_of
 from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
 from .insights.named import chosen_name
 
@@ -87,7 +87,7 @@ def _grid_fields(defaults: dict) -> dict:
     for kind, device_class in (("power", "power"), ("voltage", "voltage"),
                                ("current", "current"), ("pf", "power_factor")):
         for p in ("a", "b", "c"):
-            out.update(_entity(f"{ROLE_PREFIX['grid']}{kind}_{p}", defaults, device_class))
+            out.update(_entity(f"{GRID_PREFIX}{kind}_{p}", defaults, device_class))
     # an "auto" stored before 2026-10-01 was the utility all along
     kind = defaults.get(CONF_SOURCE_KIND)
     out[vol.Optional(CONF_SOURCE_KIND,
@@ -146,7 +146,7 @@ def _load_line(hass, entry) -> str:
     if own:
         return (f"Using the reading you set by hand on {'+'.join(own)}. Clear those fields and it "
                 "is worked out from the grid connection and the inverters instead.")
-    grid = any(cfg.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in ("a", "b", "c"))
+    grid = any(cfg.get(f"{GRID_PREFIX}power_{p}") for p in ("a", "b", "c"))
     inverters = entry.options.get(CONF_INVERTERS) or []
     if not grid and not inverters:
         return ("Nothing to work with yet - set up the grid connection, the inverters, or both. "
@@ -160,6 +160,12 @@ def _load_line(hass, entry) -> str:
     return "House consumption is worked out from " + " and ".join(parts) + "."
 
 
+def _friendly(hass, entity_id: str) -> str:
+    """An entity's friendly name, else its id."""
+    st = hass.states.get(entity_id)
+    return (st.attributes.get("friendly_name") if st is not None else None) or entity_id
+
+
 def _group_title(where: str, hass=None) -> str:
     """A naming group's row: the meter's name, or where there is none - and
     for a switch, what switches it: the one device it turns on, unmetered."""
@@ -167,8 +173,7 @@ def _group_title(where: str, hass=None) -> str:
         return "Under no meter"
     if where.startswith(SWITCH_PREFIX):
         entity_id = where[len(SWITCH_PREFIX):]
-        st = hass.states.get(entity_id) if hass is not None else None
-        return f"Switched by {st.attributes.get('friendly_name') or entity_id if st else entity_id}"
+        return f"Switched by {_friendly(hass, entity_id) if hass is not None else entity_id}"
     return where
 
 
@@ -176,10 +181,6 @@ def _helpers(hass, sig, edges=()) -> list:
     """(input, what it says about this load) for each input that helped find
     it - so an input added for the whole site can be linked to the load it
     turned out to explain once it is named (Anze, 2026-09-28)."""
-    def label(eid):
-        st = hass.states.get(eid)
-        return (st.attributes.get("friendly_name") if st is not None else None) or eid, st
-
     out = []
     story = edge_story(edges, sig)
     said = {}
@@ -191,14 +192,14 @@ def _helpers(hass, sig, edges=()) -> list:
             what = {"off→on": "turning on", "on→off": "turning off"}.get(seen["kind"], f"going from {was} to {now}")
             when = ("" if seen["lag_s"] is None else
                     f", {abs(seen['lag_s']):.0f} s {'before' if seen['lag_s'] < 0 else 'after'} the meter sees it")
-            said.setdefault(eid, []).append(f"{verb} with {label(eid)[0]} {what}{when}: {seen['share']:.0%} of its "
+            said.setdefault(eid, []).append(f"{verb} with {_friendly(hass, eid)} {what}{when}: {seen['share']:.0%} of its "
                                             f"{role}s")
     for eid, lines in said.items():
         out.append((eid, "; ".join(lines)))
     tied = sig.strongest_input()
     if tied is not None:
         eid, value, share, lift = tied
-        out.append((eid, f"Runs while {label(eid)[0]} is {value}: {share:.0%} of its runs, "
+        out.append((eid, f"Runs while {_friendly(hass, eid)} is {value}: {share:.0%} of its runs, "
                          f"{lift:.0f} times what chance would give"))
     return out
 
@@ -211,25 +212,15 @@ def _meter_entity(runner, where: str) -> Optional[str]:
     return next(iter(fields.values()), None)
 
 
-def _area_id(hass, entity_id: Optional[str]) -> Optional[str]:
-    """An entity's own area where it has one, else its device's."""
-    entity = er.async_get(hass).async_get(entity_id) if entity_id else None
-    if entity is None or entity.area_id or not entity.device_id:
-        return entity.area_id if entity is not None else None
-    device = dr.async_get(hass).async_get(entity.device_id)
-    return device.area_id if device else None
-
-
 def _meter_place(hass, runner, where: str) -> str:
     """The area and floor of the device behind a meter's readings - the
     entity's own area where it has one, else its device's."""
-    area_id = _area_id(hass, _meter_entity(runner, where))
-    area = ar.async_get(hass).async_get_area(area_id) if area_id else None
+    place = area_id(hass, _meter_entity(runner, where))
+    area = ar.async_get(hass).async_get_area(place) if place else None
     if area is None:
         return ""
     floor = None
-    if getattr(area, "floor_id", None):
-        from homeassistant.helpers import floor_registry as fr   # HA 2024.4+
+    if area.floor_id:
         found = fr.async_get(hass).async_get_floor(area.floor_id)
         floor = found.name if found else None
     return f"{area.name}, {floor}" if floor else area.name
@@ -277,20 +268,9 @@ def _meter_wait_field(defaults: dict) -> dict:
                 min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))}
 
 
-def _single_device_field(meters: list, declared) -> dict:
-    """Which meters hold ONE device. Until the page is saved the box shows
-    what the library's shape suggests (the Hidrofor plug: 99 % of its
-    sightings are one load); saved, the answer is the user's."""
-    default = list(declared) if declared is not None else [stat for stat, _, guess in meters if guess]
-    return {vol.Optional(CONF_SINGLE_DEVICE, default=default): selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
-            multiple=True, mode=selector.SelectSelectorMode.LIST))}
-
-
 def _meters_field(key: str, meters: list, chosen) -> dict:
-    """A multi-select of the meters detection could read, by statistic id
-    as _single_device_field keys them - none chosen until the page is saved."""
+    """A multi-select of the meters detection could read, by statistic id -
+    ``chosen`` ticked, none until the page is saved."""
     return {vol.Optional(key, default=list(chosen or [])): selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
@@ -328,15 +308,10 @@ def _found_line(hass, cfg: dict) -> str:
 
 def _grid_found(hass, cfg: dict) -> dict:
     """The grid page's placeholders: what ``cfg``'s grid readings were matched to."""
-    prefix = ROLE_PREFIX["grid"]
+    prefix = GRID_PREFIX
     return {"found": _found_line(hass, {
         **{k[len(prefix):]: v for k, v in cfg.items() if k.startswith(prefix) and k != CONF_GRID_DEVICE},
         "device": cfg.get(CONF_GRID_DEVICE)})}
-
-
-def _discover(hass, device_id: str, role: str = "load") -> dict:
-    """The device's sensors, its sub-devices' included, matched to per-phase fields."""
-    return match_meter_entities(device_rows(hass, device_id), role)
 
 
 def _single_weather_entity(hass) -> str | None:
@@ -404,6 +379,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         self._naming_selected: tuple | None = None
         self._pending_grid: dict | None = None
         self._naming_rows: list[tuple] = []    # menu position -> (meter, signature id), the grid's under ""
+        self._naming_group: str | None = None
+        self._naming_groups: list[str] = []
+        self._pending_links: dict | None = None   # what Done relinks and links - see _links
+        self._linking: str | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
@@ -446,8 +425,8 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             if device and pending is None:
                 # every kind, not just watts: the meter's own volts and amps
                 # are what make its reactive power meaningful
-                found = {f"{ROLE_PREFIX['grid']}{k}": v
-                         for k, v in _discover(self.hass, device, role="grid").items()}
+                found = {f"{GRID_PREFIX}{k}": v
+                         for k, v in match_meter_entities(device_rows(self.hass, device), "grid").items()}
                 typed = {k: v for k, v in user_input.items() if v}
                 merged = {**found, **typed}
                 if device != detection.get(CONF_GRID_DEVICE) or merged != typed:
@@ -458,7 +437,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                         description_placeholders=_grid_found(self.hass, merged),
                     )
             keep = {k: v for k, v in detection.items()
-                    if not k.startswith(ROLE_PREFIX["grid"])
+                    if not k.startswith(GRID_PREFIX)
                     and k not in (CONF_LAYOUT, CONF_SOURCE_KIND)}
             cfg = {**keep, **{k: v for k, v in user_input.items() if v}}
             return self.async_create_entry(
@@ -569,7 +548,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
-        where = self.__dict__.get("_naming_group")
+        where = self._naming_group
         if where == NAMED:
             candidates, waiting = runner.named(), 0
         else:
@@ -617,7 +596,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             placeholders[f"load_{index}"] = label
             placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")
-        if len(self.__dict__.get("_naming_groups") or []) > 1 or where == NAMED or runner.named():
+        if len(self._naming_groups) > 1 or where == NAMED or runner.named():
             options.append("naming")              # back to the meters
         options.append("naming_done")
         return self.async_show_menu(step_id="naming_list", menu_options=options,
@@ -629,7 +608,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             index = int(name[16:])
 
             async def _chosen(user_input: dict[str, Any] | None = None):
-                rows = self.__dict__.get("_naming_rows") or []
+                rows = self._naming_rows
                 if index >= len(rows):
                     return await self.async_step_naming_list()
                 self._naming_selected = rows[index]
@@ -640,7 +619,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             index = int(name[17:])
 
             async def _opened(user_input: dict[str, Any] | None = None):
-                groups = self.__dict__.get("_naming_groups") or []
+                groups = self._naming_groups
                 if index >= len(groups):
                     return await self.async_step_naming()
                 self._naming_group = groups[index]
@@ -656,7 +635,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         options = {**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
         # the inputs linked to a load follow its name, and the ones ticked
         # when it was named are linked to it now
-        pending = self.__dict__.get("_pending_links") or {}
+        pending = self._pending_links or {}
         for was, name in pending.get("relink") or []:
             options = relink(options, was, name)
         if pending.get("link"):
@@ -667,13 +646,19 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             options[CONF_INPUT_LINKS] = links
         return self.async_create_entry(data=options)
 
+    def _links(self) -> dict:
+        """What Done relinks and links, started on the first name given."""
+        if self._pending_links is None:
+            self._pending_links = {"relink": [], "link": []}
+        return self._pending_links
+
     def _picked(self):
         """The runner, the load chosen from the list as (meter, id), and its
         signature - None for the runner, or the load and its signature."""
         runner = runner_of(self.config_entry)
         if runner is None:
             return None, None, None
-        ref = self.__dict__.get("_naming_selected")
+        ref = self._naming_selected
         sig = runner.fleet.signature(ref) if ref is not None else None
         return runner, (ref if sig is not None else None), sig
 
@@ -734,7 +719,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             was = sig.name
             await runner.async_rename(ref, name)
             # the options are written by Done, which rebuilds the entities too
-            pending = self.__dict__.setdefault("_pending_links", {"relink": [], "link": []})
+            pending = self._links()
             pending["relink"].append((was, name))
             pending["link"] += [(eid, name) for eid in user_input.get("link_inputs") or []]
             self._naming_selected = None
@@ -749,7 +734,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if helped:
             # offered, not ticked: linking changes the load's forecast
             fields[vol.Optional("link_inputs", default=[])] = selector.SelectSelector(selector.SelectSelectorConfig(
-                options=[selector.SelectOptionDict(value=eid, label=self._input_label(eid))
+                options=[selector.SelectOptionDict(value=eid, label=_friendly(self.hass, eid))
                          for eid in dict.fromkeys(eid for eid, _ in helped)],
                 multiple=True, mode=selector.SelectSelectorMode.LIST))
             row += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
@@ -765,7 +750,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if runner is not None and sig is not None:
             was = sig.name
             await runner.async_rename(ref, None)
-            self.__dict__.setdefault("_pending_links", {"relink": [], "link": []})["relink"].append((was, None))
+            self._links()["relink"].append((was, None))
         self._naming_selected = None
         return await self.async_step_naming_list()
 
@@ -806,7 +791,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         fields = _meter_wait_field(current)
         if meters:
-            fields.update(_single_device_field(meters, current.get(CONF_SINGLE_DEVICE)))
+            # which meters hold ONE device: until the page is saved, what the
+            # library's shape suggests (the Hidrofor plug: 99 % of its
+            # sightings are one load); saved, the answer is the user's
+            declared = current.get(CONF_SINGLE_DEVICE)
+            fields.update(_meters_field(CONF_SINGLE_DEVICE, meters, declared if declared is not None
+                                        else [stat for stat, _, guess in meters if guess]))
             fields.update(_meters_field(CONF_HORIZON_SKIP, meters, current.get(CONF_HORIZON_SKIP)))
             fields.update(_meters_field(CONF_IGNORE_METERS, meters, current.get(CONF_IGNORE_METERS)))
         return self.async_show_form(
@@ -822,7 +812,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return []
-        return [(m["energy"], name, runner.guess_one_device(name))
+        return [(m["energy"], name, runner.fleet.guess_one_device(name))
                 for name, m in runner.all_submeters.items() if m.get("energy")]
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
@@ -831,11 +821,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             # Everything else is another page's and is carried over whole - it
             # kept only the device map and detection, so saving this page
             # erased the inverters and the naming revision (2026-09-28).
-            owned = _INPUT_KEYS
-            keep = {k: v for k, v in self.config_entry.options.items() if k not in owned}
+            keep = {k: v for k, v in self.config_entry.options.items() if k not in _INPUT_KEYS}
             kept = set(user_input.get(CONF_INPUT_ENTITIES) or [])
             keep[CONF_INPUT_LINKS] = {k: v for k, v in (keep.get(CONF_INPUT_LINKS) or {}).items() if k in kept}
-            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v and k in owned}})
+            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v and k in _INPUT_KEYS}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):
             current[CONF_WEATHER_ENTITY] = _single_weather_entity(self.hass)
@@ -861,10 +850,6 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 return energy
         return target
 
-    def _input_label(self, eid: str) -> str:
-        st = self.hass.states.get(eid)
-        return (st.attributes.get("friendly_name") if st is not None else None) or eid
-
     async def async_step_input_links(self, user_input: dict[str, Any] | None = None):
         """Pick an input, then what it belongs to. Every input counts for the
         whole site; a link adds a device - and every device it sits inside -
@@ -880,7 +865,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
         def label(eid):
             linked = [targets.get(self._as_target(t, targets)) for t in links.get(eid) or []]
-            return f"{self._input_label(eid)}  ({', '.join(x for x in linked if x) or 'the site only'})"
+            return f"{_friendly(self.hass, eid)}  ({', '.join(x for x in linked if x) or 'the site only'})"
         return self.async_show_form(
             step_id="input_links",
             data_schema=vol.Schema({vol.Required("input"): selector.SelectSelector(selector.SelectSelectorConfig(
@@ -889,7 +874,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_input_links_to(self, user_input: dict[str, Any] | None = None):
-        eid = self.__dict__.get("_linking")
+        eid = self._linking
         targets = await self._link_targets()
         links = dict(self.config_entry.options.get(CONF_INPUT_LINKS) or {})
         if user_input is not None:
@@ -906,7 +891,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 selector.SelectSelectorConfig(
                     options=[selector.SelectOptionDict(value=k, label=v) for k, v in targets.items()],
                     multiple=True, mode=selector.SelectSelectorMode.LIST))}),
-            description_placeholders={"input": self._input_label(eid)},
+            description_placeholders={"input": _friendly(self.hass, eid)},
         )
 
     async def async_step_suggested_inputs(self, user_input: dict[str, Any] | None = None):
@@ -928,9 +913,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         places = {}
         for t in targets:
             if not t.startswith(LOAD_PREFIX):
-                places[t] = _area_id(self.hass, t)
+                places[t] = area_id(self.hass, t)
             elif meter.get(t[len(LOAD_PREFIX):], "main") != "main":
-                places[t] = _area_id(self.hass, _meter_entity(runner, meter[t[len(LOAD_PREFIX):]]))
+                places[t] = area_id(self.hass, _meter_entity(runner, meter[t[len(LOAD_PREFIX):]]))
         # not a diagnostic one: a Shelly's own temperature is its relay's, not
         # the room's. And one from a device that meters power is that device's
         # own - a battery's cells, an inverter's heat sink, a car's cabin, a
@@ -942,7 +927,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         chosen = [e for e in registry.entities.values()
                   if not e.disabled_by and not e.entity_category
                   and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())]
-        candidates = {e.entity_id: _area_id(self.hass, e.entity_id) for e in chosen}
+        candidates = {e.entity_id: area_id(self.hass, e.entity_id) for e in chosen}
         # a device by its name, so the two halves of one appliance meet: Home's
         # boiler is a plug metering it and a controller reading its tank, both
         # called Workshop Boiler (2026-09-29)
@@ -962,7 +947,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         def row(eid, t):
             what = t[len(LOAD_PREFIX):] if t.startswith(LOAD_PREFIX) else targets[t]
             area = areas.async_get_area(places[t])
-            return f"{self._input_label(eid)} → {what} ({area.name if area else places[t]})"
+            return f"{_friendly(self.hass, eid)} → {what} ({area.name if area else places[t]})"
         rows = sorted((row(e, t), f"{e} {t}") for e, t in found)
         return self.async_show_form(
             step_id="suggested_inputs",

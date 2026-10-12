@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
 
 from .const import (
@@ -20,9 +20,8 @@ from .const import (
     SERVICE_NAME_LOAD,
     SERVICE_RESET_DETECTION,
 )
-from .config_flow import _area_id
 from .coordinator import InsightsCoordinator
-from .detection import DetectionRunner, RuntimeData
+from .detection import DetectionRunner, RuntimeData, area_id, loaded, runner_of
 from .insights.model import SiteModel, follow_renames, migrate_inputs, relink
 from .repairs import async_dashboard_renamed
 
@@ -55,7 +54,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         ref = ((call.data.get("meter") or "").strip(), int(call.data["load_id"]))
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
-        runner = entry.runtime_data.runner if entry is not None else None
+        runner = runner_of(entry)
         sig = runner.fleet.signature(ref) if runner else None
         was = sig.name if sig is not None else None
         if runner is None or not await runner.async_rename(ref, name):
@@ -73,7 +72,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         given; running it again writes the same."""
         wanted = (call.data.get("name") or "").strip().casefold()
         entry = _loaded(hass)
-        runner = entry.runtime_data.runner if entry is not None else None
+        runner = runner_of(entry)
         names = [n for n in sorted(runner.fleet.names()) if not wanted or n.casefold() == wanted] if runner else []
         if wanted and not names:
             raise ServiceValidationError(f"No load is named {call.data.get('name')}")
@@ -92,10 +91,9 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         renames = dict(pending)
         pending.clear()
         for entry in hass.config_entries.async_entries(DOMAIN):
-            loaded: RuntimeData | None = getattr(entry, "runtime_data", None)
-            if loaded is not None:
-                await loaded.runner.async_follow_renames(renames)
-                await loaded.coordinator.async_follow_renames(renames)
+            if (rt := loaded(entry)) is not None:
+                await rt.runner.async_follow_renames(renames)
+                await rt.coordinator.async_follow_renames(renames)
             data, options = follow_renames(dict(entry.data), renames), follow_renames(dict(entry.options), renames)
             if data != dict(entry.data) or options != dict(entry.options):
                 _LOGGER.info("Following renamed entities in %s: %s", entry.title, renames)
@@ -165,12 +163,10 @@ def _area_of_the_meter(hass: HomeAssistant, site: SiteModel) -> str | None:
     """The area the grid import meter sits in, if it has one - the closest
     thing this integration has to a physical location. From the dashboard
     rather than the first refresh, which setup no longer waits for."""
-    from homeassistant.helpers import area_registry as ar
-
     areas = ar.async_get(hass)
     for stat_id in site.grid_import:
-        area_id = _area_id(hass, stat_id)
-        area = areas.async_get_area(area_id) if area_id else None
+        place = area_id(hass, stat_id)
+        area = areas.async_get_area(place) if place else None
         if area:
             return area.name
     return None

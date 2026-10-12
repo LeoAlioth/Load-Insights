@@ -24,7 +24,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    ROLE_PREFIX,
+    GRID_PREFIX,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
     CONF_IGNORE_METERS,
@@ -107,9 +107,14 @@ class RuntimeData:
     site_device_id: str
 
 
+def loaded(entry: Optional[ConfigEntry]) -> Optional[RuntimeData]:
+    """The entry's runtime data, or None while it is not loaded."""
+    return getattr(entry, "runtime_data", None)
+
+
 def runner_of(entry: Optional[ConfigEntry]) -> Optional["DetectionRunner"]:
     """The entry's detection runner, or None while it is not loaded."""
-    data = getattr(entry, "runtime_data", None)
+    data = loaded(entry)
     return data.runner if data is not None else None
 
 
@@ -247,6 +252,15 @@ def meter_devices(hass: HomeAssistant, device_id: str) -> List[str]:
     return ids
 
 
+def area_id(hass: HomeAssistant, entity_id: Optional[str]) -> Optional[str]:
+    """An entity's own area where it has one, else its device's."""
+    entity = er.async_get(hass).async_get(entity_id) if entity_id else None
+    if entity is None or entity.area_id or not entity.device_id:
+        return entity.area_id if entity is not None else None
+    device = dr.async_get(hass).async_get(entity.device_id)
+    return device.area_id if device else None
+
+
 def device_rows(hass: HomeAssistant, device_id: str) -> list:
     """A device's sensors in the shape the meter matcher reads, INCLUDING
     those of the devices that hang off it.
@@ -272,6 +286,15 @@ def device_rows(hass: HomeAssistant, device_id: str) -> list:
             "name": e.name or e.original_name or "",
         })
     return rows
+
+
+def _sum_phases(readings) -> Dict[str, list]:
+    """Per phase, every reading's series summed (_sum_series), in order."""
+    out: Dict[str, list] = {}
+    for rows in readings:
+        for p, series in rows.items():
+            out[p] = _sum_series(out.get(p, []), series)
+    return out
 
 
 class DetectionRunner(DataUpdateCoordinator[None]):
@@ -308,6 +331,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
         self.pv_visible: Dict[str, bool] = {}
+        # whether the grid meter reads export positive, as the last pass that could tell found (_grid_sign)
+        self._exports_positive: Optional[bool] = None
         # what the inverters added to each phase of a house built from them
         # (_derive_load), as of each of its readings: the array IN the reading
         self.array_in_house: Dict[str, Dict[float, float]] = {}
@@ -453,19 +478,14 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return samples
 
         terms: List[tuple] = []
-        grid_cfg = {f"power_{p}": self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES}
+        grid_cfg = {f"power_{p}": self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES}
         grid_cfg = {k: v for k, v in grid_cfg.items() if v}
         grid_rows: Dict[str, list] = {}
         if grid_cfg:
             grid_rows, _ = await self._read(start, end, grid_cfg)
         inverters = await self._inverter_terms(start, end)
         if grid_rows:
-            generation = {}
-            for rows, sign in inverters:
-                if sign <= 0:
-                    continue
-                for p, series in rows.items():
-                    generation[p] = _sum_series(generation.get(p, []), series)
+            generation = _sum_phases(rows for rows, sign in inverters if sign > 0)
             sign = await self._grid_sign(grid_rows, generation)
             terms.append((grid_rows, sign))
         terms.extend(inverters)
@@ -506,8 +526,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     self._exports_positive = verdict
                     break
         # the last pass that could tell, where this one is too short to
-        exports = getattr(self, "_exports_positive", None)
-        return -1.0 if exports else 1.0
+        return -1.0 if self._exports_positive else 1.0
 
     async def _site_grid_power(self) -> list:
         try:
@@ -656,7 +675,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         meter = self.submeters.get(name) or {}
         if meter.get("single") is not None:
             return meter["single"]
-        return self.guess_one_device(name)
+        return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
 
     def metered_device(self, name: str) -> Optional[str]:
         """The meter a named load IS - named after one that holds a single
@@ -849,9 +868,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             if not self.metered_device(name):
                 await self.async_backfill_statistics(name, force=False)
 
-    def guess_one_device(self, name: str) -> bool:
-        return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
-
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
         waiting)``, each offered row ``((meter, id), signature)`` - the grid's
@@ -1009,7 +1025,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         the house, or a grid meter, or an inverter."""
         if any(self.config.get(f"power_{p}") for p in PHASES):
             return True
-        if any(self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES):
+        if any(self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES):
             return True
         return any(inv.get("power") or any(inv.get(f"power_{p}") for p in PHASES)
                    for inv in (self.entry.options.get(CONF_INVERTERS) or []))
@@ -1115,12 +1131,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 samples = await self._derive_load(start, end)
                 # the arrays, for telling a cloud from a load switching
                 self.solar = await self._resolve_solar()
-                generation: Dict[str, list] = {}
-                for fields in self.solar:
-                    rows, _ = await self._read(start, end, fields)
-                    for p, series in rows.items():
-                        generation.setdefault(p, [])
-                        generation[p] = _sum_series(generation[p], series)
+                generation = _sum_phases([(await self._read(start, end, fields))[0] for fields in self.solar])
                 # after the sum, not before: where the inverter is added back the
                 # grid meter is the circuit every household watt flows through,
                 # so its VAr is the one that steps when a load switches
@@ -1288,9 +1299,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         for phase, rows in targets.items():
             if not rows:
                 continue
-            for prefix in ("", "grid_"):
+            for prefix in ("", GRID_PREFIX):
                 cfg = {k[len(prefix):]: v for k, v in self.config.items()
-                       if not prefix or k.startswith(prefix)} if prefix else dict(self.config)
+                       if k.startswith(prefix)} if prefix else dict(self.config)
                 triple = self._coherent_triple(cfg, phase) or self._triple_beside_the_amps(cfg, phase)
                 if triple is None:
                     continue

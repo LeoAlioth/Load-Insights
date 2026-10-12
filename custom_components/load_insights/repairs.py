@@ -74,7 +74,7 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # of its three phases (Anze, 2026-09-17), and it is invisible until you
     # notice that every guess there is missing.
     runner = runner_of(entry)
-    cfg = (getattr(runner, "config", None) or {}) if getattr(runner, "enabled", False) else {}
+    cfg = (runner.config or {}) if runner is not None and runner.enabled else {}
     blind = [p.upper() for p in ("a", "b", "c")
              if cfg.get(f"power_{p}") and not cfg.get(f"pf_{p}")
              and not (cfg.get(f"current_{p}") and cfg.get(f"voltage_{p}"))]
@@ -84,9 +84,9 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # INPUT it was pointed at is zero by definition, and ten days of backfill
     # over a flat line taught it nothing - which looked like a broken
     # detector rather than the wrong sensor (Anze, 2026-09-17).
-    nothing = bool(cfg) and getattr(runner, "caught_up", False) and not runner.detector.signatures
+    nothing = bool(cfg) and runner.caught_up and not runner.detector.signatures
     _set(hass, entry, FOUND_NOTHING, nothing,
-         {"samples": str(getattr(runner, "samples_read", 0))})
+         {"samples": str(runner.samples_read if runner is not None else 0)})
 
     # A house that idles deeply negative is not a house. Nothing breaks -
     # sessions open and close and signatures form - and every one of them is
