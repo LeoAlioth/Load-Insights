@@ -668,14 +668,6 @@ def fridge(folder: str, dials) -> None:
     both = sum(per_sig["A"][i] + per_sig["B"][i] for i in sids)
     kept = sum(max(per_sig["A"][i], per_sig["B"][i]) for i in sids)
     print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a signature of their own kind)")
-    byid = {x.id: x for x in det.signatures}
-    for kind in ("A", "B"):
-        for sid, _ in per_sig[kind].most_common(2):
-            sig = byid.get(sid)
-            for n in (sig.drivers if sig else {}):
-                d, g = sig.driver_effect(n, "d"), sig.driver_effect(n, "g")
-                fmt = lambda e: f"{e[0] * 100:+5.1f} %/unit r2 {e[1]:.2f}" if e else "-"  # noqa: E731
-                print(f"  {'':44s} {kind} #{sid} x{sig.count} ev {sig.evidence:.2f}  {n}: length {fmt(d)}   gap {fmt(g)}")
 
 
 def inputs_bench(folder: str, dials) -> None:
