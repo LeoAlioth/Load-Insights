@@ -2522,7 +2522,7 @@ class PhaseState:
             # all out before any closes - see Detector.resolve_rise
             gone = [self.open_edges.pop(i) for i in sorted(taken, reverse=True)]
             return sorted((self._close(o, at, o.watts, None) for o in gone), key=lambda x: x.start)
-        if self.open_edges:
+        if self.open_edges and HELD_DROPS:            # 0: none held (the bench's off)
             self.held_drops.append((at, watts, self.stop_cluster))
             del self.held_drops[:-HELD_DROPS]
         if not self.open_edges:
