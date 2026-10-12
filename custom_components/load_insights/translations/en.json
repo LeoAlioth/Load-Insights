@@ -297,6 +297,15 @@
                     "in_power_a": "Grid-side power A",
                     "in_power_b": "Grid-side power B",
                     "in_power_c": "Grid-side power C",
+                    "voltage_a": "Output voltage A",
+                    "voltage_b": "Output voltage B",
+                    "voltage_c": "Output voltage C",
+                    "current_a": "Output current A",
+                    "current_b": "Output current B",
+                    "current_c": "Output current C",
+                    "pf_a": "Output power factor A",
+                    "pf_b": "Output power factor B",
+                    "pf_c": "Output power factor C",
                     "topology": "Wiring"
                 },
                 "data_description": {

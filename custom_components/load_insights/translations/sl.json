@@ -112,16 +112,16 @@
                 "title": "Nastavitve zaznavanja",
                 "description": "Kako deluje zaznavanje bremen. Kaj opazuje, se tu ne nastavlja več: iz omrežnega priklopa in razsmernikov se poraba hiše izračuna, ne izbere.\n\n{found}",
                 "data": {
-                    "meter_wait_s": "Pocakaj na pocasnejse merilnike, najvec",
+                    "meter_wait_s": "Počakaj na počasnejše števce, največ",
                     "single_device": "Števci z eno samo napravo",
-                    "horizon_skip": "Merilniki, na katere ne cakaj",
-                    "ignore_meters": "Merilniki, izpusceni iz zaznavanja"
+                    "horizon_skip": "Števci, na katere ne čakaj",
+                    "ignore_meters": "Števci, izpuščeni iz zaznavanja"
                 },
                 "data_description": {
-                    "meter_wait_s": "Zaznavanje presodi vsako stopnico na prikljucku sele, ko so merilniki pod njim imeli cas, da jo sporocijo - toliko, kolikor najpocasnejsi med njimi potrebuje, da pokaze stopnico, ki jo deli s prikljuckom, kot se nauci iz teh stopnic - tako da stopnico pripise merilniku, ki jo je zaznal, nikoli takemu, ki se ni spremenil, in enako, ne glede na to, ali je zgodovina prebrana naenkrat ali minuto za minuto. Nikoli dlje od tega: merilnik, pocasnejsi od tega, je presojen s tem, kar je sporocil do takrat. Sprotne meritve poimenovanih bremen zamujajo za ta cas, njihova energija ne; 0 presodi vsako stopnico takoj.",
+                    "meter_wait_s": "Zaznavanje presodi vsako stopnico na priključku šele, ko so števci pod njim imeli čas, da jo sporočijo - toliko, kolikor najpočasnejši med njimi potrebuje, da pokaže stopnico, ki jo deli s priključkom, kot se nauči iz teh stopnic - tako da stopnico pripiše števcu, ki jo je zaznal, nikoli takemu, ki se ni spremenil, in enako, ne glede na to, ali je zgodovina prebrana naenkrat ali minuto za minuto. Nikoli dlje od tega: števec, počasnejši od tega, je presojen s tem, kar je sporočil do takrat. Sprotne meritve poimenovanih bremen zamujajo za ta čas, njihova energija ne; 0 presodi vsako stopnico takoj.",
                     "single_device": "Označi števec, katerega meritve so ena naprava - vtičnica, na kateri je samo črpalka, števec bojlerja. Njegove meritve so ta naprava, zato v njem ni ničesar za poimenovanje, in sprejme le bremena na fazah, ki jih ta naprava uporablja. Števcev tokokrogov ne označi - 3EM na podrazdelilniku, hišni tokokrog: v njih se bremena zaznavajo. Dokler tega ne shraniš, so označeni števci, katerih bremena so skoraj vsa eno.",
-                    "horizon_skip": "Zaznavanje presodi vsako stopnico na prikljucku sele, ko je vsak merilnik pod njim imel cas, da jo pokaze. Oznaci merilnik, ki stopnice hise kaze pocasi - na primer vticnico, brano vsake pol minute: se vedno je prebran in se vedno umesca bremena s tem, kar je sporocil do takrat, a njegov cas ne zadrzuje vec vseh drugih stopnic. Merilnik, ki nikoli ne pokaze stopnice, ki jo kaze merilnik hise, sam po sebi ne doloca cakanja.",
-                    "ignore_meters": "Oznaci merilnik, ki ga zaznavanje sploh ne naj bere, kot da ga ne bi bilo na nadzorni plosci Energija: njegove meritve ne umescajo bremen in ne delijo stopnic, in nanj nic ne caka."
+                    "horizon_skip": "Zaznavanje presodi vsako stopnico na priključku šele, ko je vsak števec pod njim imel čas, da jo pokaže. Označi števec, ki stopnice hiše kaže počasi - na primer vtičnico, brano vsake pol minute: še vedno je prebran in še vedno umešča bremena s tem, kar je sporočil do takrat, a njegov čas ne zadržuje več vseh drugih stopnic. Števec, ki nikoli ne pokaže stopnice, ki jo kaže števec hiše, sam po sebi ne določa čakanja.",
+                    "ignore_meters": "Označi števec, ki ga zaznavanje naj sploh ne bere, kot da ga ne bi bilo na nadzorni plošči Energija: njegove meritve ne umeščajo bremen in ne delijo stopnic, in nanj nič ne čaka."
                 }
             },
             "naming": {
@@ -297,6 +297,15 @@
                     "in_power_a": "Moč na omrežni strani A",
                     "in_power_b": "Moč na omrežni strani B",
                     "in_power_c": "Moč na omrežni strani C",
+                    "voltage_a": "Izhodna napetost A",
+                    "voltage_b": "Izhodna napetost B",
+                    "voltage_c": "Izhodna napetost C",
+                    "current_a": "Izhodni tok A",
+                    "current_b": "Izhodni tok B",
+                    "current_c": "Izhodni tok C",
+                    "pf_a": "Izhodni faktor moči A",
+                    "pf_b": "Izhodni faktor moči B",
+                    "pf_c": "Izhodni faktor moči C",
                     "topology": "Vezava"
                 },
                 "data_description": {
