@@ -409,6 +409,34 @@
         }
     },
     "services": {
+        "reset_detection": {
+            "name": "Ponastavi zaznavanje porabnikov",
+            "description": "Pozabi vse zaznane podpise in znova začni zaledno branje števca. Za primer, ko je bil števec zamenjan ali faza prevezana in knjižnica opisuje stanje, ki ga ni več. Dana imena se ohranijo in se vrnejo temu, kar zaledno branje najde in je podobno - kjer se je stanje res spremenilo in se nič ne ujema, se ime pač ne vrne - razen če zahtevate, naj gredo tudi imena.",
+            "fields": {
+                "forget_names": {
+                    "name": "Pozabi tudi imena",
+                    "description": "Poleg knjižnice zavrzi tudi imena, da se nič prej naučenega - niti ime, ki še čaka na svoje breme - ne prenese. Ko se zaledno branje konča, bremena poimenujte znova."
+                }
+            }
+        },
+        "name_load": {
+            "name": "Poimenuj breme",
+            "description": "Zaznanemu bremenu dajte ime po njegovi oznaki - tisti, ki jo ima vsako breme v diagnostiki - ali ga s praznim imenom počistite. Za breme, ki ga stran za poimenovanje še ne ponuja: ta prikaže le bremena, ki so se dovolj natančno ponovila, breme z zelo različnimi zagoni pa lahko čaka dolgo.",
+            "fields": {
+                "load_id": {
+                    "name": "Breme",
+                    "description": "Oznaka zaznanega bremena, kot jo navaja diagnostika."
+                },
+                "meter": {
+                    "name": "Števec",
+                    "description": "Za breme, ki ga je videl števec z več napravami - oznaka njegovega lastnega detektorja, kot jo senzor zaznanih bremen navaja pod tem števcem (Mansardin #11). Prazno za breme, ki ga je videl priključek."
+                },
+                "name": {
+                    "name": "Ime",
+                    "description": "Kako naj se imenuje. Bremena z enakim imenom so ena naprava. Prazno počisti ime."
+                }
+            }
+        },
         "backfill_statistics": {
             "name": "Prepiši zgodovino energije bremena",
             "description": "Čez statistiko energijskega senzorja poimenovanega bremena - urno in petminutno - zapiše ure, ki jih je videlo zaznavanje, kolikor daleč nazaj jih ima, okoli deset dni, da nadzorna plošča Energija pokaže njegovo preteklost in nič od tega, kar sta iz nje naredila ponastavitev zaznavanja ali prva pojavitev senzorja: Home Assistant odčitek, ki se pojavi z več dnevi v sebi ali pade, šteje kot energijo tiste ure. Zaznavanje to stori samo vsako uro, kjer se statistika poimenovanega bremena razlikuje od tega, kar mu zdaj pripisuje. Ure pred desetimi dnevi ostanejo, kot so bile zabeležene, le ime, v katero je bilo združeno drugo ime, enkrat dobi starejšo zgodovino tega imena, breme, poimenovano zdaj, pa ure, ki jih je hranilo od prej. Ponoven zagon zapiše isto.",

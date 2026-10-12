@@ -409,6 +409,34 @@
         }
     },
     "services": {
+        "reset_detection": {
+            "name": "Reset load detection",
+            "description": "Forget every detected signature and start the meter's backfill again. For when the meter changed, or a phase was rewired, and the library describes a site that no longer exists. Names you have given are kept and handed back to whatever the backfill finds that looks like them - so where the site really has changed, and nothing matches, a name simply does not return - unless you ask for the names to go too.",
+            "fields": {
+                "forget_names": {
+                    "name": "Forget the names too",
+                    "description": "Drop the names as well as the library, so nothing learned before - not even a name waiting to find its load - carries over. Name the loads anew once the backfill has run."
+                }
+            }
+        },
+        "name_load": {
+            "name": "Name a load",
+            "description": "Give a detected load a name by its id - the one each load carries in the diagnostics - or clear it with an empty name. For a load the naming page does not offer yet: it only lists loads that have repeated tightly enough, and a load whose runs vary a lot can wait a long time.",
+            "fields": {
+                "load_id": {
+                    "name": "Load",
+                    "description": "The detected load's id, as the diagnostics give it."
+                },
+                "meter": {
+                    "name": "Meter",
+                    "description": "For a load a meter holding several devices saw - its own detector's id, as the detected loads sensor lists it under that meter (Mansarda's #11). Empty for one the grid saw."
+                },
+                "name": {
+                    "name": "Name",
+                    "description": "What to call it. Loads given the same name are one device. Empty clears the name."
+                }
+            }
+        },
         "backfill_statistics": {
             "name": "Rewrite a load's energy history",
             "description": "Write the hours detection saw of a named load - as far back as it has them, about ten days - over its energy sensor's statistics, hourly and five-minute alike, so the Energy dashboard shows its past, and none of what a detection reset or the sensor's first appearance made of it: Home Assistant counts a reading that appears with days in it, or drops, as that hour's energy. Detection does this by itself every hour, wherever a named load's statistics are off what it credits the load with now. The hours before the ten days stay as recorded, except that a name another name was joined into gains that name's older history, and a load named now the hours it kept from before, once. Running it again writes the same.",
