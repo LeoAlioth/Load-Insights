@@ -387,15 +387,15 @@ EDGE_TAU_S = 10 * 86400.0
 # does for inputs, is the upgrade if coincidences prove costly.
 EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
-# bench: a second clustering dimension - the step's reactive angle,
-# atan2(dQ, dP) in degrees, signed where the meter's VAr is. Within a size
-# segment, steps are cut again at the valleys of their angle density: a pump
-# (~35 deg) and a heater (0 deg) of one size are two kinds of edge (Hart 1992;
-# Barsim & Yang 2014 cluster dP and dQ together). Off until it can be
-# measured: Home's grid meter signs its var only from 2026-09-30 07:57, so
-# ten days of it exist from about 2026-10-10; Kozolec's Victron and every
-# 3EM give V x I or sqrt(S^2 - P^2), unsigned.
-EDGE_ANGLE = False
+# A second clustering dimension - the step's reactive angle, atan2(dQ, dP)
+# in degrees. Within a size segment, steps are cut again at the valleys of
+# their angle density: a pump (~35 deg) and a heater (0 deg) of one size are
+# two kinds of edge (Hart 1992; Barsim & Yang 2014 cluster dP and dQ
+# together). Benched on 2026-10-12 with ten days of Home's signed var: Home
+# fed devices capture +3.7 / impurity -1.3, hidden partition +3.9 / -1.9, Hiša
+# hidden +9.9 / -4.0, Kozolec hidden impurity -5.5 (its unsigned V x I var still
+# separates), Andrej +1.3 / -1.7; fragmentation no worse. A step with no var
+# reading has no angle and is cut by size alone.
 EDGE_ANGLE_BIN = 3.0           # degrees
 EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
 # A house step that meters below it stepped with at the same moment is
@@ -3504,7 +3504,7 @@ class EdgeCluster:
     # look-alike's +630 W with nothing are two kinds of edge. Only half of the
     # +630 W steps on Home's phase C came with the thermostat (2026-09-29).
     keys: Dict[str, str] = field(default_factory=dict)
-    angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE
+    angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE_BIN
     where: str = ""                           # the meter its steps happened under - see EDGE_BY_METER
     angle_n: float = 0.0
 
@@ -3799,7 +3799,7 @@ class Detector:
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
-    # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE
+    # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN
     edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
@@ -4504,7 +4504,7 @@ class Detector:
         kind = self._kinds.setdefault((ph, watts > 0), [])
         if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
-        angle = math.degrees(math.atan2(var, size)) if EDGE_ANGLE and var is not None and size > 0 else None
+        angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, where=where)
@@ -4644,7 +4644,7 @@ class Detector:
     def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
                     members: List["EdgeCluster"]) -> List["EdgeCluster"]:
         """The size segment's clusters whose reactive angle lies in the step's
-        own band of the segment's angle density - see EDGE_ANGLE."""
+        own band of the segment's angle density - see EDGE_ANGLE_BIN."""
         col: Dict[int, float] = {}
         for k, w in ha.items():
             sb, ab = k.split(":")
@@ -4653,8 +4653,11 @@ class Detector:
         ab = int(math.floor(angle / EDGE_ANGLE_BIN))
         band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
                      if lo <= ab <= hi), (ab, ab))
-        return [c for c in members if c.angle is not None
-                and band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
+        # a cluster from before the angle was measured has none yet: it still
+        # matches, and takes its angle from the steps it now gets - so a saved
+        # library carries over instead of every load starting again
+        return [c for c in members if c.angle is None
+                or band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
     def _likely_meter(self, ph: str, up: bool, size: float, since: Optional[float] = None) -> str:
         """Where a step no meter placed most likely happened: the meter whose

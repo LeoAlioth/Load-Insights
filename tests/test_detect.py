@@ -42,6 +42,24 @@ def _fridge(period=5400.0, on=1700.0, start_w=58.0, end_w=44.0):
     return lambda s: (start_w - (start_w - end_w) * (s % period) / on) if (s % period) < on else 0.0
 
 
+def test_clusters_from_before_the_angle_keep_their_steps_once_it_is_on():
+    """Production's saved clusters were built before the angle was measured
+    and have none; a step filtered to clusters WITH one matched none of them
+    and started every load again (2026-10-12)."""
+    rows = series(12 * 300, kiln(), noise=5.0)
+    var = {"a": {t: 0.0 for t, _ in rows}}
+    half = T0 + 6 * 300
+    det = D.Detector()
+    det.process({"a": [r for r in rows if r[0] < half]}, q=var, now_ts=half)
+    for c in det.edges:                          # a library saved before the angle
+        c.angle, c.angle_n = None, 0.0
+    det.edge_hist_angle.clear()
+    before = len(det.edges)
+    det.process({"a": [r for r in rows if r[0] >= half]}, q=var, now_ts=T0 + 12 * 300 + 60)
+    assert before >= 2 and len(det.edges) == before, (before, len(det.edges))
+    assert all(c.angle is not None for c in det.edges if c.count > 6), [(c.watts, c.angle) for c in det.edges]
+
+
 def test_a_load_that_sags_while_it_runs_still_closes_when_it_stops():
     """Kozolec's fridge stops 14 W short of the step it started with, past the
     ~10 W tolerance, and read as stepping down to 14 W and running on: its
@@ -3100,24 +3118,18 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
 
 def test_a_pump_and_a_heater_of_one_size_are_two_kinds_of_edge_by_their_reactive_angle():
     """Hart's plane: 900 W at 0 var and 900 W at 630 var (35 deg) share a size
-    and nothing else - with EDGE_ANGLE on, as it will be once ten days of
-    Home's signed var can measure it."""
+    and nothing else. Without a var reading only the size is there to go on."""
     rnd = random.Random(3)
-    def run(on):
-        was = D.EDGE_ANGLE
-        D.EDGE_ANGLE = on
-        try:
-            det = D.Detector()
-            ids = {}
-            for k in range(200):
-                heater = k % 2 == 0
-                w = 900.0 + rnd.gauss(0, 8)
-                var = rnd.gauss(0, 10) if heater else 630.0 + rnd.gauss(0, 15)
-                c = det._classify_step("a", T0 + 60 * k, w, var, 0.0)
-                ids.setdefault(heater, set()).add(c.id)
-            return ids
-        finally:
-            D.EDGE_ANGLE = was
+    def run(with_var):
+        det = D.Detector()
+        ids = {}
+        for k in range(200):
+            heater = k % 2 == 0
+            w = 900.0 + rnd.gauss(0, 8)
+            var = rnd.gauss(0, 10) if heater else 630.0 + rnd.gauss(0, 15)
+            c = det._classify_step("a", T0 + 60 * k, w, var if with_var else None, 0.0)
+            ids.setdefault(heater, set()).add(c.id)
+        return ids
     off, on = run(False), run(True)
     assert off[True] & off[False], off                                 # by size alone they share a cluster
     assert not (on[True] & on[False]), on                              # by angle they never do
