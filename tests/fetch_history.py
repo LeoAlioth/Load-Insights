@@ -87,6 +87,10 @@ HOME = {
         "susilna": ["switch.susilna_dehumidifier_power", "select.susilna_dehumidifier_mode",
                     "sensor.susilna_dehumidifier_humidity", "sensor.susilna_dehumidifier_temperature",
                     "number.susilna_dehumidifier_humidity_setpoint"],
+        # production's switch inputs - the motion and presence sensors a run
+        # can be keyed to, and so ended by (INPUT_ENDS): fed with SWITCH= dials
+        "inputs": ["binary_sensor.living_room_living_area_motionaware_area", "binary_sensor.staircase_occupied",
+                   "binary_sensor.entrance_sensor_occupancy", "binary_sensor.bathroom_presence_occupancy"],
     },
 }
 

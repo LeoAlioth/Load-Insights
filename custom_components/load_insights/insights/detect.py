@@ -527,7 +527,9 @@ HELD_DROPS = 8
 # on - belongs to a device that follows that input: when the input next changes
 # back, the run's stop is due at that moment by the input's lag, and if no fall
 # closed it by the end of the window its stop was hidden in another load's
-# step: it is closed there. Evidence, not a clock.
+# step: it is closed there - when the phase did step in that window; flat, the
+# run is still on (a motion sensor flipping every 10 s cut Home's kettle and
+# panini press to its flips, 2026-10-13). Evidence, not a clock.
 # ^ INPUT_ENDS: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ^ DEVICE_HOME: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...and it tells the pairing where its edges are: the thermostat going off at
@@ -1811,15 +1813,25 @@ class PhaseState:
 
     def _input_ended(self, ts: float) -> List[Session]:
         """Close runs whose input has switched back and whose stop never came -
-        see INPUT_ENDS."""
+        see INPUT_ENDS - where the phase stepped then: a stop hidden in
+        another load's step still leaves that step, and a phase flat through
+        the input's window still carries the run. Home's living-area motion
+        sensor flips every ~10 s; keyed to it, the panini press's 298 s at
+        1.5 kW was ended after 29 s, the phase flat (2026-10-12)."""
         out = []
         for o in list(self.open_edges):
             if o.cluster is None or self.owned(o):
                 continue
-            at = self.lib.input_end(o.cluster, o.since, ts)
-            if at is not None:
-                out.append(self._end(o, at, o.now or o.watts))
+            got = self.lib.input_end(o.cluster, o.since, ts)
+            if got is not None and self._stepped(o.since, *got):
+                out.append(self._end(o, got[0], o.now or o.watts))
         return out
+
+    def _stepped(self, since: float, at: float, half: float) -> bool:
+        """Whether this phase declared a step after ``since`` within ``half``
+        (and the merge tolerance) of ``at``."""
+        k = bisect.bisect_right(self.declared_t, max(since + 0.01, at - half - MERGE_TOLERANCE_S))
+        return k < len(self.declared_t) and self.declared_t[k] <= at + half + MERGE_TOLERANCE_S
 
     def _process(self, ts: float, w: float, q: Optional[float] = None,
                  pv: Optional[float] = None, held: bool = False) -> List[Session]:
@@ -4925,10 +4937,11 @@ class Detector:
             c = self._by_id.get(cid)
         return c
 
-    def input_end(self, cluster: int, since: float, now: float) -> Optional[float]:
-        """When a run that started with this cluster must have stopped, on
-        the meter's clock, if its input has changed back and the window for
-        the stop has passed by ``now`` - else None. See INPUT_ENDS."""
+    def input_end(self, cluster: int, since: float, now: float) -> Optional[Tuple[float, float]]:
+        """(when, half its window): when a run that started with this cluster
+        must have stopped, on the meter's clock, if its input has changed back
+        and the window for the stop has passed by ``now`` - else None. See
+        INPUT_ENDS."""
         c = self.cluster(cluster)
         if c is None or not c.keys or not any(c.keys.values()) or not self.signals:
             return None
@@ -4947,7 +4960,7 @@ class Detector:
                     break                                         # not known yet
                 if evs[j][1] != kind:                             # it changed back
                     due = ts[j] - lag
-                    return due if now > due + half else None
+                    return (due, half) if now > due + half else None
         return None
 
     def usual_length(self, start: int) -> Optional[float]:
