@@ -2880,6 +2880,42 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
     assert back.keys == keyed[0].keys and back.watts == keyed[0].watts
 
 
+def test_an_input_flipping_back_does_not_end_a_run_the_meter_still_shows():
+    """Home's kettle and panini press: 1.5 kW on Mansarda's B that starts as
+    the living area's motion sensor - flipping every ~10 s while someone is in
+    the kitchen - goes off. Keyed to that, INPUT_ENDS ended every run at the
+    sensor's next flip back on: 29 s of a 298 s panini run (2026-10-12),
+    with the phase flat at +1.5 kW throughout. A stop hidden in another
+    load's step still leaves a step on the phase; with none, the run is on."""
+    fleet = D.Fleet()
+    rows, flips, t = [], [], T0
+    base = 300.0
+    def hold(w, secs):
+        nonlocal t
+        for _ in range(int(secs / 5)):
+            rows.append((t, w))
+            t += 5.0
+    hold(base, 600)
+    for k in range(60):
+        on = t - 10.0
+        for j in range(32):                       # someone in the kitchen: 10 s on, 10 s off, ...
+            flips.append((on + 20.0 * j, on + 20.0 * j + 10.0))
+        hold(base + 1500.0, 300)                  # ...the kettle starts as the sensor goes off
+        hold(base, 1800)
+    step = 6 * 3600.0
+    a = T0
+    while a < t:
+        b = a + step
+        fleet.process({"b": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      switches={"binary_sensor.motion": [(x, y if y < b else None) for x, y in flips
+                                                         if x < b and y > a - D.SWITCH_MEMORY_S]})
+        a = b
+    kettle = [x for x in fleet.main.signatures if 1300.0 < sum(x.power.values()) < 1700.0]
+    runs = [y - x for k in kettle for x, y in k.runs]
+    assert sum(k.count for k in kettle) >= 55, [(k.id, k.count) for k in kettle]
+    assert runs and min(runs) > 250.0, sorted(round(r) for r in runs)
+
+
 def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
     """Home's floor mat draws through its thermostat's relay: a 600 W run on C
     while the thermostat was not heating is another load (2026-09-29)."""
