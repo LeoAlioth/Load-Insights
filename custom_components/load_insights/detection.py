@@ -65,7 +65,6 @@ from .insights.detect import (
     unit_scale,
     exports_positive,
     drop_stale_load_override,
-    mean_power,
     quantum_of_steps,
     clears_for_naming,
     offer_for_naming,
@@ -347,10 +346,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
-        # Mean watts per NAMED load over the last stretch of data processed,
-        # from the energy that stretch added. See _update_average_power.
-        self.average_power: Dict[str, float] = {}
-        self._energy_mark: Dict[str, float] = {}
+        # Watts per NAMED load as of the data processed - see _update_live_power
+        self.live_power: Dict[str, float] = {}
+        self._live_marks: Dict[str, int] = {}
+        self._live_shown: Dict[str, List[float]] = {}
         self._mark_ts: Optional[float] = None
         self._saved_at: Optional[float] = None
         self._history_saved_at: Optional[float] = None
@@ -1197,12 +1196,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 await self.hass.async_add_executor_job(
                     self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
                     dict(self.q_quantum), single, switches or None, numbers or None,
-                    inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()},
+                    inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None,
                 )
                 self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
                                   "hours": round((end - start).total_seconds() / 3600.0, 2)}
                 self.samples_read += sum(len(rows) for rows in samples.values())
-                self._update_average_power(end.timestamp())
+                self._update_live_power(end.timestamp())
                 self.last_processed = end
                 self.caught_up = end >= now - timedelta(minutes=1)
                 self.last_run = now
@@ -1304,6 +1303,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         Nothing is returned when no role can offer one, which is honest: no
         power factor beats a fabricated one."""
         out: Dict[str, Dict[float, float]] = {}
+        self.volts = {}
         for phase, rows in targets.items():
             if not rows:
                 continue
@@ -1317,6 +1317,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 power_rows = series.get(("power", phase)) or []
                 if not carries_load(power_rows):
                     continue          # coherent, but nothing flows through it
+                if series.get(("voltage", phase)):
+                    self.volts.setdefault("", {})[phase] = series[("voltage", phase)]   # steps sized at 230 V - see EDGE_NOMINAL_V
                 signed = series.get(("var", phase))
                 var = _reactive(power_rows, series.get(("voltage", phase)),
                                 series.get(("current", phase)), series.get(("pf", phase)), signed,
@@ -1377,28 +1379,19 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         entry = er.async_get(self.hass).async_get(entity_id)
         return getattr(entry, "unit_of_measurement", None) if entry else None
 
-    def _update_average_power(self, processed_to: float) -> None:
-        """Mean watts each named load drew over the data just processed.
-
-        Anze, 2026-09-18: rather than report the instantaneous power of a
-        step whose matching step down has not arrived, report the ENERGY that
-        arrived divided by the time it covers. Everything that made the
-        instantaneous reading unreliable goes away - it counts only sessions
-        that CLOSED, so a 44-second kiln run contributes whether or not
-        anyone was looking at the right moment, and a step up whose partner
-        never came contributes nothing instead of sitting high for a day.
+    def _update_live_power(self, processed_to: float) -> None:
+        """Watts each named load draws as of the data just processed - live,
+        see LIVE_NAME_SHARE: its open runs from the moment their start is
+        declared, plus the runs that began and ended within the stretch,
+        spread over it.
 
         The denominator is the span of DATA processed, not wall-clock time.
         During the backfill a single pass covers six hours of history in a
         few seconds, and dividing that energy by the few seconds would report
-        megawatts.
-        """
-        energy = self.fleet.energy_by_name()
-        previous, since = self._energy_mark, self._mark_ts
-        self._energy_mark, self._mark_ts = dict(energy), processed_to
-        if since is None or processed_to <= since:
-            return
-        self.average_power = mean_power(previous, energy, processed_to - since)
+        megawatts."""
+        since, self._mark_ts = self._mark_ts, processed_to
+        span = processed_to - since if since is not None else 0.0
+        self.live_power = self.fleet.live_power(processed_to, span, self._live_marks, self._live_shown)
 
     def _learn_q_quantum(self, key, series: Dict[tuple, list], phase: str) -> Optional[float]:
         """The apparent power one quantum of the amps behind a channel's
@@ -1434,6 +1427,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         samples = {p: series[("power", p)] for p in PHASES if series.get(("power", p))}
         if not samples:
             return {}, {}
+        if meter is not None:
+            own = {p: series[("voltage", p)] for p in samples if series.get(("voltage", p))}
+            if own:
+                self.volts[meter] = own        # the meter's own voltage - see EDGE_NOMINAL_V
         q: Dict[str, Dict[float, float]] = {}
         for p in samples:
             if self._coherent_triple(cfg, p) is None:

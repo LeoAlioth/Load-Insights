@@ -1300,36 +1300,6 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     assert set(det.energy_by_name()) == {"Boiler"}
 
 
-def test_average_power_comes_from_energy_that_arrived_not_from_an_open_step():
-    """The instantaneous reading spoke on a step UP without waiting for the
-    matching step down, was blind to any load that began and ended between
-    two five-minute passes, and sat high for a day when a partner never
-    came. Energy over the span it covers has none of that."""
-    # 178 Wh over five minutes is 2136 W - roughly two and a half kiln runs
-    got = D.mean_power({"Kiln": 1000.0}, {"Kiln": 1178.0}, 300.0)
-    assert round(got["Kiln"]) == 2136, got
-
-    # a load that did nothing reads zero, not whatever was left open
-    assert D.mean_power({"Kiln": 1178.0}, {"Kiln": 1178.0}, 300.0) == {"Kiln": 0.0}
-
-    # one reading is a total, not a rate: a name with no earlier figure waits
-    assert D.mean_power({}, {"Kiln": 1178.0}, 300.0) == {}
-
-    # a reset takes the total to zero, which is not negative power
-    assert D.mean_power({"Kiln": 1178.0}, {"Kiln": 0.0}, 300.0) == {"Kiln": 0.0}
-
-    # the denominator is the span of DATA processed: a backfill pass covering
-    # six hours in a few seconds must not report megawatts
-    slow = D.mean_power({"Kiln": 0.0}, {"Kiln": 12000.0}, 6 * 3600.0)
-    assert round(slow["Kiln"]) == 2000, slow
-    assert D.mean_power({"Kiln": 0.0}, {"Kiln": 12000.0}, 0.0) == {}
-
-    # and it integrates back to the meter: watts x hours is the energy gained
-    span = 900.0
-    rate = D.mean_power({"X": 5.0}, {"X": 305.0}, span)["X"]
-    assert abs(rate * span / 3600.0 - 300.0) < 1e-6
-
-
 def test_stored_state_carries_only_the_precision_it_has():
     """A watt-hour written as 276.1825572400394 spends fifteen digits on a
     figure the energy meter publishes to two decimals of a kilowatt-hour, and
@@ -2914,6 +2884,127 @@ def test_an_input_flipping_back_does_not_end_a_run_the_meter_still_shows():
     runs = [y - x for k in kettle for x, y in k.runs]
     assert sum(k.count for k in kettle) >= 55, [(k.id, k.count) for k in kettle]
     assert runs and min(runs) > 250.0, sorted(round(r) for r in runs)
+
+
+def test_a_step_is_sized_at_the_voltage_while_its_load_is_on():
+    """The panini press's 12 Oct rise on Mansarda's B: 668 -> 2184 W while the
+    voltage, sent 3 ms after each power reading, fell 232.6 -> 227.3 V. Read
+    at the step it was the voltage from before the rise (1482 W at 230 V, the
+    kettle's); read while on, 1552 W - for the rise and for the fall alike
+    (2026-10-13)."""
+    fleet = D.Fleet()
+    rows, volts, t = [], [], T0
+    for w, v, secs in ((668.0, 232.6, 600), (2184.0, 227.3, 300), (668.0, 232.6, 600)):
+        for _ in range(int(secs / 16)):
+            rows.append((t, w))
+            volts.append((t + 0.003, v))
+            t += 16.0
+    fleet.process({"b": rows}, {}, now_ts=t, volts={"": {"b": volts}})
+    sizes = sorted(round(c.watts) for c in fleet.main.edges if c.phase == "b")
+    want = 1516 * (230 / 227.3) ** 2
+    assert sizes and all(abs(w - want) < 15 for w in sizes), (sizes, round(want))
+
+
+def test_two_heaters_whose_steps_overlap_in_watts_are_told_apart_at_230_v():
+    """Home's kettle (36.5 ohm, ~1450 W at 230 V) and panini press (33.7 ohm,
+    ~1570 W) on Mansarda's B, where the voltage swings 224-240 V: their raw
+    steps overlap (1375-1580 W against 1489-1709 W) and made one cluster.
+    Sized at EDGE_NOMINAL_V by the phase's voltage, they are two (2026-10-13)."""
+    rnd = random.Random(7)
+    fleet = D.Fleet()
+    rows, volts, which, t = [], [], {}, T0
+    base = 300.0
+    def hold(w, v, secs):
+        nonlocal t
+        for _ in range(int(secs / 5)):
+            rows.append((t, w))
+            volts.append((t, v))
+            t += 5.0
+    hold(base, 230.0, 600)
+    for k in range(80):
+        ohm = 36.5 if k % 2 else 33.7
+        v = rnd.uniform(224.0, 240.0)
+        hold(base, v, 60)
+        which[t] = ohm
+        hold(base + v * v / ohm, v, 200)
+        hold(base, v, 1500 + rnd.uniform(0, 600))
+    a = T0
+    while a < t:
+        b = a + 6 * 3600.0
+        fleet.process({"b": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      volts={"": {"b": [r for r in volts if a <= r[0] < b]}})
+        a = b
+    starts = sorted(which)
+    def device(x):
+        i = min(range(len(starts)), key=lambda j: abs(starts[j] - x))
+        return which[starts[i]] if abs(starts[i] - x) < 30.0 else None
+    got = {}                                       # each signature's last RUN_MEMORY runs, by device
+    for sig in fleet.main.signatures:
+        d = [device(x) for x, _ in sig.runs]
+        if 36.5 in d or 33.7 in d:
+            got[sig.id] = (d.count(36.5), d.count(33.7), sig.count)
+    for kettle, panini, _ in got.values():
+        assert min(kettle, panini) <= 0.1 * (kettle + panini), got
+    assert sum(n for _, _, n in got.values()) >= 64, got
+
+
+def _named_kettle():
+    """A fleet that has learned a 1.5 kW, 300 s load on B and named it Kettle,
+    and the time its readings reach."""
+    fleet = D.Fleet()
+    rows, t = [], T0
+    for k in range(25):
+        for w, secs in ((300.0, 1500 + 37 * (k % 5)), (1800.0, 300)):
+            for _ in range(int(secs / 5)):
+                rows.append((t, w))
+                t += 5.0
+    for _ in range(60):
+        rows.append((t, 300.0))
+        t += 5.0
+    fleet.process({"b": rows}, {}, now_ts=t)
+    sig = max((x for x in fleet.main.signatures if 1300.0 < sum(x.power.values()) < 1700.0), key=lambda x: x.count)
+    assert fleet.rename(("", sig.id), "Kettle")
+    return fleet, t
+
+
+def _feed(fleet, t, steps):
+    """Feed (watts, seconds) after ``t`` in one pass; returns where it ends."""
+    rows = []
+    for w, secs in steps:
+        for _ in range(int(secs / 5)):
+            rows.append((t, w))
+            t += 5.0
+    fleet.process({"b": rows}, {}, now_ts=t)
+    return t
+
+
+def test_a_named_load_reads_its_power_while_its_run_is_still_open():
+    """Anze, 2026-10-13: the kettle's power shows as soon as its start is
+    declared, not when its run has closed - and a start whose stop never comes
+    stops counting instead of sitting high (LIVE_STALE_FACTOR)."""
+    fleet, t = _named_kettle()
+    marks, shown = {}, {}
+    fleet.live_power(t, 60.0, marks, shown)
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # on, no stop yet
+    live = fleet.live_power(t2, t2 - t, marks, shown)
+    assert 1400.0 < live["Kettle"] < 1600.0, live
+    assert fleet.main.live_runs(t2 + 3600.0) == []           # open for an hour: no longer counted
+
+
+def test_a_named_run_that_began_and_ended_between_two_readings_comes_in_as_its_energy():
+    """A run no reading saw open still counts, spread over the stretch (the
+    kiln's 44 s pulses, 2026-09-18) - and one a reading did see open is not
+    counted again when it closes."""
+    fleet, t = _named_kettle()
+    marks, shown = {}, {}
+    fleet.live_power(t, 60.0, marks, shown)
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 300), (300.0, 600)])   # a whole run inside one stretch
+    got = fleet.live_power(t2, t2 - t, marks, shown)["Kettle"]
+    assert abs(got - 1500.0 * 300.0 / (t2 - t)) < 0.15 * 1500.0 * 300.0 / (t2 - t), got
+    t3 = _feed(fleet, t2, [(1800.0, 120)])
+    assert fleet.live_power(t3, t3 - t2, marks, shown)["Kettle"] > 1400.0          # seen open...
+    t4 = _feed(fleet, t3, [(1800.0, 180), (300.0, 600)])
+    assert fleet.live_power(t4, t4 - t3, marks, shown)["Kettle"] == 0.0             # ...so not again once filed
 
 
 def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
