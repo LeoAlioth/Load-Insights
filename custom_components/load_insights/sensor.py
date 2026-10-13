@@ -600,22 +600,18 @@ class BaseLoadSensor(_PowerW, _DetectionBase):
 
 
 class NamedLoadPower(_PowerW, _DetectionBase):
-    """Mean watts a named load drew over the stretch of data last processed.
+    """What a named load draws now (Anze, 2026-10-13): its open runs from the
+    moment their start is declared, plus the runs that began and ended between
+    two passes, spread over the pass - see LIVE_NAME_SHARE.
 
-    Not the instantaneous power, which was the first design and was three
-    ways unreliable (Anze, 2026-09-18): it spoke on a step UP without waiting
-    for the matching step down; detection reads the recorder every five
-    minutes, so a load that started AND finished inside one window was
-    already closed when we looked and never showed at all - the kiln, 44
-    seconds every two minutes, was essentially never caught; and a step up
-    whose partner never arrived sat high for as much as a day.
-
-    An average over the interval has none of that. It is the energy that
-    arrived divided by the time it covers, so it counts only sessions that
-    CLOSED - short loads included, at their true share of the window - and a
-    load that did nothing reads zero rather than whatever was last left open.
-    It also integrates back to the energy meter beside it, which the
-    instantaneous reading never did.
+    It was the energy of CLOSED runs divided by the pass (2026-09-18), never
+    an open step - a step up with no partner had sat high for a day, and a
+    run that began and ended inside one read was missed. With one-minute
+    passes that booked a whole run into the minute it closed: a 15-minute
+    fridge cycle read 1 kW for a minute and 0 the rest. An open run now
+    counts only where its start's kind has been filed under the name, and
+    stops counting once it is far longer than any run of the name; the runs
+    no pass saw open still come in as their energy.
     """
 
 
@@ -627,8 +623,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
 
     @property
     def native_value(self) -> Optional[float]:
-        # None until two passes have run: one pass gives a total, not a rate
-        value = self._runner.average_power.get(self._name)
+        value = self._runner.live_power.get(self._name)
         return None if value is None else round(value)
 
 

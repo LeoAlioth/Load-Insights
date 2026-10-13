@@ -363,6 +363,7 @@ def parse(argv):
                         help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
     parser.add_argument("--input", action="append", default=[],
                         help="ENTITY: a setting a device reports - a washer's cycle phase")
+    parser.add_argument("--volts", action="append", default=[], help="phase=entity: the grid voltage for EDGE_NOMINAL_V")
     parser.add_argument("--driver", action="append", default=[],
                         help="ENTITY: a number a load's runs may follow - a room's temperature")
     parser.add_argument("--parent", action="append", default=[],
@@ -423,6 +424,7 @@ def run(args, transform=None, say=print):
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
     q = {}
     q_quantum = {}
+    grid_v = {}
     if not args.no_q:
         trios = coherent_triples(series, fields, phases)
         say("reactive power from:")
@@ -439,6 +441,8 @@ def run(args, transform=None, say=print):
                 say(f"   {p.upper()}: no meter publishes power, voltage and current together")
                 continue
             pw, v, i = trios[p]
+            if series.get(v):
+                grid_v.setdefault("", {})[p] = series[v]
             signed = next((e for e in series if device_kind_phase(e) == ("reactive_power", p)
                            and pseudo_device(e) == pseudo_device(pw)), None)
             say(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
@@ -475,6 +479,10 @@ def run(args, transform=None, say=print):
         if verdict is False:
             pv.pop(p)
 
+    for pin in args.volts:
+        p, _, eid = pin.partition("=")
+        if eid.strip() in series:
+            grid_v.setdefault("", {})[p.strip()] = series[eid.strip()]
     subs = {}
     for pin in args.sub:
         name, _, eid = pin.partition("=")
@@ -488,6 +496,10 @@ def run(args, transform=None, say=print):
         rows = {p: series[e.strip()] for p, e in zip("abc", eids.split(",")) if e.strip() in series}
         if rows:
             subs[name.strip()] = rows
+            own = {p: series[e.strip().replace("active_power", "voltage")] for p, e in zip("abc", eids.split(","))
+                   if e.strip().replace("active_power", "voltage") in series}
+            if own:
+                grid_v[name.strip()] = own        # the meter's own voltage - see EDGE_NOMINAL_V
             if not args.no_q:
                 # its reactive power from what the meter publishes beside the
                 # power - a 3EM its apparent power and a power factor - as production
@@ -581,7 +593,8 @@ def run(args, transform=None, say=print):
                                     if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
                       numbers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
-                      inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None)
+                      inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None,
+                      volts={n: {p: cut(rows, t, e) for p, rows in byp.items()} for n, byp in grid_v.items()} or None)
         t = e
     return fleet, filed, {k: sorted(v) for k, v in fed.items() if v}
 

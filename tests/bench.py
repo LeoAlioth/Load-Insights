@@ -189,9 +189,10 @@ OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": 
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 STAGES: list = []                      # INPUT=entity dials, fed as --input
+VOLTS: list = []                       # VOLTS=phase:entity dials, fed as --volts (EDGE_NOMINAL_V test)
 FEED: list = []                        # FEED=meter dials - see the docstring
 EXTRAS: list = []                      # EXTRA=folder dials - see the docstring
-LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "FEED": FEED, "EXTRA": EXTRAS}
+LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "VOLTS": VOLTS, "FEED": FEED, "EXTRA": EXTRAS}
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
@@ -304,6 +305,8 @@ def _replay(folder: str, site: str | None, before=None):
         argv += ["--driver", eid]
     for eid in STAGES:
         argv += ["--input", eid]
+    for pin in VOLTS:
+        argv += ["--volts", pin.replace(":", "=", 1)]
     if site and SUBS in ("prod", "circuits"):
         meters, parents = {**PROD_SUBS[site], **EXTRA_SUBS.get(site, {})}, PROD_PARENTS.get(site, {})
         feed = (FEED if SUBS == "prod" and FEED else

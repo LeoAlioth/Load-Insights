@@ -352,6 +352,23 @@ EDGE_LIBRARY = 150             # clusters kept per phase and direction
 EDGE_NOISE_SHARE = 0.25
 EDGE_SCALE_REL = 0.02          # ponytail: fixed; the phase's voltage spread is the upgrade
 EDGE_BIN = 0.25
+# A step is clustered by its size at EDGE_NOMINAL_V, scaled by the square of
+# its phase's voltage while the load is on - just after a rise, just before a
+# fall (the meter's own voltage, else the grid meter's through the meter's
+# phase map; 0 turns it off). Read EDGE_VOLT_SKEW_S past the step's reading:
+# a 3EM sends the voltage a few ms after the power of the same report, so the
+# voltage "at" a rise is still the one from before it - the panini press's
+# 12 Oct rise read 232.6 V (1482 W, the kettle's) where it ran at 227.3 V
+# (1552 W). Read while on, the kettle's rises spread 2.0 % (3.7 % raw) and
+# the panini's three sit 2.2-3.5 spreads above them (2026-10-13). A heating element's draw goes with V^2, and
+# Home's phase B swings 226-239 V: the kettle's step read 1334-1681 W, the
+# panini press's 1480-1520 W inside it, one pile - at 230 V they are ~1450 W
+# and ~1570 W, apart (2026-10-13). Energy, pairing and placement keep the
+# raw watts; only the histogram and the clusters' sizes are at 230 V.
+EDGE_NOMINAL_V = 230.0
+EDGE_VOLT_SKEW_S = 1.0
+EDGE_OWN_VOLTS = 1.0           # bench dial: a meter's own voltage where it has one (0: always the grid's)
+EDGE_NOMINAL_PF = 0.0          # bench dial: only steps with a power factor at least this are sized at 230 V
 EDGE_KERNEL = 1.0
 EDGE_TAU_S = 10 * 86400.0
 # The histogram is cut at its valleys again at every step, the step in it. ^
@@ -882,6 +899,19 @@ QUANTUM_LATTICE_SHARE = 0.9
 
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
+# A named load's power is live (Anze, 2026-10-13): the watts of its open runs
+# from the moment their start is declared - an open run being a name's where
+# LIVE_NAME_SHARE of its start cluster's filed runs went to that name, over
+# at least LIVE_NAME_MIN_RUNS - plus, spread over the stretch of data, the
+# energy of its runs that started and closed between two readings of it,
+# which were never seen open (the kiln's 44 s pulses). A start whose stop
+# never comes stops counting once it has been open LIVE_STALE_FACTOR times
+# the longest run its name is known for: a step up with no partner sat high
+# for a day when power was first read off open steps (2026-09-18). Energy
+# is still booked from filed runs only.
+LIVE_NAME_SHARE = 0.8
+LIVE_NAME_MIN_RUNS = 3
+LIVE_STALE_FACTOR = 2.0
 # How many of its OWN run windows each signature remembers, so "these two are
 # never on at once" can be asked about a load that runs every few days. It
 # was asked of the rolling session list, which a busy house burns through in
@@ -1085,32 +1115,6 @@ def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
         return False
     share = abs(step) / abs(pv_step)
     return PV_SHARE_MIN <= share <= PV_SHARE_MAX
-
-
-def mean_power(previous: Dict[str, float], current: Dict[str, float],
-               span_s: float) -> Dict[str, float]:
-    """Mean watts per name, from the watt-hours gained over ``span_s``.
-
-    Reporting the energy that arrived divided by the time it covers, rather
-    than the instantaneous power of a step whose matching step down has not
-    arrived, is what makes this reading trustworthy: it counts only sessions
-    that CLOSED. A 44-second run contributes its share whether or not anyone
-    was looking at the right moment, and an up-step whose partner never came
-    contributes nothing rather than sitting high for a day.
-
-    A name with no earlier total is left out - one reading is a total, not a
-    rate. A total that went DOWN means detection was reset, which is not
-    negative power.
-    """
-    if span_s <= 0:
-        return {}
-    out: Dict[str, float] = {}
-    for name, total in current.items():
-        was = previous.get(name)
-        if was is None:
-            continue
-        out[name] = max(0.0, total - was) * 3600.0 / span_s
-    return out
 
 
 def _trim(value, places: int):
@@ -3731,6 +3735,7 @@ class Detector:
     held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
     signatures: List[Signature] = field(default_factory=list)
     recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
+    filed_n: int = 0                       # sessions filed so far, each recent one's "n" - see live_runs
     # ids a merge has retired, so a session filed before it still resolves to
     # the signature that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
@@ -3828,6 +3833,8 @@ class Detector:
     meter_wh: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
     meter_read: Optional[object] = field(default=None, repr=False, compare=False)
+    # (phase, ts) -> the phase's voltage then, or None, set by the Fleet - see EDGE_NOMINAL_V
+    volt_at: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -4195,7 +4202,9 @@ class Detector:
                 if self._device_home is not None:
                     pooled = self._device_home.setdefault(pair[0], {})
                     pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
-        self.recent.append({"start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
+        self.filed_n += 1
+        self.recent.append({"n": self.filed_n, "wh": round(s.energy_wh, 2),
+                            "start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
         for sig in self._judge_born():
@@ -4505,6 +4514,7 @@ class Detector:
         if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
+        size = self._at_nominal(ph, since, size, watts > 0, pf)
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, where=where)
@@ -4521,6 +4531,19 @@ class Detector:
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         return cluster
+
+    def _at_nominal(self, ph: str, since: float, size: float, up: bool, pf: Optional[float]) -> float:
+        """``size`` as it would be at EDGE_NOMINAL_V - see EDGE_NOMINAL_V; as
+        it is where a phase's voltage is not known."""
+        if not EDGE_NOMINAL_V or self.volt_at is None:
+            return size
+        if EDGE_NOMINAL_PF and (pf is None or pf < EDGE_NOMINAL_PF):
+            return size
+        at = since + EDGE_VOLT_SKEW_S if up else since - EDGE_VOLT_SKEW_S   # while the load is on
+        vs = [self.volt_at(p, at) for p in ph]
+        if not vs or None in vs:
+            return size
+        return size * EDGE_NOMINAL_V ** 2 * len(vs) / sum(v * v for v in vs)
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
                     kind: List["EdgeCluster"], angle: Optional[float] = None, where: str = ""):
@@ -5155,6 +5178,48 @@ class Detector:
                 out[sig.name] = out.get(sig.name, 0.0) + sig.energy_wh
         return out
 
+    def live_runs(self, now_ts: float) -> List[Tuple[str, float, float]]:
+        """(name, since, watts) of each open run a named load owns - see
+        LIVE_NAME_SHARE - leaving out one open longer than LIVE_STALE_FACTOR
+        times the longest run its name is known for."""
+        longest: Dict[str, float] = {}
+        for sig in self.signatures:
+            if sig.name:
+                runs = [b - a for a, b in sig.runs] + [sig.duration_s]
+                longest[sig.name] = max(longest.get(sig.name, 0.0), max(runs))
+        out = []
+        for st in self.phases.values():
+            for o in st.open_edges:
+                name = self.start_name(o.cluster)
+                if name and now_ts - o.since <= LIVE_STALE_FACTOR * longest.get(name, 0.0):
+                    out.append((name, o.since, o.now if o.now is not None else o.watts))
+        return out
+
+    def start_name(self, cluster: Optional[int]) -> Optional[str]:
+        """The name a start of ``cluster`` belongs to: the one LIVE_NAME_SHARE
+        of its filed runs went to, over at least LIVE_NAME_MIN_RUNS - else None."""
+        home = self.start_home.get(str(cluster)) if cluster is not None else None
+        if not home:
+            return None
+        by: Dict[Optional[str], float] = {}
+        for sid, n in home.items():
+            sig = self._sig(self._current(int(sid)))
+            key = sig.name if sig is not None else None
+            by[key] = by.get(key, 0.0) + n
+        total = sum(by.values())
+        name, n = max(((k, v) for k, v in by.items() if k), key=lambda kv: kv[1], default=(None, 0.0))
+        return name if n >= LIVE_NAME_MIN_RUNS and n >= LIVE_NAME_SHARE * total else None
+
+    def filed_after(self, n: int) -> List[Tuple[str, float, float]]:
+        """(name, start, Wh) of each named session filed after the ``n``-th."""
+        out = []
+        for r in self.recent:
+            if int(r.get("n") or 0) > n:
+                sig = self._sig(self._current(r["signature"]))
+                if sig is not None and sig.name:
+                    out.append((sig.name, r["start"], float(r.get("wh", r["kwh"] * 1000.0))))
+        return out
+
     def running_now(self, now_ts: float) -> set:
         """Signature ids believed to be on right now."""
         return {a.get("signature") for a in self.active(now_ts) if a.get("signature")}
@@ -5300,6 +5365,7 @@ class Detector:
         det.held = [Session.from_dict(x) for x in d.get("held") or []]
         det.signatures = [Signature.from_dict(x) for x in d.get("signatures") or []]
         det.recent = list(d.get("recent") or [])
+        det.filed_n = max([0] + [int(r.get("n") or 0) for r in det.recent])
         det.next_id = d.get("next_id", 1)
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
@@ -5378,6 +5444,8 @@ class Fleet:
     _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False)   # see _advance
     _names: List[str] = field(default_factory=list, repr=False, compare=False)
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
+    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process, not persisted - see EDGE_NOMINAL_V
+    volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     # meter -> (phase, run, closed at) of the runs it owned the last day - see _meter_wh
@@ -5439,7 +5507,8 @@ class Fleet:
                 switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
                 numbers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
                 inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None,
-                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None) -> None:
+                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
+                volts: Optional[Dict[str, Dict[str, Sequence[Tuple[float, float]]]]] = None) -> None:
         """A pass over every meter's new readings, on ONE clock (2026-10-02).
 
         The meters below are read as they come and the grid wait_cap_s behind
@@ -5470,6 +5539,12 @@ class Fleet:
                 held.update((float(t), cast(v)) for t, v in rows)
                 last = max((t for t in held if t < keep), default=None)   # still in force at the cut
                 store[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+        for name, by_ph in (volts or {}).items():
+            for ph, rows in by_ph.items():
+                held = dict(self.volts.setdefault(name, {}).get(ph) or [])
+                held.update((float(t), float(v)) for t, v in rows)
+                last = max((t for t in held if t < keep), default=None)
+                self.volts[name][ph] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         sub_samples = sub_samples or {}
@@ -5482,6 +5557,8 @@ class Fleet:
         for name, rows_by_phase in sub_samples.items():
             self._keep_rows(name, rows_by_phase, end)
         self._keep_rows("", main_samples or {}, end)        # the grid's own, as a meter's
+        for name, det in self.detectors():
+            det.volt_at = functools.partial(self._volt_at, name)
         events, numbers = self._signal_events()
         signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
         units = self._units()
@@ -7154,6 +7231,18 @@ class Fleet:
                     row[house] = row.get(house, 0.0) + s.energy_wh * gain
                     self._votes_rev += 1
 
+    def _volt_at(self, name: str, ph: str, ts: float) -> Optional[float]:
+        """The voltage of meter ``name``'s channel ``ph`` (the grid's under "")
+        at ``ts``: the meter's own last reading by then, or else its grid
+        phase's, or None while the channel's phase is not mapped - see
+        EDGE_NOMINAL_V."""
+        rows = (self.volts.get(name) or {}).get(ph) if EDGE_OWN_VOLTS or not name else None
+        if not rows and name:
+            ph = self.phase_map(name).get(ph)
+            rows = (self.volts.get("") or {}).get(ph) if ph else None
+        i = bisect.bisect_right(rows, (ts, math.inf)) - 1 if rows else -1
+        return rows[i][1] if i >= 0 else None
+
     def phase_map(self, name: str) -> Dict[str, str]:
         """Which house phase each of the meter's channels carries, from its
         votes - worked out again only once they have changed: every grid
@@ -7266,6 +7355,32 @@ class Fleet:
         for _, det in self.detectors():
             for k, v in per_detector(det).items():
                 out[k] = out.get(k, 0.0) + v
+        return out
+
+    def live_power(self, now_ts: float, span_s: float, marks: Dict[str, int],
+                   shown: Dict[str, List[float]]) -> Dict[str, float]:
+        """Watts each name draws now - see LIVE_NAME_SHARE. ``marks`` (meter ->
+        the last session filed at the previous reading) and ``shown`` (name ->
+        the starts of runs counted open then) are the previous reading's, and
+        are updated to this one's. A load that several meters see is read off
+        the one showing the most of it, not added up."""
+        per: Dict[str, Dict[str, float]] = {}
+        now_shown: Dict[str, List[float]] = {}
+        for key, det in self.detectors():
+            for name, since, w in det.live_runs(now_ts):
+                row = per.setdefault(name, {})
+                row[key] = row.get(key, 0.0) + w
+                now_shown.setdefault(name, []).append(since)
+            if span_s > 0:
+                for name, start, wh in det.filed_after(marks.get(key, det.filed_n)):
+                    if not any(abs(start - t) <= MERGE_TOLERANCE_S for t in shown.get(name, [])):
+                        row = per.setdefault(name, {})
+                        row[key] = row.get(key, 0.0) + wh * 3600.0 / span_s
+            marks[key] = det.filed_n
+        shown.clear()
+        shown.update(now_shown)
+        out = {name: 0.0 for name in self.names()}
+        out.update({name: max(row.values()) for name, row in per.items()})
         return out
 
     def energy_by_name(self) -> Dict[str, float]:
