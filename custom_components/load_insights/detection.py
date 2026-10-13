@@ -239,12 +239,20 @@ def meter_devices(hass: HomeAssistant, device_id: str) -> List[str]:
     Looked for among the devices of the meter's own config entries:
     `registry.devices` used as a mapping (`.values()` too) is deprecated from
     Home Assistant 2026.9 and breaks in 2027.9, and iterating it yields device
-    ids rather than entries before 2026.9 - this helper reads the same on both."""
+    ids rather than entries before 2026.9 - this helper reads the same on both.
+    A device's `config_entries` (a set) is deprecated for its single
+    `config_entry_id` and breaks in 2027.10; older versions have only the set."""
     ids = [device_id]
     try:
         devices = dr.async_get(hass)
         meter = devices.async_get(device_id)
-        ids += dict.fromkeys(d.id for entry_id in (meter.config_entries if meter else ())
+        if meter is None:
+            entry_ids = ()
+        elif hasattr(type(meter), "config_entry_id"):   # checked on the class: no deprecation warning
+            entry_ids = (meter.config_entry_id,) if meter.config_entry_id else ()
+        else:
+            entry_ids = meter.config_entries
+        ids += dict.fromkeys(d.id for entry_id in entry_ids
                              for d in dr.async_entries_for_config_entry(devices, entry_id)
                              if d.via_device_id == device_id)
     except Exception:                        # a registry we cannot read is not fatal
