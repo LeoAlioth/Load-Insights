@@ -61,17 +61,21 @@ from . import detect as _d   # read at call time, so the bench's dials reach the
 # of 2026-10-14 that the properties were first measured with). A moment is
 # decided only once every meter's readings reach this far past it.
 PROPS_REACH_S = 90.0
-# "Clearly above the ancestor's noise" (coverage): the detector's own clear
-# step, ten times the noise (Fleet._learn_lags). Conservation judges only
-# the moments whose children's step is that clear of both meters' IDLE noise
-# (PhaseState.noise, a step's floor) and counts the rest apart (Anze,
-# 2026-10-14): of the grid>Hiša moments that did not add up, 4,461 of the
-# 4,945 with a step of their size nearby had children under 100 W, their
-# parent's step of that size anywhere in the two minutes looked in - chance,
-# not a meter at fault. Not the noise at the level (noise_at): on a loaded
-# grid phase that put the bar near 1 kW, and 1,452 of the hidrofor's 1,461
-# moments fell under it.
-CLEAR_NOISES = 10.0
+# A clear step (conservation and coverage, see _clear): one at least the
+# meters' idle noises added together (PhaseState.noise, a step's floor) - the
+# parent's channels and every child leg involved - with no factor on top
+# (Anze, 2026-10-14: no multiplier). Conservation judges only those moments
+# and counts the rest apart: of the grid>Hiša moments that did not add up,
+# 4,461 of the 4,945 with a step of their size nearby had children under
+# 100 W, their parent's step of that size anywhere in the two minutes looked
+# in - chance, not a meter at fault. Not the noise at the level (noise_at):
+# on a loaded grid phase that put the bar near 1 kW, and 1,452 of the
+# hidrofor's 1,461 moments fell under it.
+
+
+def _clear(step: float, floors: Sequence[float]) -> bool:
+    return abs(step) >= sum(floors)
+
 # The scorecard's judgements, from the spec (2026-10-14): a property mixed
 # where it splits into two piles each holding this share of a group; a group
 # counted with this many edges, seen on this many days.
@@ -255,7 +259,7 @@ class Assembler:
         self.first: Dict[Tuple[str, str], float] = {}
         self.chans: Dict[str, Dict[str, Optional[str]]] = {"": {}}
         self.noise: Dict[Tuple[str, str], float] = {}
-        self.floor: Dict[Tuple[str, str], float] = {}     # each channel's idle noise - see CLEAR_NOISES
+        self.floor: Dict[Tuple[str, str], float] = {}     # each channel's idle noise - see _clear
         self.latency: Dict[str, float] = {}
         self.edges: List[dict] = []
         self.cons: List[dict] = []
@@ -464,7 +468,7 @@ class Assembler:
             ok = abs(p - c) <= tol
             self.cons.append({"t": min(x.t for x in ps), "parent": ps[0].meter, "children": sorted({q.meter for q in ks}),
                               "p": p, "c": c, "tol": tol, "ok": ok, "at": min(q.t for q in ks),
-                              "clear": abs(c) >= CLEAR_NOISES * max(x.floor or x.noise for x in ps + [y for q in ks for y in q.legs]),
+                              "clear": _clear(c, [x.floor or x.noise for x in ps + [y for q in ks for y in q.legs]]),
                               "phases": None if any(q.phases is None for q in ks) else sorted(set().union(*(q.phases for q in ks))),
                               "keys": [x.key for x in ps] + [x.key for q in ks for x in q.legs]})
             if ok:
@@ -502,8 +506,8 @@ class Assembler:
             tol = _tol([noise] + [x.noise for x in q.legs], q.dp)
             self.cons.append({"t": q.t, "parent": anc, "children": [q.meter], "p": 0.0, "c": q.dp, "tol": tol,
                               "ok": abs(q.dp) <= tol, "at": q.t,
-                              "clear": abs(q.dp) >= CLEAR_NOISES * max([self.floor.get((anc, c), self.noise.get((anc, c), 0.0)) for c in chans]
-                                                                       + [x.floor or x.noise for x in q.legs]), "phases": None if q.phases is None else sorted(q.phases),
+                              "clear": _clear(q.dp, [self.floor.get((anc, c), self.noise.get((anc, c), 0.0)) for c in chans]
+                                              + [x.floor or x.noise for x in q.legs]), "phases": None if q.phases is None else sorted(q.phases),
                               "keys": [x.key for x in q.legs]})
 
     def _edge(self, places: List[Step], ups: dict, piece_of: dict) -> Tuple[dict, List[Step]]:
@@ -546,8 +550,8 @@ class Assembler:
                 states.append((c, entries[k]))
             if m in above and m not in chain and states and all(v is not None for _, v in states):
                 # a meter above read through the moment and showed nothing of a clear step
-                noise = max(self.noise.get((m, c), 0.0) for c, _ in states)
-                if noise and abs(sum(x.grid for x in places)) >= CLEAR_NOISES * noise:
+                if _clear(sum(x.grid for x in places), [self.floor.get((m, c), self.noise.get((m, c), 0.0)) for c, _ in states]
+                          + [x.floor or x.noise for x in places]):
                     blind.append(m)
         size = abs(dp)
         dqs = [x.dq for x in places]
@@ -722,8 +726,8 @@ KINDS = ("missed", "opposite", "more", "less")
 
 def conservation(cons: Sequence[dict]) -> Dict[str, list]:
     """Per meter pair "parent>child": [moments whose children's step is clear
-    of both meters' noise, of them adding up, the rest by how they fail
-    (KINDS), and the noise-level moments, counted apart - see CLEAR_NOISES]."""
+    of the meters' idle noises added, of them adding up, the rest by how they fail
+    (KINDS), and the noise-level moments, counted apart - see _clear]."""
     out: Dict[str, list] = {}
     for c in cons:
         for ch in c["children"]:
@@ -743,8 +747,8 @@ def coverage(edges: Sequence[dict]) -> Dict[str, dict]:
     """Per meter: its entries, the share unknown (not read yet), the share 0
     on silence alone (no reading within its latency either side - held, as
     the detector reads a silence), and per place meter the share of its
-    edges where a meter above read 0 though the step was clearly above that
-    meter's noise (CLEAR_NOISES)."""
+    edges where a meter above read 0 though the step was clear of its idle
+    noise and the place's added (_clear)."""
     out: Dict[str, dict] = {}
     for e in edges:
         for k, v in e["entries"].items():

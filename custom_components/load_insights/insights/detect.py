@@ -95,6 +95,11 @@ NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: Anze wants 
 # 30 W from the level on average, set the floor at 4 x 30 W and so stayed
 # inside it for good: 1,616 of its steps on 28.09 counted from a start on the
 # 19th, none from a start on the 21st. A held level moves by nothing.
+# Only a move from a reading at the level too: back at the level after a dip
+# of a load nothing holds open, the move from the dip is the load's, not
+# noise - Home's grid b, 10-12 19:20, a load cycling 280 <-> 660 W under a
+# floor that had taken it in slid 360-390 W "idle" moves and held the noise at
+# 700 W for an hour (2026-10-14, once the implied zeros moved the floor there).
 # ^ NOISE_FROM_MOVES: always on, the name this note goes by elsewhere
 # A new level is confirmed by TIME, SUSTAIN_CADENCES of the meter's own
 # reading cadence (its shortest usual gap), never by a count of readings: the
@@ -988,6 +993,23 @@ NOISE_WINDOW = 240     # the moves the noise is the median of at every reading (
 # every 300 s 16.8 % and 33.7 % captured, every 3600 s 16.0 and 31.6 with the
 # spread of the blocks back (14.1-17.3 against 16.4-17.0; 2026-10-04).
 REL_REFRESH_S = 300.0
+# The recorder writes only a CHANGE, so a silence is the value held: each of
+# the meter's intervals (its cadence, a low percentile of its gaps) in it is a
+# move of nothing, and a reading after one brings them into the noise window
+# (the seed's too). A gap is silence only past SILENCE_CADENCES intervals, and
+# only that part counts: (gap - SILENCE_CADENCES x interval) / interval,
+# whole intervals. Home's hidrofor plug reports while it runs (87 %
+# of its readings over 8.6 % of the time) and idle once in 8 minutes, flat at
+# 0.6 W: from its moves alone its noise was 158-298 W, seeded on a run and
+# never re-learned, the window filling with 62 idle moves in ten days. A
+# meter at a steady cadence has no gaps to fill (_implied_zeros).
+# ponytail: a quarter of the window per gap, so one gap (a night, an outage
+# the recorder did not mark) never decides the median alone; a judgement.
+IMPLIED_ZEROS_CAP = NOISE_WINDOW // 4
+# ponytail: k = 3, as SUSTAIN_CADENCES (the latency: a silence that long means
+# the value held); Home's grid reads every ~2 s at a cadence of 1.1-1.8 s and
+# 9-16 % of its readings implied a zero at k = 1. A judgement.
+SILENCE_CADENCES = 3
 
 
 def _slide(window: List[float], ordered: List[float], x: float, size: int) -> float:
@@ -1793,6 +1815,7 @@ class PhaseState:
     noise_rel: float = 0.0
     rel_diffs: List[float] = field(default_factory=list)
     seed: List[float] = field(default_factory=list)
+    seed_zeros: int = 0               # the held moves its gaps imply - see IMPLIED_ZEROS_CAP
     idle_diffs: List[float] = field(default_factory=list)
     _rel_tick: Optional[int] = field(default=None, repr=False, compare=False)
     _idle_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
@@ -1940,6 +1963,7 @@ class PhaseState:
                     m = self._moving_sorted
                     self.interval = m[int(MOVING_PERCENTILE * (len(m) - 1))]
         prev_w = self.last_w             # the reading before this one - see NOISE_FROM_MOVES
+        zeros = 0 if held else self._implied_zeros(ts)
         if not held:
             moved = prev_w is not None and abs(w - prev_w) >= self.noise_at(prev_w)
             same = self.last_ts is not None and ts - self.last_ts <= SAME_UPDATE_S
@@ -1961,6 +1985,7 @@ class PhaseState:
             self._learn_quantum(w)
         if self.baseline is None:
             self.seed.append(w)
+            self.seed_zeros += zeros
             if len(self.seed) >= BASELINE_SEED_SAMPLES:
                 ordered = sorted(self.seed)
                 self.baseline = ordered[int(BASELINE_SEED_PERCENTILE * (len(ordered) - 1))]
@@ -1976,12 +2001,12 @@ class PhaseState:
                 # whole load noise. The old window was "within twice the
                 # floor", which tied this to a constant meant for something
                 # else and made lowering that constant collapse the estimate.
-                diffs = [abs(b - a) for a, b in zip(self.seed, self.seed[1:])] or [0.0]
+                diffs = [abs(b - a) for a, b in zip(self.seed, self.seed[1:])] + [0.0] * self.seed_zeros or [0.0]
                 self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * _median(diffs))
                 self.level = self.baseline
                 self.q_level = q
                 self.pv_level = pv
-                self.seed = []
+                self.seed, self.seed_zeros = [], 0
             return []
 
         if self.open_edges and any(ts - e.since > MAX_OPEN_S for e in self.open_edges):
@@ -2040,10 +2065,12 @@ class PhaseState:
                 # under-reported rather than booked as a load it is not.
                 if abs(w - self.baseline) <= self.noise_at(self.baseline):
                     self.level = self.baseline
-                mid = _slide(self.idle_diffs, self._idle_sorted,
-                             abs(w - prev_w) if prev_w is not None else abs(w - self.baseline), NOISE_WINDOW)
-                if len(self.idle_diffs) >= NOISE_WINDOW:
-                    self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * mid)
+                if prev_w is not None and abs(prev_w - self.level) < self.noise_at(self.level):
+                    for _ in range(zeros):
+                        _slide(self.idle_diffs, self._idle_sorted, 0.0, NOISE_WINDOW)
+                    mid = _slide(self.idle_diffs, self._idle_sorted, abs(w - prev_w), NOISE_WINDOW)
+                    if len(self.idle_diffs) >= NOISE_WINDOW:
+                        self.noise = max(self.min_noise, self.quantum, NOISE_MAD_FACTOR * mid)
             return []
 
         self.pending.append((ts, w, q, pv))
@@ -2134,6 +2161,14 @@ class PhaseState:
         """The step declared exactly at ``since``, if one was."""
         k = bisect.bisect_left(self.declared_t, since - 0.01)
         return self.declared[k] if k < len(self.declared) and abs(self.declared[k][0] - since) <= 0.01 else None
+
+    def _implied_zeros(self, ts: float) -> int:
+        """The moves of nothing the gap before a reading at ``ts`` implies,
+        one per interval of the meter's in its silence - see IMPLIED_ZEROS_CAP."""
+        if self.last_ts is None or not self.interval:
+            return 0
+        silence = ts - self.last_ts - SILENCE_CADENCES * self.interval
+        return max(0, min(IMPLIED_ZEROS_CAP, int(silence / self.interval)))
 
     def latency(self) -> float:
         """How long after a moment this reading's data about it is complete -
@@ -2720,6 +2755,7 @@ class PhaseState:
                 "min_noise": self.min_noise, "noise_rel": self.noise_rel,
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
+                "seed_zeros": self.seed_zeros,
                 "idle_diffs": list(self.idle_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
                 "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag, "lead": self.lead,
@@ -2734,6 +2770,7 @@ class PhaseState:
                    interval=d.get("interval", 0.0), noise_rel=d.get("noise_rel", 0.0),
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
                    step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   seed_zeros=int(d.get("seed_zeros") or 0),
                    idle_diffs=list(d.get("idle_diffs") or []),
                    pending=[tuple(x) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),

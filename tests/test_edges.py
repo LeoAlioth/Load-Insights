@@ -104,8 +104,12 @@ def test_a_step_only_a_sub_meter_saw_is_an_edge():
     e = a.edges[0]
     assert e["place"] == "NASA" and e["entries"]["Mansarda|x"] == 0.0 and e["entries"]["|a"] == 0.0
     assert e["blind"] == []
-    # 12 W is no clear step on 10 W of noise: counted apart, not judged
+    # 12 W is under the two meters' idle noises added (10 + 10 W): counted apart, not judged
     assert sorted(E.conservation(a.cons).items()) == [(">NASA", [0, 0, 0, 0, 0, 0, 1]), ("Mansarda>NASA", [0, 0, 0, 0, 0, 0, 1])]
+    # 25 W clears them with no factor on top: judged (a miss), and blind above
+    a = assemble([step("NASA", "a", 200.0, 25.0, "a")], {"NASA": "Mansarda"}, chans)
+    assert sorted(a.edges[0]["blind"]) == ["", "Mansarda"]
+    assert sorted(E.conservation(a.cons).items()) == [(">NASA", [1, 0, 1, 0, 0, 0, 0]), ("Mansarda>NASA", [1, 0, 1, 0, 0, 0, 0])]
 
 
 def test_zero_against_unknown():

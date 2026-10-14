@@ -17,12 +17,13 @@ card    Home, Kozolec and Andrej's site (or the SITEs given) with every meter
           1 conservation - per meter pair parent>child, the share of moments
             where the parent's step is its children's (within both meters'
             noise and METER_CAL_SLACK), a parent that read nothing counted
-            as 0 - of the moments whose children's step is clear of both
-            meters' noise, the noise-level ones counted apart; the worst ones
+            as 0 - of the moments whose children's step is clear of the
+            meters' idle noises added, the noise-level ones counted apart; the worst ones
             are the worklist
           2 coverage - per meter, its entries unknown (not read yet) and 0 on
             silence alone; per place, its edges where a meter above read 0
-            though the step was clearly above its noise ("blind")
+            though the step was clear of its idle noise and the place's
+            added ("blind")
           3 invariance - edges SLICE=0 and LIVE=1 assemble differently from
             SLICE=6 (place, direction, pattern within 2 s, non-zero entries)
           4-8 the groups' tightness, mixed, duplicates, count and mirror, beside
@@ -311,7 +312,7 @@ def _site_lines(site: str, runs: dict, inv: dict) -> tuple:
              f"); {r['shared']:,d} with a shared entry; late {r['late']}; {r['seconds']:.0f} s"]
     lines.append("  gains at the end (Fleet.gain against the grid, the steps it learned from): " +
                  ", ".join(f"{m} {g:.3f} ({n:.0f})" for m, (g, n) in r.get("gains", {}).items()))
-    lines.append("  1 conservation, parent > child: adds up % of the moments clear of both meters' noise; the rest as "
+    lines.append("  1 conservation, parent > child: adds up % of the moments clear of the meters' idle noises added; the rest as "
                  + ", ".join(E.KINDS) + " %; the noise-level moments; median parent / children; failing ones whose "
                  "parent stepped so off their moment")
     for k, (n, ok, *how, quiet) in sorted(r["conservation"].items(), key=lambda x: -x[1][0]):
