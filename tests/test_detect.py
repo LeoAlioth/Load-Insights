@@ -3442,6 +3442,27 @@ def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
     assert f._horizon() == 12.0
 
 
+def test_a_meter_ahead_of_the_grid_learns_a_lead_and_its_spans_reach_the_grids_step():
+    """A 3EM whose steps come 5 s BEFORE the grid's (its lags negative, Home's
+    grid read a median 4.6 s after the 3EM's, 2026-10-14): its lag stays 0,
+    its lead is 5 s, and a step whose span ended before the grid's began is
+    found over the grid's span - not without the lead."""
+    f = _fleet_with_meters({"Hiša": 0.0})
+    plug, grid = f.subs["Hiša"].phases["a"], f.main.phases["c"]
+    plug.interval, grid.noise = 2.0, 10.0
+    for k in range(30):
+        t = T0 + 600.0 * k
+        _declare(grid, (t, 900.0, None, t - 1.0, t))
+        _declare(plug, (t - 5.0, 880.0, None, t - 8.0, t - 3.0, t - 1.0))
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f._learn_lags(T0 + 600.0 * 30 + D.LAG_REACH_S + 1.0)
+    assert plug.lag == 0.0 and plug.lead == 5.0
+    assert len(f._near(plug, T0 - 1.0, T0, 6.0)) == 1                  # spans t-8 .. t-3+5 meet the grid's t-1 .. t
+    plug.lead = 0.0
+    assert f._near(plug, T0 - 1.0, T0, 6.0) == []
+    assert D.PhaseState.from_dict(D.PhaseState(lead=5.0).to_dict()).lead == 5.0
+
+
 def test_the_grid_readings_newer_than_the_horizon_wait_for_the_next_pass():
     """A live pass reads up to now and the grid is read behind its meters:
     its readings newer than that, reactive power too, wait for the next pass,

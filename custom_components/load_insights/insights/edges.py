@@ -10,7 +10,8 @@ overwritten: choosing between entries is the grouping's business.
 
 The same moment: a meter's step is read over its own span (PhaseState.declared,
 from when the change can have happened - its latency back, see span_start -
-to its first reading at the new level), and a meter's steps on several
+to its first reading at the new level, and its lead on where its readings run
+ahead of the grid's - the feeder's, see detect.LAG_PERCENTILE), and a meter's steps on several
 channels are one event within its event window (rises as its detector formed
 them, falls grouped here the same way). A step's ENTRY on the meter above is
 that meter's step over the same moment on its phase (its phase map) nearest

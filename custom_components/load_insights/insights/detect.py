@@ -492,6 +492,13 @@ LAG_REACH_S = 300.0
 LAG_SAMPLES = 200
 LAG_MIN_SAMPLES = 20
 LAG_PERCENTILE = 0.95
+# ...and signed (Anze, 2026-10-14: "they should be able to go negative"): a
+# meter whose readings run AHEAD of the grid's has its lags below zero, and
+# the other tail, the (1 - LAG_PERCENTILE) one, is how far ahead - its LEAD
+# (PhaseState.lead). Clipped at zero, a meter's span never reached the grid's
+# step that came after it: Home's grid read its step a median 4.6 s after the
+# 3EM's in 63 % of the Hiša moments that did not add up, Blaž's plug 92 %
+# (the first edge card, 2026-10-14).
 # A run is filed by its DEVICE - the component of edge clusters its start
 # belongs to - into the signature most of the device's runs went to, or a new
 # one for a device not seen before; signatures whose runs are one device's are
@@ -1754,6 +1761,10 @@ class PhaseState:
     # a meter below the grid: its report lag against it, learned by the
     # Fleet (Fleet._learn_lags), 0 until it is - see latency
     lag: float = 0.0
+    # ...and how far its readings run AHEAD of the grid's, the other tail of
+    # its signed lags: its spans reach this much further on to meet the grid's
+    # - see LAG_PERCENTILE and Fleet._near
+    lead: float = 0.0
     _stood: Optional[float] = field(default=None, repr=False, compare=False)   # the pending reading last stood in for
     # this phase's own reading interval - its cadence, see CADENCE_GAPS - the
     # meter's rate, not a setting, so turning a poll up from 5 s to 1 s is
@@ -2669,7 +2680,7 @@ class PhaseState:
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "idle_diffs": list(self.idle_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
-                "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag,
+                "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag, "lead": self.lead,
                 "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
 
     @classmethod
@@ -2685,6 +2696,7 @@ class PhaseState:
                    pending=[tuple(x) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
                    raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),
+                   lead=float(d.get("lead") or 0.0),
                    floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
 
 
@@ -5396,10 +5408,16 @@ _HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_stop", "meter_on", "
           "meter_level", "meter_ended", "meter_wh", "meter_read")
 
 
-def _lag_of(lags) -> float:
-    """The LAG_PERCENTILE of a meter's learned lags, never below 0."""
+def _lag_of(lags, q: float = LAG_PERCENTILE) -> float:
+    """The ``q`` percentile of a meter's learned lags, never below 0."""
     got = sorted(lags)
-    return max(0.0, got[int(LAG_PERCENTILE * (len(got) - 1))])
+    return max(0.0, got[int(q * (len(got) - 1))])
+
+
+def _lead_of(lags) -> float:
+    """How far ahead of the grid a meter's learned lags put it: the other
+    tail, negated, never below 0 - see LAG_PERCENTILE."""
+    return _lag_of((-x for x in lags), LAG_PERCENTILE)
 
 
 # ------------------------------------------------------------------ the fleet: main meter + downstream meters
@@ -5845,9 +5863,11 @@ class Fleet:
 
     def _pair_tol(self, name: str, main_iv: Optional[float] = None) -> float:
         """How far apart the grid's and meter ``name``'s views of one moment
-        may lie: the merge tolerance, or the grid's cadence and the meter's
-        latency together where that is longer."""
-        return max(MERGE_TOLERANCE_S, (self._interval("") if main_iv is None else main_iv) + self._latency(name))
+        may lie: the merge tolerance, or the grid's cadence, the meter's
+        latency and its lead together where that is longer."""
+        det = self._det(name)
+        lead = max((self._lead(st) for st in det.phases.values()), default=0.0) if det and name else 0.0
+        return max(MERGE_TOLERANCE_S, (self._interval("") if main_iv is None else main_iv) + self._latency(name) + lead)
 
     def _declare_lag(self, name: str) -> float:
         """How long after a step the grid shares with it this meter has
@@ -5921,11 +5941,11 @@ class Fleet:
             return                 # the grid is the reference clock: a report lag is against it
         for name, det in self.subs.items():
             rows = self.meter_lag.get(name) or []
-            lag = 0.0
+            lag = lead = 0.0
             if len(rows) >= LAG_MIN_SAMPLES:
-                lag = _lag_of(r[0] for r in rows)
+                lag, lead = _lag_of(r[0] for r in rows), _lead_of(r[0] for r in rows)
             for st in det.phases.values():
-                st.lag = lag
+                st.lag, st.lead = lag, lead
 
     def _oldest_asked(self) -> float:
         """The oldest moment a question may still be asked about on the clock:
@@ -5998,8 +6018,8 @@ class Fleet:
             return None
         if size is not None and abs(abs(mine[1]) - size) > grid._tol(abs(mine[1]), size):
             return None                              # a part of the grid's step, not all of it
-        steps = [e for c in chans for e in self._near(det.phases[c], mine[3], mine[4], det.phases[c].latency())
-                 if (e[1] > 0) == up]
+        steps = [self._shifted(det.phases[c], e) for c in chans
+                 for e in self._near(det.phases[c], mine[3], mine[4], det.phases[c].latency()) if (e[1] > 0) == up]
         if not steps:
             return None
         a, b = min([mine[3]] + [e[3] for e in steps]), max([mine[4]] + [e[4] for e in steps])
@@ -6775,8 +6795,9 @@ class Fleet:
         if c in self.phase_map(name):
             return True
         size, best = e[1] * self.gain(name, "p"), None
+        end = self._shifted(self._det(name).phases[c], e)[4]
         for p, grid in self.main.phases.items():
-            for g in self._near(grid, e[3], e[4], grid.latency()):
+            for g in self._near(grid, e[3], end, grid.latency()):
                 if (g[1] > 0) == (e[1] > 0) and (best is None or abs(g[1] - size) < best[0]):
                     best = (abs(g[1] - size), p)
         return best is None or best[1] == ph
@@ -6854,7 +6875,7 @@ class Fleet:
                     # step, not a part of this start
                     tol = math.hypot(grid.noise_at(), st.noise_at()) + METER_CAL_SLACK * rise
                     if any(abs(g[0] - since) > 0.01 and g[1] > 0 and g[1] >= rise - tol
-                           for g in self._near(grid, e[3], e[4], st.latency())):
+                           for g in self._near(grid, e[3], self._shifted(st, e)[4], st.latency())):
                         continue
                     took[name] = rise
         if not took:
@@ -7115,12 +7136,27 @@ class Fleet:
             return 1.0
         return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
 
-    @staticmethod
-    def _near(st: "PhaseState", a: float, b: float, reach: float) -> List[tuple]:
-        """``st``'s declared steps whose spans reach into [a, b]."""
-        lo = bisect.bisect_left(st.declared_t, a - reach)
+    def _lead(self, st: "PhaseState") -> float:
+        """How far ``st``'s readings run ahead of this fleet's main's: its lead
+        less the main's (a view's main has one against the grid too), never
+        below 0; none for the main's own."""
+        if not st.lead or any(st is p for p in self.main.phases.values()):
+            return 0.0
+        return max(0.0, st.lead - max((p.lead for p in self.main.phases.values()), default=0.0))
+
+    def _shifted(self, st: "PhaseState", e: tuple) -> tuple:
+        """Meter channel ``st``'s declared step ``e`` with its span reaching
+        its lead further on (_lead) - on the main's clock."""
+        lead = self._lead(st)
+        return e if not lead else e[:4] + (e[4] + lead,) + e[5:]
+
+    def _near(self, st: "PhaseState", a: float, b: float, reach: float) -> List[tuple]:
+        """``st``'s declared steps whose spans reach into [a, b] - a meter's
+        reaching its lead further on (_lead)."""
+        lead = self._lead(st)
+        lo = bisect.bisect_left(st.declared_t, a - reach - lead)
         hi = bisect.bisect_right(st.declared_t, b + reach)
-        return [e for e in st.declared[lo:hi] if e[3] <= b and e[4] >= a]
+        return [e for e in st.declared[lo:hi] if e[3] <= b and e[4] + lead >= a]
 
     def _meter_totals(self, ph: str, since: float, window: float, up: Optional[bool] = None) -> Dict[str, tuple]:
         """Per meter measured to carry grid phase ``ph``: (its share of the grid
@@ -7142,7 +7178,7 @@ class Fleet:
             cap = UNION_CAP_WINDOWS * max([main_window] + [det.phases[c].latency() for c in chans])
             a, b = g_span
             for _ in range(8):                       # the union, grown until it holds still
-                ms = [e for c in chans for e in self._near(det.phases[c], a, b, cap)]
+                ms = [self._shifted(det.phases[c], e) for c in chans for e in self._near(det.phases[c], a, b, cap)]
                 gs = self._near(grid, a, b, cap)
                 na, nb = min([a] + [e[3] for e in ms + gs]), max([b] + [e[4] for e in ms + gs])
                 if (na, nb) == (a, b) or nb - na > cap:
