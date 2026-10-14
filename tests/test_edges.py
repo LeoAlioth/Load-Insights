@@ -125,6 +125,54 @@ def test_zero_against_unknown():
     assert a.edges[0]["blind"] == [""] and a.edges[0]["entries"]["|a"] == 0.0
 
 
+def test_a_level_read_once_is_measured_to_where_the_meter_settles():
+    """Kozolec's boiler plug, 10-04 13:54:20: the switch-on read 1902 W, the
+    plug's silence confirmed it, and its next report 40 s on read 1875 - the
+    element warming - which its detector declared as a -27 W step of its own.
+    A level the meter read once and left by its next reading, back toward
+    where it came from by no more than half the step, is no level: the step is measured to
+    where the meter settled, the first reading its surge. A level read twice,
+    or a return of more than half the step (a spike), stays as declared."""
+    chans = {"Boiler": {"a": "a"}}
+
+    def run(readings, steps):
+        rows = {("Boiler", "a"): flat(0.0, to=100.0) + readings}
+        return assemble([step("Boiler", "a", t, dp, "a") for t, dp in steps], {}, chans, rows)
+    on = [(100.0, 1902.0), (140.0, 1875.0)] + [(140.0 + 60.0 * k, 1876.0) for k in range(1, 15)]
+    a = run(on, [(100.0, 1902.0), (140.0, -27.0)])
+    assert [(e["dir"], e["entries"]["Boiler|a"]["dp"]) for e in a.edges] == [(1, 1875.0)]
+    assert abs(a.edges[0]["surge"] - 1902.0 / 1875.0) < 1e-9
+    twice = [(100.0, 1902.0), (110.0, 1902.0)] + on[1:]
+    assert [e["dir"] for e in run(twice, [(100.0, 1902.0), (140.0, -27.0)]).edges] == [1, -1]
+    for back in (12.0, 940.0):        # a spike back, or a step back past half: two steps
+        spike = [(100.0, 1902.0), (140.0, back)] + [(140.0 + 60.0 * k, back) for k in range(1, 15)]
+        assert [e["dir"] for e in run(spike, [(100.0, 1902.0), (140.0, back - 1902.0)]).edges] == [1, -1]
+    # a settle is judged on the steps as declared, and a step that is a
+    # settle absorbs none: Vtičnice 10-05 20:14, +35.2, -32.2 (no settle of
+    # it), +15.3 (the -32.2's) - once the -32.2 had absorbed the +15.3 it
+    # passed as the +35.2's settle in one slicing and not in another
+    office = [(100.0, 508.0), (130.0, 475.8), (153.0, 488.1)] + [(153.0 + 10.0 * k, 488.0) for k in range(1, 30)]
+    rows = {("Boiler", "a"): flat(487.6, to=100.0) + office}
+    steps = [step("Boiler", "a", t, dp, "a") for t, dp in ((100.0, 35.2), (130.0, -32.2), (153.0, 15.3))]
+    for every in (None, 20.0):
+        a = E.Assembler({})
+        if every is None:
+            a.feed(steps, rows=rows, chans=chans, noise={("Boiler", "a"): 10.0}, latency={"Boiler": 6.0})
+        else:
+            t = 0.0
+            while t < 600.0:
+                e = t + every
+                a.feed([s for s in steps if t <= s.b + 1.0 < e], rows={k: [r for r in rr if t <= r[0] < e] for k, rr in rows.items()},
+                       frontier={"Boiler": e}, reach={"Boiler": 11.0}, now=e, chans=chans,
+                       noise={("Boiler", "a"): 10.0}, latency={"Boiler": 6.0})
+                t = e
+        a.flush()
+        assert [round(e["entries"]["Boiler|a"]["dp"], 1) for e in a.edges] == [35.2, -16.9], (every, a.edges)
+    # a small step and a large one back: not its settle
+    small = [(100.0, 30.0), (140.0, -1000.0)] + [(140.0 + 60.0 * k, -1000.0) for k in range(1, 15)]
+    assert [e["dir"] for e in run(small, [(100.0, 30.0), (140.0, -1030.0)]).edges] == [1, -1]
+
+
 def test_a_three_phase_charger_read_as_one_total_takes_all_three_legs():
     """A meter whose one channel is not mapped may be on any phase, one mapped
     to all three is on all three: the charger's 11 kW total takes the grid's
