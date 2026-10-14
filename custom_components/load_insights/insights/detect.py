@@ -357,23 +357,6 @@ EDGE_LIBRARY = 150             # clusters kept per phase and direction
 EDGE_NOISE_SHARE = 0.25
 EDGE_SCALE_REL = 0.02          # ponytail: fixed; the phase's voltage spread is the upgrade
 EDGE_BIN = 0.25
-# A step is clustered by its size at EDGE_NOMINAL_V, scaled by the square of
-# its phase's voltage while the load is on - just after a rise, just before a
-# fall (the meter's own voltage, else the grid meter's through the meter's
-# phase map; 0 turns it off). Read EDGE_VOLT_SKEW_S past the step's reading:
-# a 3EM sends the voltage a few ms after the power of the same report, so the
-# voltage "at" a rise is still the one from before it - the panini press's
-# 12 Oct rise read 232.6 V (1482 W, the kettle's) where it ran at 227.3 V
-# (1552 W). Read while on, the kettle's rises spread 2.0 % (3.7 % raw) and
-# the panini's three sit 2.2-3.5 spreads above them (2026-10-13). A heating element's draw goes with V^2, and
-# Home's phase B swings 226-239 V: the kettle's step read 1334-1681 W, the
-# panini press's 1480-1520 W inside it, one pile - at 230 V they are ~1450 W
-# and ~1570 W, apart (2026-10-13). Energy, pairing and placement keep the
-# raw watts; only the histogram and the clusters' sizes are at 230 V.
-EDGE_NOMINAL_V = 230.0
-EDGE_VOLT_SKEW_S = 1.0
-EDGE_OWN_VOLTS = 1.0           # bench dial: a meter's own voltage where it has one (0: always the grid's)
-EDGE_NOMINAL_PF = 0.0          # bench dial: only steps with a power factor at least this are sized at 230 V
 EDGE_KERNEL = 1.0
 EDGE_TAU_S = 10 * 86400.0
 # The histogram is cut at its valleys again at every step, the step in it. ^
@@ -3933,8 +3916,6 @@ class Detector:
     meter_wh: Optional[object] = field(default=None, repr=False, compare=False)
     # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
     meter_read: Optional[object] = field(default=None, repr=False, compare=False)
-    # (phase, ts) -> the phase's voltage then, or None, set by the Fleet - see EDGE_NOMINAL_V
-    volt_at: Optional[object] = field(default=None, repr=False, compare=False)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -4614,7 +4595,6 @@ class Detector:
         if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
-        size = self._at_nominal(ph, since, size, watts > 0, pf)
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
             cluster = EdgeCluster(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, where=where)
@@ -4631,19 +4611,6 @@ class Detector:
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         return cluster
-
-    def _at_nominal(self, ph: str, since: float, size: float, up: bool, pf: Optional[float]) -> float:
-        """``size`` as it would be at EDGE_NOMINAL_V - see EDGE_NOMINAL_V; as
-        it is where a phase's voltage is not known."""
-        if not EDGE_NOMINAL_V or self.volt_at is None:
-            return size
-        if EDGE_NOMINAL_PF and (pf is None or pf < EDGE_NOMINAL_PF):
-            return size
-        at = since + EDGE_VOLT_SKEW_S if up else since - EDGE_VOLT_SKEW_S   # while the load is on
-        vs = [self.volt_at(p, at) for p in ph]
-        if not vs or None in vs:
-            return size
-        return size * EDGE_NOMINAL_V ** 2 * len(vs) / sum(v * v for v in vs)
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
                     kind: List["EdgeCluster"], angle: Optional[float] = None, where: str = ""):
@@ -5569,7 +5536,8 @@ class Fleet:
     _names: List[str] = field(default_factory=list, repr=False, compare=False)
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
     _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)     # see _through_parent
-    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process, not persisted - see EDGE_NOMINAL_V
+    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process, not persisted: the voltage
+    # the cross-meter edges read beside each step (insights/edges.py); nothing here sizes a step by it
     volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
@@ -5684,8 +5652,6 @@ class Fleet:
         for name, rows_by_phase in sub_samples.items():
             self._keep_rows(name, rows_by_phase, end)
         self._keep_rows("", main_samples or {}, end)        # the grid's own, as a meter's
-        for name, det in self.detectors():
-            det.volt_at = functools.partial(self._volt_at, name)
         events, numbers = self._signal_events()
         signals = (events, {n: [t for t, _ in evs] for n, evs in events.items()}, numbers)
         units = self._units()
@@ -7515,19 +7481,6 @@ class Fleet:
                     row = energy.setdefault(own, {})
                     row[house] = row.get(house, 0.0) + s.energy_wh * gain
                     self._votes_rev += 1
-
-    def _volt_at(self, name: str, ph: str, ts: float) -> Optional[float]:
-        """The voltage of meter ``name``'s channel ``ph`` (the grid's under "")
-        at ``ts``: the meter's own last reading by then, or else its grid
-        phase's, or None while the channel's phase is not mapped - see
-        EDGE_NOMINAL_V."""
-        rows = (self.volts.get(name) or {}).get(ph) if EDGE_OWN_VOLTS or not name else None
-        if not rows and name:
-            # a channel on several phases: their voltages together
-            got = [self._volt_at("", p, ts) for p in self.phase_map(name).get(ph) or ""]
-            return sum(got) / len(got) if got and None not in got else None
-        i = bisect.bisect_right(rows, (ts, math.inf)) - 1 if rows else -1
-        return rows[i][1] if i >= 0 else None
 
     def phase_map(self, name: str) -> Dict[str, str]:
         """Which house phase each of the meter's channels carries, from its

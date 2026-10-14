@@ -72,8 +72,8 @@ HOME = {
         "shellys-pf": (
             [f"sensor.{m}_phase_{p}_{k}" for m in ("hisa", "mansarda") for p in "abc"
              for k in ("power_factor", "apparent_power")]),
-        # ...and their voltage per phase: a step sized at 230 V by the meter's
-        # own voltage while the load is on (EDGE_NOMINAL_V, 2026-10-13)
+        # ...and their voltage per phase: the cross-meter edges' v / dv
+        # beside each step (insights/edges.py, 2026-10-13)
         "shellys-v": [f"sensor.{m}_phase_{p}_voltage" for m in ("hisa", "mansarda") for p in "abc"],
         # small loads energy_bench's worth scores (2026-10-02): the bathroom
         # fan's Shelly (behind Mansarda, from 22 Sep 12:58 UTC), the RF ceiling

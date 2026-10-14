@@ -28,7 +28,7 @@ card    Home, Kozolec and Andrej's site (or the SITEs given) with every meter
             SLICE=6 (place, direction, pattern within 2 s, non-zero entries)
           4-8 the groups' tightness, mixed, duplicates, count and mirror, beside
             the same figures for today's grid edges - the main detector's
-            classified steps by their EdgeCluster, sized as today (at 230 V)
+            classified steps by their EdgeCluster, sized as today (raw watts)
 diff    two card files, figure by figure.
 
 The steps are each detector's as it classified them (Detector._classify_step:
