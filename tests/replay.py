@@ -567,7 +567,10 @@ def run(args, transform=None, say=print):
     t = first
     fed_last: dict = {}
     fleet.parents = dict(p.split("=", 1) for p in args.parent)
-    live_from = latest - args.live_days * 86400.0 if args.live_days else math.inf
+    # the live passes END past the last reading: begun AT it, the last pass
+    # took that reading for the recorder's window-start copy and dropped it
+    # (without_window_start) - one reading at the end of LIVE replays alone
+    live_from = latest + 1e-6 - args.live_days * 86400.0 if args.live_days else math.inf
     while t <= latest:
         if t < live_from:
             e = min(t + step, live_from, latest + 1e-6)          # the backfill's slices, up to where live begins
