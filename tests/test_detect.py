@@ -492,6 +492,24 @@ def test_a_dip_its_one_device_meter_reads_once_is_the_charge_not_a_run_beside_it
         assert abs(sum(s.energy_wh for s in runs) - drew) < 0.03 * drew, ("busy" if busy else "quiet", round(drew), got)
 
 
+def test_a_meters_run_carries_only_a_step_it_can_hold():
+    """Home 10-08 14:02: the EVBox's charge dipped 2.1 kW for 6 s; the run
+    its meter owned on A was a 392 W piece of the charge's ramp, which took
+    the 2.1 kW return for its own (Fleet._meter_read), and the charge's next
+    66 minutes, 2.3 kWh, went into no run. The runs a meter owns there carry
+    a step only up to their size together."""
+    for carried, owns in ((392.0, False), (2500.0, True)):
+        f = _fleet_with_meters({"Charger": 0.0})
+        f.single = {"Charger": True}
+        plug = f.subs["Charger"].phases["a"]
+        plug.interval, plug.last_ts = 10.0, T0 + 700.0
+        f.sub_rows = {"Charger": {"a": [(T0 - 100.0, 0.0), (T0 + 2.0, 2500.0), (T0 + 608.0, 400.0), (T0 + 618.0, 2500.0)]}}
+        f._now = T0 + 700.0
+        f.main.phases["c"].open_edges = [D._Open(since=T0, watts=carried, var=None, meter="Charger")]
+        got = f._meter_read("c", T0 + 620.0, 2100.0, True, T0 + 640.0)
+        assert (got == "Charger") == owns, (carried, got)
+
+
 def _keep_filed(fleet):
     """Every house session the fleet files, and every one a meter's own
     signature takes (Session.owner), in order, as the bench keeps them."""
@@ -3423,8 +3441,8 @@ def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
     """A plug declaring the grid's steps 1.5 s after they happened, and its
     own a reading's latency later: learned once each grid step is LAG_REACH_S
     old on the clock - the same whatever the slicing - it sets the plug's
-    latency and the grid's horizon. A step the plug has two of nearby is not
-    learned from."""
+    latency and the grid's horizon. A step the plug has two of nearby is
+    learned from the nearer."""
     f = _fleet_with_meters({"Hidrofor": 0.0})
     plug, grid = f.subs["Hidrofor"].phases["a"], f.main.phases["c"]
     plug.interval, grid.noise = 10.0, 10.0
@@ -3437,9 +3455,40 @@ def test_a_meters_lag_is_learned_from_the_steps_it_shares_with_the_grid():
     f.wait_cap_s = D.METER_WAIT_CAP_S
     f._learn_lags(T0 + 600.0 * 30 + D.LAG_REACH_S + 1.0)
     rows = f.meter_lag["Hidrofor"]
-    assert len(rows) == 30 and all(r == [1.5, 12.0] for r in rows), rows[:3]
+    assert len(rows) == 31 and all(r == [1.5, 12.0] for r in rows[:30]) and rows[30][0] == 2.0, rows[-3:]
     assert plug.lag == 1.5 and plug.latency() == 30.0              # never under three of its repeat intervals
     assert f._horizon() == 12.0
+
+
+def test_a_meters_lag_is_where_its_shared_steps_pile_up_among_chance():
+    """Home's Mansarda: two channels the map placed, a third it did not - so
+    every phase had two of its channels and, learned from one-of-a-kind
+    steps on one channel only, it learned no lag in ten days (2026-10-14).
+    Each grid step's nearest step of its size on any channel that may carry
+    the phase is learned from, chance and all: the lags are where those pile
+    up - here 1-3 s late on the 3EM - and a meter whose nearest steps lie
+    anywhere in the reach shares none and does not hold the grid back."""
+    f = _fleet_with_meters({"Mansarda": 0.0})
+    m = f.subs["Mansarda"]
+    m.phases["b"] = D.PhaseState()
+    for st in m.phases.values():
+        st.interval, st.last_ts, st.noise = 0.5, T0, 5.0                # "b" placed nowhere yet
+    grid = f.main.phases["c"]
+    for k in range(60):
+        t = T0 + 600.0 * k
+        _declare(grid, (t, 900.0, None, t - 1.0, t))
+        if k % 3:                                                       # shared, on the placed channel
+            _declare(m.phases["a"], (t + 1.0 + (k % 5) * 0.5, 880.0, None, t - 2.0, t + 3.0, t + 8.0))
+        else:                                                           # chance: another load's, on the other
+            _declare(m.phases["b"], (t - 55.0 + (k * 7) % 110, 880.0, None, t - 60.0, t + 50.0, t + 60.0))
+    f.wait_cap_s = D.METER_WAIT_CAP_S
+    f._learn_lags(T0 + 600.0 * 60 + D.LAG_REACH_S + 1.0)
+    assert len(f.meter_lag["Mansarda"]) == 60
+    st = m.phases["a"]
+    assert st.lag == 3.0 and st.lead == 0.0, (st.lag, st.lead)
+    assert f._horizon() == 8.0
+    f.meter_lag["Mansarda"] = [[-55.0 + (k * 7) % 110, 60.0] for k in range(60)]   # all chance
+    assert not D._shared(f.meter_lag["Mansarda"]) and f._horizon() == 0.0
 
 
 def test_a_meter_ahead_of_the_grid_learns_a_lead_and_its_spans_reach_the_grids_step():
@@ -3792,6 +3841,100 @@ def test_every_meters_session_is_matched_by_its_peak_in_the_grids_terms():
     assert abs(f.phase_energy["Plug"]["a"]["c"] - low.energy_wh * 1.25) < 1e-6      # its energy, in the grid's terms
 
 
+def test_a_meter_reading_one_total_of_a_three_phase_load_maps_to_all_three():
+    """Home's EVBox (Polnilnica): one entity, the 11 kW total of charges on
+    all three phases. Its charges vote for the phase set, its one channel
+    carries all three - a third of its step on each against one grid phase -
+    and its sessions pair with the house's three-phase ones. A plug under a
+    single-phase load still maps to that one phase, and a 3EM's channel never
+    votes for a set (edge card 6fcb280: Polnilnica mapped to A alone)."""
+    f = D.Fleet()
+    f.subs["Charger"], f.subs["Plug"], f.subs["Hiša"] = D.Detector(), D.Detector(), D.Detector()
+    f.subs["Charger"].phases["a"].last_ts = f.subs["Plug"].phases["a"].last_ts = T0
+    for p in "abc":
+        f.subs["Hiša"].phases[p].last_ts = T0
+    charges, kettles, pool = [], [], []
+    for k in range(D.PHASE_MAP_MIN_VOTES):
+        t = T0 + 3600.0 * k
+        pool.append(D.Session("abc", t, t + 1800.0, {p: [(t, 3670.0)] for p in "abc"}))
+        charges.append(D.Session("a", t + 3.0, t + 1803.0, {"a": [(t + 3.0, 11000.0)]}))
+        pool.append(D.Session("b", t + 900.0, t + 1080.0, {"b": [(t + 900.0, 2000.0)]}))
+        kettles.append(D.Session("a", t + 902.0, t + 1082.0, {"a": [(t + 902.0, 1990.0)]}))
+    pool.sort(key=lambda m: m.start)
+    f._vote_phases({"Charger": charges, "Plug": kettles, "Hiša": charges[:3]}, 5.0, pool)
+    assert f.phase_votes["Charger"] == {"a": {"abc": D.PHASE_MAP_MIN_VOTES}} and f.phase_votes["Hiša"] == {}
+    assert f.phase_map("Charger") == {"a": "abc"} and f.phase_map("Plug") == {"a": "b"}
+    assert all(f._chans("Charger", p) == ["a"] for p in "abc")
+    assert f._chans("Plug", "b") == ["a"] and f._chans("Plug", "a") == []
+    assert f._leg_gain("Charger", "a") == 1.0 / 3.0 and f._leg_gain("Plug", "a") == 1.0
+    assert f._several("Charger", "a") and not f._several("Plug", "a")       # its falls end no leg's run
+    assert D._same_load(pool[0], charges[0], {"a": "abc"}, 1.0, 60.0)
+    assert not D._same_load(pool[0], charges[0], {"a": "a"}, 1.0, 60.0)
+
+
+def test_a_set_carries_its_subsets():
+    """Home's EVBox also charges on L1 alone (10-08 15:50, 3.6 kW on A): its
+    votes a 52 / abc 16 / c 6 (3,352 / 1,751 / 42 Wh) carry the set - a
+    tenth of them saw several phases at once (PHASE_SET_MIN), by count or by
+    energy - and an L1 charge pairs with it; Hidrofor's stray ab votes do not
+    move it off A. A
+    meter inside a circuit meter is mapped through the circuit's view of it
+    (Blaževa Soba, on Hiša's C)."""
+    f = D.Fleet()
+    f.phase_votes = {"Charger": {"a": {"a": 52, "abc": 16, "c": 6}}, "Pump": {"a": {"a": 1441, "ab": 16, "c": 3}}}
+    f.phase_energy = {"Charger": {"a": {"a": 3352.0, "abc": 1751.0, "c": 42.0}},
+                      "Pump": {"a": {"a": 24728.0, "ab": 154.0, "c": 55.0}}}
+    assert f.phase_map("Charger") == {"a": "abc"} and f.phase_map("Pump") == {"a": "a"}
+    f.phase_votes["L1"], f.phase_energy["L1"] = {"a": {"a": 65, "abc": 4}}, {"a": {"a": 9355.0, "abc": 5051.0}}
+    assert f.phase_map("L1") == {"a": "abc"}                    # a sixteenth by count, a third by energy
+    l1 = D.Session("a", T0, T0 + 1800.0, {"a": [(T0, 3600.0)]})
+    own = D.Session("a", T0 + 3.0, T0 + 1803.0, {"a": [(T0 + 3.0, 3610.0)]})
+    assert D._same_load(l1, own, {"a": "abc"}, 1.0, 60.0) and not D._same_load(l1, own, {"a": "bc"}, 1.0, 60.0)
+    view = D.Fleet()
+    view.subs["PC"] = D.Detector()
+    view.phase_votes = {"PC": {"a": {"c": D.PHASE_MAP_MIN_VOTES, "a": 2}}}
+    f.views, f.parents = {"Hiša": view}, {"PC": "Hiša"}
+    f.phase_votes.update({"Hiša": {p: {q: D.PHASE_MAP_MIN_VOTES} for p, q in zip("abc", "bca")},
+                          "PC": {"a": {"b": D.PHASE_MAP_MIN_VOTES}}})      # its own, against the house
+    assert f.phase_map("PC") == {"a": "a"}                     # Hiša's c is the grid's a
+
+
+def test_a_one_channel_meters_step_votes_for_the_phases_that_moved_with_it():
+    """Home's EVBox, 10-12 19:18:09 (the grid's per-phase readings): the
+    charge rose 4 -> 10.5 kW as a +965, b +1434, c +964 stepped together and
+    a, c ramped +1100 / +1750 and b +380 within 30 s. Its step votes for the
+    set that moved its way in the moment, the ramp counted, with its layer's
+    energy once the meter reads back below half of it; a plug's step votes
+    for its one phase; a coincident load on another phase makes the sum miss
+    - no vote."""
+    f = D.Fleet()
+    for p in "abc":
+        f.main.phases[p] = D.PhaseState(noise=10.0, interval=2.0, last_ts=T0 + 4000.0)
+    _declare(f.main.phases["a"], (T0, 965.0, None, T0 - 2.0, T0), (T0 + 15.0, 1100.0, None, T0 + 13.0, T0 + 15.0),
+             (T0 + 2000.0, 300.0, None, T0 + 1998.0, T0 + 2000.0))
+    _declare(f.main.phases["b"], (T0 + 0.5, 1434.0, None, T0 - 1.5, T0 + 0.5), (T0 + 12.0, 380.0, None, T0 + 10.0, T0 + 12.0),
+             (T0 + 2001.0, 800.0, None, T0 + 1999.0, T0 + 2001.0))
+    _declare(f.main.phases["c"], (T0 + 0.3, 964.0, None, T0 - 1.7, T0 + 0.3), (T0 + 20.0, 1750.0, None, T0 + 18.0, T0 + 20.0),
+             (T0 + 1000.0, 500.0, None, T0 + 998.0, T0 + 1000.0))
+    car, plug, lamp = D.Detector(), D.Detector(), D.Detector()
+    car.phases["a"] = D.PhaseState(noise=20.0, interval=10.0, last_ts=T0 + 4000.0)
+    _declare(car.phases["a"], (T0 + 5.0, 6600.0, None, T0 - 5.0, T0 + 5.0, T0 + 30.0, 10600.0),
+             (T0 + 3600.0, -10500.0, None, T0 + 3590.0, T0 + 3600.0, T0 + 3630.0, 100.0))
+    plug.phases["a"] = D.PhaseState(noise=5.0, interval=10.0, last_ts=T0 + 4000.0)
+    _declare(plug.phases["a"], (T0 + 1002.0, 495.0, None, T0 + 995.0, T0 + 1002.0, T0 + 1030.0, 500.0),
+             (T0 + 1500.0, -495.0, None, T0 + 1495.0, T0 + 1500.0, T0 + 1530.0, 5.0))
+    lamp.phases["a"] = D.PhaseState(noise=5.0, interval=10.0, last_ts=T0 + 4000.0)
+    _declare(lamp.phases["a"], (T0 + 2000.0, 300.0, None, T0 + 1995.0, T0 + 2000.0, T0 + 2030.0, 300.0),
+             (T0 + 2100.0, -300.0, None, T0 + 2095.0, T0 + 2100.0, T0 + 2130.0, 0.0))     # b's +800 beside it
+    f.subs.update({"Charger": car, "Plug": plug, "Lamp": lamp})
+    f._vote_steps(T0 + 3000.0)
+    assert f.phase_votes == {"Charger": {"a": {"abc": 1}}, "Plug": {"a": {"c": 1}}}, f.phase_votes
+    assert abs(f.phase_energy["Charger"]["a"]["abc"] - 6600.0 * 3595.0 / 3600.0) < 1e-6
+    assert f._step_votes_from["Charger"] == T0 + 5.0         # its fall not yet LAG_REACH_S old
+    f._vote_steps(T0 + 3000.0)
+    assert f.phase_votes["Charger"] == {"a": {"abc": 1}}       # each step votes once
+
+
 def test_a_meters_energy_answers_only_on_the_sessions_phases():
     """A 3EM's energy is its channels' that may carry the session's phases,
     in the grid's terms: its rise on a channel on another phase is another
@@ -3945,6 +4088,11 @@ def test_a_name_given_on_the_grid_stays_on_the_grid():
     call. Hiša's own signature of it is that named load, not offered."""
     f = D.Fleet()
     f.wait_cap_s = D.METER_WAIT_CAP_S
+    # both meters mapped, as at a site past its first days: with step votes
+    # (2026-10-14) Hiša mapped within these 12 hours and the PC not yet, and
+    # the 1 kW load's runs beside the PC's filed as 1.3 kW ones - the name's
+    # place is this test's question, not the maps' timing
+    f.phase_votes = {n: {"a": {"a": D.PHASE_MAP_MIN_VOTES}} for n in ("Hiša", "Blaž PC")}
     f.carry_names([{"name": "Bojler", "phases": "a", "power": {"a": 1000.0}, "duration_s": 600.0, "pf": None}])
     _tree_fleet(f=f)
     kw = _kw(f.main)
@@ -4451,13 +4599,12 @@ def test_a_meters_run_is_that_meters_until_the_meter_shows_it_stopped():
     assert back.meter == "Plug"
 
 
-def test_a_lag_is_learned_only_within_the_two_meters_latencies():
+def test_a_lag_is_learned_only_within_the_reach():
     """Home's office plug, a computer: a step of its own 150 s after a grid
     step of the same size read as that step's late report, and its 95th
     report lag came to 109 s, its declaring lag 190 s - Home's horizon. A
-    meter that reports within its latency cannot be 150 s late: a shared
-    step teaches a lag only within the two meters' latencies and the merge
-    tolerance; a true 20 s lag still does."""
+    shared step teaches a lag only within EDGE_LAG_REACH_S; a true 20 s lag
+    still does."""
     f = _fleet_with_meters({"Plug": 0.0})
     plug, grid = f.subs["Plug"].phases["a"], f.main.phases["c"]
     plug.interval, grid.interval, grid.noise = 10.0, 2.0, 10.0                    # latencies 30 and 6 s

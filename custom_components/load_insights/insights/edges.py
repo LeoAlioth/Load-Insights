@@ -23,6 +23,15 @@ an entry above that both reach into is kept on both, marked SHARED, and an
 entry above whose children's steps do not add up to it is a place too - the
 rest is a load no meter below reads (shared with them).
 
+Across meters, sizes are compared and added in the GRID's terms: each step
+times its meter's learned gain against the grid as of when its detector
+classified it (Fleet.gain, 1 until learned; a nested meter against its parent
+follows from both gains against the grid). Kozolec's Victron reads ~5 % below
+the boiler's plug (10-04 14:57:44: +1825 against +1938, tolerance 105), so
+raw, its moments failed to add up on calibration alone (stage-1 card,
+2026-10-14: grid>Boiler 54 %, median ratio 0.949). The entries keep each
+meter's raw step; only the comparisons take the gains.
+
 Streaming: steps come in pass by pass (``Assembler.feed``) and a moment is
 decided only once every meter has read past it by its own reach - nothing
 it could still declare can touch it - so the slicing never changes an edge.
@@ -53,7 +62,15 @@ from . import detect as _d   # read at call time, so the bench's dials reach the
 # decided only once every meter's readings reach this far past it.
 PROPS_REACH_S = 90.0
 # "Clearly above the ancestor's noise" (coverage): the detector's own clear
-# step, ten times the noise (Fleet._learn_lags).
+# step, ten times the noise (Fleet._learn_lags). Conservation judges only
+# the moments whose children's step is that clear of both meters' IDLE noise
+# (PhaseState.noise, a step's floor) and counts the rest apart (Anze,
+# 2026-10-14): of the grid>Hiša moments that did not add up, 4,461 of the
+# 4,945 with a step of their size nearby had children under 100 W, their
+# parent's step of that size anywhere in the two minutes looked in - chance,
+# not a meter at fault. Not the noise at the level (noise_at): on a loaded
+# grid phase that put the bar near 1 kW, and 1,452 of the hidrofor's 1,461
+# moments fell under it.
 CLEAR_NOISES = 10.0
 # The scorecard's judgements, from the spec (2026-10-14): a property mixed
 # where it splits into two piles each holding this share of a group; a group
@@ -87,17 +104,23 @@ class Step:
     dq: Optional[float]
     a: float                    # its span: from when the change can have happened...
     b: float                    # ...to its first reading at the new level
-    phase: Optional[str]        # the grid phase the meter's map gives the channel; None: not mapped yet
+    phase: Optional[str]        # the grid phase(s) the meter's map gives the channel ("abc": a total on all three); None: not mapped yet
     window: float = 0.0         # its meter's event window
     interval: float = 0.0       # its reading interval then
     noise: float = 0.0          # its noise at the step (PhaseState.noise_at) - the tolerances'
     floor: float = 0.0          # the channel's idle noise (PhaseState.noise) - the grouping's unit
     event: Optional[int] = None  # the detector's own event (a rise's legs); None: grouped here
+    gain: float = 1.0           # its meter's learned gain against the grid when classified (Fleet.gain)
     props: dict = field(default_factory=dict)
 
     @property
     def key(self) -> str:
         return f"{self.meter}|{self.ch}"
+
+    @property
+    def grid(self) -> float:
+        """Its step in the grid's terms - what is compared across meters."""
+        return self.dp * self.gain
 
     def entry(self) -> dict:
         return {"t": self.t, "dp": self.dp, "dq": self.dq, "angle": angle(self.dp, self.dq),
@@ -189,17 +212,28 @@ class _Group:
     def __init__(self, meter: str, legs: List[Step], event: Optional["_Group"] = None):
         self.meter, self.legs, self.event = meter, legs, event
         self.t, self.a, self.b = min(x.t for x in legs), min(x.a for x in legs), max(x.b for x in legs)
-        self.dp = sum(x.dp for x in legs)
-        self.phases = None if any(x.phase is None for x in legs) else {x.phase for x in legs}
+        self.dp = sum(x.grid for x in legs)      # in the grid's terms
+        self.phases = _phases(legs)
 
     def pieces(self) -> List["_Group"]:
-        loose = [x for x in self.legs if x.phase is None]
-        return [_Group(self.meter, [x], self) for x in self.legs if x.phase is not None] + \
+        """Each leg on one phase alone; those on any phase or several together."""
+        loose = [x for x in self.legs if x.phase is None or len(x.phase) > 1]
+        return [_Group(self.meter, [x], self) for x in self.legs if x.phase is not None and len(x.phase) == 1] + \
             ([_Group(self.meter, loose, self)] if loose else [])
+
+    @property
+    def loose(self) -> bool:
+        return any(x.phase is None or len(x.phase) > 1 for x in self.legs)
+
+
+def _phases(legs: Sequence[Step]):
+    """The grid phases ``legs`` may be on, None: any."""
+    return None if any(x.phase is None for x in legs) else set("".join(x.phase for x in legs))
 
 
 def _fits(phase: Optional[str], phases) -> bool:
-    return phase is None or phases is None or phase in phases
+    """Can a channel on ``phase`` (one or several, None: any) be on ``phases``?"""
+    return phase is None or phases is None or bool(set(phase) & phases)
 
 
 def _tol(noises: Sequence[float], size: float) -> float:
@@ -211,7 +245,7 @@ def _tol(noises: Sequence[float], size: float) -> float:
 class Assembler:
     """Every meter's declared steps, fed pass by pass, assembled into edges
     once each moment is decided (``edges``); what each parent's step was
-    against the steps below it (``cons``)."""
+    against the steps below it, both in the grid's terms (``cons``)."""
 
     def __init__(self, parents: Optional[Dict[str, Optional[str]]] = None):
         self.parents = {k: v for k, v in (parents or {}).items() if v}   # meter -> the meter it hangs under
@@ -221,6 +255,7 @@ class Assembler:
         self.first: Dict[Tuple[str, str], float] = {}
         self.chans: Dict[str, Dict[str, Optional[str]]] = {"": {}}
         self.noise: Dict[Tuple[str, str], float] = {}
+        self.floor: Dict[Tuple[str, str], float] = {}     # each channel's idle noise - see CLEAR_NOISES
         self.latency: Dict[str, float] = {}
         self.edges: List[dict] = []
         self.cons: List[dict] = []
@@ -230,14 +265,14 @@ class Assembler:
 
     # ------------------------------------------------ feeding
     def feed(self, steps: Sequence[Step], rows=None, volts=None, frontier=None, reach=None,
-             now: float = math.inf, chans=None, noise=None, latency=None) -> None:
+             now: float = math.inf, chans=None, noise=None, latency=None, floor=None) -> None:
         """A pass: the steps its detectors classified; each channel's new
         readings and voltages, {(meter, ch): [(t, x)]}; per meter the earliest
         step it may still declare (``frontier``) and how far a step's moment
         reaches back from it (``reach``: its latency and event window); how
         far the readings reach (``now``); each meter's channels and their
         grid phases, {meter: {ch: phase or None}}; each channel's noise; each
-        meter's latency."""
+        meter's latency; each channel's idle noise (``floor``)."""
         for store, fed in ((self.rows, rows), (self.volts, volts)):
             for k, rr in (fed or {}).items():
                 if not rr:
@@ -253,6 +288,7 @@ class Assembler:
         for m, cs in (chans or {}).items():
             self.chans.setdefault(m, {}).update(cs)
         self.noise.update(noise or {})
+        self.floor.update(floor or {})
         self.latency.update(latency or {})
         for s in steps:
             self.chans.setdefault(s.meter, {}).setdefault(s.ch, s.phase)
@@ -322,7 +358,7 @@ class Assembler:
         meter's event, its legs together - a three-phase charger read as one
         total is the grid's three legs. Its steps, or none."""
         for anc in self.ancestors(p.meter):
-            got = (events if p.phases is None else pieces).get(anc)
+            got = (events if p.loose else pieces).get(anc)
             if not got:
                 continue
             starts, cands, longest = got
@@ -334,7 +370,7 @@ class Assembler:
                 legs = [x for x in q.legs if _fits(x.phase, p.phases)]
                 if not any(x.a <= p.b and x.b >= p.a for x in legs):
                     continue
-                rank = (abs(sum(x.dp for x in legs) - p.dp), abs(q.t - p.t), q.t, legs[0].key)
+                rank = (abs(sum(x.grid for x in legs) - p.dp), abs(q.t - p.t), q.t, legs[0].key)
                 if best is None or rank < best[0]:
                     best = (rank, legs)
             if best is not None:
@@ -422,11 +458,13 @@ class Assembler:
         explained = set()
         for kids, parents in clusters.values():
             ps, ks = sorted(parents.values(), key=lambda x: x.key), sorted(kids.values(), key=lambda q: (q.t, q.meter))
-            p, c = sum(x.dp for x in ps), sum(q.dp for q in ks)
-            tol = _tol([x.noise for x in ps] + [x.noise for q in ks for x in q.legs], p)
+            p, c = sum(x.grid for x in ps), sum(q.dp for q in ks)
+            noises = [x.noise for x in ps] + [x.noise for q in ks for x in q.legs]
+            tol = _tol(noises, p)
             ok = abs(p - c) <= tol
             self.cons.append({"t": min(x.t for x in ps), "parent": ps[0].meter, "children": sorted({q.meter for q in ks}),
                               "p": p, "c": c, "tol": tol, "ok": ok, "at": min(q.t for q in ks),
+                              "clear": abs(c) >= CLEAR_NOISES * max(x.floor or x.noise for x in ps + [y for q in ks for y in q.legs]),
                               "phases": None if any(q.phases is None for q in ks) else sorted(set().union(*(q.phases for q in ks))),
                               "keys": [x.key for x in ps] + [x.key for q in ks for x in q.legs]})
             if ok:
@@ -463,7 +501,9 @@ class Assembler:
             noise = max(self.noise.get((anc, c), 0.0) for c in chans)
             tol = _tol([noise] + [x.noise for x in q.legs], q.dp)
             self.cons.append({"t": q.t, "parent": anc, "children": [q.meter], "p": 0.0, "c": q.dp, "tol": tol,
-                              "ok": abs(q.dp) <= tol, "at": q.t, "phases": None if q.phases is None else sorted(q.phases),
+                              "ok": abs(q.dp) <= tol, "at": q.t,
+                              "clear": abs(q.dp) >= CLEAR_NOISES * max([self.floor.get((anc, c), self.noise.get((anc, c), 0.0)) for c in chans]
+                                                                       + [x.floor or x.noise for x in q.legs]), "phases": None if q.phases is None else sorted(q.phases),
                               "keys": [x.key for x in q.legs]})
 
     def _edge(self, places: List[Step], ups: dict, piece_of: dict) -> Tuple[dict, List[Step]]:
@@ -473,7 +513,7 @@ class Assembler:
         self._ids += 1
         t, meter = min(x.t for x in places), places[0].meter
         dp = sum(x.dp for x in places)
-        phases = None if any(x.phase is None for x in places) else {x.phase for x in places}
+        phases = _phases(places)
         held = list(places)
         entries = {x.key: x.entry() for x in places}
         todo, seen = list(places), set()
@@ -507,7 +547,7 @@ class Assembler:
             if m in above and m not in chain and states and all(v is not None for _, v in states):
                 # a meter above read through the moment and showed nothing of a clear step
                 noise = max(self.noise.get((m, c), 0.0) for c, _ in states)
-                if noise and abs(dp) >= CLEAR_NOISES * noise:
+                if noise and abs(sum(x.grid for x in places)) >= CLEAR_NOISES * noise:
                     blind.append(m)
         size = abs(dp)
         dqs = [x.dq for x in places]
@@ -681,12 +721,16 @@ KINDS = ("missed", "opposite", "more", "less")
 
 
 def conservation(cons: Sequence[dict]) -> Dict[str, list]:
-    """Per meter pair "parent>child": [moments, of them adding up, and the
-    rest by how they fail (KINDS)]."""
+    """Per meter pair "parent>child": [moments whose children's step is clear
+    of both meters' noise, of them adding up, the rest by how they fail
+    (KINDS), and the noise-level moments, counted apart - see CLEAR_NOISES]."""
     out: Dict[str, list] = {}
     for c in cons:
         for ch in c["children"]:
-            row = out.setdefault(f"{c['parent']}>{ch}", [0, 0] + [0] * len(KINDS))
+            row = out.setdefault(f"{c['parent']}>{ch}", [0, 0] + [0] * len(KINDS) + [0])
+            if not c.get("clear", True):
+                row[-1] += 1
+                continue
             row[0] += 1
             if c["ok"]:
                 row[1] += 1

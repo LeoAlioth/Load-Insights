@@ -499,6 +499,21 @@ LAG_PERCENTILE = 0.95
 # step that came after it: Home's grid read its step a median 4.6 s after the
 # 3EM's in 63 % of the Hiša moments that did not add up, Blaž's plug 92 %
 # (the first edge card, 2026-10-14).
+# The lags are learned from every step the two show, not only the clear,
+# one-of-a-kind ones (Anze, 2026-10-14: "more pairs / longer time match
+# window"): each grid step's nearest step that way of its size on the meter
+# within EDGE_LAG_REACH_S, chance and all, and the percentiles are taken over
+# those where the lags PILE UP (_shared, as an input's lag window is found):
+# chance spreads evenly over the reach. Clear, unique pairs within the two
+# meters' latencies taught Hiša 200 of its last 2,465 shared steps, and
+# Mansarda none in ten days - its unmapped third channel made it "a meter on
+# several channels" of every phase - so its lag and lead stayed 0. The small
+# steps lie wider than the clear ones: at Hiša the clear ones' nearest pairs
+# pile at grid - meter -4..+2 s, the small ones' too with a shoulder to +10
+# (a ~62 W load the grid shows 3-10 s after the 3EM, 543 of the moments that
+# did not add up). Of those moments, the parent's step of the children's size
+# "off" the moment (the edge card's median +5.8 s) is chance in 87 %: spread
+# evenly over the 120 s either side looked in, the children ~62 W (2026-10-14).
 # A run is filed by its DEVICE - the component of edge clusters its start
 # belongs to - into the signature most of the device's runs went to, or a new
 # one for a device not seen before; signatures whose runs are one device's are
@@ -681,6 +696,17 @@ METER_WAIT_CAP_S = 300.0
 # live, 92 credited, all of them by energy - 2026-09-23), and a plug's "a" is
 # a placeholder (the unify audit, 2026-10-03).
 PHASE_MAP_MIN_VOTES = 30
+# A meter that reads ONE total of a load on several phases - Home's EVBox,
+# 11 kW charges on all three, its one entity the charger's total - votes for
+# the phase SET of the house session its own started with (Fleet._vote_phases),
+# and its map may give that one channel several phases ("abc"). Until
+# 2026-10-14 only single-phase house sessions took votes, so its charges never
+# voted, a few single-phase coincidences mapped it to A, and the edge card
+# read its steps against the grid's A leg alone (10-12 21:40:10: grid|a +3,590
+# against Polnilnica +10,529). A channel carries every phase of its map's
+# value; against one grid phase its step counts evenly spread over them
+# (Fleet._leg_gain). phases.py stays the permutation Load Juggler shares: a
+# multi-channel meter (a 3EM) still votes, and is mapped, channel by phase.
 # ...or as much energy in its votes as PHASE_MAP_MIN_VOTES of the site's
 # votes carry on average: a meter's few long runs are as much evidence as
 # many short ones (Anze, 2026-10-03: "score by both the no of events/runs and
@@ -691,6 +717,22 @@ PHASE_MAP_MIN_VOTES = 30
 # other measure's own best map has; where neither map passes on both, the
 # channels are placed nowhere.
 PHASE_MAP_AGREE = 0.5
+# A one-channel meter carries a SET of phases when the votes that saw several
+# phases step with it at once (Fleet._vote_phases, _vote_steps) are at least
+# this share of its votes, by count or by energy; the map is then the set
+# most voted for, and a single phase's votes inside it count toward it - a
+# set carries every subset of itself (_same_load, _leg_gain). Home's EVBox
+# also charges on L1 alone (10-08 15:50-16:08, 3.6 kW on A only): its votes
+# a 52 / abc 16 / c 6 / ab 2 / b 1 had 23 % by count and 38 % by energy on
+# several phases; no single-phase meter reached 2 % (Hidrofor 1.5 / 0.8,
+# Susilna 0.3 / 0.4, Blaževa Soba 1.6 / 1.9; 2026-10-14), so a tenth sits
+# far from both. Counted against a single phase vote for vote, the L1 charges
+# outvoted the three-phase ones and the charger stayed on A. Either measure,
+# not both: needing both, the EVBox's map went abc -> a -> abc -> a -> abc
+# between 10-08 16:00 and 10-12 12:00, its count share hovering at a tenth as
+# L1 charges came in; on either it holds abc from 10-08 08:00, and its fed
+# capture went 75.7 -> 77.7 %, impurity 3.3 -> 2.7 %.
+PHASE_SET_MIN = 0.1
 # A detection on a sub-meter overrides the house meter's (Anze, 2026-09-22:
 # "a detection on a sub meter level should always override one on a higher
 # level, especially if it is the less noisy one"). Not by handing detection to
@@ -3677,14 +3719,12 @@ def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int
     return segs
 
 
-def lag_window(hist: Sequence[float]) -> Optional[Tuple[float, float]]:
-    """Where an input's changes pile up against the meter's edges: (earliest,
-    latest) lag in seconds, from its histogram of lags over
-    -EDGE_LAG_REACH_S..+EDGE_LAG_REACH_S in EDGE_LAG_BIN_S bins. Chance puts
-    changes evenly across the reach; a real link piles them in a few bins. None
-    while too few are seen, or when nothing stands out of the even spread."""
+def _pile(hist: Sequence[float], least: float = EDGE_LAG_MIN) -> Optional[Tuple[int, int]]:
+    """The bins of ``hist`` where its counts pile up, (first, last): chance
+    puts them evenly across it, a real link in a few bins. None while fewer
+    than ``least`` are seen, or when nothing stands out of the even spread."""
     total = sum(hist)
-    if total < EDGE_LAG_MIN:
+    if total < least:
         return None
     even = total / len(hist)
     peak = max(range(len(hist)), key=lambda i: hist[i])
@@ -3695,6 +3735,17 @@ def lag_window(hist: Sequence[float]) -> Optional[Tuple[float, float]]:
         lo -= 1
     while hi < len(hist) - 1 and hist[hi + 1] > 2.0 * even:
         hi += 1
+    return lo, hi
+
+
+def lag_window(hist: Sequence[float]) -> Optional[Tuple[float, float]]:
+    """Where an input's changes pile up against the meter's edges (_pile):
+    (earliest, latest) lag in seconds, from its histogram of lags over
+    -EDGE_LAG_REACH_S..+EDGE_LAG_REACH_S in EDGE_LAG_BIN_S bins."""
+    got = _pile(hist)
+    if got is None:
+        return None
+    lo, hi = got
     at = lambda i: -EDGE_LAG_REACH_S + (i + 0.5) * EDGE_LAG_BIN_S  # noqa: E731
     w = sum(hist[lo:hi + 1])
     mean = sum(at(i) * hist[i] for i in range(lo, hi + 1)) / w
@@ -5420,6 +5471,24 @@ def _lead_of(lags) -> float:
     return _lag_of((-x for x in lags), LAG_PERCENTILE)
 
 
+def _shared(rows: Sequence[Sequence[float]]) -> List[Sequence[float]]:
+    """A meter's learned (report lag, declaring lag) rows whose report lags
+    pile up (_pile over EDGE_LAG_BIN_S bins of the reach) - the steps it truly
+    shares with the grid, not chance; none while fewer than LAG_MIN_SAMPLES
+    are learned or nothing piles up - see LAG_PERCENTILE."""
+    n = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
+    hist = [0] * n
+    for r in rows:
+        i = math.floor((r[0] + EDGE_LAG_REACH_S) / EDGE_LAG_BIN_S)
+        if 0 <= i < n:
+            hist[i] += 1
+    got = _pile(hist, LAG_MIN_SAMPLES)
+    if got is None:
+        return []
+    lo, hi = (-EDGE_LAG_REACH_S + k * EDGE_LAG_BIN_S for k in (got[0], got[1] + 1))
+    return [r for r in rows if lo <= r[0] < hi]
+
+
 # ------------------------------------------------------------------ the fleet: main meter + downstream meters
 @dataclass
 class Fleet:
@@ -5462,6 +5531,7 @@ class Fleet:
     _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False)   # see _advance
     _names: List[str] = field(default_factory=list, repr=False, compare=False)
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
+    _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)     # see _through_parent
     # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process, not persisted - see EDGE_NOMINAL_V
     volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
@@ -5477,6 +5547,8 @@ class Fleet:
     # LAG_SAMPLES of them, and the clock up to which grid steps were asked - see _learn_lags
     meter_lag: Dict[str, List[List[float]]] = field(default_factory=dict)
     _lag_from: Optional[float] = None
+    # meter -> the time of its last declared step that has voted - see _vote_steps
+    _step_votes_from: Dict[str, float] = field(default_factory=dict)
     # meters the runner says are not to set the horizon (the settings page) - see _horizon
     horizon_skip: set = field(default_factory=set, repr=False, compare=False)
     # the grid's readings, reactive and PV newer than the wait, for the next pass
@@ -5753,6 +5825,7 @@ class Fleet:
                     self._repaired_to += REPAIR_DAY_S
                 else:
                     f._learn_lags(at)
+                    f._vote_steps(at)
                     f._wait, f._wait_at = f._horizon(), math.floor(at / MODEL_REFRESH_S)
                     self._dues = {}                   # every meter's latency may have moved
 
@@ -5814,7 +5887,7 @@ class Fleet:
         MODEL_REFRESH_S of the clock as the lags are learned - at a pass's
         start it would move with the slicing."""
         wait = max([0.0] + [self._declare_lag(name) for name in self.subs
-                            if name not in self.horizon_skip and self.meter_lag.get(name)])
+                            if name not in self.horizon_skip and self._shares(name)])
         if self.switch_on or self.main.inputs:
             wait = max(wait, EDGE_LAG_REACH_S)
         return min(self.wait_cap_s, wait)
@@ -5836,7 +5909,54 @@ class Fleet:
     def _mapped(self, name: str, ph: str) -> List[str]:
         """Meter ``name``'s channels the phase map places on grid phase ``ph``."""
         det = self._det(name)
-        return [c for c, h in self.phase_map(name).items() if h == ph and c in det.phases] if det else []
+        return [c for c, h in self.phase_map(name).items() if ph in h and c in det.phases] if det else []
+
+    def _several(self, name: str, c: str) -> bool:
+        """Does the map give meter ``name``'s channel ``c`` several phases (a
+        total, PHASE_MAP_MIN_VOTES)? Then its falls end no run on a grid
+        phase (_meter_stop, _meter_ended): the grid's own legs pair the
+        stop. Ended by the total's fall, read at a third, Andrej's go-e
+        (mapped "abc") fed capture fell 94.0 -> 81.3 %, and to 71.7 % with the
+        fall used once per phase; with neither path ending them 95.5 %
+        (2026-10-14)."""
+        return len(self.phase_map(name).get(c) or "") > 1
+
+    def _leg_gain(self, name: str, c: str, ph: Optional[str] = None, at: Optional[float] = None) -> float:
+        """What meter ``name``'s step on channel ``c`` is worth on ONE grid
+        phase, in the grid's terms: its gain, over a channel the map gives
+        several phases (PHASE_MAP_MIN_VOTES) that phase's part of what the
+        grid's phases among them moved, as a step votes (_moved), at ``at``
+        on ``ph`` - a total carries any part of its set (PHASE_SET_MIN):
+        Home's EVBox's L1-only charge is all on A and none on B -; a share
+        evenly spread where none moved or no moment is asked about."""
+        gain = self.gain(name, "p")
+        h = self.phase_map(name).get(c) or ""
+        if len(h) < 2:
+            return gain
+        if ph is not None and at is not None:
+            tol = self._pair_tol(name)
+            for up in (True, False):
+                moved = self._moved(at, tol, h, up)
+                if ph in moved:
+                    return gain * moved[ph][0] / sum(x for x, _ in moved.values())
+            if self._moved(at, tol, h, True) or self._moved(at, tol, h, False):
+                return 0.0                    # its step was on the others
+        return gain / len(h)
+
+    def _moved(self, at: float, tol: float, phases, up: bool) -> Dict[str, Tuple[float, float]]:
+        """The grid phases among ``phases`` whose declared steps within
+        ``tol`` of ``at`` net a clear change ``up`` (or down) - ten noises,
+        as _learn_lags takes a grid step: phase -> (its size, its noise)."""
+        out = {}
+        for p in phases:
+            grid = self.main.phases.get(p)
+            if grid is None:
+                continue
+            lo, hi = bisect.bisect_left(grid.declared_t, at - tol), bisect.bisect_right(grid.declared_t, at + tol)
+            net = sum(g[1] for g in grid.declared[lo:hi])
+            if (net > 0) == up and abs(net) >= 10.0 * grid.noise_at():
+                out[p] = (abs(net), grid.noise_at())
+        return out
 
     def _read_chans(self, name: str) -> List[str]:
         """Meter ``name``'s channels that have read."""
@@ -5869,16 +5989,23 @@ class Fleet:
         lead = max((self._lead(st) for st in det.phases.values()), default=0.0) if det and name else 0.0
         return max(MERGE_TOLERANCE_S, (self._interval("") if main_iv is None else main_iv) + self._latency(name) + lead)
 
+    def _shares(self, name: str) -> bool:
+        """Has meter ``name`` shown a step the grid showed: any learned while
+        too few are to tell, then those that pile up (_shared) - a meter whose
+        nearest steps of the grid's size lie anywhere in the reach shares none."""
+        rows = self.meter_lag.get(name) or []
+        return bool(rows) and (len(rows) < LAG_MIN_SAMPLES or bool(_shared(rows)))
+
     def _declare_lag(self, name: str) -> float:
         """How long after a step the grid shares with it this meter has
         declared its own: the LAG_PERCENTILE of what was learned, once
         LAG_MIN_SAMPLES are; until then its latency twice over - the report,
         then the silence that confirms it - and in either case, where others
         hang under it, the horizon it is read behind them (_wait_of)."""
-        rows = self.meter_lag.get(name) or []
+        rows = _shared(self.meter_lag.get(name) or [])
         # ...and a meter others hang under is read its own horizon behind
         # them, which a lag learned off its own readings' times does not hold
-        if len(rows) >= LAG_MIN_SAMPLES:
+        if rows:
             return _lag_of(r[1] for r in rows) + self._wait_of(name)
         return 2.0 * self._latency(name) + self._wait_of(name)
 
@@ -5886,20 +6013,23 @@ class Fleet:
         """Each meter's lag against the grid, from the steps the two share:
         for every clear grid step at least LAG_REACH_S old on the clock - so
         the meter has had its whole reach to declare its own, whatever the
-        slicing - the meter's declared step that way of its size on a channel
-        mapped to that phase, where each is the only one of its kind on its
-        meter within the reach: (when it happened, when it was declared)
-        less the grid step's time.
-        The meter's report lag sets its latency (PhaseState.lag), the
-        declaring lag the grid's horizon (_horizon)."""
+        slicing - the meter's declared step that way of its size nearest it
+        within EDGE_LAG_REACH_S, on its channels that may carry that phase:
+        (when it happened, when it was declared) less the grid step's time.
+        Where those pile up (_shared), the meter's report lag sets its latency
+        (PhaseState.lag) and its lead, the declaring lag the grid's horizon
+        (_horizon) - see LAG_PERCENTILE."""
         reach = LAG_REACH_S
         upto = at - reach
-        # a lag is at most what the two meters' own reporting allows: a step
-        # the meter shows 100 s after the grid is another step of a wandering
-        # load, not a late report - Home's office plug (a computer) read a
-        # 95th report lag of 109 s and a declaring lag of 190 s that way, and
-        # set Home's horizon (2026-10-02)
-        bound_g = self._latency("")
+        # a step the meter shows 100 s after the grid's is another step of a
+        # wandering load, not a late report - Home's office plug (a computer)
+        # read a 95th report lag of 109 s and a declaring lag of 190 s that
+        # way, and set Home's horizon (2026-10-02): looked for within
+        # EDGE_LAG_REACH_S, and chance's left out by where the lags pile up.
+        # ponytail: a meter whose reports lag past the reach learns none, its
+        # latency its cadence's (none here does: the slowest pile, Kozolec's
+        # pond EVSE, reaches 18 s)
+        reach_m = EDGE_LAG_REACH_S
         start = self._lag_from if self._lag_from is not None else -math.inf
         if upto <= start:
             return
@@ -5912,40 +6042,100 @@ class Fleet:
                 continue
             for name, det in self.subs.items():
                 chans = self._chans(name, ph)
-                if len(chans) != 1:
-                    continue                      # a meter on several channels of it: whose step is it
-                st = det.phases[chans[0]]
-                gain, noise_m = self.gain(name, "p"), st.noise_at()
+                if not chans:
+                    continue
                 rows = self.meter_lag.setdefault(name, [])
-                bound = st.latency() + bound_g + MERGE_TOLERANCE_S
                 for g in steps:
-                    tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * abs(g[1])
-
-                    def like(e, size_tol):
-                        return ((e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= size_tol
-                                and abs(e[0] - g[0]) <= bound)
-                    near = [e for e in self._near(st, g[0] - reach, g[0] + reach, reach)
-                            if like(e, tol) and self._on_phase(name, chans[0], e, ph)]
-                    # one of its kind on both meters within the reach, or a
-                    # cycling load's next run is taken for this one's late
-                    # report and the lag reads minutes (Kozolec's boiler,
-                    # pulsing every four: its 95th 256 s)
-                    twins = [x for x in self._near(grid, g[0] - reach, g[0] + reach, reach)
-                             if x is not g and (x[1] > 0) == (g[1] > 0) and abs(abs(x[1]) - abs(g[1])) <= 2.0 * tol]
-                    if len(near) != 1 or twins:
-                        continue
-                    e = near[0]
-                    rows.append([round(e[0] - g[0], 2), round((e[5] if len(e) > 5 else e[4]) - g[0], 2)])
+                    best = None
+                    for c in chans:
+                        st = det.phases[c]
+                        # its share on this one phase (_leg_gain): a total on
+                        # several reads the part the grid's phases moved here
+                        gain = self._leg_gain(name, c, ph, g[0])
+                        if gain <= 0.0:
+                            continue
+                        tol = math.hypot(noise_g, st.noise_at()) + METER_CAL_SLACK * abs(g[1])
+                        a, b = (bisect.bisect_left(st.declared_t, g[0] - reach_m),
+                                bisect.bisect_right(st.declared_t, g[0] + reach_m))
+                        for e in st.declared[a:b]:
+                            if ((e[1] > 0) == (g[1] > 0) and abs(abs(e[1]) * gain - abs(g[1])) <= tol
+                                    and (best is None or abs(e[0] - g[0]) < abs(best[0] - g[0]))
+                                    and self._on_phase(name, c, e, ph)):
+                                best = e
+                    if best is not None:
+                        rows.append([round(best[0] - g[0], 2), round((best[5] if len(best) > 5 else best[4]) - g[0], 2)])
                 del rows[:-LAG_SAMPLES]
         if not self.reference:
             return                 # the grid is the reference clock: a report lag is against it
         for name, det in self.subs.items():
-            rows = self.meter_lag.get(name) or []
+            rows = _shared(self.meter_lag.get(name) or [])
             lag = lead = 0.0
-            if len(rows) >= LAG_MIN_SAMPLES:
+            if rows:
                 lag, lead = _lag_of(r[0] for r in rows), _lead_of(r[0] for r in rows)
             for st in det.phases.values():
                 st.lag, st.lead = lag, lead
+
+    def _vote_steps(self, at: float) -> None:
+        """Each step a one-channel meter declared votes for the SET of grid
+        phases that moved its way in the same moment - the pair window
+        session votes use (_pair_tol), LAG_REACH_S old so the grid has
+        declared its own - where together they make the meter's step, in
+        the grid's terms, within both meters' noise and METER_CAL_SLACK (as
+        a step is placed, _step_meter). A phase moved where the net of its
+        declared steps in the window is clear (10 noises, as _learn_lags
+        takes a grid step); the net, not the first step, so a ramp the
+        detector declared in pieces counts whole: Home's EVBox rose 4 ->
+        10.5 kW on 10-12 at 19:18:09 as a +965, b +1434, c +964, then a and
+        c ramped +1100 / +1750 and b +380 within 30 s (the grid's per-phase
+        readings), and the house never held one three-phase session the
+        charge's could vote with (_vote_phases). One set, all the phases
+        that moved: a coincident load on one makes the sum miss, and the
+        step does not vote. A rise's vote carries the energy of its layer,
+        its size held until the meter reads back below half of it (as
+        _meter_on frees a run) or MAX_OPEN_S - so it waits for that -; a
+        fall's none. Same rule for every one-channel meter,
+        a single phase being a set of one; a 3EM's channels vote by session.
+        No clear test of the meter's own: the phases' is the bar, and Home's
+        Hidrofor plug (noise 158 W) cast none of its 850 W runs' steps past
+        ten of its own noises (2026-10-14)."""
+        upto = at - LAG_REACH_S
+        for name, det in self.subs.items():
+            chans = self._read_chans(name)
+            if len(chans) != 1:
+                continue
+            st = det.phases[chans[0]]
+            frm = self._step_votes_from.get(name, -math.inf)
+            lo, hi = bisect.bisect_right(st.declared_t, frm), bisect.bisect_right(st.declared_t, upto)
+            if lo >= hi:
+                continue
+            gain, noise_m, tol = self.gain(name, "p"), st.noise_at(), self._pair_tol(name)
+            for i in range(lo, hi):
+                e = st.declared[i]
+                end = e[0]
+                if e[1] > 0:
+                    # its layer: until the meter reads back below half of it
+                    # (as _meter_on frees a run), or MAX_OPEN_S
+                    was = e[6] - e[1] if len(e) > 6 else None
+                    end = next((x[0] for x in st.declared[i + 1:] if was is not None and len(x) > 6
+                                and x[6] <= was + 0.5 * e[1]), None)
+                    if end is None:
+                        if upto - e[0] < MAX_OPEN_S:
+                            break                 # its layer has not ended yet
+                        end = e[0] + MAX_OPEN_S
+                frm = e[0]
+                w = abs(e[1]) * gain
+                moved = self._moved(e[0], tol, self.main.phases, e[1] > 0)
+                size, noise_g = sum(x for x, _ in moved.values()), math.sqrt(sum(n * n for _, n in moved.values()))
+                if not moved or abs(size - w) > math.hypot(noise_g, noise_m) + METER_CAL_SLACK * max(size, w):
+                    continue
+                house = "".join(sorted(moved))
+                row = self.phase_votes.setdefault(name, {}).setdefault(chans[0], {})
+                row[house] = row.get(house, 0) + 1
+                if e[1] > 0:
+                    row = self.phase_energy.setdefault(name, {}).setdefault(chans[0], {})
+                    row[house] = row.get(house, 0.0) + w * (end - e[0]) / 3600.0
+                self._votes_rev += 1
+            self._step_votes_from[name] = frm
 
     def _oldest_asked(self) -> float:
         """The oldest moment a question may still be asked about on the clock:
@@ -6036,15 +6226,15 @@ class Fleet:
             if other == name or self._under(other, name) or self._under(name, other):
                 continue
             och = self._mapped(other, ph)
-            change -= sum(e[1] for c in och for e in self._near(odet.phases[c], a, b, 0.0) if a <= e[0] <= b) \
-                * self.gain(other, "p")
+            change -= sum(e[1] * self._leg_gain(other, c, ph, since) for c in och
+                          for e in self._near(odet.phases[c], a, b, 0.0) if a <= e[0] <= b)
         if size is not None and abs(change) > 2.0 * size:
             # a ramp's first plateau carries most of it (261 of 307 W); a
             # small step whose window holds a bigger one is not that ramp:
             # a 25 W blip 7 s before a 2 kW start was booked at 1,981 W and
             # ran on for two hours (Home 09-24 12:45)
             return None
-        return change, a, b, (sum(m1) - sum(m0)) * self.gain(name, "p")
+        return change, a, b, sum((y - x) * self._leg_gain(name, c, ph, since) for c, x, y in zip(chans, m0, m1))
 
     def _sub_total(self, name: str, chans: Sequence[str]) -> List[Tuple[float, float]]:
         """The meter's channels ``chans`` summed at every moment any of them
@@ -6655,9 +6845,10 @@ class Fleet:
         if len(self._stops_used) > 1000:
             self._stops_used = {k: t for k, t in self._stops_used.items() if t > a - 86400.0}
         for name, det in self.subs.items():
-            gain = self.gain(name, "p")
             for c in self._chans(name, ph):
-                st = det.phases[c]
+                if self._several(name, c):
+                    continue                  # a total's fall is no one leg's stop - see _several
+                st, gain = det.phases[c], self._leg_gain(name, c)
                 for e in self._near(st, a, b, st.latency()):
                     if e[1] >= 0 or (name, e[0]) in self._stops_used or not self._on_phase(name, c, e, ph):
                         continue
@@ -6678,7 +6869,7 @@ class Fleet:
         """The open run on ``ph`` that meter ``name``'s fall ``e`` on channel
         ``c`` ends by _meter_stop's rule - and, asked ``still``, the channel
         still that far below where it stood then - marked used; None."""
-        gain, grid = self.gain(name, "p"), self.main.phases[ph]
+        gain, grid = self._leg_gain(name, c), self.main.phases[ph]
         mine = []
         for i, o in enumerate(opens):
             if o.since >= e[0]:
@@ -6729,6 +6920,8 @@ class Fleet:
             if det is None:
                 continue
             for c in self._chans(name, ph):
+                if self._several(name, c):
+                    continue                  # see _several
                 st = det.phases[c]
                 lo = bisect.bisect_right(st.declared_t, max(frm, o.since + st.latency()))
                 for e in st.declared[lo:bisect.bisect_right(st.declared_t, upto)]:
@@ -6839,7 +7032,7 @@ class Fleet:
         if not chans:
             return False
         t = self._now if t is None else t
-        return sum(self._change_since(name, ph, c, since, t) for c in chans) * self.gain(name, "p") > 0.5 * size
+        return sum(self._change_since(name, ph, c, since, t) * self._leg_gain(name, c, ph, since) for c in chans) > 0.5 * size
 
     def _meter_started(self, ph: str, since: float, size: float) -> Optional[Tuple[str, float]]:
         """(meter, its rise in the grid's terms): the meter whose own rise -
@@ -6862,9 +7055,8 @@ class Fleet:
             return None
         took: Dict[str, float] = {}
         for name, det in self.subs.items():
-            gain = self.gain(name, "p")
             for c in self._chans(name, ph):
-                st = det.phases[c]
+                st, gain = det.phases[c], self._leg_gain(name, c, ph, since)
                 for e in self._steps_over(name, c, ph, since, True):
                     rise = e[1] * gain
                     if rise > size + grid._tol(size, rise) or rise <= took.get(name, 0.0):
@@ -6901,20 +7093,32 @@ class Fleet:
         1.30 -> 3.43 kW in one 10 s reading, 22 times in a charge). On before
         it too: a 65 W wobble Kozolec's EVSE rose by at 3.4 kW, still open
         after the charger stopped, took its restart for its own and booked
-        it from the wobble's base, 0.4 of 3.9 kWh (10-01 15:2x)."""
+        it from the wobble's base, 0.4 of 3.9 kWh (10-01 15:2x). And only a
+        step its runs open there can carry - together at least its size: a
+        392 W piece of a ramp Home's EVBox owned on A took the 2.1 kW return
+        of a 6 s dip for its own, and the charge's next 66 minutes, 2.3 kWh,
+        went into no run (10-08 14:02, once its lags were learned sooner and
+        the runs open there differed, 2026-10-14)."""
         grid = self.main.phases.get(ph)
         if grid is None:
             return None
         g = self._grid_step(ph, since)
         a, b = (g[3], g[4]) if g else (since, since)
+        carried: Dict[str, float] = {}
+        for o in grid.open_edges:
+            if o.meter:
+                carried[o.meter] = carried.get(o.meter, 0.0) + (o.now if o.now and o.now > 0 else o.watts)
         for o in grid.open_edges:
             name = o.meter
-            if not name or name not in self.subs or o.since >= a or not self.holds_one_device(name) \
+            if not name or size > carried[name] + grid._tol(size, carried[name]):
+                continue
+            if name not in self.subs or o.since >= a or not self.holds_one_device(name) \
                     or not self._meter_on(name, ph, o.since, o.watts, a) \
                     or not self._meter_on(name, ph, o.since, o.watts, t):
                 continue
-            k, lat = self.gain(name, "p"), self._latency(name)
+            lat = self._latency(name)
             for c in self._chans(name, ph):
+                k = self._leg_gain(name, c, ph, since)
                 rows = (self.sub_rows.get(name) or {}).get(c) or []
                 lo, hi = bisect.bisect_right(rows, (a - lat, math.inf)), bisect.bisect_right(rows, (b + lat, math.inf))
                 vals = [v for tv, v in rows[max(lo - 1, 0):hi] if tv <= self._now]
@@ -6943,7 +7147,7 @@ class Fleet:
         chans = self._chans(name, ph) if det is not None else []
         if not chans:
             return None
-        return max(0.0, sum(self._change_since(name, ph, c, since, t) for c in chans)) * self.gain(name, "p")
+        return max(0.0, sum(self._change_since(name, ph, c, since, t) * self._leg_gain(name, c, ph, since) for c in chans))
 
     def _meter_wh(self, name: str, ph: str, o: "_Open", at: float) -> Optional[float]:
         """What run ``o`` on grid phase ``ph``, which meter ``name`` owns, drew
@@ -7119,8 +7323,9 @@ class Fleet:
         det = self.subs.get(name)
         if det is None:
             return False
-        total = sum(e[1] for c in self._chans(name, ph) for e in self._steps_over(name, c, ph, since, up))
-        return abs(total) * self.gain(name, "p") >= least
+        total = sum(e[1] * self._leg_gain(name, c, ph, since) for c in self._chans(name, ph)
+                    for e in self._steps_over(name, c, ph, since, up))
+        return abs(total) >= least
 
     def _learn_gain(self, name: str, kind: str, grid: float, meter: float) -> None:
         if not grid or not meter:
@@ -7177,8 +7382,12 @@ class Fleet:
             noise = max(det.phases[c].noise_at() for c in chans)
             cap = UNION_CAP_WINDOWS * max([main_window] + [det.phases[c].latency() for c in chans])
             a, b = g_span
+            # each step its share on this one phase (_leg_gain): a total on
+            # all three reads a third of its step here, and teaches its gain so
+            share = {c: self._leg_gain(name, c, ph, since) / self.gain(name, "p") for c in chans}
             for _ in range(8):                       # the union, grown until it holds still
-                ms = [self._shifted(det.phases[c], e) for c in chans for e in self._near(det.phases[c], a, b, cap)]
+                ms = [self._shifted(det.phases[c], e if share[c] == 1.0 else e[:1] + (e[1] * share[c],) + e[2:])
+                      for c in chans for e in self._near(det.phases[c], a, b, cap)]
                 gs = self._near(grid, a, b, cap)
                 na, nb = min([a] + [e[3] for e in ms + gs]), max([b] + [e[4] for e in ms + gs])
                 if (na, nb) == (a, b) or nb - na > cap:
@@ -7239,28 +7448,31 @@ class Fleet:
         """Each new single-channel session on a meter votes for the house phase
         whose single-phase session started with it at the same size - by size
         and moment only, never by label; the size its peak in the grid's
-        terms, as sessions are matched (_same_load). Every hook reads the map
-        that comes of it (phase_map)."""
+        terms, as sessions are matched (_same_load). A meter with one channel
+        may also vote for the phase SET of a house session on several phases
+        whose peaks add up to its own - see PHASE_MAP_MIN_VOTES. Every hook
+        reads the map that comes of it (phase_map)."""
         for name, sessions in closed_sub.items():
             tol = self._pair_tol(name, main_iv)
             gain = self.gain(name, "p")
             votes = self.phase_votes.setdefault(name, {})
             energy = self.phase_energy.setdefault(name, {})
+            total = len(self._read_chans(name)) == 1
             for s in sessions:
                 if len(s.levels) != 1:
                     continue
                 (own,), w = s.levels.keys(), s.max_w * gain
                 best = None
                 for m in pool:
-                    if len(m.levels) != 1 or abs(m.start - s.start) > tol:
+                    if (len(m.levels) != 1 and not total) or abs(m.start - s.start) > tol:
                         continue
-                    mw = m.max_w
+                    mw = m.max_w if len(m.levels) == 1 else sum(_peaks(m).values())
                     if abs(mw - w) > max(MATCH_POWER_REL * max(mw, w), MIN_NOISE_W):
                         continue
                     if best is None or abs(m.start - s.start) < abs(best.start - s.start):
                         best = m
                 if best is not None:
-                    (house,) = best.levels.keys()
+                    house = "".join(sorted(best.levels))
                     row = votes.setdefault(own, {})
                     row[house] = row.get(house, 0) + 1
                     row = energy.setdefault(own, {})
@@ -7274,8 +7486,9 @@ class Fleet:
         EDGE_NOMINAL_V."""
         rows = (self.volts.get(name) or {}).get(ph) if EDGE_OWN_VOLTS or not name else None
         if not rows and name:
-            ph = self.phase_map(name).get(ph)
-            rows = (self.volts.get("") or {}).get(ph) if ph else None
+            # a channel on several phases: their voltages together
+            got = [self._volt_at("", p, ts) for p in self.phase_map(name).get(ph) or ""]
+            return sum(got) / len(got) if got and None not in got else None
         i = bisect.bisect_right(rows, (ts, math.inf)) - 1 if rows else -1
         return rows[i][1] if i >= 0 else None
 
@@ -7291,7 +7504,13 @@ class Fleet:
         read on A from its first vote to its thirtieth (the unify audit,
         2026-10-03). A channel not mapped yet may carry any phase (_chans).
         The map by count, unless it clearly loses on energy; else the map by
-        energy, unless it clearly loses on count (PHASE_MAP_AGREE)."""
+        energy, unless it clearly loses on count (PHASE_MAP_AGREE). A meter
+        with one channel whose votes saw several phases at once often enough
+        carries that set (PHASE_SET_MIN). A meter inside a circuit meter is
+        mapped through it (_through_parent)."""
+        got = self._through_parent(name)
+        if got:
+            return got
         votes = self.phase_votes.get(name) or {}
         energy = self.phase_energy.get(name) or {}
         # Kept while neither these votes nor the site's (_vote_wh_needed) have
@@ -7308,15 +7527,46 @@ class Fleet:
                 and sum(sum(r.values()) for r in energy.values()) < self._vote_wh_needed()):
             mp = {}
         else:
-            by_n, by_wh = phase_mapping(votes), phase_mapping(energy)
+            # the phase sets one-channel meters voted for are candidates too
+            # (PHASE_MAP_MIN_VOTES); a 3EM's votes hold single phases only
+            sets = sorted(set(PHASES) | {p for r in list(votes.values()) + list(energy.values()) for p in r})
+            by_n, by_wh = phase_mapping(votes, sets), phase_mapping(energy, sets)
 
             def holds(mp):
                 return (support(votes, mp) >= PHASE_MAP_AGREE * support(votes, by_n)
                         and support(energy, mp) >= PHASE_MAP_AGREE * support(energy, by_wh))
             mp = by_n if holds(by_n) else by_wh if holds(by_wh) else {}
+            if len(votes) == 1:
+                (c, rn), = votes.items()
+                re = energy.get(c) or {}
+                many = {k: (rn.get(k, 0), re.get(k, 0.0)) for k in set(rn) | set(re) if len(k) > 1}
+                if (sum(n for n, _ in many.values()) >= PHASE_SET_MIN * sum(rn.values())
+                        or sum(wh for _, wh in many.values()) >= PHASE_SET_MIN * sum(re.values()) > 0):
+                    mp = {c: max(many, key=lambda k: many[k])}
         if votes or energy:
             self._phase_maps[name] = (votes, energy, rev, mp)
         return mp
+
+    def _through_parent(self, name: str) -> Dict[str, str]:
+        """Meter ``name``'s map through the circuit meter it hangs in: its
+        channel's place among the circuit's channels, by its votes in the
+        circuit's own fleet (views), and theirs among the grid's; empty while
+        either is not mapped. Against the whole house a small meter's
+        sessions meet a coincidence of their size on every phase: Blaževa
+        Soba, on Hiša's C, read a 33 / c 16 / b 14 at the grid (28 / 218 / 7
+        Wh) and lost its map to a few votes either way, where against Hiša it
+        read c 52 / a 7 / b 2 (792 / 7 / 1 Wh; Home, 2026-10-14)."""
+        parent = self.parents.get(name)
+        view = self.views.get(parent) if parent else None
+        if view is None or view is self or name not in view.subs:
+            return {}
+        inner, outer = view.phase_map(name), self.phase_map(parent)
+        hit = self._composed.get(name)
+        if hit is None or hit[0] is not inner or hit[1] is not outer:
+            mp = {c: "".join(sorted(set("".join(outer[x] for x in h))))
+                  for c, h in inner.items() if all(x in outer for x in h)}
+            hit = self._composed[name] = (inner, outer, mp)
+        return hit[2]
 
     def _vote_wh_needed(self) -> float:
         """The energy PHASE_MAP_MIN_VOTES of the site's votes carry, on
@@ -7525,7 +7775,7 @@ class Fleet:
                 "phase_votes": self.phase_votes, "phase_energy": self.phase_energy,
                 "unfiled": [[t, s.to_dict()] for t, s in self.unfiled], "identity": self.identity,
                 "sub_last": self._sub_last, "wait": self._wait, "wait_at": self._wait_at,
-                "meter_lag": self.meter_lag, "lag_from": self._lag_from,
+                "meter_lag": self.meter_lag, "lag_from": self._lag_from, "step_votes_from": self._step_votes_from,
                 "unvoted": [[t, n, final, s.to_dict()] for t, n, final, s in self._unvoted],
                 "recent_main": [[t, s.to_dict()] for t, s in self._recent_main],
                 "meter_gain": self.meter_gain,
@@ -7552,6 +7802,7 @@ class Fleet:
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
         f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
         f._lag_from = d.get("lag_from")
+        f._step_votes_from = dict(d.get("step_votes_from") or {})
         f._unvoted = [(t, n, bool(final), Session.from_dict(x)) for t, n, final, x in d.get("unvoted") or []]
         f._recent_main = [(t, Session.from_dict(x)) for t, x in d.get("recent_main") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
@@ -7731,15 +7982,18 @@ def _same_load(a: Session, b: Session, mapping: Optional[Dict[str, str]] = None,
     # out 343 of 381 otherwise-good pairs on it (Anze, 2026-09-18). What
     # a load PEAKS at survives coarse sampling; what it averages does not.
     pa, pb, mp = _peaks(a), _peaks(b), mapping or {}
-    placed: Dict[str, float] = {}
+    placed: Dict[str, float] = {}            # a phase, or the phases one channel carries together -> its peak
     for c, w in pb.items():
         if c in mp:
             placed[mp[c]] = placed.get(mp[c], 0.0) + w
     rest = [w for c, w in pb.items() if c not in mp]
-    free = [ph for ph in pa if ph not in placed]
-    if any(ph not in pa for ph in placed) or bool(free) != bool(rest):
+    free = [ph for ph in pa if not any(ph in k for k in placed)]
+    # a channel on a set carries any part of it - Home's EVBox charging on
+    # L1 alone (PHASE_SET_MIN) - but on none of it is another load
+    if any(not any(ph in pa for ph in k) for k in placed) or bool(free) != bool(rest):
         return False
-    for x, y in [(pa[ph], w) for ph, w in placed.items()] + ([(sum(pa[ph] for ph in free), sum(rest))] if free else []):
+    for x, y in [(sum(pa.get(ph, 0.0) for ph in k), w) for k, w in placed.items()] + \
+            ([(sum(pa[ph] for ph in free), sum(rest))] if free else []):
         y *= gain
         if abs(x - y) > max(MATCH_POWER_REL * max(x, y), MIN_NOISE_W):
             return False

@@ -17,7 +17,9 @@ card    Home, Kozolec and Andrej's site (or the SITEs given) with every meter
           1 conservation - per meter pair parent>child, the share of moments
             where the parent's step is its children's (within both meters'
             noise and METER_CAL_SLACK), a parent that read nothing counted
-            as 0; the worst ones are the worklist
+            as 0 - of the moments whose children's step is clear of both
+            meters' noise, the noise-level ones counted apart; the worst ones
+            are the worklist
           2 coverage - per meter, its entries unknown (not read yet) and 0 on
             silence alone; per place, its edges where a meter above read 0
             though the step was clearly above its noise ("blind")
@@ -30,7 +32,10 @@ diff    two card files, figure by figure.
 
 The steps are each detector's as it classified them (Detector._classify_step:
 falls at once, rises when their event formed), whole as the channel declared
-them (PhaseState.declared - a fall split between meters is one step); the
+them (PhaseState.declared - a fall split between meters is one step), each
+with its meter's gain against the grid as the fleet had learned it then
+(Fleet.gain: as of its own moment on the fleet's one clock, so a gain learned
+later never reaches an edge already decided, whatever the slicing); the
 readings, voltages, each meter's phase map, latency, noise and how far it has
 read are handed over after every pass (Fleet.process).
 """
@@ -115,7 +120,8 @@ def _instrument(asm):
             b += fleet._lead(p) if name else 0.0         # its span on the grid's clock - see LAG_PERCENTILE
             s = E.Step(meter=name, ch=lph, t=lsince, dp=dp, dq=dq, a=a, b=b,
                        phase=mp.get(lph) if name else lph, window=self.event_window(), interval=p.interval,
-                       noise=p.noise_at(), floor=p.noise, event=st["calls"] if legs else None)
+                       noise=p.noise_at(), floor=p.noise, event=st["calls"] if legs else None,
+                       gain=fleet.gain(name, "p") if name else 1.0)
             st["seen"][key] = s
             st["pass"].append(s)
         if not name:
@@ -142,6 +148,7 @@ def _instrument(asm):
                  reach={n: self._latency(n) + d.event_window() for n, d in dets}, now=now,
                  chans={n: {c: (c if not n else self.phase_map(n).get(c)) for c in read[n]} for n, _ in dets},
                  noise={(n, c): d.phases[c].noise_at() for n, d in dets for c in read[n]},
+                 floor={(n, c): d.phases[c].noise for n, d in dets for c in read[n]},
                  latency={n: self._latency(n) for n, _ in dets})
         st["pass"] = []
         st["undecided"] = max(st.get("undecided", 0), len(asm.steps))
@@ -192,8 +199,8 @@ def _lateness(cons: list, steps) -> dict:
     on the record - a meter's clock against its parent's, not a meter at
     fault. Per meter pair [failing, of them so found, the median offset, and
     the median ratio parent / children over every moment both stepped the
-    same way] - the ratio a calibration (Fleet.gain) the tolerance does not
-    take."""
+    same way], both in the grid's terms (Step.gain) - the ratio the
+    calibration the learned gains leave."""
     by = {}
     for s in steps:
         by.setdefault(s.meter, []).append(s)
@@ -201,12 +208,12 @@ def _lateness(cons: list, steps) -> dict:
         v.sort(key=lambda s: s.t)
     out = {}
     for c in cons:
-        if c["ok"]:
+        if c["ok"] or not c["clear"]:
             continue
         mine = by.get(c["parent"], [])
         i = bisect.bisect_left([s.t for s in mine], c["at"] - OFF_REACH_S) if mine else 0
-        near = [s for s in mine[i:] if s.t <= c["at"] + OFF_REACH_S and abs(s.dp - c["c"]) <= c["tol"]
-                and (c["phases"] is None or s.phase is None or s.phase in c["phases"])]
+        near = [s for s in mine[i:] if s.t <= c["at"] + OFF_REACH_S and abs(s.grid - c["c"]) <= c["tol"]
+                and (c["phases"] is None or s.phase is None or set(s.phase) & set(c["phases"]))]
         if near:
             c["off"] = min((s.t - c["at"] for s in near), key=abs)
         for ch in c["children"]:
@@ -245,13 +252,14 @@ def replay(site: str, folder: str, dials: list) -> dict:
     # the worklist: the largest children's steps their parent did not show as theirs first - a
     # coincident load beside a wobble of a plug's is the parent's rest, not a meter at fault
     cons = {}
-    for c in sorted((c for c in asm.cons if not c["ok"]), key=lambda c: (-abs(c["c"]), c["t"])):
+    for c in sorted((c for c in asm.cons if not c["ok"] and c["clear"]), key=lambda c: (-abs(c["c"]), c["t"])):
         pair = cons.setdefault(f"{c['parent']}>{','.join(c['children'])}", [])
         if len(pair) < WORST:
             pair.append(c)
     late = _lateness(asm.cons, st["seen"].values())
     res = {"site": site, "dials": tag, "seconds": time.time() - t0, "steps": len(st["seen"]),
-           "edges": len(edges), "late": asm.late, "undecided_max": st.get("undecided", 0),
+           "edges": len(edges), "late": asm.late,
+           "gains": {n: [fleet.gain(n, "p"), (fleet.meter_gain.get(n) or {}).get("p", [0.0, 0.0])[1]] for n in sorted(fleet.subs)}, "undecided_max": st.get("undecided", 0),
            "places": {m: sum(1 for e in edges if e["place"] == m) for m in sorted({e["place"] for e in edges})},
            "shared": sum(1 for e in edges if e["shared"]),
            "conservation": E.conservation(asm.cons), "lateness": late, "coverage": E.coverage(edges),
@@ -301,13 +309,16 @@ def _site_lines(site: str, runs: dict, inv: dict) -> tuple:
     lines = [f"{site}: {r['steps']:,d} steps -> {r['edges']:,d} edges (" +
              ", ".join(f"{m or 'grid'} {n:,d}" for m, n in sorted(r["places"].items(), key=lambda x: -x[1])) +
              f"); {r['shared']:,d} with a shared entry; late {r['late']}; {r['seconds']:.0f} s"]
-    lines.append("  1 conservation, parent > child: adds up % of moments; the rest as " + ", ".join(E.KINDS) + " %; "
-                 "median parent / children; failing ones whose parent stepped so off their moment")
-    for k, (n, ok, *how) in sorted(r["conservation"].items(), key=lambda x: -x[1][0]):
+    lines.append("  gains at the end (Fleet.gain against the grid, the steps it learned from): " +
+                 ", ".join(f"{m} {g:.3f} ({n:.0f})" for m, (g, n) in r.get("gains", {}).items()))
+    lines.append("  1 conservation, parent > child: adds up % of the moments clear of both meters' noise; the rest as "
+                 + ", ".join(E.KINDS) + " %; the noise-level moments; median parent / children; failing ones whose "
+                 "parent stepped so off their moment")
+    for k, (n, ok, *how, quiet) in sorted(r["conservation"].items(), key=lambda x: -x[1][0]):
         parent, child = k.split(">", 1)
         n_f, found, off, ratio = r["lateness"].get(k, [0, 0, None, None])
-        lines.append(f"    {(parent or 'grid') + ' > ' + child:34s} {_pct(ok / n)} % of {n:7,d}   "
-                     + " ".join(_pct(h / n) for h in how)
+        lines.append(f"    {(parent or 'grid') + ' > ' + child:34s} {_pct(ok / n if n else None)} % of {n:7,d}   "
+                     + " ".join(_pct(h / n if n else None) for h in how) + f"   noise-level {quiet:6,d}"
                      + (f"   ratio {ratio:.3f}" if ratio else "")
                      + (f"   off: {found / n_f:.0%} of the failing, median {off:+.1f} s" if found else ""))
     lines.append("  2 coverage, per meter: entries, unknown %, 0 on silence %; as the place: edges, blind %")
@@ -385,10 +396,10 @@ def diff(a_path: str, b_path: str) -> None:
             print(f"  {label:28s} {_fig(k, ra['groups'][k]):>9s} -> {_fig(k, rb['groups'][k]):>9s}"
                   f"   today {_fig(k, ra['today'][k]):>9s} -> {_fig(k, rb['today'][k]):>9s}")
         for pair in sorted(set(ra["conservation"]) | set(rb["conservation"])):
-            na, oka = ra["conservation"].get(pair, [0, 0])[:2]
-            nb, okb = rb["conservation"].get(pair, [0, 0])[:2]
+            (na, oka), qa = ra["conservation"].get(pair, [0, 0])[:2], ra["conservation"].get(pair, [0])[-1]
+            (nb, okb), qb = rb["conservation"].get(pair, [0, 0])[:2], rb["conservation"].get(pair, [0])[-1]
             print(f"  conservation {pair:34s} {_pct(oka / na if na else None)} % of {na:6,d} -> "
-                  f"{_pct(okb / nb if nb else None)} % of {nb:6,d}")
+                  f"{_pct(okb / nb if nb else None)} % of {nb:6,d}   noise-level {qa:6,d} -> {qb:6,d}")
         ia, ib = A["invariance"].get(site, {}), Bj["invariance"].get(site, {})
         print("  invariance " + ", ".join(f"{p}: {ia[p]['differ']} -> {ib[p]['differ']}" for p in ia if p in ib))
 

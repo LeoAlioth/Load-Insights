@@ -13,10 +13,10 @@ E = load("insights.edges")
 D = load("insights.detect")
 
 
-def step(meter, ch, t, dp, phase=None, dq=None, span=2.0, noise=10.0, event=None):
+def step(meter, ch, t, dp, phase=None, dq=None, span=2.0, noise=10.0, event=None, gain=1.0):
     return E.Step(meter=meter, ch=ch, t=t, dp=dp, dq=dq, a=t - span, b=t + 1.0,
                   phase=phase if phase is not None or meter else ch, window=5.0, interval=2.0,
-                  noise=noise, floor=noise, event=event)
+                  noise=noise, floor=noise, event=event, gain=gain)
 
 
 def flat(level=100.0, frm=0.0, to=1000.0, every=2.0):
@@ -39,15 +39,15 @@ def test_nested_meters_are_one_edge_placed_innermost():
     """The office plug inside Mansarda inside the grid, each stepping +100 W
     together: one edge, at the plug, its entries on all three; both pairs add up."""
     chans = {"": {"a": "a", "b": "b", "c": "c"}, "Mansarda": {"x": "a", "y": "b"}, "NASA": {"a": "a"}}
-    a = assemble([step("", "a", 100.0, 100.0), step("Mansarda", "x", 101.0, 98.0, "a"),
-                  step("NASA", "a", 101.5, 97.0, "a")], {"NASA": "Mansarda"}, chans)
+    a = assemble([step("", "a", 100.0, 100.0, noise=5.0), step("Mansarda", "x", 101.0, 98.0, "a", noise=5.0),
+                  step("NASA", "a", 101.5, 97.0, "a", noise=5.0)], {"NASA": "Mansarda"}, chans)
     assert len(a.edges) == 1
     e = a.edges[0]
     assert (e["place"], e["dir"], e["pattern"]) == ("NASA", 1, "a")
     assert e["entries"]["|a"]["dp"] == 100.0 and e["entries"]["Mansarda|x"]["dp"] == 98.0
     assert "Mansarda|y" not in e["entries"] and "|b" not in e["entries"]   # other phases: not this edge's
     assert not e["shared"] and not e["blind"]
-    assert E.conservation(a.cons) == {">Mansarda": [1, 1, 0, 0, 0, 0], "Mansarda>NASA": [1, 1, 0, 0, 0, 0]}
+    assert E.conservation(a.cons) == {">Mansarda": [1, 1, 0, 0, 0, 0, 0], "Mansarda>NASA": [1, 1, 0, 0, 0, 0, 0]}
 
 
 def test_separate_branches_are_two_edges_the_parent_shared():
@@ -77,6 +77,25 @@ def test_a_rest_no_meter_reads_is_an_edge_of_its_own():
     assert [c["ok"] for c in a.cons] == [False]
 
 
+def test_a_child_reading_high_adds_up_once_its_gain_is_known():
+    """Kozolec 10-04 14:57:44: the boiler's plug +1938 W, the Victron +1825
+    (the plug reads ~5 % high; tolerance 105). Raw, they fail to add up and
+    the grid's step is a rest of its own; in the grid's terms (gain
+    1825/1938) they add up, one edge at the plug - its entries still each
+    meter's raw step."""
+    chans = {"": {"a": "a"}, "Boiler": {"a": "a"}}
+
+    def run(gain):
+        return assemble([step("", "a", 100.0, 1825.0), step("Boiler", "a", 100.5, 1938.0, "a", gain=gain)], {}, chans)
+    raw = run(1.0)
+    assert [c["ok"] for c in raw.cons] == [False] and set(by_place(raw)) == {"", "Boiler"}
+    a = run(1825.0 / 1938.0)
+    assert [(round(c["p"]), round(c["c"]), c["ok"]) for c in a.cons] == [(1825, 1825, True)]
+    assert [e["place"] for e in a.edges] == ["Boiler"]
+    e = a.edges[0]
+    assert e["entries"]["Boiler|a"]["dp"] == 1938.0 and e["entries"]["|a"]["dp"] == 1825.0 and e["size"] == 1938.0
+
+
 def test_a_step_only_a_sub_meter_saw_is_an_edge():
     """NASA's 12 W under Mansarda, below the grid's noise: an edge at NASA,
     Mansarda and the grid read 0 (and 12 W is no clear step for them)."""
@@ -85,7 +104,8 @@ def test_a_step_only_a_sub_meter_saw_is_an_edge():
     e = a.edges[0]
     assert e["place"] == "NASA" and e["entries"]["Mansarda|x"] == 0.0 and e["entries"]["|a"] == 0.0
     assert e["blind"] == []
-    assert sorted(E.conservation(a.cons).items()) == [(">NASA", [1, 1, 0, 0, 0, 0]), ("Mansarda>NASA", [1, 1, 0, 0, 0, 0])]
+    # 12 W is no clear step on 10 W of noise: counted apart, not judged
+    assert sorted(E.conservation(a.cons).items()) == [(">NASA", [0, 0, 0, 0, 0, 0, 1]), ("Mansarda>NASA", [0, 0, 0, 0, 0, 0, 1])]
 
 
 def test_zero_against_unknown():
@@ -102,14 +122,16 @@ def test_zero_against_unknown():
 
 
 def test_a_three_phase_charger_read_as_one_total_takes_all_three_legs():
-    """A meter whose one channel is not mapped may be on any phase: the
-    charger's 11 kW total takes the grid's three-leg event whole."""
-    chans = {"": {"a": "a", "b": "b", "c": "c"}, "Charger": {"a": None}}
-    legs = [step("", p, 100.0 + k, 3700.0, event=7) for k, p in enumerate("abc")]
-    a = assemble(legs + [step("Charger", "a", 102.0, 11050.0, None)], {}, chans)
-    assert [e["place"] for e in a.edges] == ["Charger"]
-    assert {k for k, v in a.edges[0]["entries"].items() if isinstance(v, dict)} == {"Charger|a", "|a", "|b", "|c"}
-    assert a.cons[0]["ok"]
+    """A meter whose one channel is not mapped may be on any phase, one mapped
+    to all three is on all three: the charger's 11 kW total takes the grid's
+    three-leg event whole."""
+    for mapped in (None, "abc"):                  # not mapped yet, or mapped to all three
+        chans = {"": {"a": "a", "b": "b", "c": "c"}, "Charger": {"a": mapped}}
+        legs = [step("", p, 100.0 + k, 3700.0, event=7) for k, p in enumerate("abc")]
+        a = assemble(legs + [step("Charger", "a", 102.0, 11050.0, mapped)], {}, chans)
+        assert [e["place"] for e in a.edges] == ["Charger"]
+        assert {k for k, v in a.edges[0]["entries"].items() if isinstance(v, dict)} == {"Charger|a", "|a", "|b", "|c"}
+        assert a.cons[0]["ok"]
 
 
 def test_a_two_phase_step_takes_each_phase_above_on_its_own():
@@ -202,8 +224,9 @@ def test_scorecard_arithmetic():
     # the conservation's per-pair count, and the comparison of two replays
     cons = [{"parent": "", "children": ["Hiša", "Hidrofor"], "ok": True, "p": 900.0, "c": 905.0},
             {"parent": "", "children": ["Hiša"], "ok": False, "p": 0.0, "c": 500.0},
-            {"parent": "", "children": ["Hiša"], "ok": False, "p": 3000.0, "c": 40.0}]
-    assert E.conservation(cons) == {">Hiša": [3, 1, 1, 0, 1, 0], ">Hidrofor": [1, 1, 0, 0, 0, 0]}
+            {"parent": "", "children": ["Hiša"], "ok": False, "p": 3000.0, "c": 40.0},
+            {"parent": "", "children": ["Hiša"], "ok": False, "p": 0.0, "c": 40.0, "clear": False}]
+    assert E.conservation(cons) == {">Hiša": [3, 1, 1, 0, 1, 0, 1], ">Hidrofor": [1, 1, 0, 0, 0, 0, 0]}
     x = (10.0, "P", 1, "a", {"|a": 100.0})
     assert E.compare([x], [(11.5, "P", 1, "a", {"|a": 100.2})]) == []
     assert [d["kind"] for d in E.compare([x], [(13.0, "P", 1, "a", {"|a": 100.0})])] == ["only A", "only B"]
