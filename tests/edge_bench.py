@@ -37,7 +37,7 @@ them (PhaseState.declared - a fall split between meters is one step), each
 with its meter's gain against the grid as the fleet had learned it then
 (Fleet.gain: as of its own moment on the fleet's one clock, so a gain learned
 later never reaches an edge already decided, whatever the slicing); the
-readings, voltages, each meter's phase map, latency, noise and how far it has
+readings, reactive powers, voltages, each meter's phase map, latency, noise and how far it has
 read are handed over after every pass (Fleet.process).
 """
 from __future__ import annotations
@@ -142,9 +142,16 @@ def _instrument(asm):
         rows = {("", p): list(r) for p, r in (main_samples or {}).items()}
         rows.update({(n, c): list(r) for n, byc in (sub_samples or {}).items() for c, r in byc.items()})
         volts = {(n, c): list(r) for n, byc in (kw.get("volts") or {}).items() for c, r in byc.items()}
+        # the reactive power the replay hands over whole every pass ({channel: {t: var}}): this pass's part
+        main_q, sub_q = (a[0] if a else kw.get("main_q")), (a[1] if len(a) > 1 else kw.get("sub_q"))
+        lo, hi = st.get("qnow", -math.inf), now if now is not None else math.inf
+        qrows = {k: sorted((t, v) for t, v in byt.items() if lo < t <= hi)
+                 for k, byt in [(("", p), d) for p, d in (main_q or {}).items()]
+                 + [((n, c), d) for n, byc in (sub_q or {}).items() for c, d in byc.items()]}
+        st["qnow"] = hi
         dets = self.detectors()
         read = {n: [c for c, p in d.phases.items() if p.last_ts is not None] for n, d in dets}
-        asm.feed(st["pass"], rows, volts,
+        asm.feed(st["pass"], rows, volts, qrows=qrows,
                  frontier={n: _frontier(d, n, asm) for n, d in dets},
                  reach={n: self._latency(n) + d.event_window() for n, d in dets}, now=now,
                  chans={n: {c: (c if not n else self.phase_map(n).get(c)) for c in read[n]} for n, _ in dets},

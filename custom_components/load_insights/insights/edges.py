@@ -61,6 +61,14 @@ from . import detect as _d   # read at call time, so the bench's dials reach the
 # of 2026-10-14 that the properties were first measured with). A moment is
 # decided only once every meter's readings reach this far past it.
 PROPS_REACH_S = 90.0
+# A step's levels are read over WINDOWS of its channel's readings (Anze,
+# 2026-10-14: "an edge should include a couple readings before and after the
+# actual step ... up to my 5 minute max delay ... and of course to the
+# next/previous event"): before it from this long back or the channel's
+# previous step, after it to this long on or its next, the transition left
+# out (``windows``). A moment is decided once every meter has read this far
+# past it.
+WINDOW_S = 300.0
 # A clear step (conservation and coverage, see _clear): one at least the
 # meters' idle noises added together (PhaseState.noise, a step's floor) - the
 # parent's channels and every child leg involved - with no factor on top
@@ -117,6 +125,7 @@ class Step:
     gain: float = 1.0           # its meter's learned gain against the grid when classified (Fleet.gain)
     props: dict = field(default_factory=dict)
     declared: Optional[Tuple[float, Optional[float]]] = None   # (dp, dq) as declared, before a settle - see _settle_once
+    absorbed: bool = False      # a settle another step took - see _settle_once
 
     @property
     def key(self) -> str:
@@ -187,9 +196,13 @@ def properties(rows: Sequence[Tuple[float, float]], t: float, dp: float,
         out["ramp_s"] = t_on - t_off
         out["ramp_n"] = sum(1 for ta, _ in after if t_off < ta < t_on)
     t1 = t_on if t_on is not None else t
-    first = [v for ta, v in after if t1 <= ta <= t1 + 8][:3]
-    peak = max(((v - lo) if up else (lo - v)) for v in first) if first else size
+    first = [(ta, v) for ta, v in after if t1 <= ta <= t1 + 8][:3]
+    peak = max(((v - lo) if up else (lo - v)) for _, v in first) if first else size
     out["surge"] = peak / size
+    # where the old level was last read and where the new one is read past
+    # the surge - the windows' ends (``windows``)
+    out["t_off"] = t_off if t_off is not None else max((ta for ta, _ in after if ta < t), default=t - 0.01)
+    out["t_set"] = (first[-1][0] if first else t1) + 0.01
     on = _win(rows, t1 + 5, t1 + 65) if up else _win(rows, t - 65, t - 5)
     off = _win(rows, t - 35, t - 5) if up else _win(rows, t1 + 5, t1 + 35)
     if len(on) >= 4:
@@ -207,18 +220,76 @@ def properties(rows: Sequence[Tuple[float, float]], t: float, dp: float,
     return out
 
 
+def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: float, end: float,
+            qrows=None, volts=None, noise: float = 0.0) -> Tuple[float, Optional[float], dict]:
+    """A step's levels from its WINDOWS (WINDOW_S): before it, the readings
+    from ``start`` (its channel's previous step, or WINDOW_S back) to where
+    the old level was last read; after it, from past the surge to ``end``
+    (the next step, or WINDOW_S on) - each level their median, so a voltage
+    that lags the power or one reading's wobble does not set it. The same
+    for the reactive power, the voltage (the on side's for R = V^2 / |dP|:
+    after a rise, before a fall) and the spread of each (noise, a median
+    deviation as a standard deviation). A window of fewer than two readings
+    falls back to the step as declared (``dp``, ``dq``) and the readings
+    beside it (``p``: ``properties``), and so does a step whose windows show
+    none of its sign above its ``noise`` (``contra``). Returns (dP, dQ, the properties):
+    p0/p1, q0/q1, pf0/pf1, v0/v1, dv, dv_kw (volts per kW), r, n0/n1, and
+    the readings each window held (nb/na)."""
+    def both(series, fall0, fall1, size):
+        b = [v for _, v in _win(series or [], start, p["t_off"])]
+        a = [v for _, v in _win(series or [], p["t_set"], end)]
+        x0 = _median(b) if len(b) >= 2 else None
+        x1 = _median(a) if len(a) >= 2 else None
+        if x0 is None and x1 is None:
+            x0, x1 = fall0, fall1
+        elif x0 is None:
+            x0 = None if size is None else x1 - size
+        elif x1 is None:
+            x1 = None if size is None else x0 + size
+        return x0, x1, b, a
+    lo = _median([v for _, v in _win(rows, t - 30, t - 0.01)])
+    lo = (_held(rows, t - 0.01) or 0.0) if lo is None else lo
+    p0, p1, b, a = both(rows, lo, lo + dp, dp)
+    q0, q1 = both(qrows, None, None, dq)[:2] if qrows else (None, None)
+    v0, v1 = both(volts, p.get("v0"), p.get("v1"), None)[:2] if volts else (None, None)
+    v0 = p.get("v0") if v0 is None else v0
+    v1 = p.get("v1") if v1 is None else v1
+    dP = p1 - p0
+    contra = abs(dP) <= noise or (dP > 0) != (dp > 0)
+    if contra:                       # the windows show no step of its sign above its noise: as declared
+        p1, dP = p0 + dp, dp
+    dQ = (q1 - q0) if q0 is not None and q1 is not None and not contra else dq
+    out = {"p0": p0, "p1": p1, "q0": q0, "q1": q1, "v0": v0, "v1": v1, "nb": len(b), "na": len(a), "contra": contra,
+           "pf0": p0 / math.hypot(p0, q0) if q0 is not None and (p0 or q0) else None,
+           "pf1": p1 / math.hypot(p1, q1) if q1 is not None and (p1 or q1) else None,
+           "n0": MAD_SD * _mad(b) if len(b) >= 3 else None, "n1": MAD_SD * _mad(a) if len(a) >= 3 else None}
+    out["dv"] = v1 - v0 if v0 is not None and v1 is not None else None
+    out["dv_kw"] = out["dv"] / (dP / 1000.0) if out["dv"] is not None and dP else None
+    von = v1 if dP > 0 else v0
+    out["r"] = von * von / abs(dP) if von is not None and dP else None
+    for k in ("surge", "settle", "wobble"):          # the transition's, over the step as its windows read it
+        if p.get(k) is not None and dP:
+            out[k] = p[k] * abs(dp) / abs(dP)
+    return dP, dQ, out
+
+
 class _Group:
     """A meter's steps taken together: an EVENT - its channels at one moment -
     or a PIECE of one, what is matched against the meter above: a channel its
     map places on a phase, alone, or its channels mapped nowhere yet,
     together (they may be on any phase, as one total)."""
-    __slots__ = ("meter", "legs", "t", "a", "b", "dp", "phases", "event")
+    __slots__ = ("meter", "legs", "t", "a", "b", "phases", "event")
 
     def __init__(self, meter: str, legs: List[Step], event: Optional["_Group"] = None):
         self.meter, self.legs, self.event = meter, legs, event
         self.t, self.a, self.b = min(x.t for x in legs), min(x.a for x in legs), max(x.b for x in legs)
-        self.dp = sum(x.grid for x in legs)      # in the grid's terms
         self.phases = _phases(legs)
+
+    @property
+    def dp(self) -> float:
+        """In the grid's terms; its legs' steps as read so far (``windows``
+        at a decision)."""
+        return sum(x.grid for x in self.legs)
 
     def pieces(self) -> List["_Group"]:
         """Each leg on one phase alone; those on any phase or several together."""
@@ -256,6 +327,8 @@ class Assembler:
         self.parents = {k: v for k, v in (parents or {}).items() if v}   # meter -> the meter it hangs under
         self.steps: List[Step] = []          # not decided yet
         self.rows: Dict[Tuple[str, str], list] = {}
+        self.qrows: Dict[Tuple[str, str], list] = {}     # reactive power, read as the rows
+        self.marks: Dict[str, list] = {}     # each channel's steps, [(t, id, step)] - a window's ends (_ends)
         self.volts: Dict[Tuple[str, str], list] = {}
         self.first: Dict[Tuple[str, str], float] = {}
         self.chans: Dict[str, Dict[str, Optional[str]]] = {"": {}}
@@ -270,7 +343,7 @@ class Assembler:
 
     # ------------------------------------------------ feeding
     def feed(self, steps: Sequence[Step], rows=None, volts=None, frontier=None, reach=None,
-             now: float = math.inf, chans=None, noise=None, latency=None, floor=None) -> None:
+             now: float = math.inf, chans=None, noise=None, latency=None, floor=None, qrows=None) -> None:
         """A pass: the steps its detectors classified; each channel's new
         readings and voltages, {(meter, ch): [(t, x)]}; per meter the earliest
         step it may still declare (``frontier``) and how far a step's moment
@@ -278,7 +351,7 @@ class Assembler:
         far the readings reach (``now``); each meter's channels and their
         grid phases, {meter: {ch: phase or None}}; each channel's noise; each
         meter's latency; each channel's idle noise (``floor``)."""
-        for store, fed in ((self.rows, rows), (self.volts, volts)):
+        for store, fed in ((self.rows, rows), (self.volts, volts), (self.qrows, qrows)):
             for k, rr in (fed or {}).items():
                 if not rr:
                     continue
@@ -297,11 +370,12 @@ class Assembler:
         self.latency.update(latency or {})
         for s in steps:
             self.chans.setdefault(s.meter, {}).setdefault(s.ch, s.phase)
+            bisect.insort(self.marks.setdefault(s.key, []), (s.t, id(s), s))
             if s.a < self._until:
                 self.late += 1
             self.steps.append(s)
         until = min((f - (reach or {}).get(m, 0.0) for m, f in (frontier or {}).items()), default=math.inf)
-        self._decide(min(until, now - PROPS_REACH_S), now)
+        self._decide(min(until, now - WINDOW_S), now)
 
     def flush(self) -> None:
         """The readings ended: every moment left is decided."""
@@ -418,6 +492,8 @@ class Assembler:
                     x.dq = None if x.dq is None or y.dq is None else x.dq + y.dq
                     gone.add(id(y))
                     took[id(x)] = y
+        for x in self.steps:
+            x.absorbed = id(x) in gone
         return [x for x in self.steps if id(x) not in gone], took
 
     def _decide(self, until: float, now: float) -> None:
@@ -452,8 +528,8 @@ class Assembler:
             comps.setdefault(find(id(e)), []).append(e)
         keep = []
         for comp in sorted(comps.values(), key=lambda c: min(e.t for e in c)):
-            reach = max(max(x.b, x.t, self._next_read(x)) for e in comp for x in e.legs)
-            if reach < until and max(e.t for e in comp) + PROPS_REACH_S <= now:
+            reach = max(max(x.b, x.t + WINDOW_S, self._next_read(x)) for e in comp for x in e.legs)
+            if reach < until and max(e.t for e in comp) + WINDOW_S <= now:
                 comp.sort(key=lambda e: (e.t, e.meter, e.legs[0].ch))
                 self._settle(comp, [q for e in comp for q in parts[id(e)]], ups, piece_of)
             else:
@@ -467,8 +543,8 @@ class Assembler:
         longest latency back, go - the last one before kept, as held."""
         if not math.isfinite(oldest):
             return
-        cut = oldest - PROPS_REACH_S - max(self.latency.values(), default=0.0) - 60.0
-        for store in (self.rows, self.volts):
+        cut = oldest - WINDOW_S - max(self.latency.values(), default=0.0) - 60.0
+        for store in (self.rows, self.volts, self.qrows, self.marks):
             for k, rr in store.items():
                 i = bisect.bisect_left(rr, (cut, -math.inf))
                 if i > 1:
@@ -481,8 +557,13 @@ class Assembler:
         explains is a place; and the edges."""
         for e in comp:
             for x in e.legs:
-                v = self.volts.get((x.meter, x.ch)) or (self.volts.get(("", x.phase)) if x.phase else None)
-                x.props = properties(self.rows.get((x.meter, x.ch)) or [], x.t, x.dp, v)
+                rows, v = self.rows.get((x.meter, x.ch)) or [], self._volts(x)
+                x.props = properties(rows, x.t, x.dp, v)
+                if "t_off" in x.props:
+                    x.dp, x.dq, w = windows(rows, x.t, x.dp, x.dq, x.props, *self._ends(x),
+                                            self.qrows.get((x.meter, x.ch)), v, x.noise)
+                    del x.props["t_off"], x.props["t_set"]
+                    x.props.update(w)
         root: Dict[tuple, tuple] = {}
 
         def find(k):
@@ -530,6 +611,31 @@ class Assembler:
                 if others:
                     edge["shared"][x.key] = others
             self.edges.append(edge)
+
+    def _volts(self, x: Step):
+        """The voltage at ``x``'s channel: its meter's own, else a meter's
+        above on its phase, else the grid's."""
+        own = self.volts.get((x.meter, x.ch))
+        if own or not x.phase:
+            return own
+        for anc in self.ancestors(x.meter):
+            for c, ph in sorted(self.chans.get(anc, {}).items()):
+                if ph == x.phase and self.volts.get((anc, c)):
+                    return self.volts[(anc, c)]
+        return None
+
+    def _ends(self, x: Step) -> Tuple[float, float]:
+        """Where ``x``'s windows end: its channel's previous step (where that
+        one was read at its new level) or WINDOW_S back; its next step (from
+        when it can have begun) or WINDOW_S on. A settle another step took
+        (``_settle_once``) is no step."""
+        ms = self.marks.get(x.key) or []
+        i = bisect.bisect_left(ms, (x.t, -1))
+        prev = next((m[2] for m in reversed(ms[:i]) if not m[2].absorbed), None)
+        nxt = next((m[2] for m in ms[i:] if m[2].t > x.t and not m[2].absorbed), None)
+        start = max(x.t - WINDOW_S, prev.b if prev is not None else -math.inf)
+        end = min(x.t + WINDOW_S, nxt.a if nxt is not None and nxt.t <= x.t + WINDOW_S else math.inf)
+        return start, end
 
     def _skipped(self, q: _Group, up: List[Step]) -> None:
         """Conservation where a meter above showed nothing: each meter between

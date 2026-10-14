@@ -23,9 +23,16 @@ def flat(level=100.0, frm=0.0, to=1000.0, every=2.0):
     return [(frm + k * every, level) for k in range(int((to - frm) / every))]
 
 
+def stepped(rows, steps):
+    """``rows`` with each step of their channel added from its moment on - the
+    readings a meter that declared those steps read."""
+    return {k: [(t, v + sum(s.dp for s in steps if (s.meter, s.ch) == k and s.t <= t)) for t, v in rr]
+            for k, rr in rows.items()}
+
+
 def assemble(steps, parents, chans, rows=None):
     a = E.Assembler(parents)
-    rows = rows or {(m, c): flat() for m, cs in chans.items() for c in cs}
+    rows = rows or stepped({(m, c): flat() for m, cs in chans.items() for c in cs}, steps)
     a.feed(steps, rows=rows, chans=chans, noise={k: 10.0 for k in rows}, latency={m: 6.0 for m in chans})
     a.flush()
     return a
@@ -118,10 +125,12 @@ def test_zero_against_unknown():
     through and showed nothing of is blind there."""
     chans = {"": {"a": "a"}, "Plug": {"a": "a"}, "Late": {"a": None}}
     rows = {("", "a"): flat(), ("Plug", "a"): flat(), ("Late", "a"): flat(frm=300.0)}
-    a = assemble([step("", "a", 200.0, 500.0)], {}, chans, rows)
+    steps = [step("", "a", 200.0, 500.0)]
+    a = assemble(steps, {}, chans, stepped(rows, steps))
     e = a.edges[0]
     assert e["entries"]["Plug|a"] == 0.0 and e["entries"]["Late|a"] is None
-    a = assemble([step("Plug", "a", 200.0, 500.0, "a")], {}, chans, rows)
+    steps = [step("Plug", "a", 200.0, 500.0, "a")]
+    a = assemble(steps, {}, chans, stepped(rows, steps))
     assert a.edges[0]["blind"] == [""] and a.edges[0]["entries"]["|a"] == 0.0
 
 
@@ -140,8 +149,9 @@ def test_a_level_read_once_is_measured_to_where_the_meter_settles():
         return assemble([step("Boiler", "a", t, dp, "a") for t, dp in steps], {}, chans, rows)
     on = [(100.0, 1902.0), (140.0, 1875.0)] + [(140.0 + 60.0 * k, 1876.0) for k in range(1, 15)]
     a = run(on, [(100.0, 1902.0), (140.0, -27.0)])
-    assert [(e["dir"], e["entries"]["Boiler|a"]["dp"]) for e in a.edges] == [(1, 1875.0)]
-    assert abs(a.edges[0]["surge"] - 1902.0 / 1875.0) < 1e-9
+    # its level the median of the readings after it (WINDOW_S): 1875, 1876, 1876, ...
+    assert [(e["dir"], e["entries"]["Boiler|a"]["dp"]) for e in a.edges] == [(1, 1876.0)]
+    assert abs(a.edges[0]["surge"] - 1902.0 / 1876.0) < 1e-9
     twice = [(100.0, 1902.0), (110.0, 1902.0)] + on[1:]
     assert [e["dir"] for e in run(twice, [(100.0, 1902.0), (140.0, -27.0)]).edges] == [1, -1]
     for back in (12.0, 940.0):        # a spike back, or a step back past half: two steps
@@ -171,6 +181,40 @@ def test_a_level_read_once_is_measured_to_where_the_meter_settles():
     # a small step and a large one back: not its settle
     small = [(100.0, 30.0), (140.0, -1000.0)] + [(140.0 + 60.0 * k, -1000.0) for k in range(1, 15)]
     assert [e["dir"] for e in run(small, [(100.0, 30.0), (140.0, -1030.0)]).edges] == [1, -1]
+
+
+def test_a_steps_levels_are_the_medians_of_its_windows():
+    """Anze (2026-10-14): an edge reads a couple of readings before and after
+    its step, up to his 5-minute delay and never past the channel's previous
+    or next step. Mansarda's B: a 300 W fall at 900, the kettle on at 1000
+    (its first readings 1700, 1650, 1648 - the surge), off at 1150; the 3EM's
+    voltage, read every 10 s, sags from 232 to 228 V 10 s after the switch.
+    The kettle's step is the windows' medians, 200 -> 1645 W, its R from the
+    on side's median voltage, 228^2 / 1445; the readings before the fall at
+    900 (500 W) are not its level; the reactive power and voltage the same
+    way."""
+    chans = {"Mansarda": {"b": "c"}}
+    rows = {("Mansarda", "b"): [(float(t), 500.0) for t in range(0, 900, 2)]
+            + [(float(t), 200.0 + 2.0 * ((t // 2) % 3 - 1)) for t in range(900, 1000, 2)]
+            + [(1000.0, 1700.0), (1002.0, 1650.0), (1004.0, 1648.0)]
+            + [(float(t), 1645.0 + 3.0 * ((t // 2) % 3 - 1)) for t in range(1006, 1150, 2)]
+            + [(float(t), 200.0) for t in range(1150, 1600, 2)]}
+    qrows = {("Mansarda", "b"): [(t, 60.0 if 1000.0 <= t < 1150.0 else 50.0) for t, _ in rows[("Mansarda", "b")]]}
+    volts = {("Mansarda", "b"): [(float(t), 228.0 if 1010 <= t < 1160 else 232.0) for t in range(0, 1600, 10)]}
+    steps = [step("Mansarda", "b", 900.0, -300.0, "c"), step("Mansarda", "b", 1000.0, 1500.0, "c", dq=12.0),
+             step("Mansarda", "b", 1150.0, -1445.0, "c")]
+    a = E.Assembler({})
+    a.feed(steps, rows=rows, qrows=qrows, volts=volts, chans=chans, noise={("Mansarda", "b"): 10.0},
+           latency={"Mansarda": 6.0})
+    a.flush()
+    k = next(e["entries"]["Mansarda|b"] for e in a.edges if e["t"] == 1000.0)
+    assert (k["dp"], k["p0"], k["p1"], k["dq"], k["v0"], k["v1"]) == (1445.0, 200.0, 1645.0, 10.0, 232.0, 228.0), k
+    assert abs(k["r"] - 228.0 ** 2 / 1445.0) < 1e-9 and abs(k["surge"] - 1500.0 / 1445.0) < 1e-9   # the first reading's excursion
+    assert abs(k["dv_kw"] - (-4.0 / 1.445)) < 1e-9 and k["n1"] > 0.0
+    # windows that show less than the step's noise contradict it: the step as declared
+    dp, dq, w = E.windows([(float(t), 100.0 + (2.0 if t >= 50 else 0.0)) for t in range(0, 200, 2)], 50.0, 50.0, None,
+                          {"t_off": 48.0, "t_set": 50.01}, 0.0, 200.0, noise=10.0)
+    assert (dp, w["contra"]) == (50.0, True)
 
 
 def test_a_three_phase_charger_read_as_one_total_takes_all_three_legs():
@@ -223,7 +267,7 @@ def test_slicing_never_changes_an_edge():
             steps.append(step("Blaz", "a", t + 1.2, 290.0 + 10 * k, "b"))
         if k % 5 == 0:
             steps.append(step("Pump", "a", t + 9.0, -400.0, "a"))
-    rows = {(m, c): flat(to=1200.0) for m, cs in chans.items() for c in cs}
+    rows = stepped({(m, c): flat(to=1200.0) for m, cs in chans.items() for c in cs}, steps)
     noise, lat = {k: 10.0 for k in rows}, {m: 6.0 for m in chans}
     one = E.Assembler(parents)
     one.feed(steps, rows=rows, chans=chans, noise=noise, latency=lat)
