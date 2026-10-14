@@ -151,7 +151,7 @@ def _instrument(asm):
         st["qnow"] = hi
         dets = self.detectors()
         read = {n: [c for c, p in d.phases.items() if p.last_ts is not None] for n, d in dets}
-        asm.feed(st["pass"], rows, volts, qrows=qrows,
+        asm.feed(st["pass"], rows, volts, qrows=qrows, qsigned=dict(B.R.SIGNED_FROM),
                  frontier={n: _frontier(d, n, asm) for n, d in dets},
                  reach={n: self._latency(n) + d.event_window() for n, d in dets}, now=now,
                  chans={n: {c: (c if not n else self.phase_map(n).get(c)) for c in read[n]} for n, _ in dets},

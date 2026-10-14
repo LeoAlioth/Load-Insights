@@ -317,14 +317,23 @@ def coherent_triples(series, fields, phases):
     return out
 
 
-def own_reactive(series, power_eid, p, rows):
+# (meter, channel) -> when its reactive power starts to be the meter's own
+# SIGNED reading rather than one worked out from the apparent power or V x I
+# (which has no sign) - what the replay read, handed to the edges (edge_bench)
+SIGNED_FROM: dict = {}
+
+
+def own_reactive(series, power_eid, p, rows, key=None):
     """VAr at ``rows``' times from what the power's own device publishes
     beside it - its signed reactive power, apparent power or power factor -
-    as production derives it for every meter's channel; None without."""
+    as production derives it for every meter's channel; None without. Where
+    the device publishes a signed one, from when goes to SIGNED_FROM[key]."""
     by_kind = {device_kind_phase(e): e for e in series if pseudo_device(e) == pseudo_device(power_eid)}
     pf, va, signed = (series.get(by_kind.get((k, p))) for k in ("power_factor", "apparent_power", "reactive_power"))
     if not (pf or va or signed):
         return None
+    if signed and key is not None:
+        SIGNED_FROM[key] = signed[0][0]
     var = reactive(rows, None, None, pf, signed, va)
     return D._align(sorted(var.items()), rows) if var else None
 
@@ -422,6 +431,7 @@ def run(args, transform=None, say=print):
         raise SystemExit("no per-phase power found - pin one with --role power_a=sensor.x")
 
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
+    SIGNED_FROM.clear()
     q = {}
     q_quantum = {}
     grid_v = {}
@@ -432,7 +442,7 @@ def run(args, transform=None, say=print):
             if p not in trios or pseudo_device(trios[p][0]) != pseudo_device(fields[f"power_{p}"]):
                 # the load reading's own device first, as production and every
                 # sub-meter: a 3EM's apparent power or power factor
-                got = own_reactive(series, fields[f"power_{p}"], p, samples[p])
+                got = own_reactive(series, fields[f"power_{p}"], p, samples[p], ("", p))
                 if got:
                     q[p] = got
                     say(f"   {p.upper()}: {fields[f'power_{p}']} (its own apparent power or power factor)")
@@ -446,6 +456,8 @@ def run(args, transform=None, say=print):
             signed = next((e for e in series if device_kind_phase(e) == ("reactive_power", p)
                            and pseudo_device(e) == pseudo_device(pw)), None)
             say(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
+            if signed and series.get(signed):
+                SIGNED_FROM[("", p)] = series[signed][0][0]
             var = reactive(series[pw], series.get(v), series.get(i), None, series.get(signed) if signed else None)
             if var:
                 # held forward onto the load reading's own sample times
@@ -505,7 +517,7 @@ def run(args, transform=None, say=print):
                 # power - a 3EM its apparent power and a power factor - as production
                 # derives it for every sub-meter
                 for p, prow in rows.items():
-                    got = own_reactive(series, eids.split(",")[0].strip(), p, prow)
+                    got = own_reactive(series, eids.split(",")[0].strip(), p, prow, (name.strip(), p))
                     if got:
                         sub_q.setdefault(name.strip(), {})[p] = got
                 if name.strip() in sub_q:
