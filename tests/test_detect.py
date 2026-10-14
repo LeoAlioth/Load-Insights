@@ -1741,6 +1741,39 @@ def test_the_idle_noise_is_not_learned_while_the_array_moves_under_the_reading()
     assert blind.phases["a"].noise > 2 * D.MIN_NOISE_W, blind.phases["a"].noise
 
 
+def test_a_meter_that_reports_on_change_learns_its_idle_noise_from_its_silences():
+    """Home's hidrofor plug: reports every second while the pump runs and
+    idle once in minutes, flat at about 1 W. Seeded on a run and re-learned
+    from its moves alone, its noise sat at the run's wander (158-298 W): ten
+    days held 62 idle moves. The recorder writes only a change, so each of
+    the meter's own intervals in a silence is a move of nothing."""
+    rnd = random.Random(7)
+    rows, t = [], T0
+    for _ in range(72):                         # a day: a 3-minute run every 20 minutes
+        for _ in range(180):                    # 850 W, a report every second
+            rows.append((t, 850.0 + rnd.gauss(0.0, 30.0)))
+            t += 1.0
+        for _ in range(2):                      # idle: a report every 8 minutes
+            rows.append((t, 1.0 + rnd.choice([-0.1, 0.1])))
+            t += 480.0
+    det = D.Detector()
+    det.process({"a": rows}, None, t)
+    st = det.phases["a"]
+    assert st.interval <= 1.5, st.interval
+    assert st.noise <= max(D.MIN_NOISE_W, st.quantum) + 1e-9, st.noise
+
+def test_a_dip_back_to_the_level_is_no_idle_move():
+    """Home's grid b, 10-12 19:20: a load cycling 280 <-> 660 W under a floor
+    that had taken it in, nothing open. Each reading back at the level moved
+    380 W from the dip before it, and those moves held the idle noise at
+    700 W for an hour. A move counts only from a reading at the level too."""
+    rnd = random.Random(3)
+    st = D.PhaseState(min_noise=5.0)
+    st.baseline, st.level, st.noise, st.interval = 660.0, 660.0, 15.0, 2.0
+    for i in range(1200):
+        st.process(T0 + 2.0 * i, (280.0 if i % 3 == 2 else 660.0) + rnd.gauss(0, 1.5))
+    assert st.noise < 30.0, st.noise
+
 def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
     """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
     records fewer, so a running mean of its gaps came out 7.1 s against the
