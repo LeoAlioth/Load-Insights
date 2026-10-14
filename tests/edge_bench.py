@@ -112,6 +112,7 @@ def _instrument(asm):
             p = self.phases[lph]
             d = p.declared_at(lsince)
             dp, dq, a, b = (d[1], d[2], d[3], d[4]) if d else (lw, var if len(ph) == 1 else None, lsince, lsince)
+            b += fleet._lead(p) if name else 0.0         # its span on the grid's clock - see LAG_PERCENTILE
             s = E.Step(meter=name, ch=lph, t=lsince, dp=dp, dq=dq, a=a, b=b,
                        phase=mp.get(lph) if name else lph, window=self.event_window(), interval=p.interval,
                        noise=p.noise_at(), floor=p.noise, event=st["calls"] if legs else None)
