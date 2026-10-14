@@ -3,6 +3,7 @@ the slicing, the properties and the scorecard's arithmetic.
 
     python3 tests/test_edges.py
 """
+import math
 import sys
 from pathlib import Path
 
@@ -215,6 +216,39 @@ def test_a_steps_levels_are_the_medians_of_its_windows():
     dp, dq, w = E.windows([(float(t), 100.0 + (2.0 if t >= 50 else 0.0)) for t in range(0, 200, 2)], 50.0, 50.0, None,
                           {"t_off": 48.0, "t_set": 50.01}, 0.0, 200.0, noise=10.0)
     assert (dp, w["contra"]) == (50.0, True)
+
+
+def test_an_edges_reactive_size_and_sign_come_along_its_chain():
+    """A plug reads no reactive power, Mansarda's 3EM an unsigned one (from
+    its apparent power), the grid a signed one (Anze, 2026-10-14). The office
+    plug's +100 W under Mansarda: its reactive size from the innermost meter
+    that reads one and took the same step (Mansarda, 50 -> 80 var), its sign
+    from the innermost signed one (the grid, which read the reactive power
+    rise or fall); each meter recorded. A meter whose step is not the
+    plug's lends nothing; with no signed meter's the angle is unsigned."""
+    chans = {"": {"c": "c"}, "Mansarda": {"b": "c"}, "Office": {"a": "c"}}
+
+    def run(grid_q, mansarda_dp=100.0, grid_steps=True):
+        steps = [step("Office", "a", 1000.0, 100.0, "c"), step("Mansarda", "b", 1000.5, mansarda_dp, "c", dq=30.0)]
+        if grid_steps:
+            steps.append(step("", "c", 1001.0, 100.0, dq=grid_q))
+        rows = stepped({(m, c): flat(to=1600.0) for m, cs in chans.items() for c in cs}, steps)
+        q = {("Mansarda", "b"): [(t, 80.0 if t >= 1000.5 else 50.0) for t, _ in rows[("Mansarda", "b")]],
+             ("", "c"): [(t, -200.0 + (grid_q if t >= 1001.0 else 0.0)) for t, _ in rows[("", "c")]]}
+        a = E.Assembler({"Office": "Mansarda"})
+        a.feed(steps, rows=rows, qrows=q, qsigned={("", "c"): 0.0}, chans=chans, noise={k: 10.0 for k in rows},
+               latency={m: 6.0 for m in chans})
+        a.flush()
+        return next(e for e in a.edges if e["place"] == "Office")
+    want = math.degrees(math.atan2(30.0, 100.0))
+    e = run(30.0)
+    assert (e["q_from"], e["sign_from"], e["unsigned"]) == ("Mansarda", "", False) and abs(e["angle"] - want) < 1e-9, e
+    e = run(-30.0)                                   # the grid read it capacitive
+    assert e["sign_from"] == "" and abs(e["angle"] + want) < 1e-9, e
+    e = run(30.0, grid_steps=False)                  # no signed meter took the step
+    assert (e["q_from"], e["sign_from"], e["unsigned"]) == ("Mansarda", None, True) and abs(e["angle"] - want) < 1e-9, e
+    e = run(30.0, mansarda_dp=300.0)                 # Mansarda's step is not the plug's: the grid lends both
+    assert (e["q_from"], e["sign_from"]) == ("", ""), e
 
 
 def test_a_three_phase_charger_read_as_one_total_takes_all_three_legs():

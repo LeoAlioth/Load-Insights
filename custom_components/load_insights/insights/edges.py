@@ -233,7 +233,8 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     falls back to the step as declared (``dp``, ``dq``) and the readings
     beside it (``p``: ``properties``), and so does a step whose windows show
     none of its sign above its ``noise`` (``contra``). Returns (dP, dQ, the properties):
-    p0/p1, q0/q1, pf0/pf1, v0/v1, dv, dv_kw (volts per kW), r, n0/n1, and
+    p0/p1, q0/q1, pf0/pf1, v0/v1, dv, dv_kw (volts per kW), r, n0/n1, the
+    reactive power's spread over both (qn), and
     the readings each window held (nb/na)."""
     def both(series, fall0, fall1, size):
         b = [v for _, v in _win(series or [], start, p["t_off"])]
@@ -250,7 +251,7 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     lo = _median([v for _, v in _win(rows, t - 30, t - 0.01)])
     lo = (_held(rows, t - 0.01) or 0.0) if lo is None else lo
     p0, p1, b, a = both(rows, lo, lo + dp, dp)
-    q0, q1 = both(qrows, None, None, dq)[:2] if qrows else (None, None)
+    q0, q1, qb, qa = both(qrows, None, None, dq) if qrows else (None, None, [], [])
     v0, v1 = both(volts, p.get("v0"), p.get("v1"), None)[:2] if volts else (None, None)
     v0 = p.get("v0") if v0 is None else v0
     v1 = p.get("v1") if v1 is None else v1
@@ -262,7 +263,8 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     out = {"p0": p0, "p1": p1, "q0": q0, "q1": q1, "v0": v0, "v1": v1, "nb": len(b), "na": len(a), "contra": contra,
            "pf0": p0 / math.hypot(p0, q0) if q0 is not None and (p0 or q0) else None,
            "pf1": p1 / math.hypot(p1, q1) if q1 is not None and (p1 or q1) else None,
-           "n0": MAD_SD * _mad(b) if len(b) >= 3 else None, "n1": MAD_SD * _mad(a) if len(a) >= 3 else None}
+           "n0": MAD_SD * _mad(b) if len(b) >= 3 else None, "n1": MAD_SD * _mad(a) if len(a) >= 3 else None,
+           "qn": math.hypot(MAD_SD * (_mad(qb) or 0.0), MAD_SD * (_mad(qa) or 0.0)) if qa or qb else None}
     out["dv"] = v1 - v0 if v0 is not None and v1 is not None else None
     out["dv_kw"] = out["dv"] / (dP / 1000.0) if out["dv"] is not None and dP else None
     von = v1 if dP > 0 else v0
@@ -328,6 +330,7 @@ class Assembler:
         self.steps: List[Step] = []          # not decided yet
         self.rows: Dict[Tuple[str, str], list] = {}
         self.qrows: Dict[Tuple[str, str], list] = {}     # reactive power, read as the rows
+        self.qsigned: Dict[Tuple[str, str], float] = {}  # from when each channel's reactive power is signed - see signed
         self.marks: Dict[str, list] = {}     # each channel's steps, [(t, id, step)] - a window's ends (_ends)
         self.volts: Dict[Tuple[str, str], list] = {}
         self.first: Dict[Tuple[str, str], float] = {}
@@ -343,14 +346,18 @@ class Assembler:
 
     # ------------------------------------------------ feeding
     def feed(self, steps: Sequence[Step], rows=None, volts=None, frontier=None, reach=None,
-             now: float = math.inf, chans=None, noise=None, latency=None, floor=None, qrows=None) -> None:
+             now: float = math.inf, chans=None, noise=None, latency=None, floor=None, qrows=None,
+             qsigned=None) -> None:
         """A pass: the steps its detectors classified; each channel's new
         readings and voltages, {(meter, ch): [(t, x)]}; per meter the earliest
         step it may still declare (``frontier``) and how far a step's moment
         reaches back from it (``reach``: its latency and event window); how
         far the readings reach (``now``); each meter's channels and their
         grid phases, {meter: {ch: phase or None}}; each channel's noise; each
-        meter's latency; each channel's idle noise (``floor``)."""
+        meter's latency; each channel's idle noise (``floor``); its reactive
+        readings (``qrows``) and from when they are the meter's own signed
+        ones, {(meter, ch): t} (``qsigned``; one worked out from the apparent
+        power or V x I has no sign)."""
         for store, fed in ((self.rows, rows), (self.volts, volts), (self.qrows, qrows)):
             for k, rr in (fed or {}).items():
                 if not rr:
@@ -363,6 +370,7 @@ class Assembler:
                     have.extend(rr)
                 if store is self.rows:
                     self.first.setdefault(k, rr[0][0])
+        self.qsigned.update(qsigned or {})
         for m, cs in (chans or {}).items():
             self.chans.setdefault(m, {}).update(cs)
         self.noise.update(noise or {})
@@ -612,6 +620,44 @@ class Assembler:
                     edge["shared"][x.key] = others
             self.edges.append(edge)
 
+    def signed(self, legs: Sequence[Step]) -> bool:
+        """Do ``legs``' channels read a SIGNED reactive power then (``qsigned``:
+        the meter publishes one - Home's grid from 30 Sep, Andrej's from
+        8 Oct; one worked out from the apparent power, as Home's 3EMs', has
+        no sign)?"""
+        return all(self.qsigned.get((x.meter, x.ch), math.inf) <= x.t for x in legs)
+
+    def _reactive(self, meter: str, places: List[Step], held: List[Step]):
+        """The edge's reactive angle (Anze, 2026-10-14): its size from the
+        innermost meter of its chain that reads a reactive power, its sign
+        from the innermost that reads it signed - the place's own where it
+        has them, else a meter's above whose entry is the same step (its
+        step and the place's agree within both meters' noise, as
+        conservation judges them) and whose reactive step clears that
+        meter's own reactive noise (its windows' spread, ``windows``).
+        Returns (the meter the size came from, the sign's, the angle -
+        |angle| where no meter gave a sign; None, None, None with no size)."""
+        dp = sum(x.grid for x in places)
+
+        def lends(legs):
+            if not legs or any(x.dq is None for x in legs):
+                return False
+            if legs is places:
+                return True
+            if abs(sum(x.grid for x in legs) - dp) > _tol([x.noise for x in legs + places], dp):
+                return False
+            return abs(sum(x.dq for x in legs)) > math.hypot(*[x.props.get("qn") or 0.0 for x in legs])
+        chain = [(meter, places)] + [(m, [x for x in held if x.meter == m]) for m in self.ancestors(meter)]
+        mag = next(((m, legs) for m, legs in chain if lends(legs)), None)
+        if mag is None:
+            return None, None, None
+        sgn = next(((m, legs) for m, legs in chain if self.signed(legs) and lends(legs)), None)
+        size = abs(math.degrees(math.atan2(sum(x.dq for x in mag[1]), abs(dp))))
+        if sgn is None:
+            return mag[0], None, size
+        load = sum(x.dq for x in sgn[1]) * (1 if sum(x.dp for x in sgn[1]) > 0 else -1)   # a load's, rise or fall
+        return mag[0], sgn[0], math.copysign(size, load)
+
     def _volts(self, x: Step):
         """The voltage at ``x``'s channel: its meter's own, else a meter's
         above on its phase, else the grid's."""
@@ -700,14 +746,15 @@ class Assembler:
                           + [x.floor or x.noise for x in places]):
                     blind.append(m)
         size = abs(dp)
-        dqs = [x.dq for x in places]
+        q_from, sign_from, ang = self._reactive(meter, places, held)
         props = {}
         for p in ("surge", "settle", "wobble", "ramp_n", "ramp_s"):
             got = [(abs(x.dp), x.props.get(p)) for x in places if x.props.get(p) is not None]
             props[p] = sum(w * v for w, v in got) / sum(w for w, _ in got) if got else None
         edge = {"id": self._ids, "t": t, "place": meter, "dir": 1 if dp > 0 else -1,
                 "pattern": "".join(sorted(x.ch for x in places)), "size": size,
-                "angle": angle(dp, sum(dqs) if None not in dqs else None),
+                "angle": ang, "q_from": q_from, "sign_from": sign_from,
+                "unsigned": ang is not None and sign_from is None,
                 "noise": sum(x.floor or x.noise for x in places), "err": sum(x.noise for x in places),
                 "legs": [x.key for x in places],
                 "entries": entries, "shared": {}, "silent": silent, "blind": blind, **props}
