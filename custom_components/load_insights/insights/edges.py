@@ -116,6 +116,7 @@ class Step:
     event: Optional[int] = None  # the detector's own event (a rise's legs); None: grouped here
     gain: float = 1.0           # its meter's learned gain against the grid when classified (Fleet.gain)
     props: dict = field(default_factory=dict)
+    declared: Optional[Tuple[float, Optional[float]]] = None   # (dp, dq) as declared, before a settle - see _settle_once
 
     @property
     def key(self) -> str:
@@ -381,10 +382,49 @@ class Assembler:
                 return best[1]
         return []
 
+    def _next_read(self, x: Step) -> float:
+        """The first reading of ``x``'s channel after its own, within
+        PROPS_REACH_S (``x.t`` where there is none) - see _settle_once."""
+        rows = self.rows.get((x.meter, x.ch)) or []
+        i = bisect.bisect_right(rows, (x.t + 0.01, math.inf))
+        return rows[i][0] if i < len(rows) and rows[i][0] <= x.t + PROPS_REACH_S else x.t
+
+    def _settle_once(self) -> Tuple[List[Step], Dict[int, Step]]:
+        """A level a meter read once is no level (Anze, 2026-10-14): a step
+        whose channel's next reading starts a step back toward where it came
+        from, no more than half its size, is measured to where the meter
+        settled - that second step is its settle, not a step of its own, and
+        its first reading its surge (``properties``). Kozolec's boiler plug read a
+        switch-on as 1902 W, its silence confirmed it, and its next report,
+        40 s on, read 1875 - the element warming: declared -27 W, it was
+        blind on the grid 131 times in ten days. A step is held until its
+        channel's next reading is decided (``_decide``), so the slicing
+        never changes it; each pair is judged on the steps as declared, and
+        a step that is a settle absorbs none, so neither does the order they
+        come in. Returns the steps left and {absorber: its settle}."""
+        by: Dict[str, List[Step]] = {}
+        for x in sorted(self.steps, key=lambda x: x.t):
+            if x.declared is None:
+                x.declared = (x.dp, x.dq)
+            x.dp, x.dq = x.declared
+            by.setdefault(x.key, []).append(x)
+        took: Dict[int, Step] = {}
+        gone = set()
+        for xs in by.values():
+            for x, y in zip(xs, xs[1:]):
+                if (id(x) not in gone and (x.dp > 0) != (y.dp > 0) and abs(y.dp) <= abs(x.dp) / 2
+                        and y.t > x.t and abs(y.t - self._next_read(x)) <= 0.01):
+                    x.dp += y.dp
+                    x.dq = None if x.dq is None or y.dq is None else x.dq + y.dq
+                    gone.add(id(y))
+                    took[id(x)] = y
+        return [x for x in self.steps if id(x) not in gone], took
+
     def _decide(self, until: float, now: float) -> None:
         if not self.steps or min(max(x.b, x.t) for x in self.steps) >= until:
             return                                # nothing can have closed
-        evs = self._events(self.steps)
+        steps, took = self._settle_once()
+        evs = self._events(steps)
         parts = {id(e): e.pieces() for e in evs}
         piece_of = {id(x): q for e in evs for q in parts[id(e)] for x in q.legs}
         idx = []
@@ -412,14 +452,14 @@ class Assembler:
             comps.setdefault(find(id(e)), []).append(e)
         keep = []
         for comp in sorted(comps.values(), key=lambda c: min(e.t for e in c)):
-            reach = max(max(x.b, x.t) for e in comp for x in e.legs)
+            reach = max(max(x.b, x.t, self._next_read(x)) for e in comp for x in e.legs)
             if reach < until and max(e.t for e in comp) + PROPS_REACH_S <= now:
                 comp.sort(key=lambda e: (e.t, e.meter, e.legs[0].ch))
                 self._settle(comp, [q for e in comp for q in parts[id(e)]], ups, piece_of)
             else:
                 keep += [x for e in comp for x in e.legs]
         self._until = max(self._until, until)
-        self.steps = keep
+        self.steps = keep + [took[id(x)] for x in keep if id(x) in took]   # a settle goes with its step
         self._prune(min([x.t for x in keep] + [until]))
 
     def _prune(self, oldest: float) -> None:
