@@ -63,9 +63,14 @@ GROUP_DAYS = 3
 # Each recorded property's histogram bin and smoothing for the mixed test, in
 # its own units: the angle as the grouping cuts it today, the rest a
 # judgement (ponytail: fixed; measure each property's own error when weights
-# over them are benched).
+# over them are benched) - and for the three that are readings over the step
+# (ERR_PROPS), at least what the noise makes of them, the group's noise over
+# its size: cut finer, a 50 W step's settling read in 10 W of noise split
+# into "piles" by noise alone (Home's first card, 2026-10-14: settle mixed
+# 27 % of edges).
 PROP_BINS = {"angle": (None, None), "surge": (0.05, 0.15), "settle": (0.01, 0.03),
              "wobble": (0.01, 0.03), "ramp_n": (1.0, 1.0)}
+ERR_PROPS = ("surge", "settle", "wobble")
 PROPS = tuple(PROP_BINS)
 MAD_SD = 1.4826                 # a median deviation as a standard deviation
 
@@ -512,7 +517,8 @@ class Assembler:
         edge = {"id": self._ids, "t": t, "place": meter, "dir": 1 if dp > 0 else -1,
                 "pattern": "".join(sorted(x.ch for x in places)), "size": size,
                 "angle": angle(dp, sum(dqs) if None not in dqs else None),
-                "noise": sum(x.floor or x.noise for x in places), "legs": [x.key for x in places],
+                "noise": sum(x.floor or x.noise for x in places), "err": sum(x.noise for x in places),
+                "legs": [x.key for x in places],
                 "entries": entries, "shared": {}, "silent": silent, "blind": blind, **props}
         return edge, held
 
@@ -609,7 +615,8 @@ def scorecard(groups: Sequence[dict]) -> dict:
     tightness - the place entry's size spread in measurement errors, per group
     of three or more, weighted by edges (1: as tight as the meter allows);
     mixed - edges in groups of GROUP_MIN or more where a recorded property
-    splits into two piles each holding MIXED_SHARE of the group;
+    splits into two piles each holding MIXED_SHARE of the group, cut as the
+    grouping cuts (PROP_BINS; an item's "err" is its noise in watts);
     duplicates - edges in groups with a same-key group of agreeing size and angle;
     count - groups, those of GROUP_MIN edges or more, the share of edges in
     smaller ones, groups seen on GROUP_DAYS days or more;
@@ -624,8 +631,11 @@ def scorecard(groups: Sequence[dict]) -> dict:
         if n < GROUP_MIN:
             continue
         hit = False
+        err = _median([e["err"] / e["size"] for e in g["items"] if e.get("err") and e["size"]]) or 0.0
         for p, (bw, sd) in PROP_BINS.items():
             bw, sd = (bw or _d.EDGE_ANGLE_BIN, sd or _d.EDGE_ANGLE_KERNEL)
+            if p in ERR_PROPS and err > sd:
+                bw, sd = err * bw / sd, err
             xs = [e[p] for e in g["items"] if e.get(p) is not None]
             if len(xs) >= GROUP_MIN and sum(1 for c in _piles(xs, bw, sd) if c >= MIXED_SHARE * n) >= 2:
                 mixed_by[p] += n
