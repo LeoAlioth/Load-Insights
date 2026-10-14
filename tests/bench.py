@@ -189,7 +189,7 @@ OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": 
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 STAGES: list = []                      # INPUT=entity dials, fed as --input
-VOLTS: list = []                       # VOLTS=phase:entity dials, fed as --volts (EDGE_NOMINAL_V test)
+VOLTS: list = []                       # VOLTS=phase:entity dials, fed as --volts (the edges' voltage)
 FEED: list = []                        # FEED=meter dials - see the docstring
 EXTRAS: list = []                      # EXTRA=folder dials - see the docstring
 LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "VOLTS": VOLTS, "FEED": FEED, "EXTRA": EXTRAS}

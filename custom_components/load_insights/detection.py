@@ -1318,7 +1318,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 if not carries_load(power_rows):
                     continue          # coherent, but nothing flows through it
                 if series.get(("voltage", phase)):
-                    self.volts.setdefault("", {})[phase] = series[("voltage", phase)]   # steps sized at 230 V - see EDGE_NOMINAL_V
+                    self.volts.setdefault("", {})[phase] = series[("voltage", phase)]   # the edges' voltage - see Fleet.volts
                 signed = series.get(("var", phase))
                 var = _reactive(power_rows, series.get(("voltage", phase)),
                                 series.get(("current", phase)), series.get(("pf", phase)), signed,
@@ -1430,7 +1430,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if meter is not None:
             own = {p: series[("voltage", p)] for p in samples if series.get(("voltage", p))}
             if own:
-                self.volts[meter] = own        # the meter's own voltage - see EDGE_NOMINAL_V
+                self.volts[meter] = own        # the meter's own voltage - see Fleet.volts
         q: Dict[str, Dict[float, float]] = {}
         for p in samples:
             if self._coherent_triple(cfg, p) is None:

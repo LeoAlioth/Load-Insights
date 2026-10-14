@@ -363,7 +363,7 @@ def parse(argv):
                         help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
     parser.add_argument("--input", action="append", default=[],
                         help="ENTITY: a setting a device reports - a washer's cycle phase")
-    parser.add_argument("--volts", action="append", default=[], help="phase=entity: the grid voltage for EDGE_NOMINAL_V")
+    parser.add_argument("--volts", action="append", default=[], help="phase=entity: the grid voltage, for the edges' v / dv")
     parser.add_argument("--driver", action="append", default=[],
                         help="ENTITY: a number a load's runs may follow - a room's temperature")
     parser.add_argument("--parent", action="append", default=[],
@@ -499,7 +499,7 @@ def run(args, transform=None, say=print):
             own = {p: series[e.strip().replace("active_power", "voltage")] for p, e in zip("abc", eids.split(","))
                    if e.strip().replace("active_power", "voltage") in series}
             if own:
-                grid_v[name.strip()] = own        # the meter's own voltage - see EDGE_NOMINAL_V
+                grid_v[name.strip()] = own        # the meter's own voltage - see Fleet.volts
             if not args.no_q:
                 # its reactive power from what the meter publishes beside the
                 # power - a 3EM its apparent power and a power factor - as production

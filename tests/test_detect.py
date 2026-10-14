@@ -2937,68 +2937,6 @@ def test_an_input_flipping_back_does_not_end_a_run_the_meter_still_shows():
     assert runs and min(runs) > 250.0, sorted(round(r) for r in runs)
 
 
-def test_a_step_is_sized_at_the_voltage_while_its_load_is_on():
-    """The panini press's 12 Oct rise on Mansarda's B: 668 -> 2184 W while the
-    voltage, sent 3 ms after each power reading, fell 232.6 -> 227.3 V. Read
-    at the step it was the voltage from before the rise (1482 W at 230 V, the
-    kettle's); read while on, 1552 W - for the rise and for the fall alike
-    (2026-10-13)."""
-    fleet = D.Fleet()
-    rows, volts, t = [], [], T0
-    for w, v, secs in ((668.0, 232.6, 600), (2184.0, 227.3, 300), (668.0, 232.6, 600)):
-        for _ in range(int(secs / 16)):
-            rows.append((t, w))
-            volts.append((t + 0.003, v))
-            t += 16.0
-    fleet.process({"b": rows}, {}, now_ts=t, volts={"": {"b": volts}})
-    sizes = sorted(round(c.watts) for c in fleet.main.edges if c.phase == "b")
-    want = 1516 * (230 / 227.3) ** 2
-    assert sizes and all(abs(w - want) < 15 for w in sizes), (sizes, round(want))
-
-
-def test_two_heaters_whose_steps_overlap_in_watts_are_told_apart_at_230_v():
-    """Home's kettle (36.5 ohm, ~1450 W at 230 V) and panini press (33.7 ohm,
-    ~1570 W) on Mansarda's B, where the voltage swings 224-240 V: their raw
-    steps overlap (1375-1580 W against 1489-1709 W) and made one cluster.
-    Sized at EDGE_NOMINAL_V by the phase's voltage, they are two (2026-10-13)."""
-    rnd = random.Random(7)
-    fleet = D.Fleet()
-    rows, volts, which, t = [], [], {}, T0
-    base = 300.0
-    def hold(w, v, secs):
-        nonlocal t
-        for _ in range(int(secs / 5)):
-            rows.append((t, w))
-            volts.append((t, v))
-            t += 5.0
-    hold(base, 230.0, 600)
-    for k in range(80):
-        ohm = 36.5 if k % 2 else 33.7
-        v = rnd.uniform(224.0, 240.0)
-        hold(base, v, 60)
-        which[t] = ohm
-        hold(base + v * v / ohm, v, 200)
-        hold(base, v, 1500 + rnd.uniform(0, 600))
-    a = T0
-    while a < t:
-        b = a + 6 * 3600.0
-        fleet.process({"b": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
-                      volts={"": {"b": [r for r in volts if a <= r[0] < b]}})
-        a = b
-    starts = sorted(which)
-    def device(x):
-        i = min(range(len(starts)), key=lambda j: abs(starts[j] - x))
-        return which[starts[i]] if abs(starts[i] - x) < 30.0 else None
-    got = {}                                       # each signature's last RUN_MEMORY runs, by device
-    for sig in fleet.main.signatures:
-        d = [device(x) for x, _ in sig.runs]
-        if 36.5 in d or 33.7 in d:
-            got[sig.id] = (d.count(36.5), d.count(33.7), sig.count)
-    for kettle, panini, _ in got.values():
-        assert min(kettle, panini) <= 0.1 * (kettle + panini), got
-    assert sum(n for _, _, n in got.values()) >= 64, got
-
-
 def _named_kettle():
     """A fleet that has learned a 1.5 kW, 300 s load on B and named it Kettle,
     and the time its readings reach."""
