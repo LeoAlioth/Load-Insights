@@ -976,6 +976,16 @@ NOISE_WINDOW = 240     # the moves the noise is the median of at every reading (
 # every 300 s 16.8 % and 33.7 % captured, every 3600 s 16.0 and 31.6 with the
 # spread of the blocks back (14.1-17.3 against 16.4-17.0; 2026-10-04).
 REL_REFRESH_S = 300.0
+# NOISE_REL_FROM_LEVEL (2026-10-14): the relative noise is learned as the idle
+# noise is. A move counts only where the reading before it sat at the level
+# too: back from a dip of a load nothing declared, the move is the load's -
+# 12 % of Home's grid c moves counted at a loaded level came from a reading
+# off it, and the noise there sat at the 5 % cap (~108 W at 2.2 kW). And a
+# seed's worth of moves (BASELINE_SEED_SAMPLES) starts it, as it starts the
+# idle noise: Kozolec's car charger plug, read once a minute, gathered 185
+# moves at its 2.2 kW in ten days - under the window - and never learned one.
+# The moves are kept with the phase, as the idle ones: a restart began the
+# count again.
 # The recorder writes only a CHANGE, so a silence is the value held: each of
 # the meter's intervals (its cadence, a low percentile of its gaps) in it is a
 # move of nothing, and a reading after one brings them into the noise window
@@ -2022,12 +2032,15 @@ class PhaseState:
                 else:
                     # a drop held since it started is not it sagging - see HELD_DROPS
                     o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
-            if self.level is not None and abs(self.level) >= self.rel_floor and not sun_moving:
-                wander = abs(w - prev_w) if prev_w is not None else abs(w - self.level)
-                self.rel_diffs.append(wander / abs(self.level))
+            # the relative noise as the idle noise: a move only from a reading
+            # at the level too, and from a seed's worth of moves on - see
+            # NOISE_REL_FROM_LEVEL
+            if (self.level is not None and abs(self.level) >= self.rel_floor and not sun_moving
+                    and prev_w is not None and abs(prev_w - self.level) < self.noise_at(self.level)):
+                self.rel_diffs.append(abs(w - prev_w) / abs(self.level))
                 del self.rel_diffs[:-NOISE_WINDOW]
                 tick = math.floor(ts / REL_REFRESH_S)
-                if len(self.rel_diffs) >= NOISE_WINDOW and tick != self._rel_tick:
+                if len(self.rel_diffs) >= BASELINE_SEED_SAMPLES and tick != self._rel_tick:
                     self.noise_rel = min(NOISE_REL_CAP, NOISE_MAD_FACTOR * _median(self.rel_diffs))
                     self._rel_tick = tick
             if q is not None:
@@ -2739,7 +2752,7 @@ class PhaseState:
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
                 "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "seed_zeros": self.seed_zeros,
-                "idle_diffs": list(self.idle_diffs), "pending": [list(x) for x in self.pending],
+                "idle_diffs": list(self.idle_diffs), "rel_diffs": list(self.rel_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
                 "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag, "lead": self.lead,
                 "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
@@ -2754,7 +2767,7 @@ class PhaseState:
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
                    step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    seed_zeros=int(d.get("seed_zeros") or 0),
-                   idle_diffs=list(d.get("idle_diffs") or []),
+                   idle_diffs=list(d.get("idle_diffs") or []), rel_diffs=list(d.get("rel_diffs") or []),
                    pending=[tuple(x) for x in d.get("pending") or []],
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
                    raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),

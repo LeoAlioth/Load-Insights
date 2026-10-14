@@ -336,8 +336,10 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
     its own signature's (Session.owner)."""
     for busy in (False, True):
         filed, fleet, on, off = _plug_fleet(busy)
-        own = [s for s in fleet.subs["Plug"].recent if s["end"] - s["start"] > 10 * 3600]
-        assert len(own) == 1 and abs(own[0]["kwh"] - 6.0) < 0.1, own          # the plug's own detector: one 20 h run
+        # the plug's own detector: one 20 h run of its load (a 15 W wobble step
+        # before its relative noise is learned may stand as a run of its own)
+        own = [s for s in fleet.subs["Plug"].recent if s["end"] - s["start"] > 10 * 3600 and s["max_w"] > 100]
+        assert len(own) == 1 and abs(own[0]["kwh"] - 6.0) < 0.1, own
         run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
         assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
         run = max(run, key=lambda s: s.duration_s)
@@ -1731,14 +1733,21 @@ def test_the_idle_noise_is_not_learned_while_the_array_moves_under_the_reading()
         sun[k] = sun[k - 1] + rnd.choice([1, -1]) * rnd.uniform(20.0, 30.0)
     rows = [(T0 + DT * k, 300.0 + rnd.choice([-1.0, 0.0, 1.0]) + 0.3 * (sun[k] - sun[k - 1] if k else 0.0))
             for k in range(n)]
-    det = D.Detector()
-    det.phases["a"].floor_zero = True
-    det.process({"a": rows}, None, T0 + DT * n, {"a": {t: s for (t, _), s in zip(rows, sun)}})
-    assert det.phases["a"].noise <= D.MIN_NOISE_W + 1e-9, det.phases["a"].noise
-    blind = D.Detector()                       # the array not handed over: its moves are the reading's
-    blind.phases["a"].floor_zero = True
-    blind.process({"a": rows}, None, T0 + DT * n)
-    assert blind.phases["a"].noise > 2 * D.MIN_NOISE_W, blind.phases["a"].noise
+    # the highest the noise got, fed in passes of 50 readings: the readings
+    # wander in two modes (+-6..9 W), so where a move from the level counts
+    # (NOISE_FROM_MOVES) the blind noise ends a run at 10 W or ~38 by chance
+    # (4 of 8 seeds at 10 before NOISE_REL_FROM_LEVEL, 6 of 8 since)
+    def highest(pv):
+        det = D.Detector()
+        det.phases["a"].floor_zero = True
+        top = 0.0
+        for i in range(0, n, 50):
+            part = rows[i:i + 50]
+            det.process({"a": part}, None, part[-1][0], {"a": dict(zip((t for t, _ in part), sun[i:i + 50]))} if pv else None)
+            top = max(top, det.phases["a"].noise)
+        return top
+    assert highest(True) <= D.MIN_NOISE_W + 1e-9, highest(True)
+    assert highest(False) > 2 * D.MIN_NOISE_W, highest(False)   # the array not handed over: its moves are the reading's
 
 
 def test_a_meter_that_reports_on_change_learns_its_idle_noise_from_its_silences():
@@ -1773,6 +1782,46 @@ def test_a_dip_back_to_the_level_is_no_idle_move():
     for i in range(1200):
         st.process(T0 + 2.0 * i, (280.0 if i % 3 == 2 else 660.0) + rnd.gauss(0, 1.5))
     assert st.noise < 30.0, st.noise
+
+def test_a_dip_back_to_a_loaded_level_is_no_relative_move():
+    """A loaded phase (2 kW, wandering 3 W a reading) with a load dipping it
+    300 W for one reading in three: each reading back at the level moved
+    300 W from the dip, and those moves counted as its wander put the relative
+    noise at the cap (Home's grid c, ~108 W at 2.2 kW). A move counts only
+    from a reading at the level too, as the idle noise's (2026-10-14)."""
+    rnd = random.Random(4)
+    st = D.PhaseState(min_noise=10.0)
+    st.baseline, st.level, st.noise, st.interval = 0.0, 2000.0, 10.0, 2.0
+    st.open_edges = [D._Open(T0, 2000.0, None, [(T0, 2000.0)])]
+    for i in range(1500):
+        st.process(T0 + 2.0 * i, (1700.0 if i % 3 == 2 else 2000.0) + rnd.gauss(0, 3.0))
+    assert 0.0 < st.noise_rel < 0.01, st.noise_rel
+
+
+def test_a_slow_meter_learns_its_relative_noise_from_a_seeds_worth_of_moves():
+    """Kozolec's car charger plug reports once a minute while it charges:
+    ten days gave it 185 moves at a loaded level, under the NOISE_WINDOW the
+    relative noise waited for, so it never learned one and its noise at 2.2 kW
+    stayed the idle 10 W. Like the idle noise, a seed's worth of moves
+    (BASELINE_SEED_SAMPLES) is enough to start from."""
+    rnd = random.Random(6)
+    st = D.PhaseState(min_noise=10.0)
+    st.baseline, st.level, st.noise, st.interval = 0.0, 2200.0, 10.0, 60.0
+    st.open_edges = [D._Open(T0, 2200.0, None, [(T0, 2200.0)])]
+    for i in range(D.BASELINE_SEED_SAMPLES + 5):
+        st.process(T0 + 60.0 * i, 2200.0 + rnd.gauss(0, 3.0))
+    assert st.noise_rel > 0.0, st.noise_rel
+
+
+def test_the_relative_noises_moves_survive_a_restart():
+    """Production restores a phase from its store: the moves the relative
+    noise is the median of were not in it, so every restart began the count
+    again and a meter that never gathered a window between restarts never
+    learned one."""
+    st = D.PhaseState()
+    st.rel_diffs = [0.001 * k for k in range(30)]
+    assert D.PhaseState.from_dict(json.loads(json.dumps(st.to_dict()))).rel_diffs == st.rel_diffs
+
 
 def test_a_readings_interval_is_its_cadence_not_how_often_it_changes():
     """Home Assistant records only a CHANGE. A quiet phase of Home's grid meter
