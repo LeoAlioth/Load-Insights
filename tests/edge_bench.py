@@ -121,7 +121,7 @@ def _instrument(asm):
             b += fleet._lead(p) if name else 0.0         # its span on the grid's clock - see LAG_PERCENTILE
             s = E.Step(meter=name, ch=lph, t=lsince, dp=dp, dq=dq, a=a, b=b,
                        phase=mp.get(lph) if name else lph, window=self.event_window(), interval=p.interval,
-                       noise=p.noise_at(), floor=p.noise, event=st["calls"] if legs else None,
+                       noise=p.noise_at(), floor=p.noise, quantum=p.quantum, q_quantum=p.q_quantum or 0.0, event=st["calls"] if legs else None,
                        gain=fleet.gain(name, "p") if name else 1.0)
             st["seen"][key] = s
             st["pass"].append(s)
@@ -303,7 +303,7 @@ def _pct(v) -> str:
 
 FIGS = [("tightness", "tightness (errors)"), ("mixed", "mixed %"), ("duplicates", "duplicates %"),
         ("groups", "groups"), ("groups_min", f"groups >= {E.GROUP_MIN} edges"), ("small_share", "edges in smaller %"),
-        ("groups_days", f"groups on >= {E.GROUP_DAYS} days"), ("mirror", "mirror %"), ("edges", "edges")]
+        ("groups_days", f"groups on >= {E.GROUP_DAYS} days"), ("mirror", "mirror %"), ("unsure", "unsure %"), ("edges", "edges")]
 
 
 def _fig(k: str, v) -> str:
@@ -341,6 +341,7 @@ def _site_lines(site: str, runs: dict, inv: dict) -> tuple:
         lines.append(f"    {label:28s} {_fig(k, r['groups'][k]):>10s} {_fig(k, r['today'][k]):>10s}")
     lines.append("    mixed by property %: " + ", ".join(f"{p} {100 * r['groups']['mixed_by'][p]:.1f}/{100 * r['today']['mixed_by'][p]:.1f}"
                                                          for p in E.PROPS) + "  (edges/today)")
+    lines.append("    groups by median size and edges: " + ", ".join(f"{k} {v}" for k, v in r["groups"]["by_size"].items()))
     return lines
 
 

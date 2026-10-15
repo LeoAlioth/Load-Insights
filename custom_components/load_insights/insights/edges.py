@@ -104,6 +104,14 @@ ERR_PROPS = ("surge", "settle", "wobble")
 PROPS = tuple(PROP_BINS)
 MAD_SD = 1.4826                 # a median deviation as a standard deviation
 MEDIAN_SE = math.sqrt(math.pi / 2)   # a median of n readings: this many standard deviations / sqrt(n)
+MAD_SE = 1.166                  # a spread read as MAD-sd from n readings: this many of it / sqrt(n)
+# A window of fewer than three readings falls back to the noise at the step.
+# The Shelly report rule (a held level within ~5 % of its last report, uniform:
+# 2.9 % of the level) was benched in its place (2026-10-15) and read too wide:
+# the same step on the plug and the grid then disagreed by 0.33-0.78 of the
+# errors it predicted (Kozolec's Pond, boiler, IR panel, well pump), against
+# the noise's 1.0 for the boiler; a held level moves well under 1 % at the
+# plug's next tick. Truth was the same either way.
 
 
 @dataclass
@@ -122,6 +130,8 @@ class Step:
     interval: float = 0.0       # its reading interval then
     noise: float = 0.0          # its noise at the step (PhaseState.noise_at) - the tolerances'
     floor: float = 0.0          # the channel's idle noise (PhaseState.noise) - the grouping's unit
+    quantum: float = 0.0        # its reading resolution (PhaseState.quantum) - a window level's error floor
+    q_quantum: float = 0.0      # its reactive power's (PhaseState.q_quantum, V x dI) - the same for qe
     event: Optional[int] = None  # the detector's own event (a rise's legs); None: grouped here
     gain: float = 1.0           # its meter's learned gain against the grid when classified (Fleet.gain)
     props: dict = field(default_factory=dict)
@@ -180,8 +190,13 @@ def properties(rows: Sequence[Tuple[float, float]], t: float, dp: float,
     nothing), settling (the on side's last 15 s less its first, over the
     minute after a rise or before a fall, / the step), wobble (the on side's
     median deviation less the off side's / the step), and the voltage before
-    and after (medians over 30 s)."""
-    out = dict.fromkeys(("ramp_s", "ramp_n", "surge", "settle", "wobble", "v0", "v1"))
+    and after (medians over 30 s). The surge's and wobble's own errors
+    (surge_e, wobble_e): the peak is single readings, so the on side's
+    spread and the old level's median's error; a median deviation's error
+    from its readings (MAD_SE) on both sides - each over the step (clarity
+    study, 2026-10-15: both followed their error across a 35x range of it,
+    deviation over error 0.5-1.3)."""
+    out = dict.fromkeys(("ramp_s", "ramp_n", "surge", "settle", "wobble", "v0", "v1", "surge_e", "wobble_e"))
     size, up = abs(dp), dp > 0
     pre = [v for _, v in _win(rows, t - 30, t - 0.01)]
     lo = _median(pre) if pre else _held(rows, t - 0.01)
@@ -213,6 +228,10 @@ def properties(rows: Sequence[Tuple[float, float]], t: float, dp: float,
     m_on, m_off = _mad([v for _, v in on]), _mad([v for _, v in off])
     if m_on is not None and m_off is not None:
         out["wobble"] = (m_on - m_off) / size
+        out["wobble_e"] = MAD_SE * MAD_SD * math.hypot(m_on / math.sqrt(len(on)), m_off / math.sqrt(len(off))) / size
+    if m_on is not None:
+        m_pre = _mad(pre)
+        out["surge_e"] = math.hypot(MAD_SD * m_on, 0.0 if m_pre is None else MAD_SD * m_pre * MEDIAN_SE / math.sqrt(len(pre))) / size
     if volts:
         b4 = [v for _, v in _win(volts, t - 31, t - 1)]
         af = [v for _, v in _win(volts, t1 + 1, t1 + 31)]
@@ -248,8 +267,21 @@ def _level(rows, a: float, b: float) -> Optional[float]:
     return segs[-1][0]
 
 
+def _se(w: Sequence[float], noise: float, quantum: float) -> float:
+    """A window's level's standard error: a median of its readings
+    (MEDIAN_SE), and never finer than the resolution (a level read in whole
+    quanta is known to one quantum, uniform, however many readings hold it:
+    Kozolec's V x I reactive power steps 23 var, so a 40 W step's angle read
+    from flat readings is no 1 deg); with fewer than three readings the
+    noise at the step."""
+    if len(w) >= 3:
+        return math.hypot(MAD_SD * _mad(w) * MEDIAN_SE / math.sqrt(len(w)), quantum / math.sqrt(12.0))
+    return noise
+
+
 def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: float, end: float,
-            qrows=None, volts=None, noise: float = 0.0) -> Tuple[float, Optional[float], dict]:
+            qrows=None, volts=None, noise: float = 0.0, quantum: float = 0.0,
+            q_quantum: float = 0.0) -> Tuple[float, Optional[float], dict]:
     """A step's levels from its WINDOWS (WINDOW_S): before it, the readings
     from ``start`` (its channel's previous step, or WINDOW_S back) to where
     the old level was last read; after it, from past the surge to ``end``
@@ -268,8 +300,9 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     none of its sign above its ``noise`` (``contra``). Returns (dP, dQ, the properties):
     p0/p1, q0/q1, pf0/pf1, v0/v1, dv, dv_kw (volts per kW), r, n0/n1, the
     reactive power's spread over both (qn) and its step's standard error
-    (qe: each window's spread over the root of its readings, as a median's), and
-    the readings each window held (nb/na)."""
+    (qe: each window's spread over the root of its readings, as a median's),
+    the size step's (pe, the same, _se) and the on side's voltage level's
+    (ve), and the readings each window held (nb/na)."""
     def both(series, fall0, fall1, size):
         b = [v for _, v in _win(series or [], start, p["t_off"])]
         a = [v for _, v in _win(series or [], p["t_set"], end)]
@@ -298,8 +331,11 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
            "pf1": p1 / math.hypot(p1, q1) if q1 is not None and (p1 or q1) else None,
            "n0": MAD_SD * _mad(b) if len(b) >= 3 else None, "n1": MAD_SD * _mad(a) if len(a) >= 3 else None,
            "qn": math.hypot(MAD_SD * (_mad(qb) or 0.0), MAD_SD * (_mad(qa) or 0.0)) if qa or qb else None,
-           "qe": math.hypot(*[MAD_SD * (_mad(w) or 0.0) * MEDIAN_SE / math.sqrt(len(w)) for w in (qb, qa) if w])
-           if qa or qb else None}
+           "qe": math.hypot(*[math.hypot(MAD_SD * (_mad(w) or 0.0) * MEDIAN_SE / math.sqrt(len(w)), q_quantum / math.sqrt(12.0))
+                              for w in (qb, qa) if w]) if qa or qb else None}
+    out["pe"] = math.hypot(_se(b, noise, quantum), _se(a, noise, quantum))
+    vw = [v for _, v in (_win(volts, p["t_set"], end) if dP > 0 else _win(volts, start, p["t_off"]))] if volts else []
+    out["ve"] = MAD_SD * _mad(vw) * MEDIAN_SE / math.sqrt(len(vw)) if len(vw) >= 3 else None
     out["dv"] = v1 - v0 if v0 is not None and v1 is not None else None
     out["dv_kw"] = out["dv"] / (dP / 1000.0) if out["dv"] is not None and dP else None
     von = v1 if dP > 0 else v0
@@ -603,7 +639,7 @@ class Assembler:
                 x.props = properties(rows, x.t, x.dp, v)
                 if "t_off" in x.props:
                     x.dp, x.dq, w = windows(rows, x.t, x.dp, x.dq, x.props, *self._ends(x),
-                                            self.qrows.get((x.meter, x.ch)), v, x.noise)
+                                            self.qrows.get((x.meter, x.ch)), v, x.noise, x.quantum, x.q_quantum)
                     del x.props["t_off"], x.props["t_set"]
                     x.props.update(w)
         root: Dict[tuple, tuple] = {}
@@ -804,6 +840,17 @@ class Assembler:
         for p in ("surge", "settle", "wobble", "ramp_n", "ramp_s"):
             got = [(abs(x.dp), x.props.get(p)) for x in places if x.props.get(p) is not None]
             props[p] = sum(w * v for w, v in got) / sum(w for w, _ in got) if got else None
+        for p in ("surge_e", "wobble_e"):     # the legs' errors, weighted as their values
+            got = [(abs(x.dp), x.props.get(p)) for x in places if x.props.get(p) is not None]
+            props[p] = math.hypot(*[w * v for w, v in got]) / sum(w for w, _ in got) if got else None
+        # the size's error (the place legs' pe together) and the load's
+        # resistance V_on^2 / |dP| per leg, averaged, with its error
+        props["pe"] = math.hypot(*[x.props.get("pe", x.noise) for x in places])
+        rs = [(x.props["r"], x.props["r"] * math.hypot(x.props.get("pe", x.noise) / abs(x.dp),
+                                                       2 * (x.props.get("ve") or 0.0) / (x.props["v1"] if x.dp > 0 else x.props["v0"])))
+              for x in places if x.props.get("r") and x.dp]
+        props["r"] = sum(r for r, _ in rs) / len(rs) if rs else None
+        props["re"] = math.hypot(*[e for _, e in rs]) / len(rs) if rs else None
         edge = {"id": self._ids, "t": t, "place": meter, "dir": 1 if dp > 0 else -1,
                 "pattern": "".join(sorted(x.ch for x in places)), "size": size,
                 "angle": ang, "q_from": q_from, "sign_from": sign_from,
@@ -815,50 +862,194 @@ class Assembler:
 
 
 # ------------------------------------------------------------- grouping
+# The properties an edge's tolerance and two groups' agreement weigh, each by
+# its measured error (``distance``); the size as the resistance where both
+# sides have one.
+SCORED = ("size", "angle", "surge", "wobble")
+
+
 def _spread(xs: Sequence[float]) -> Optional[float]:
     m = _mad(list(xs))
     return None if m is None else MAD_SD * m
 
 
-def _angle_err(e: dict, unit: float) -> float:
-    """An edge's angle's measurement error, in degrees: its size's error
-    (edge_scale's: ``unit`` at small steps, EDGE_SCALE_REL of the step at
-    large) and its reactive step's standard error (qe, ``windows``: the
-    readings' spread over the root of their count, each window's level a
-    median of them) on the meter its angle's size came from, over its size."""
-    qe = [v.get("qe") or 0.0 for k, v in (e.get("entries") or {}).items()
-          if isinstance(v, dict) and k.split("|", 1)[0] == e.get("q_from")]
-    return math.degrees(math.atan2(math.hypot(unit, _d.EDGE_SCALE_REL * e["size"], *qe), e["size"]))
+def _pe(v: dict) -> float:
+    return v.get("pe") or v.get("noise") or 0.0
 
 
-def _group_err(items: Sequence[dict], unit: float) -> Optional[float]:
+def _angle_err(e: dict) -> float:
+    """An edge's angle's measurement error, in degrees: its size's (the
+    windows' pe) and its reactive step's (qe; each window's level a median of
+    its readings, no finer than the reactive resolution) on the meter its
+    angle's size came from, over its size. No relative term: a gain scales
+    P and Q together and leaves the angle (the cross-meter rho in it took
+    Le Hottie's MW 4.9 -> 26.8 % dominated, 2026-10-15)."""
+    ent = [v for k, v in (e.get("entries") or {}).items()
+           if isinstance(v, dict) and k.split("|", 1)[0] == e.get("q_from")]
+    pe = math.hypot(*[_pe(v) for v in ent]) if ent else (e.get("pe") or e.get("err") or e.get("noise") or 0.0)
+    qe = math.hypot(*[v.get("qe") or 0.0 for v in ent])
+    return math.degrees(math.atan2(math.hypot(pe, qe), e["size"]))
+
+
+def _group_err(items: Sequence[dict]) -> Optional[float]:
     """A set of edges' angle error: the median of theirs (_angle_err); None
     where none has an angle."""
-    return _median([_angle_err(e, unit) for e in items if e.get("angle") is not None])
+    return _median([_angle_err(e) for e in items if e.get("angle") is not None])
+
+
+def _err(e: dict, p: str) -> Optional[float]:
+    """An edge's own measured error on property ``p``, from the meter it was
+    read on (clarity study, 2026-10-15): the size its windows' pe; the
+    resistance V^2 / |dP| that relative error and twice the voltage's
+    (``Assembler._edge``); the angle _angle_err; surge and wobble their
+    readings' (``properties``)."""
+    if e.get(p) is None:
+        return None
+    if p == "size":
+        return e.get("pe") or e.get("err") or e.get("noise") or 0.0
+    if p == "angle":
+        return _angle_err(e)
+    return e.get({"r": "re"}.get(p, p + "_e"))
+
+
+def stats(items: Sequence[dict]) -> dict:
+    """A group's centre and error per scored property (and the resistance):
+    (median, hypot(its edges' median error, its own spread), count) - each
+    edge's error refined by what the group shows (Anze, 2026-10-15: "per
+    meter for each edge, and then later for the group")."""
+    out = {}
+    for p in ("size", "r", "angle", "surge", "wobble"):
+        xs = [(e[p], s) for e in items for s in (_err(e, p),) if s is not None]
+        if xs:
+            vals = [x for x, _ in xs]
+            out[p] = (_median(vals), math.hypot(_median([s for _, s in xs]), _spread(vals) or 0.0), len(xs))
+    return out
+
+
+def _one(e: dict) -> dict:
+    """An edge as a group of one: its values and its own errors."""
+    out = {}
+    for p in ("size", "r", "angle", "surge", "wobble"):
+        s = _err(e, p)
+        if s is not None:
+            out[p] = (e[p], s, 1)
+    return out
+
+
+def distance(a: dict, b: dict, props: Sequence[str] = SCORED) -> Tuple[float, int]:
+    """Two groups' (``stats``) distance: the sum over properties of (their
+    difference / their errors together)^2 - a well measured property pulls
+    hard, a vague one hardly at all (Anze, 2026-10-15: "if two loads are
+    scored strongly on PF, they should be more eagerly grouped by that") -
+    and how many were compared. The size is compared as the resistance where
+    both have one (V^2 normalises the voltage: the oven's elements 0.5 %
+    against 1.8 %). An angle on one side only: never the same (inf)."""
+    d, n = 0.0, 0
+    for p in props:
+        if p == "size" and "r" in a and "r" in b:
+            p = "r"
+        if p == "angle" and (p in a) != (p in b):
+            return math.inf, 1
+        if p in a and p in b:
+            s = math.hypot(a[p][1], b[p][1])
+            if s > 0:
+                d += ((a[p][0] - b[p][0]) / s) ** 2
+                n += 1
+            elif a[p][0] != b[p][0]:
+                return math.inf, 1
+    return d, n
+
+
+def _within(d: float, n: int) -> bool:
+    """Within one error, every property together."""
+    return d <= 1.0
+
+
+def _reach(st: dict) -> float:
+    """How far in watts a group's size can agree with another's: its own
+    relative error on size or resistance, the larger."""
+    s = st.get("size")
+    if s is None:
+        return 0.0
+    rel = s[1] / s[0] if s[0] else 0.0
+    if st.get("r") and st["r"][0]:
+        rel = max(rel, st["r"][1] / st["r"][0])
+    return rel * s[0]
+
+
+class _Index:
+    """A key's groups (``stats``) by size, for the groups an edge may agree with."""
+
+    def __init__(self, sts: List[dict]):
+        self.sts = sts
+        self.order = sorted((s["size"][0], k) for k, s in enumerate(sts) if s.get("size"))
+        self.sizes = [x for x, _ in self.order]
+        self.reach = max((_reach(sts[k]) for _, k in self.order), default=0.0)
+
+    def holders(self, e: dict) -> List[int]:
+        """The groups whose tolerance holds an edge: its own error and each
+        group's together, as two groups agree (``distance``)."""
+        one = _one(e)
+        if "size" not in one:
+            return []
+        w = 3.0 * (_reach(one) + self.reach)
+        lo, hi = bisect.bisect_left(self.sizes, one["size"][0] - w), bisect.bisect_right(self.sizes, one["size"][0] + w)
+        return sorted(k for _, k in self.order[lo:hi] if _within(*distance(one, self.sts[k])))
+
+
+def _cut(es: List[dict]) -> List[List[dict]]:
+    """One key's edges cut at the valleys of their size density - in
+    measurement errors, the key's median pe (its windows' standard error) -
+    then each size segment at the valleys of its angle density, smoothed by
+    the segment's median angle error; a step without an angle joins its
+    segment's largest part.
+    ponytail: one error for the whole key (its median pe), linear in watts,
+    so large steps are cut finer than their own error (Home's >= 1 kW groups
+    of one 680 -> 1,257); a kernel per edge of its own pe is the upgrade. An
+    error that grows with the step (asinh, the key's small half's pe and its
+    large half's pe / size) lost the truths (kettle 24 -> 98 %, Susilna
+    63 -> 84 %, Workshop boiler 39 -> 98 %, 2026-10-15)."""
+    u = _median([e.get("pe") or e.get("err") or e["noise"] for e in es]) or _d.MIN_NOISE_W
+    bins = {e["id"]: int(math.floor(e["size"] / u / _d.EDGE_BIN)) for e in es}
+    parts = []
+    for lo, hi in _d.valley_segments(Counter(bins.values())):
+        seg = [e for e in es if lo <= bins[e["id"]] <= hi]
+        angled = [e for e in seg if e["angle"] is not None]
+        mine = []
+        if angled:
+            k = _group_err(angled)
+            bw = k * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL
+            ab = {e["id"]: int(math.floor(e["angle"] / bw)) for e in angled}
+            for alo, ahi in _d.valley_segments(Counter(ab.values()), k / bw):
+                mine.append([e for e in angled if alo <= ab[e["id"]] <= ahi])
+        rest = [e for e in seg if e["angle"] is None]
+        if rest and mine:
+            max(mine, key=len).extend(rest)
+        elif rest:
+            mine.append(rest)
+        parts += [p for p in mine if p]
+    return parts
 
 
 def group(edges: Sequence[dict]) -> List[dict]:
-    """Edges grouped per (place, direction, phase pattern), cut at the valleys
-    of the place entry's size density - measurement errors of the quietest
-    noise the group's place saw, as the detector's histogram keeps its unit
-    (Detector._by_density) - and then of its angle, smoothed by the segment's
-    median angle error (_group_err); a step without an angle joins its size
-    segment's largest group, as today (_same_angle).
-    The fixed 6 deg smoothing ran Le Hottie's microwave (~15 deg) into its
-    1.65 kW element (~0 deg) on Mansarda C: the element's falls outnumber it
-    three to one and their smoothed tail filled the valley between, so the
-    microwave's falls had no valley of their own - MW 63.4 % of its edges in
-    a group another class dominates. At 1.7 kW the angle is read to about
-    1 deg (the element's spread 1.3, the microwave's 1.8). The reactive
-    spread is what keeps it honest elsewhere: from the size's error alone
-    Kozolec's boiler (1.8 kW, V x I var, qn ~50 var) split into piles at
-    10, 15 and 21 deg (duplicates 0 -> 10 %). The reactive step's error is
-    its level's - a median of the window's readings (qe) - not the readings'
-    spread (qn): with qn the error passed 6 deg at small steps and merged
-    Kozolec's Pond (53.9 -> 100 % dominated) unless capped at the old fixed
-    6 deg; with qe no cap, and the kettle's falls left the unlabelled
-    Mansarda B steps of its size (98.1 -> 48.1 % dominated, truth bench
-    2026-10-15).
+    """Edges grouped per (place, direction, phase pattern) by their measured
+    errors (Anze, 2026-10-15): cut at the valleys of the size density in the
+    windows' own error (pe, not a unit and EDGE_SCALE_REL 2 %) and then of
+    the angle density, smoothed by the segment's angle error (``_cut``). An
+    edge whose tolerance - its own errors and a group's, every scored
+    property weighted by them (``distance``) - holds a group not its own is
+    UNSURE (``e["unsure"]``), flagged and counted apart, never moved.
+    Benched against the truths (2026-10-15, scratchpad scores-report): a
+    relative term measured from the meters' disagreement (rho, Home 3.8-8 %,
+    Kozolec 1.3 %) in the size and angle errors cost the oven and the kettle
+    (MW 4.9 -> 12-27 %, E165 2.8 -> 97 %, kettle 98 % dominated): a pair's
+    disagreement is the meter above's other loads, not the place's error. A
+    merge of groups agreeing within their errors (with or without their
+    spreads) cost the kettle (24 -> 39-83 %); groups built from sure edges
+    only, the unsure attached where one group holds them, cost the oven
+    (E265 72 % loose). The fixed 6 deg smoothing ran Le Hottie's microwave
+    (~15 deg) into its 1.65 kW element (~0 deg); the reactive step's error
+    is its level's (qe), not the readings' spread.
     ponytail: one batch over the decided edges, no fading (EDGE_TAU_S) - a
     streaming library is the stage that makes these the detector's edges."""
     by: Dict[tuple, List[dict]] = {}
@@ -867,24 +1058,13 @@ def group(edges: Sequence[dict]) -> List[dict]:
     out = []
     for key in sorted(by):
         es = sorted(by[key], key=lambda e: e["t"])
-        unit = _d.EDGE_NOISE_SHARE * max(min(e["noise"] for e in es), _d.MIN_NOISE_W)
-        bins = {e["id"]: _d._bin(e["size"], unit) for e in es}
-        for lo, hi in _d.valley_segments(Counter(bins.values())):
-            seg = [e for e in es if lo <= bins[e["id"]] <= hi]
-            angled = [e for e in seg if e["angle"] is not None]
-            parts = []
-            if angled:
-                k = _group_err(angled, unit)
-                bw = k * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL
-                ab = {e["id"]: int(math.floor(e["angle"] / bw)) for e in angled}
-                for alo, ahi in _d.valley_segments(Counter(ab.values()), k / bw):
-                    parts.append([e for e in angled if alo <= ab[e["id"]] <= ahi])
-            rest = [e for e in seg if e["angle"] is None]
-            if rest and parts:
-                max(parts, key=len).extend(rest)
-            elif rest:
-                parts.append(rest)
-            out += [{"key": key, "unit": unit, "items": sorted(p, key=lambda e: e["t"])} for p in parts if p]
+        unit = _d.EDGE_NOISE_SHARE * max(min(e["noise"] for e in es), _d.MIN_NOISE_W)   # tightness's
+        parts = _cut(es)
+        ix = _Index([stats(p) for p in parts])
+        for k, p in enumerate(parts):
+            for e in p:
+                e["unsure"] = any(h != k for h in ix.holders(e))
+        out += [{"key": key, "unit": unit, "items": sorted(p, key=lambda e: e["t"])} for p in parts]
     return out
 
 
@@ -918,24 +1098,11 @@ def _piles(xs: Sequence[float], bin_w: float, sd: float) -> List[int]:
     return [sum(n for b, n in h.items() if lo <= b <= hi) for lo, hi in _d.valley_segments(h, sd / bin_w)]
 
 
-def _centre(g: dict) -> tuple:
-    """(size in measurement errors and its spread, angle and its spread, the
-    angle's error - _group_err)."""
-    s = _scaled(g)
-    a = [e["angle"] for e in g["items"] if e.get("angle") is not None]
-    return _median(s), _spread(s) or 0.0, _median(a), _spread(a) or 0.0, _group_err(g["items"], g["unit"])
-
-
-def _agree(ca: tuple, cb: tuple) -> bool:
-    """Two groups' sizes and angles agree within measurement error: one error
-    of size (EDGE_KERNEL) or their spreads together, one error of angle (the
-    larger group's, as the grouping smooths it) or their spreads; no angle on
-    either side, or none on both."""
-    if abs(ca[0] - cb[0]) > max(_d.EDGE_KERNEL, math.hypot(ca[1], cb[1])):
-        return False
-    if ca[2] is None or cb[2] is None:
-        return ca[2] is None and cb[2] is None
-    return abs(ca[2] - cb[2]) <= max(ca[4], cb[4], math.hypot(ca[3], cb[3]))
+def _agree(ca: dict, cb: dict) -> bool:
+    """Two groups' sizes and angles agree within their errors (``stats``,
+    ``distance``) as the grouping merges them; no angle on either side, or
+    none on both."""
+    return _within(*distance(ca, cb, ("size", "angle")))
 
 
 def scorecard(groups: Sequence[dict]) -> dict:
@@ -943,48 +1110,59 @@ def scorecard(groups: Sequence[dict]) -> dict:
     tightness - the place entry's size spread in measurement errors, per group
     of three or more, weighted by edges (1: as tight as the meter allows);
     mixed - edges in groups of GROUP_MIN or more where a recorded property
-    splits into two piles each holding MIXED_SHARE of the group, cut as the
-    grouping cuts (PROP_BINS; an item's "err" is its noise in watts);
+    splits into two piles each holding MIXED_SHARE of the group, cut at the
+    group's own error of it where measured (the angle, surge, wobble) and
+    PROP_BINS for the rest (an item's "err" is its noise in watts);
     duplicates - edges in groups with a same-key group of agreeing size and angle;
     count - groups, those of GROUP_MIN edges or more, the share of edges in
-    smaller ones, groups seen on GROUP_DAYS days or more;
+    smaller ones, groups seen on GROUP_DAYS days or more, and by median size
+    and edge count (by_size);
     mirror - rise edges in groups with a fall group of the same place and
-    pattern of agreeing size and angle."""
+    pattern of agreeing size and angle; unsure - edges flagged (``group``)."""
+    unsure = sum(1 for g in groups for e in g["items"] if e.get("unsure"))
     total = sum(len(g["items"]) for g in groups) or 1
     tight = [(len(g["items"]), _spread(_scaled(g))) for g in groups if len(g["items"]) >= 3]
     mixed_by = {p: 0 for p in PROPS}
     mixed = 0
-    for g in groups:
+    sts = [stats(g["items"]) for g in groups]
+    for g, st in zip(groups, sts):
         n = len(g["items"])
         if n < GROUP_MIN:
             continue
         hit = False
         err = _median([e["err"] / e["size"] for e in g["items"] if e.get("err") and e["size"]]) or 0.0
-        aerr = _group_err(g["items"], g["unit"])
         for p, (bw, sd) in PROP_BINS.items():
+            own = _median([s for e in g["items"] for s in (_err(e, p),) if s is not None]) \
+                if p in ("angle", "surge", "wobble") else None
             if p == "angle":
-                if aerr is None:
+                if own is None:
                     continue
-                bw, sd = aerr * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL, aerr
-            if p in ERR_PROPS and err > sd:
+                bw, sd = own * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL, own
+            elif own:
+                bw, sd = own * bw / sd, own
+            elif p in ERR_PROPS and err > sd:
                 bw, sd = err * bw / sd, err
             xs = [e[p] for e in g["items"] if e.get(p) is not None]
             if len(xs) >= GROUP_MIN and sum(1 for c in _piles(xs, bw, sd) if c >= MIXED_SHARE * n) >= 2:
                 mixed_by[p] += n
                 hit = True
         mixed += n if hit else 0
-    centres = [_centre(g) for g in groups]
     by_key: Dict[tuple, List[int]] = {}
     for i, g in enumerate(groups):
         by_key.setdefault(tuple(g["key"]), []).append(i)
     dup = sum(len(groups[i]["items"]) for ids in by_key.values() for i in ids
-              if any(j != i and _agree(centres[i], centres[j]) for j in ids))
+              if any(j != i and _agree(sts[i], sts[j]) for j in ids))
     rises = [i for i, g in enumerate(groups) if g["key"][1] > 0]
     mirrored = sum(len(groups[i]["items"]) for i in rises
-                   if any(_agree(centres[i], centres[j])
+                   if any(_agree(sts[i], sts[j])
                           for j in by_key.get((groups[i]["key"][0], -1, groups[i]["key"][2]), ())))
     rise_n = sum(len(groups[i]["items"]) for i in rises) or 1
     days = [len({datetime.fromtimestamp(e["t"]).date() for e in g["items"]}) for g in groups]
+    by_size = Counter()
+    for g in groups:
+        n, med = len(g["items"]), _median([e["size"] for e in g["items"]])
+        by_size[("<200W" if med < 200 else "<1kW" if med < 1000 else ">=1kW") + " "
+                + ("1" if n == 1 else "2-4" if n < GROUP_MIN else f"{GROUP_MIN}+")] += 1
     return {"edges": sum(len(g["items"]) for g in groups),
             "tightness": sum(n * s for n, s in tight) / sum(n for n, _ in tight) if tight else None,
             "mixed": mixed / total, "mixed_by": {p: v / total for p, v in mixed_by.items()},
@@ -992,7 +1170,8 @@ def scorecard(groups: Sequence[dict]) -> dict:
             "groups": len(groups), "groups_min": sum(1 for g in groups if len(g["items"]) >= GROUP_MIN),
             "small_share": sum(len(g["items"]) for g in groups if len(g["items"]) < GROUP_MIN) / total,
             "groups_days": sum(1 for d in days if d >= GROUP_DAYS),
-            "mirror": mirrored / rise_n}
+            "mirror": mirrored / rise_n, "by_size": dict(sorted(by_size.items())),
+            "unsure": unsure / total}
 
 
 def miss(c: dict) -> str:

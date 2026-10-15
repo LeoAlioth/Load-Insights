@@ -218,6 +218,10 @@ def test_a_steps_levels_are_the_medians_of_its_windows():
     dp, dq, w = E.windows([(float(t), 100.0 + (2.0 if t >= 50 else 0.0)) for t in range(0, 200, 2)], 50.0, 50.0, None,
                           {"t_off": 48.0, "t_set": 50.01}, 0.0, 200.0, noise=10.0)
     assert (dp, w["contra"]) == (50.0, True)
+    # a level read flat in whole watts is known to a watt, uniform, however many readings hold it
+    dp, dq, w = E.windows([(float(t), 100.0 + (50.0 if t >= 50 else 0.0)) for t in range(0, 200, 2)], 50.0, 50.0, None,
+                          {"t_off": 48.0, "t_set": 50.01}, 0.0, 200.0, noise=10.0, quantum=1.0)
+    assert dp == 50.0 and abs(w["pe"] - math.sqrt(2.0 / 12.0)) < 1e-9
 
 
 def test_an_edges_reactive_size_and_sign_come_along_its_chain():
@@ -354,7 +358,7 @@ def test_properties_of_a_motor_start():
 def test_scorecard_arithmetic():
     def g(key, sizes, unit=10.0, angle=0.0, surge=None, t0=0.0, day=86400.0):
         return {"key": key, "unit": unit, "items": [
-            {"size": s, "angle": angle, "surge": (surge or [1.0] * len(sizes))[k], "t": t0 + k * day}
+            {"size": s, "angle": angle, "surge": (surge or [1.0] * len(sizes))[k], "t": t0 + k * day, "pe": 10.0}
             for k, s in enumerate(sizes)]}
     a = g(("P", 1, "a"), [1000.0] * 5, surge=[1.0, 1.0, 1.0, 3.0, 3.0])      # mixed by surge, 5 days
     b = g(("P", 1, "a"), [1001.0, 1001.0, 1002.0])                             # a's duplicate
@@ -397,10 +401,11 @@ def test_grouping_smooths_the_angle_by_its_measured_error():
     """An element (30 at ~0 deg) and a microwave (10 at ~15 deg) of one size:
     read to a degree they are two groups, where 6 deg of smoothing ran the
     smaller pile into the larger one's tail (four steps between them); a
-    reactive step known to 200 var (the angle to ~7 deg) keeps them one."""
+    reactive step known to 200 var (the angle to ~7 deg) keeps them one;
+    the step's size known to 30 W (its windows' pe)."""
     def edge(i, ang, qe):
         return {"id": i, "t": float(i), "place": "M", "dir": -1, "pattern": "c", "size": 1700.0 + i % 3, "angle": ang,
-                "noise": 10.0, "legs": ["M|c"], "q_from": "M", "entries": {"M|c": {"qe": qe}}}
+                "noise": 10.0, "legs": ["M|c"], "q_from": "M", "entries": {"M|c": {"qe": qe, "pe": 30.0}}}
     for qe, want in ((15.0, [10, 30]), (200.0, [44])):
         es = [edge(i, (i % 5 - 2) * 0.6, qe) for i in range(30)] + [edge(30 + i, 15.0 + (i % 5 - 2) * 0.8, qe) for i in range(10)]
         es += [edge(40 + i, 5.0 + i, qe) for i in range(4)]       # a tail between the two
