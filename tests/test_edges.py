@@ -178,7 +178,8 @@ def test_a_level_read_once_is_measured_to_where_the_meter_settles():
                        noise={("Boiler", "a"): 10.0}, latency={"Boiler": 6.0})
                 t = e
         a.flush()
-        assert [round(e["entries"]["Boiler|a"]["dp"], 1) for e in a.edges] == [35.2, -16.9], (every, a.edges)
+        # each as its windows held it (edges._level): 487.6 -> 508, 508 -> 488
+        assert [round(e["entries"]["Boiler|a"]["dp"], 1) for e in a.edges] == [20.4, -20.0], (every, a.edges)
     # a small step and a large one back: not its settle
     small = [(100.0, 30.0), (140.0, -1000.0)] + [(140.0 + 60.0 * k, -1000.0) for k in range(1, 15)]
     assert [e["dir"] for e in run(small, [(100.0, 30.0), (140.0, -1030.0)]).edges] == [1, -1]
