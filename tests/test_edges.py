@@ -393,5 +393,20 @@ def test_grouping_cuts_size_then_angle():
     assert got == [(4, 2000), (10, 1001), (10, 1001)]
 
 
+def test_grouping_smooths_the_angle_by_its_measured_error():
+    """An element (30 at ~0 deg) and a microwave (10 at ~15 deg) of one size:
+    read to a degree they are two groups, where 6 deg of smoothing ran the
+    smaller pile into the larger one's tail (four steps between them); a
+    reactive reading that spreads over 200 var (the angle known to ~7 deg,
+    the smoothing held at EDGE_ANGLE_KERNEL) keeps them one, as before."""
+    def edge(i, ang, qn):
+        return {"id": i, "t": float(i), "place": "M", "dir": -1, "pattern": "c", "size": 1700.0 + i % 3, "angle": ang,
+                "noise": 10.0, "legs": ["M|c"], "q_from": "M", "entries": {"M|c": {"qn": qn}}}
+    for qn, want in ((15.0, [10, 30]), (200.0, [44])):
+        es = [edge(i, (i % 5 - 2) * 0.6, qn) for i in range(30)] + [edge(30 + i, 15.0 + (i % 5 - 2) * 0.8, qn) for i in range(10)]
+        es += [edge(40 + i, 5.0 + i, qn) for i in range(4)]       # a tail between the two
+        assert sorted(len(g["items"]) for g in E.group(es) if len(g["items"]) > 4) == want, qn
+
+
 if __name__ == "__main__":
     run_main(globals())
