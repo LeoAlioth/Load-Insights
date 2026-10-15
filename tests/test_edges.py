@@ -246,10 +246,26 @@ def test_an_edges_reactive_size_and_sign_come_along_its_chain():
     assert (e["q_from"], e["sign_from"], e["unsigned"]) == ("Mansarda", "", False) and abs(e["angle"] - want) < 1e-9, e
     e = run(-30.0)                                   # the grid read it capacitive
     assert e["sign_from"] == "" and abs(e["angle"] + want) < 1e-9, e
-    e = run(30.0, grid_steps=False)                  # no signed meter took the step
-    assert (e["q_from"], e["sign_from"], e["unsigned"]) == ("Mansarda", None, True) and abs(e["angle"] - want) < 1e-9, e
+    e = run(30.0, grid_steps=False)                  # no signed meter took the step: nothing is lent
+    assert (e["q_from"], e["sign_from"], e["angle"]) == (None, None, None), e
     e = run(30.0, mansarda_dp=300.0)                 # Mansarda's step is not the plug's: the grid lends both
     assert (e["q_from"], e["sign_from"]) == ("", ""), e
+
+
+def test_an_unsigned_place_keeps_its_own_reactive_sign():
+    """No signed meter on the chain: an edge's angle is its place's own
+    reactive step, signed as the meter reads it (a rise of |Q| a lagging
+    load's, a drop a leading one's), and marked unsigned."""
+    chans = {"Mansarda": {"b": "c"}}
+    for dq in (30.0, -30.0):
+        steps = [step("Mansarda", "b", 1000.0, 300.0, "c", dq=dq)]
+        rows = stepped({("Mansarda", "b"): flat(to=1600.0)}, steps)
+        q = {("Mansarda", "b"): [(t, 50.0 + (dq if t >= 1000.0 else 0.0)) for t, _ in rows[("Mansarda", "b")]]}
+        a = E.Assembler({})
+        a.feed(steps, rows=rows, qrows=q, chans=chans, noise={("Mansarda", "b"): 10.0}, latency={"Mansarda": 6.0})
+        a.flush()
+        e = a.edges[0]
+        assert e["unsigned"] and abs(e["angle"] - math.degrees(math.atan2(dq, 300.0))) < 1e-9, e
 
 
 def test_a_three_phase_charger_read_as_one_total_takes_all_three_legs():
