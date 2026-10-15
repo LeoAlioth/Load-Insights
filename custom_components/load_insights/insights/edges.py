@@ -816,12 +816,35 @@ def _spread(xs: Sequence[float]) -> Optional[float]:
     return None if m is None else MAD_SD * m
 
 
+def _angle_err(e: dict, unit: float) -> float:
+    """An edge's angle's measurement error, in degrees: its size's error
+    (edge_scale's: ``unit`` at small steps, EDGE_SCALE_REL of the step at
+    large) and the spread of the reactive readings around the step (qn,
+    ``windows``) on the meter its angle's size came from, over its size."""
+    qn = [v.get("qn") or 0.0 for k, v in e["entries"].items()
+          if isinstance(v, dict) and k.split("|", 1)[0] == e.get("q_from")]
+    return math.degrees(math.atan2(math.hypot(unit, _d.EDGE_SCALE_REL * e["size"], *qn), e["size"]))
+
+
 def group(edges: Sequence[dict]) -> List[dict]:
     """Edges grouped per (place, direction, phase pattern), cut at the valleys
     of the place entry's size density - measurement errors of the quietest
     noise the group's place saw, as the detector's histogram keeps its unit
-    (Detector._by_density) - and then of its angle; a step without an angle
-    joins its size segment's largest group, as today (_same_angle).
+    (Detector._by_density) - and then of its angle, smoothed by the segment's
+    median angle error (_angle_err), never wider than EDGE_ANGLE_KERNEL; a
+    step without an angle joins its size segment's largest group, as today
+    (_same_angle).
+    The fixed 6 deg smoothing ran Le Hottie's microwave (~15 deg) into its
+    1.65 kW element (~0 deg) on Mansarda C: the element's falls outnumber it
+    three to one and their smoothed tail filled the valley between, so the
+    microwave's falls had no valley of their own - MW 63.4 % of its edges in
+    a group another class dominates. At 1.7 kW the angle is read to about
+    1 deg (the element's spread 1.3, the microwave's 1.8). The reactive
+    spread is what keeps it honest elsewhere: from the size's error alone
+    Kozolec's boiler (1.8 kW, V x I var, qn ~50 var) split into piles at
+    10, 15 and 21 deg (duplicates 0 -> 10 %). Uncapped, the measured error
+    passes 6 deg at small steps and merged Kozolec's Pond (53.9 -> 100 %
+    dominated), so today's kernel stays the ceiling (truth bench 2026-10-15).
     ponytail: one batch over the decided edges, no fading (EDGE_TAU_S) - a
     streaming library is the stage that makes these the detector's edges."""
     by: Dict[tuple, List[dict]] = {}
@@ -837,8 +860,10 @@ def group(edges: Sequence[dict]) -> List[dict]:
             angled = [e for e in seg if e["angle"] is not None]
             parts = []
             if angled:
-                ab = {e["id"]: int(math.floor(e["angle"] / _d.EDGE_ANGLE_BIN)) for e in angled}
-                for alo, ahi in _d.valley_segments(Counter(ab.values()), _d.EDGE_ANGLE_KERNEL / _d.EDGE_ANGLE_BIN):
+                k = min(_d.EDGE_ANGLE_KERNEL, _median([_angle_err(e, unit) for e in angled]))
+                bw = k * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL
+                ab = {e["id"]: int(math.floor(e["angle"] / bw)) for e in angled}
+                for alo, ahi in _d.valley_segments(Counter(ab.values()), k / bw):
                     parts.append([e for e in angled if alo <= ab[e["id"]] <= ahi])
             rest = [e for e in seg if e["angle"] is None]
             if rest and parts:
