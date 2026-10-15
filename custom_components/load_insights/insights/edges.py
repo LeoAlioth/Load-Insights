@@ -666,8 +666,12 @@ class Assembler:
         step and the place's agree within both meters' noise, as
         conservation judges them) and whose reactive step clears that
         meter's own reactive noise (its windows' spread, ``windows``).
-        Returns (the meter the size came from, the sign's, the angle -
-        |angle| where no meter gave a sign; None, None, None with no size)."""
+        With no signed meter on the chain (Kozolec's V x I, Andrej's history)
+        nothing is lent: the place's own reactive step, signed as it reads -
+        lent unsigned, the grid's |angle| on Kozolec's plugs took the mirror
+        78.1 -> 68.8 % (2026-10-15).
+        Returns (the meter the size came from, the sign's, the angle; None,
+        None, None with no size)."""
         dp = sum(x.grid for x in places)
 
         def lends(legs):
@@ -683,6 +687,16 @@ class Assembler:
         if mag is None:
             return None, None, None
         sgn = next(((m, legs) for m, legs in chain if self.signed(legs) and lends(legs)), None)
+        if sgn is None:
+            # no meter gives a sign: nothing is borrowed, and the place's own
+            # reactive step keeps its own sign - an unsigned |Q|'s change still
+            # follows the house's steady reactive load (Kozolec's V x I, Home's
+            # 3EMs from their apparent power)
+            if mag[0] != meter:
+                if not lends(places):
+                    return None, None, None
+                mag = (meter, places)
+            sgn = mag
         size = abs(math.degrees(math.atan2(sum(x.dq for x in mag[1]), abs(dp))))
         if sgn is None:
             return mag[0], None, size
@@ -785,7 +799,7 @@ class Assembler:
         edge = {"id": self._ids, "t": t, "place": meter, "dir": 1 if dp > 0 else -1,
                 "pattern": "".join(sorted(x.ch for x in places)), "size": size,
                 "angle": ang, "q_from": q_from, "sign_from": sign_from,
-                "unsigned": ang is not None and sign_from is None,
+                "unsigned": ang is not None and not self.signed([x for x in held if x.meter == sign_from]),
                 "noise": sum(x.floor or x.noise for x in places), "err": sum(x.noise for x in places),
                 "legs": [x.key for x in places],
                 "entries": entries, "shared": {}, "silent": silent, "blind": blind, **props}
