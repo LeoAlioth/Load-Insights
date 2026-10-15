@@ -300,9 +300,8 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     out["dv_kw"] = out["dv"] / (dP / 1000.0) if out["dv"] is not None and dP else None
     von = v1 if dP > 0 else v0
     out["r"] = von * von / abs(dP) if von is not None and dP else None
-    for k in ("surge", "settle", "wobble"):          # the transition's, over the step as its windows read it
-        if p.get(k) is not None and dP:
-            out[k] = p[k] * abs(dp) / abs(dP)
+    # surge, settle and wobble stay over the step as declared (``properties``):
+    # over the windows' dP the oven's surge 1-NN fell 44.8 -> 28.6 % (truth, 2026-10-15)
     return dP, dQ, out
 
 
