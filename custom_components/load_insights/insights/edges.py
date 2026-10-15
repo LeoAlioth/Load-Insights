@@ -91,7 +91,7 @@ MIXED_SHARE = 0.2
 GROUP_MIN = 5
 GROUP_DAYS = 3
 # Each recorded property's histogram bin and smoothing for the mixed test, in
-# its own units: the angle as the grouping cuts it today, the rest a
+# its own units: the angle as the grouping cuts it (its error, _group_err), the rest a
 # judgement (ponytail: fixed; measure each property's own error when weights
 # over them are benched) - and for the three that are readings over the step
 # (ERR_PROPS), at least what the noise makes of them, the group's noise over
@@ -103,6 +103,7 @@ PROP_BINS = {"angle": (None, None), "surge": (0.05, 0.15), "settle": (0.01, 0.03
 ERR_PROPS = ("surge", "settle", "wobble")
 PROPS = tuple(PROP_BINS)
 MAD_SD = 1.4826                 # a median deviation as a standard deviation
+MEDIAN_SE = math.sqrt(math.pi / 2)   # a median of n readings: this many standard deviations / sqrt(n)
 
 
 @dataclass
@@ -266,7 +267,8 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     beside it (``p``: ``properties``), and so does a step whose windows show
     none of its sign above its ``noise`` (``contra``). Returns (dP, dQ, the properties):
     p0/p1, q0/q1, pf0/pf1, v0/v1, dv, dv_kw (volts per kW), r, n0/n1, the
-    reactive power's spread over both (qn), and
+    reactive power's spread over both (qn) and its step's standard error
+    (qe: each window's spread over the root of its readings, as a median's), and
     the readings each window held (nb/na)."""
     def both(series, fall0, fall1, size):
         b = [v for _, v in _win(series or [], start, p["t_off"])]
@@ -295,7 +297,9 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
            "pf0": p0 / math.hypot(p0, q0) if q0 is not None and (p0 or q0) else None,
            "pf1": p1 / math.hypot(p1, q1) if q1 is not None and (p1 or q1) else None,
            "n0": MAD_SD * _mad(b) if len(b) >= 3 else None, "n1": MAD_SD * _mad(a) if len(a) >= 3 else None,
-           "qn": math.hypot(MAD_SD * (_mad(qb) or 0.0), MAD_SD * (_mad(qa) or 0.0)) if qa or qb else None}
+           "qn": math.hypot(MAD_SD * (_mad(qb) or 0.0), MAD_SD * (_mad(qa) or 0.0)) if qa or qb else None,
+           "qe": math.hypot(*[MAD_SD * (_mad(w) or 0.0) * MEDIAN_SE / math.sqrt(len(w)) for w in (qb, qa) if w])
+           if qa or qb else None}
     out["dv"] = v1 - v0 if v0 is not None and v1 is not None else None
     out["dv_kw"] = out["dv"] / (dP / 1000.0) if out["dv"] is not None and dP else None
     von = v1 if dP > 0 else v0
@@ -819,11 +823,18 @@ def _spread(xs: Sequence[float]) -> Optional[float]:
 def _angle_err(e: dict, unit: float) -> float:
     """An edge's angle's measurement error, in degrees: its size's error
     (edge_scale's: ``unit`` at small steps, EDGE_SCALE_REL of the step at
-    large) and the spread of the reactive readings around the step (qn,
-    ``windows``) on the meter its angle's size came from, over its size."""
-    qn = [v.get("qn") or 0.0 for k, v in e["entries"].items()
+    large) and its reactive step's standard error (qe, ``windows``: the
+    readings' spread over the root of their count, each window's level a
+    median of them) on the meter its angle's size came from, over its size."""
+    qe = [v.get("qe") or 0.0 for k, v in (e.get("entries") or {}).items()
           if isinstance(v, dict) and k.split("|", 1)[0] == e.get("q_from")]
-    return math.degrees(math.atan2(math.hypot(unit, _d.EDGE_SCALE_REL * e["size"], *qn), e["size"]))
+    return math.degrees(math.atan2(math.hypot(unit, _d.EDGE_SCALE_REL * e["size"], *qe), e["size"]))
+
+
+def _group_err(items: Sequence[dict], unit: float) -> Optional[float]:
+    """A set of edges' angle error: the median of theirs (_angle_err); None
+    where none has an angle."""
+    return _median([_angle_err(e, unit) for e in items if e.get("angle") is not None])
 
 
 def group(edges: Sequence[dict]) -> List[dict]:
@@ -831,9 +842,8 @@ def group(edges: Sequence[dict]) -> List[dict]:
     of the place entry's size density - measurement errors of the quietest
     noise the group's place saw, as the detector's histogram keeps its unit
     (Detector._by_density) - and then of its angle, smoothed by the segment's
-    median angle error (_angle_err), never wider than EDGE_ANGLE_KERNEL; a
-    step without an angle joins its size segment's largest group, as today
-    (_same_angle).
+    median angle error (_group_err); a step without an angle joins its size
+    segment's largest group, as today (_same_angle).
     The fixed 6 deg smoothing ran Le Hottie's microwave (~15 deg) into its
     1.65 kW element (~0 deg) on Mansarda C: the element's falls outnumber it
     three to one and their smoothed tail filled the valley between, so the
@@ -842,9 +852,13 @@ def group(edges: Sequence[dict]) -> List[dict]:
     1 deg (the element's spread 1.3, the microwave's 1.8). The reactive
     spread is what keeps it honest elsewhere: from the size's error alone
     Kozolec's boiler (1.8 kW, V x I var, qn ~50 var) split into piles at
-    10, 15 and 21 deg (duplicates 0 -> 10 %). Uncapped, the measured error
-    passes 6 deg at small steps and merged Kozolec's Pond (53.9 -> 100 %
-    dominated), so today's kernel stays the ceiling (truth bench 2026-10-15).
+    10, 15 and 21 deg (duplicates 0 -> 10 %). The reactive step's error is
+    its level's - a median of the window's readings (qe) - not the readings'
+    spread (qn): with qn the error passed 6 deg at small steps and merged
+    Kozolec's Pond (53.9 -> 100 % dominated) unless capped at the old fixed
+    6 deg; with qe no cap, and the kettle's falls left the unlabelled
+    Mansarda B steps of its size (98.1 -> 48.1 % dominated, truth bench
+    2026-10-15).
     ponytail: one batch over the decided edges, no fading (EDGE_TAU_S) - a
     streaming library is the stage that makes these the detector's edges."""
     by: Dict[tuple, List[dict]] = {}
@@ -860,7 +874,7 @@ def group(edges: Sequence[dict]) -> List[dict]:
             angled = [e for e in seg if e["angle"] is not None]
             parts = []
             if angled:
-                k = min(_d.EDGE_ANGLE_KERNEL, _median([_angle_err(e, unit) for e in angled]))
+                k = _group_err(angled, unit)
                 bw = k * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL
                 ab = {e["id"]: int(math.floor(e["angle"] / bw)) for e in angled}
                 for alo, ahi in _d.valley_segments(Counter(ab.values()), k / bw):
@@ -905,21 +919,23 @@ def _piles(xs: Sequence[float], bin_w: float, sd: float) -> List[int]:
 
 
 def _centre(g: dict) -> tuple:
-    """(size in measurement errors and its spread, angle and its spread)."""
+    """(size in measurement errors and its spread, angle and its spread, the
+    angle's error - _group_err)."""
     s = _scaled(g)
     a = [e["angle"] for e in g["items"] if e.get("angle") is not None]
-    return _median(s), _spread(s) or 0.0, _median(a), _spread(a) or 0.0
+    return _median(s), _spread(s) or 0.0, _median(a), _spread(a) or 0.0, _group_err(g["items"], g["unit"])
 
 
 def _agree(ca: tuple, cb: tuple) -> bool:
     """Two groups' sizes and angles agree within measurement error: one error
-    of size (EDGE_KERNEL) or their spreads together, the angle's smoothing
-    (EDGE_ANGLE_KERNEL) or theirs; no angle on either side, or none on both."""
+    of size (EDGE_KERNEL) or their spreads together, one error of angle (the
+    larger group's, as the grouping smooths it) or their spreads; no angle on
+    either side, or none on both."""
     if abs(ca[0] - cb[0]) > max(_d.EDGE_KERNEL, math.hypot(ca[1], cb[1])):
         return False
     if ca[2] is None or cb[2] is None:
         return ca[2] is None and cb[2] is None
-    return abs(ca[2] - cb[2]) <= max(_d.EDGE_ANGLE_KERNEL, math.hypot(ca[3], cb[3]))
+    return abs(ca[2] - cb[2]) <= max(ca[4], cb[4], math.hypot(ca[3], cb[3]))
 
 
 def scorecard(groups: Sequence[dict]) -> dict:
@@ -944,8 +960,12 @@ def scorecard(groups: Sequence[dict]) -> dict:
             continue
         hit = False
         err = _median([e["err"] / e["size"] for e in g["items"] if e.get("err") and e["size"]]) or 0.0
+        aerr = _group_err(g["items"], g["unit"])
         for p, (bw, sd) in PROP_BINS.items():
-            bw, sd = (bw or _d.EDGE_ANGLE_BIN, sd or _d.EDGE_ANGLE_KERNEL)
+            if p == "angle":
+                if aerr is None:
+                    continue
+                bw, sd = aerr * _d.EDGE_ANGLE_BIN / _d.EDGE_ANGLE_KERNEL, aerr
             if p in ERR_PROPS and err > sd:
                 bw, sd = err * bw / sd, err
             xs = [e[p] for e in g["items"] if e.get(p) is not None]
