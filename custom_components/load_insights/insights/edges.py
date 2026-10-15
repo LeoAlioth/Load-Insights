@@ -220,16 +220,48 @@ def properties(rows: Sequence[Tuple[float, float]], t: float, dp: float,
     return out
 
 
+def _level(rows, a: float, b: float) -> Optional[float]:
+    """What ``rows`` held over [a, b]: the median BY TIME of the values read
+    there and the one held into it - a reading holds until the next, as the
+    recorder writes only changes and a detector reads a silence (a plug's
+    report on a 5 % change or its 60 s tick, a transitional reading that
+    held a few seconds). None where the span is empty or nothing was read
+    by its end."""
+    if not rows or b <= a:
+        return None
+    k = max(bisect.bisect_right(rows, (a, math.inf)) - 1, 0)
+    segs = []
+    while k < len(rows) and rows[k][0] <= b:
+        lo, hi = max(rows[k][0], a), min(rows[k + 1][0] if k + 1 < len(rows) else b, b)
+        if hi > lo:
+            segs.append((rows[k][1], hi - lo))
+        k += 1
+    if not segs:
+        return None
+    segs.sort()
+    half, acc = sum(d for _, d in segs) / 2.0, 0.0
+    for v, d in segs:
+        acc += d
+        if acc >= half:
+            return v
+    return segs[-1][0]
+
+
 def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: float, end: float,
             qrows=None, volts=None, noise: float = 0.0) -> Tuple[float, Optional[float], dict]:
     """A step's levels from its WINDOWS (WINDOW_S): before it, the readings
     from ``start`` (its channel's previous step, or WINDOW_S back) to where
     the old level was last read; after it, from past the surge to ``end``
-    (the next step, or WINDOW_S on) - each level their median, so a voltage
-    that lags the power or one reading's wobble does not set it. The same
+    (the next step, or WINDOW_S on) - each level what the channel held
+    there, its median by time (``_level``), so a voltage that lags the power
+    or one reading's wobble does not set it, and a plug that reports on
+    change is read as the grid is: Kozolec's 60 s plugs held two or three
+    readings a window, a plain median of them half a transitional one
+    (2026-10-15: the IR panel's +528 W read +262, its window before holding
+    0 and 528). The same
     for the reactive power, the voltage (the on side's for R = V^2 / |dP|:
     after a rise, before a fall) and the spread of each (noise, a median
-    deviation as a standard deviation). A window of fewer than two readings
+    deviation as a standard deviation). A window that held nothing
     falls back to the step as declared (``dp``, ``dq``) and the readings
     beside it (``p``: ``properties``), and so does a step whose windows show
     none of its sign above its ``noise`` (``contra``). Returns (dP, dQ, the properties):
@@ -239,8 +271,7 @@ def windows(rows, t: float, dp: float, dq: Optional[float], p: dict, start: floa
     def both(series, fall0, fall1, size):
         b = [v for _, v in _win(series or [], start, p["t_off"])]
         a = [v for _, v in _win(series or [], p["t_set"], end)]
-        x0 = _median(b) if len(b) >= 2 else None
-        x1 = _median(a) if len(a) >= 2 else None
+        x0, x1 = _level(series, start, p["t_off"]), _level(series, p["t_set"], end)
         if x0 is None and x1 is None:
             x0, x1 = fall0, fall1
         elif x0 is None:
