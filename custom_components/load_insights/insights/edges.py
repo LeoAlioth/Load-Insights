@@ -716,15 +716,20 @@ class Assembler:
 
     def _ends(self, x: Step) -> Tuple[float, float]:
         """Where ``x``'s windows end: its channel's previous step (where that
-        one was read at its new level) or WINDOW_S back; its next step (from
-        when it can have begun) or WINDOW_S on. A settle another step took
-        (``_settle_once``) is no step."""
+        one was read at its new level) or WINDOW_S back; just before its next
+        step's first reading (its ``t``, on the channel's own clock) or
+        WINDOW_S on. Not the next step's span start (``a``, its latency back,
+        on the grid's clock): Hidrofor's 30 s latency put it 10 s after a
+        rise whose next step, a -40 W decay, came 40 s on (10-03 13:34:42
+        UTC, readings 1105, 902, 873, 855), and the window held the surge
+        reading alone - +1104 W against the grid's +847. A settle another
+        step took (``_settle_once``) is no step."""
         ms = self.marks.get(x.key) or []
         i = bisect.bisect_left(ms, (x.t, -1))
         prev = next((m[2] for m in reversed(ms[:i]) if not m[2].absorbed), None)
         nxt = next((m[2] for m in ms[i:] if m[2].t > x.t and not m[2].absorbed), None)
         start = max(x.t - WINDOW_S, prev.b if prev is not None else -math.inf)
-        end = min(x.t + WINDOW_S, nxt.a if nxt is not None and nxt.t <= x.t + WINDOW_S else math.inf)
+        end = min(x.t + WINDOW_S, nxt.t - 0.01 if nxt is not None else math.inf)
         return start, end
 
     def _skipped(self, q: _Group, up: List[Step]) -> None:
