@@ -152,7 +152,7 @@ def test_a_level_read_once_is_measured_to_where_the_meter_settles():
     a = run(on, [(100.0, 1902.0), (140.0, -27.0)])
     # its level the median of the readings after it (WINDOW_S): 1875, 1876, 1876, ...
     assert [(e["dir"], e["entries"]["Boiler|a"]["dp"]) for e in a.edges] == [(1, 1876.0)]
-    assert abs(a.edges[0]["surge"] - 1902.0 / 1876.0) < 1e-9
+    assert abs(a.edges[0]["surge"] - 1902.0 / 1875.0) < 1e-9     # over the step as declared, its settle taken in
     twice = [(100.0, 1902.0), (110.0, 1902.0)] + on[1:]
     assert [e["dir"] for e in run(twice, [(100.0, 1902.0), (140.0, -27.0)]).edges] == [1, -1]
     for back in (12.0, 940.0):        # a spike back, or a step back past half: two steps
@@ -211,7 +211,8 @@ def test_a_steps_levels_are_the_medians_of_its_windows():
     a.flush()
     k = next(e["entries"]["Mansarda|b"] for e in a.edges if e["t"] == 1000.0)
     assert (k["dp"], k["p0"], k["p1"], k["dq"], k["v0"], k["v1"]) == (1445.0, 200.0, 1645.0, 10.0, 232.0, 228.0), k
-    assert abs(k["r"] - 228.0 ** 2 / 1445.0) < 1e-9 and abs(k["surge"] - 1500.0 / 1445.0) < 1e-9   # the first reading's excursion
+    # the surge over the step as declared - the detector's, to the first reading: 1500 / 1500
+    assert abs(k["r"] - 228.0 ** 2 / 1445.0) < 1e-9 and abs(k["surge"] - 1.0) < 1e-9
     assert abs(k["dv_kw"] - (-4.0 / 1.445)) < 1e-9 and k["n1"] > 0.0
     # windows that show less than the step's noise contradict it: the step as declared
     dp, dq, w = E.windows([(float(t), 100.0 + (2.0 if t >= 50 else 0.0)) for t in range(0, 200, 2)], 50.0, 50.0, None,
