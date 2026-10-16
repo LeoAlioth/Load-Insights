@@ -186,7 +186,7 @@ def test_a_level_read_once_is_measured_to_where_the_meter_settles():
 
 
 def test_a_steps_levels_are_the_medians_of_its_windows():
-    """Anze (2026-10-14): an edge reads a couple of readings before and after
+    """The owner (2026-10-14): an edge reads a couple of readings before and after
     its step, up to his 5-minute delay and never past the channel's previous
     or next step. Mansarda's B: a 300 W fall at 900, the kettle on at 1000
     (its first readings 1700, 1650, 1648 - the surge), off at 1150; the 3EM's
@@ -226,7 +226,7 @@ def test_a_steps_levels_are_the_medians_of_its_windows():
 
 def test_an_edges_reactive_size_and_sign_come_along_its_chain():
     """A plug reads no reactive power, Mansarda's 3EM an unsigned one (from
-    its apparent power), the grid a signed one (Anze, 2026-10-14). The office
+    its apparent power), the grid a signed one (2026-10-14). The office
     plug's +100 W under Mansarda: its reactive size from the innermost meter
     that reads one and took the same step (Mansarda, 50 -> 80 var), its sign
     from the innermost signed one (the grid, which read the reactive power

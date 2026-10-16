@@ -38,7 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # the recent actuals, the score. Daily totals, import and export figures
     # and the individual score numbers were sensors of their own once; they
     # are all attributes already, and a template sensor makes one where a
-    # dashboard wants it (Anze, 2026-09-17).
+    # dashboard wants it (2026-09-17).
     entities = [
         ForecastPowerSensor(coordinator, entry, "consumption_forecast", "consumption"),
         ForecastPowerSensor(coordinator, entry, "remainder_forecast", "remainder"),
@@ -52,7 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     site = SiteModel.from_prefs((await async_get_manager(hass)).data)
     # The state of charge is only forecastable where the Energy dashboard
     # gives a battery SOC and a capacity (or a capacity sensor is set). A site with no battery was
-    # getting the sensor anyway, permanently unavailable (Anze,
+    # getting the sensor anyway, permanently unavailable (the owner,
     # 2026-09-17), so it is created only where it can have a value.
     if site.battery_soc and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
         entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
@@ -66,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         if detection.metered_device(n):
             # named after a meter holding one device, it IS that device:
             # the meter's readings and its forecast stand for it, and
-            # detected ones beside them only duplicate it (Anze,
+            # detected ones beside them only duplicate it (the owner,
             # 2026-09-29: "i would expect that we only add forecasting")
             _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
             _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
@@ -283,7 +283,7 @@ def _score_attrs(led: Optional[Ledger], now) -> dict:
 class DeviceForecastSensor(ForecastPowerSensor):
     """The same forecast, for one individually metered device.
 
-    Enabled, like every other sensor here (Anze, 2026-09-17). They were
+    Enabled, like every other sensor here (2026-09-17). They were
     disabled by default on the theory that a busy dashboard would flood the
     registry - but a device is on the Energy dashboard because its owner
     cares about it, the dashboard template builds a card per device, and an
@@ -391,7 +391,7 @@ class DetectedLoadsSensor(_DetectionBase):
     # unexplained loads are on, is. Naming three of them and letting the rest
     # through put the recorder over its 16 KB ceiling on a real site, which
     # logs a warning, refuses to store the attributes and says the database
-    # will suffer - 989 times at Anze's house (2026-09-22). The list drifted
+    # will suffer - 989 times at the owner's house (2026-09-22). The list drifted
     # because it was a list, so it is the recorder's own "all of them".
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
@@ -600,7 +600,7 @@ class BaseLoadSensor(_PowerW, _DetectionBase):
 
 
 class NamedLoadPower(_PowerW, _DetectionBase):
-    """What a named load draws now (Anze, 2026-10-13): its open runs from the
+    """What a named load draws now (2026-10-13): its open runs from the
     moment their start is declared, plus the runs that began and ended between
     two passes, spread over the pass - see LIVE_NAME_SHARE.
 
@@ -633,7 +633,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
     Naming a load already gave it a device and a power reading; without an
     ENERGY reading beside it the device cannot appear on the Energy
     dashboard, which is where anyone would go to ask what the thing costs
-    (Anze, 2026-09-18).
+    (2026-09-18).
 
     It counts up by what detection gains and nothing else - never down, and
     not while detection re-reads history after a reset - across restarts

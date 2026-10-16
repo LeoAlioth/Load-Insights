@@ -3,10 +3,10 @@
 Load Insights, branch `dev`. Personal project: never log it to work-context.md.
 This is a plan only. Nothing has been changed yet.
 
-Anze's ask: a sensor or attribute holding a Markdown list of the detected loads
+The owner's ask: a sensor or attribute holding a Markdown list of the detected loads
 running now, named and unnamed, with links to the page where they get named.
 
-Anze's decisions, 2026-10-12:
+The owner's decisions, 2026-10-12:
 - English only for now.
 - A load on a meter that holds several devices shows **once**, with its name if it is named. An unnamed one there gets its link. This was a "known gap" in the first draft and is now fixed below.
 
@@ -41,14 +41,14 @@ The link from a grid run to its meter is one the detector already keeps. No new 
 | case | row label | link / id | where |
 |---|---|---|---|
 | `o.meter` is None | grid's own guess `main._guess(phases, watts, elapsed)`. Named sig: **name**. Unnamed sig: `Unnamed #id`. No sig: `New load` | `#id` = grid sig id. Link if `("", id)` is in `offered` | `most_specific(sig.locations, sig.count, parents)`, hidden when "main" |
-| `o.meter = M`, `fleet.holds_one_device(M)` (a plug, a switch) | the grid sig's name if named, else **M**. The meter IS that device (Anze, 2026-09-28), and `namable` never offers it | none | none (the label is the meter) |
+| `o.meter = M`, `fleet.holds_one_device(M)` (a plug, a switch) | the grid sig's name if named, else **M**. The meter IS that device (2026-09-28), and `namable` never offers it | none | none (the label is the meter) |
 | `o.meter = M`, M holds several devices, its run matched (step 2) | `subs[M]._guess(chans, sub_watts, elapsed)`. Named: **name**. Unnamed: `Unnamed #id`. No sig: `New load` | `#id` = **the meter's own signature id**, the one `Fleet.namable` offers under group M (it never offers the grid's twin of a sub-located load). Link if `(M, id)` is in `offered` | M |
 | `o.meter = M`, several devices, no matched run (the meter's run already closed, or its rise was undeclared) | as the first row, from the grid's guess | as the first row | M |
 
    - Watts, phases and `since` always come from the grid run, so the card speaks one meter's numbers: the grid's.
    - Per-run guessing uses the existing `Detector._guess(phases, watts, elapsed)`, the same matcher `active()` applies to a phase total, here applied to one run.
    - Rows sharing a name are merged into one: watts summed, phases joined, earliest `since`. A device on two meters, or two legs filed apart, is one row.
-4. **One source of truth for "is this load running"** (Anze, 2026-10-12): `Fleet.running(now)` is the only place that decides whether a load is on. Three things that each answered it before now read from it:
+4. **One source of truth for "is this load running"** (2026-10-12): `Fleet.running(now)` is the only place that decides whether a load is on. Three things that each answered it before now read from it:
    - **The named-load on/off sensors** (`NamedLoadRunning`, the only user of `Fleet.active_by_name`). Today they sum each detector's `Detector.active_by_name`, which guesses a signature from a phase's whole total. So a named load is "on" only while it is alone on its phase(s): a 95 W fridge beside a 2 kW boiler is guessed as one 2,095 W thing, matches neither, and both sensors read off.
    - **The naming page's "on now"** (config_flow.py:569, `det.running_now` per meter).
    - **The sensor's `signatures[].running` flag** (sensor.py:412, `det.running_now`).
@@ -210,7 +210,7 @@ Checked against `home-assistant/frontend` dev on 2026-10-12 (`ha-panel-my.ts`, `
    - About line 595: add one line, `rest += f" · #{ref[1]}"`.
    - About line 569: the per-meter `running |= {(meter, i) for i in det.running_now(now_ts)}` becomes one `running = runner.fleet.running_refs(now_ts)` before the loop. The loop keeps building `partners`/`by_ref`.
 
-3b. **The named on/off sensors onto the same runs** (Anze, 2026-10-12: now, not later):
+3b. **The named on/off sensors onto the same runs** (2026-10-12: now, not later):
    - **`insights/detect.py`**: `Fleet.active_by_name` is replaced by the version in step 1 (the named rows of `running()`), and `Fleet.running_refs` is added. **Delete** `Detector.active_by_name` and `Detector.running_now`: their only callers were `Fleet.active_by_name`, sensor.py:412 and config_flow.py:569, all moved above. `Fleet._summed` stays, because `energy_by_name`/`hourly_by_name` use it.
    - **`binary_sensor.py` `NamedLoadRunning`**: no code change. `is_on` and the `watts` attribute already call `fleet.active_by_name`, which now answers per load. Update the class docstring: on while a running load is filed under this name, read one load at a time from the grid meter's runs (`Fleet.running`), the same answer as the dashboard list.
    - **Unchanged on purpose:**
@@ -290,9 +290,9 @@ Checked against `home-assistant/frontend` dev on 2026-10-12 (`ha-panel-my.ts`, `
    - that the three moved tests changed and why (the Hiša one most of all);
    - that `run_all` passes.
 
-   **Do not push** until Anze says so; a push to dev auto-deploys. Install on Home and Kozolec only, never Andrej's site. No generation bump or reset is needed: `_Open.meter` is already persisted.
+   **Do not push** until the owner says so; a push to dev auto-deploys. Install on Home and Kozolec only, never the third site. No generation bump or reset is needed: `_Open.meter` is already persisted.
 
-9. **After Anze's push**: restart both sites and wait for `RUNNING`. Read `running_markdown` back through `/api/states/<entity>` and check:
+9. **After the owner's push**: restart both sites and wait for `RUNNING`. Read `running_markdown` back through `/api/states/<entity>` and check:
    - it is under 3 KB;
    - **no load appears twice.** Compare against the meters' own `meters.<M>.active` in the same attributes (Mansarda's fridge, Susilna's dehumidifier at Home);
    - a meter's unnamed row's `#id` is on that meter's naming page;
@@ -300,7 +300,7 @@ Checked against `home-assistant/frontend` dev on 2026-10-12 (`ha-panel-my.ts`, `
    - each named sensor's `unique_id` and entity id are unchanged (HA_Configs `entities.json` before vs after);
    - clicking a link opens the entry highlighted (desktop and companion app).
 
-   Adding the card to a dashboard is an HA change. Do it only on Anze's OK, with an HA_Configs snapshot before and after.
+   Adding the card to a dashboard is an HA change. Do it only on the owner's OK, with an HA_Configs snapshot before and after.
 
 ## Remaining limits (said, not hidden)
 

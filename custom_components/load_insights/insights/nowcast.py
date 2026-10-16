@@ -112,7 +112,7 @@ def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Op
     """A device's states, one or several: ``rows`` are (weight, states at t,
     residuals h hours after t, None where unknown), states in a fixed order.
 
-    Forward, one at a time (Anze, 2026-09-28: a floor mat's thermostat reads
+    Forward, one at a time (2026-09-28: a floor mat's thermostat reads
     the room AND the floor): the state that explains the most on its own goes
     in first, and each further one only if, fitted jointly with those already
     in, it adds MIN_EXPLAINED at the best lead. Two readings of one room tell

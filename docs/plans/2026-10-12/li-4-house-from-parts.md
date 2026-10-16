@@ -1,7 +1,7 @@
 # LI-4 - The house forecast built from its parts; Kozolec's minimum SOC without the over-target loads (plan, 2026-10-12)
 
 Personal project (Load Insights + Kozolec HA). Never log to any work-context file.
-Repo `/Users/anzek/Projects/Load_Insights`, branch `dev`, head `482aa9a`, tree clean.
+Repo `~/Projects/Load_Insights`, branch `dev`, head `482aa9a`, tree clean.
 Plan only: nothing below has run except the read-only reads and template renders marked **(read)**.
 Part B does not depend on Part A and can run first.
 
@@ -75,7 +75,7 @@ Part B does not depend on Part A and can run first.
 |---|---|
 | `sensor.*_consumption_forecast` | Same meaning (house forecast) and same unit. Its values are now built. Its level / temperature / signals attributes describe the whole's own fit, which now supplies only the band; add one docstring line saying so. New attr `parts`. Its long-term statistics simply carry on (no migration). |
 | `sensor.*_unmetered_consumption_forecast` | Becomes "consumption − mature top-level devices". `subtracted_devices` lists exactly those. No change today at either site. |
-| parent device sensors (Kozolec `sensor.inverter_forecast`; Home Mansarda, Hiša, Delavnica, Centralna, Pisarna) | **Meaning changes**: now own part + mature parts, so the nesting adds up on the sensors. New attr `parts`. The own part is not a sensor; it is in diagnostics only. Add a sensor if Anze wants one. |
+| parent device sensors (Kozolec `sensor.inverter_forecast`; Home Mansarda, Hiša, Delavnica, Centralna, Pisarna) | **Meaning changes**: now own part + mature parts, so the nesting adds up on the sensors. New attr `parts`. The own part is not a sensor; it is in diagnostics only. Add a sensor if the owner wants one. |
 | leaf device sensors | unchanged |
 | `GridForecastSensor`, `BatterySocForecastSensor` | Values change through `build_grid(cons_fc.hourly)`. Meaning unchanged. |
 | overview page, diagnostics | Overview reads the built forecast. Diagnostics add `"consumption_fitted"` (the independent total) and each `own:<stat>`, so the two can be compared live. |
@@ -119,7 +119,7 @@ Part B does not depend on Part A and can run first.
 
 The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc/koz` are empty, and only stale code copies remain. Rebuild it as **`tests/forecast_bt.py`** (committed, so it cannot be lost again). Its cache is gitignored under `data/forecast/<site>.json`.
 
-1. **Fetch** (read-only), using `node /Users/anzek/Projects/HA_Configs/tools/ws.mjs <site> cmds.json`:
+1. **Fetch** (read-only), using `node ~/Projects/HA_Configs/tools/ws.mjs <site> cmds.json`:
    - `energy/get_prefs`
    - `recorder/statistics_during_period` with `{period: "hour", units: {energy: "kWh"}, types: ["change"]}`, covering every id in `SiteModel.all_statistic_ids()`
    - the outdoor temperature (`types: ["mean"]`); its entity is the consumption sensor's `temperature_response.temperature_entity` attribute
@@ -143,13 +143,13 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 4. **Acceptance**: in each site, B's total MAE at lead 1 **and** at lead 24 is ≤ A's, and the daily error does not rise.
    - Pick N among the B(N) that pass, by lead-24 MAE.
    - The band rule is whichever covers closer to 0.8.
-   - If no B passes at a site, stop and bring the table to Anze. No per-site switch.
-5. **Where to run**: libench if Anze is not using it, otherwise the Mac (`python3.14`). Both sites in parallel.
-6. **Commits**: commit the result locally, with the table in the commit body (A vs B per site, per lead). **Do not push** until Anze says. A push to dev auto-deploys to Home and Kozolec, and both restart by themselves.
+   - If no B passes at a site, stop and bring the table to the owner. No per-site switch.
+5. **Where to run**: libench if the owner is not using it, otherwise the Mac (`python3.14`). Both sites in parallel.
+6. **Commits**: commit the result locally, with the table in the commit body (A vs B per site, per lead). **Do not push** until the owner says. A push to dev auto-deploys to Home and Kozolec, and both restart by themselves.
 
-### A5. Ship (when Anze says)
+### A5. Ship (when the owner says)
 
-1. Push dev. Home and Kozolec install and restart. Andrej's site is not included.
+1. Push dev. Home and Kozolec install and restart. The third site is not included.
 2. Read back on Kozolec:
    - `sensor.kozolec_pv_kozolec_insights_consumption_forecast` `tomorrow_kwh` = remainder + `sensor.inverter_forecast` + `sensor.inverter_losses_forecast`, within rounding.
    - `parts` lists the bee heater as "(in own part)".
@@ -167,7 +167,7 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 - The live `state` is byte-identical to `kozolec/changes/2026-10-12/forecast_soc_minimum_after_minimum_discount.txt`.
 - **It already subtracts three loads**: `sensor.pond_evse_forecast`, `sensor.power_strip_forecast`, `sensor.well_pump_forecast`.
 - **It also spreads the tanks evenly**: `sensor.boiler_forecast_2`, `sensor.bee_room_heater_forecast`.
-- **Anze's decision (2026-10-12):** the well pump is counted again, so only the Pond EVSE and the Power Strip are subtracted. The tanks are no longer spread evenly; every remaining load counts as forecast, hour by hour.
+- **The owner's decision (2026-10-12):** the well pump is counted again, so only the Pond EVSE and the Power Strip are subtracted. The tanks are no longer spread evenly; every remaining load counts as forecast, hour by hour.
 - Renders now **(read, /api/template)**: live **18 %**, new text (B2) **16 %**.
 - Per-device forecast sensors (DeviceForecastSensor, unique id `<entry>_device_<statistic>`):
   - `sensor.pond_evse_forecast` ← `sensor.pond_evse_energy`
@@ -177,7 +177,7 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 
 ### B1. Steps
 
-1. `node /Users/anzek/Projects/HA_Configs/tools/snapshot.mjs kozolec before-minimum-no-evse-strip`
+1. `node ~/Projects/HA_Configs/tools/snapshot.mjs kozolec before-minimum-no-evse-strip`
 2. Save the live `state` to `kozolec/changes/2026-10-12/forecast_soc_minimum_before_no_evse_strip.txt`. Read it from the options flow and abort the flow, as `tools/read_helper_options.py` does.
 3. Render the new text (B2) via `POST /api/template`. It must be a number 10-100. Write the before and after renders down. The expected value (12 Oct ~21h) is 16, against 18 now.
 4. Save it:
@@ -189,7 +189,7 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 7. `node tools/snapshot.mjs kozolec after-minimum-no-evse-strip`
 8. Add a line to `kozolec/NOTES.md`. It should cover:
    - the date
-   - "Minimum SOC counts all but the over-target loads" (Anze)
+   - "Minimum SOC counts all but the over-target loads" (the owner)
    - the Pond EVSE and Power Strip subtracted; the well pump and the tanks (boiler, bee room heater) now counted as LI forecasts them, with no even spread
    - minimum 18 → 16
    - the snapshot names and the changes/ file names
@@ -202,13 +202,13 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 {# Minimum SOC: 10 % plus the deepest the battery's balance (S) dips below where it is now over the next 120 h. #}
 {% set factor = states('input_number.kozolec_forecast_factor') | float(0.8) %}
 {# the further out, the less of the forecast sun is counted: full weight for full_h hours, then drop % less
-   per hour (Anze, 2026-10-12: 48 h, 0.5 %); the use is counted in full #}
+   per hour (2026-10-12: 48 h, 0.5 %); the use is counted in full #}
 {% set full_h = states('input_number.kozolec_minimum_full_hours') | float(48) %}
 {% set drop = states('input_number.kozolec_minimum_drop_per_hour') | float(0.5) / 100 %}  {# share of the Open-Meteo forecast we count on #}
 {% set flat = states('input_number.kozolec_base_consumption') | float(300) / 1000 %}
 {% set pack = states('sensor.kozolec_battery_capacity') | float(0) %}  {# kWh: installed Ah x SOH x 51.2 V #}
 {# Use per hour: Load Insights' house forecast less the two loads that run only over the target - Pond EVSE and
-   Power Strip (Anze, 2026-10-12); everything else as Load Insights forecasts it, the tanks and the well pump
+   Power Strip (2026-10-12); everything else as Load Insights forecasts it, the tanks and the well pump
    included; input_number.kozolec_base_consumption for an hour Load Insights does not cover. #}
 {% set li = namespace(base = {}) %}
 {% for p in state_attr('sensor.kozolec_pv_kozolec_insights_consumption_forecast', 'detailedForecast') or [] %}
@@ -242,4 +242,4 @@ The scratchpad `fc/bt.py` that AGENTS.md mentions is **gone**: `fc/home` and `fc
 
 The target helper (`sensor.kozolec_forecast_soc_target`) and the daily-excess helper (`sensor.kozolec_forecast_daily_excess`) are left as they are. Their use term still subtracts the Pond EVSE, Power Strip and Well Pump, and still spreads the tanks. Say so in the NOTES line.
 
-Scratch copies: `/private/tmp/claude-1773206459/-Users-anzek-Projects/4b9e35e1-1c3c-4305-92d3-4b8a8a8f0980/scratchpad/li4/` (`minimum_live.j2`, `minimum_new.j2`, `read_live.py`, `render.py`).
+Scratch copies: `<scratch>` (`minimum_live.j2`, `minimum_new.j2`, `read_live.py`, `render.py`).

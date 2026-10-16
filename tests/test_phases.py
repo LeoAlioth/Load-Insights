@@ -77,7 +77,7 @@ def test_line_to_neutral_is_that_phases_own_voltage():
 
 def test_a_meters_own_reactive_power_is_found_beside_its_power():
     """V x I gives only the size of the reactive power; the meter's own
-    reading carries its sign (Anze, 2026-09-30)."""
+    reading carries its sign (2026-09-30)."""
     rows = SOLAREDGE + [e(f"sensor.solaredge_se17k_m1_ac_var_{p}", "reactive_power", f"SE17K M1 AC Reactive Power {p.upper()}")
                         for p in "abc"] + [e("sensor.solaredge_se17k_m1_ac_var", "reactive_power", "SE17K M1 AC Reactive Power")]
     got = D.match_meter_entities(rows)
@@ -87,7 +87,7 @@ def test_a_meters_own_reactive_power_is_found_beside_its_power():
 
 def test_a_3ems_apparent_power_is_found_beside_its_active_power():
     """Its 0.1 VA apparent power gives the VAr far finer than its two-decimal
-    power factor (Anze, 2026-09-30)."""
+    power factor (2026-09-30)."""
     rows = [r for p in "abc" for r in (
         e(f"sensor.hisa_phase_{p}_active_power", "power", "Phase " + p.upper() + " active power"),
         e(f"sensor.hisa_phase_{p}_apparent_power", "apparent_power", "Phase " + p.upper() + " apparent power"),
@@ -188,7 +188,7 @@ def test_an_inverter_publishing_both_sides_is_left_to_the_user():
     """A MultiPlus offers input and output power on one device. Preferring
     the load side looks obvious and is wrong at least once: Kozolec has no
     load-side power at all, and its input is where the grid would connect,
-    so that IS its meter (Anze, 2026-09-17). The matcher picks one and the
+    so that IS its meter (2026-09-17). The matcher picks one and the
     form shows it for changing; it does not take sides."""
     rows = [
         e("sensor.multiplus_id_276_input_power_l1", "power", "MultiPlus Input Power L1"),
@@ -277,7 +277,7 @@ def test_a_three_phase_shelly_is_one_device_per_phase():
     statistic lives, and one child per phase pointing at it with
     via_device_id. Reading only the parent's own entities found a single
     total and nothing else, so a three-phase meter was taken for a one-phase
-    one - which is what stopped Anze's attic and grid meters from ever being
+    one - which is what stopped the owner's attic and grid meters from ever being
     subtracted per phase (2026-09-22)."""
     parent = [
         {"entity_id": "sensor.attic_total_active_power", "device_class": "power",

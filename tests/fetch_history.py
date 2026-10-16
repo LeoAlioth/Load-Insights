@@ -1,6 +1,6 @@
 """Pull the history the replay harness needs straight from Home Assistant.
 
-Clicking twenty exports through the History panel is the slow way (Anze,
+Clicking twenty exports through the History panel is the slow way (the owner,
 2026-09-18). The REST API returns the same states, so this walks a day at a
 time over each group of entities and writes one CSV per day per group, in
 exactly the shape the panel downloads - entity_id, state, last_changed - so
@@ -17,7 +17,7 @@ takes on the command line, where it would land in a shell history:
     that instance issued. The whole data/ folder is gitignored.
 
 A token belongs to ONE instance, so each site needs its own, and naming the
-file after the host is what keeps them straight (Anze, 2026-09-18).
+file after the host is what keeps them straight (2026-09-18).
 
 Days already downloaded are skipped, so an interrupted run resumes. Beside
 the CSVs it writes units.json, each electrical entity's unit from its live
@@ -84,7 +84,7 @@ HOME = {
                  "sensor.living_room_ceiling_fan_speed", "fan.ceiling_fan"],
         "blinds": ["sensor.west_blinds_power", "sensor.north_blinds_power",
                    "sensor.living_room_east_blinds_power"],
-        # The Sušilna plug feeds a Klarstein dehumidifier on Tuya Local (Anze,
+        # The Sušilna plug feeds a Klarstein dehumidifier on Tuya Local (the owner,
         # 2026-10-02: its state should help - it runs 20 h a day at ~300 W,
         # 20:00 to 16:00, and the grid detector loses its run within hours).
         "susilna": ["switch.susilna_dehumidifier_power", "select.susilna_dehumidifier_mode",
@@ -99,7 +99,7 @@ HOME = {
 
 # Kozolec is a second Home Assistant, so it needs its own base URL and its
 # own token - a long-lived token is issued by one instance for one user and
-# means nothing to another (Anze, 2026-09-18). Its LOAD side is the
+# means nothing to another (2026-09-18). Its LOAD side is the
 # MultiPlus AC OUT, whose entity names are still to be confirmed; the AC IN
 # it is currently pointed at reads zero, the site being off grid.
 KOZOLEC = {
@@ -111,7 +111,7 @@ KOZOLEC = {
         # very reading the loads hang off - the one thing home does not have.
         # The AC INPUT is a generator port, real but idle almost always, so
         # it comes along to show what "off" looks like rather than to detect
-        # on (Anze, 2026-09-18).
+        # on (2026-09-18).
         "inverter": [
             "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1",
             "sensor.multiplus_ii_48_15000_200_100_id_276_output_current_l1",
@@ -150,14 +150,14 @@ KOZOLEC = {
     },
 }
 
-# Andrej's site (2026-10-03): a SolarEdge SE17K with its M1 grid meter, which
+# the third site (2026-10-03): a SolarEdge SE17K with its M1 grid meter, which
 # reads export POSITIVE like Home's (the Energy dashboard declares it
 # inverted), and a go-e charger. Its Energy dashboard reads the charger through
 # OCPP in kW, sent every 30 s to 2 min; the go-e integration's own readings
 # come every ~5 s in W - nrg_11 the total, nrg_7-9 per phase (W), nrg_4-6 (A).
 # The hot-water heat pump (MELCloud Ecodan) has no power meter: its valve,
 # pump and tank are what show when it heats water.
-ANDREJG = {
+THIRD = {
     "base": "https://andrejg.duckdns.org:8123",
     "tz": timezone(timedelta(hours=2)),
     "groups": {
@@ -178,7 +178,7 @@ ANDREJG = {
     },
 }
 
-SITES = {"home": HOME, "kozolec": KOZOLEC, "andrejg": ANDREJG}
+SITES = {"home": HOME, "kozolec": KOZOLEC, "third": THIRD}
 
 # Entities renamed on 2026-09-28 (HA_Configs/<site>/rename-plan-2026-09-28*.json).
 # History fetched before then is under the old id and after under the new;
@@ -253,7 +253,7 @@ def write_units(out: Path, base: str, token: str, entities, timeout: int) -> dic
     out/units.json - entity -> unit - which replay.read_csv scales by, as
     production scales every reading it reads (detect.unit_scale). The history
     comes without attributes, so the CSVs carry no unit: Home's EVBox and
-    Andrej's OCPP chargers publish kW and were replayed as watts, the EVBox's
+    The third site's OCPP chargers publish kW and were replayed as watts, the EVBox's
     10.8 kW charge as 10.8 W (2026-10-04)."""
     request = urllib.request.Request(f"{base}/api/states", headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(request, timeout=timeout) as response:

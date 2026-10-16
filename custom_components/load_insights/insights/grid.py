@@ -24,7 +24,7 @@ came from the pack or off the arrays a second earlier. Parallel, or
 AC-coupled: the arrays are already AC and feed the house at no cost, and
 only the surplus pays, twice, in and back out. On a site that runs its
 whole night off the pack that is the dominant term, and the model used to
-have no losses at all (Anze, 2026-09-18, about Kozolec).
+have no losses at all (2026-09-18, about Kozolec).
 
 WHAT IS AT THE AC INPUT. The residual after the battery is grid flow only
 where there is a grid. Off grid a deficit is a load that goes UNSERVED and

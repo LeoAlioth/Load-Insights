@@ -3,10 +3,10 @@
 Both already exist as services, which is the right shape for an automation
 but the wrong shape for a person: resetting load detection meant opening
 Developer Tools and finding an action by name. These sit on the site's own
-device page, beside the diagnostics download (Anze, 2026-09-17).
+device page, beside the diagnostics download (2026-09-17).
 
 Home Assistant gives an integration no way to add a link beside "Download
-diagnostics" on the device info card, which is where Anze looked for this
+diagnostics" on the device info card, which is where the owner looked for this
 twice. A button entity on the same page is as close as it allows, so both
 sit in CONTROLS - the card directly beside device info - rather than in the
 configuration card further down.

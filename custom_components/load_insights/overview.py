@@ -3,7 +3,7 @@
 A read-only page, built fresh each time it is shown. Everything here is
 already in the entities and the diagnostics dump; the point is that nobody
 should have to open either to answer "is it working, and how far has it
-got" (Anze, 2026-09-17 - Load Juggler has had this page for a while).
+got" (2026-09-17 - Load Juggler has had this page for a while).
 """
 from __future__ import annotations
 

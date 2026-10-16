@@ -1,6 +1,6 @@
 # Cross-meter edges - design (2026-10-14)
 
-Agreed with Anze in conversation, 2026-10-14. Stage 1 of reworking what an
+Agreed with the owner in conversation, 2026-10-14. Stage 1 of reworking what an
 edge is: **edge detection and grouping across meters only**. How well the
 groups match real devices comes later, and so does sharing a parent meter's
 change between coinciding edges.
@@ -41,7 +41,7 @@ the same way a multi-phase edge already holds each phase separately.
 - A plug's channel joins the grid phase its learned phase map gives
   (`Fleet.phase_map`); an unmapped channel may join any phase.
 
-Kozolec and Andrej have no circuit meters: there an edge is the grid's step
+Kozolec and the third site have no circuit meters: there an edge is the grid's step
 plus the plugs' entries.
 
 ## Grouping (stage 1)
@@ -96,7 +96,7 @@ EdgeClusters) where it applies, as the baseline.
 - The detector is unchanged: pairing, runs and devices still use today's edges.
   The assembly is fed alongside it in replays; production wiring comes with
   the stage that makes these edges the detector's.
-- `tests/edge_bench.py`: the scorecard at Home, Kozolec and Andrej (fed
+- `tests/edge_bench.py`: the scorecard at Home, Kozolec and the third site (fed
   meters, SUBS=prod), invariance over SLICE=0 / 6 / LIVE=1, and a `diff`.
 - `tests/test_edges.py`: assembly (nested meters -> one edge; separate
   branches -> two edges, the parent shared; a sub-meter-only step is an

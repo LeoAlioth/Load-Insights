@@ -221,7 +221,7 @@ def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
     the meter it sits in - and the forecasts welcome it like any device. But
     detection takes every listed device as a meter, and read back as one the
     kiln's estimate would be fed in as a measurement, with the kiln then
-    detected inside it (Anze, 2026-09-28: "make sure that the generated
+    detected inside it (2026-09-28: "make sure that the generated
     detected entities do not back feed to any detection as if they were
     actual measurements"). Read back as a sub-meter a load's estimate became
     its own truth - and naming a load after it made the load "that metered
@@ -278,7 +278,7 @@ def device_rows(hass: HomeAssistant, device_id: str) -> list:
     statistic lives - so reading only the parent's own entities found a
     single total and nothing else, and a three-phase meter was taken for
     a one-phase one. It is the commonest three-phase meter there is
-    (Anze's attic and grid meters are both this, 2026-09-22). The grid
+    (the owner's attic and grid meters are both this, 2026-09-22). The grid
     page reads a device through this too."""
     registry = er.async_get(hass)
     rows = []
@@ -451,7 +451,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 if total and not any(cfg.values()):
                     # a machine that publishes one figure: a three-phase
                     # inverter is symmetric, so its legs are its total in
-                    # thirds - which reproduced Anze's own templates exactly
+                    # thirds - which reproduced the owner's own templates exactly
                     cfg = {f"power_{p}": total for p in PHASES}
                     share = 1.0 / len(PHASES)
                 else:
@@ -470,13 +470,13 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
         There is no load reading to configure because there is nothing to
         configure: given the grid and the inverters, the house is determined
-        (Anze, 2026-09-18 - "just have each inverter entry have both inputs
+        (2026-09-18 - "just have each inverter entry have both inputs
         and outputs configurable"). Whatever sits between the utility meter
         and an inverter's own AC input falls out of the same sum, because a
         hybrid measures that input itself.
 
         An explicit reading still wins where someone has one that already IS
-        the house - a dedicated CT, or the template sensors Anze built before
+        the house - a dedicated CT, or the template sensors the owner built before
         this existed."""
         self.array_in_house = {}
         override = {f"power_{p}": self.config.get(f"power_{p}") for p in PHASES}
@@ -514,7 +514,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                          generation: Optional[Dict[str, list]]) -> float:
         """+1 where the grid meter reads import positive, -1 where it does
         not - because "the house is the meter plus the inverter" is true only
-        in the first convention, and Anze's SolarEdge M1 is the second.
+        in the first convention, and the owner's SolarEdge M1 is the second.
 
         Declared beats derived: the Energy dashboard's grid source asks this
         outright (none, normal, inverted, or a pair of sensors), so where it
@@ -558,7 +558,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # lists what produces energy, not where it is wired, and a DC-coupled
         # array charging the battery through an MPPT never shows on the AC
         # side at all - so at Kozolec there is nothing for the dashboard's
-        # view to find (Anze, 2026-09-18).
+        # view to find (2026-09-18).
         configured = self.entry.options.get(CONF_INVERTERS) or []
         if configured:
             out: List[Dict[str, str]] = []
@@ -620,7 +620,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         numbers: Dict[str, list] = {}
         inputs: Dict[str, list] = {}
         since = start - timedelta(seconds=SWITCH_MEMORY_S)
-        # every input the forecast is given, whatever it is linked to (Anze,
+        # every input the forecast is given, whatever it is linked to (the owner,
         # 2026-09-28: add the thermostat to the inputs first, and move it to
         # the device once the load it helped find is named)
         for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
@@ -708,7 +708,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         energy meter's statistics - long-term and five-minute alike - for the
         hours detection watched, about ten days: the days before it was named
         show on the Energy dashboard, and a reset or the reading's first
-        appearance no longer shows as a day's worth in one hour (Anze,
+        appearance no longer shows as a day's worth in one hour (the owner,
         2026-09-29: "rewrite the long term and short term statistics for
         detected entities for the time it has the data for"). See
         plan_rewrite.
@@ -882,7 +882,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         meters by how much their loads use.
 
         Split by where each load lives, so the page can be taken one circuit
-        at a time (Anze, 2026-09-25: "any way of splitting the detected loads
+        at a time (2026-09-25: "any way of splitting the detected loads
         early would help with organisation and naming"), and a meter's list
         is its own detector's signatures (Fleet.namable). Named loads have a
         page of their own (``named``). Each group gets the length
@@ -966,7 +966,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         The snapshot is the whole library and runs to well over a hundred
         kilobytes; written every five minutes that is tens of megabytes a day,
         and it is the single thing that would multiply if detection ran every
-        minute instead (Anze, 2026-09-18, whose suggestion this is: keep it in
+        minute instead (2026-09-18, whose suggestion this is: keep it in
         memory and write it at most hourly).
 
         async_delay_save alone will not do it. Called again before its delay
@@ -1011,7 +1011,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         None before it has read anything at all. The backfill walks ten days
         in six-hour slices, so a library part way through that is a library
         of whatever happened to be in the first few days - which is not a
-        thing to offer anyone for naming (Anze, 2026-09-18)."""
+        thing to offer anyone for naming (2026-09-18)."""
         if self.last_processed is None:
             return None
         return max(0.0, (dt_util.utcnow() - self.last_processed).total_seconds())
@@ -1046,7 +1046,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             # dropping them behind a log line would take their devices, their
             # energy meters and their place on the Energy dashboard with them
             # - on every installation at once, the first time this constant
-            # moves (Anze asked what an update does to a named load,
+            # moves (the owner asked what an update does to a named load,
             # 2026-09-22). Read defensively: the whole point is that the old
             # shape may not be one we still understand.
             orphans = names_in_store(raw)
@@ -1085,7 +1085,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         re-learns everything else in minutes. Each is carried across as a
         description and handed back to the first rebuilt signature that looks
         like it; where the site really has changed - the reason to do this by
-        hand - nothing matches and the name does not return. Anze
+        hand - nothing matches and the name does not return. The owner
         (2026-09-30) would rather drop them than have a stale one land on the
         wrong load, so the service can forget them too.
 
@@ -1451,7 +1451,7 @@ def _fetch(hass, start, end, entity_ids):
 
     This looped over state_changes_during_period, which takes a single
     entity_id, so a pass cost one SQL round trip per entity - about twenty at
-    Anze's home once the submeters are counted, and that is per pass rather
+    The owner's home once the submeters are counted, and that is per pass rather
     than per sample, so it is exactly the cost that multiplies if detection
     runs more often (2026-09-18). get_significant_states takes the whole
     list; significant_changes_only=False is what keeps it every change rather

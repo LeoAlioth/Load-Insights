@@ -146,7 +146,7 @@ def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():
 
 
 def test_each_devices_own_inputs_become_links_on_one_list():
-    """One list of inputs, each with what it is linked to (Anze, 2026-09-28:
+    """One list of inputs, each with what it is linked to (2026-09-28:
     "a single storage with the tags only deciding to which things it
     connects to"); a link follows its load's name."""
     migrate_inputs, relink = model.migrate_inputs, model.relink

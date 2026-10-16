@@ -40,7 +40,7 @@ WEEK_SECONDS = 7 * 24 * 3600.0
 # phase's own noise from how much it wanders while idle, and this stops a
 # pathological signal from setting it at nothing.
 #
-# It was 100 W, which on both of Anze's sites was eight times the real noise:
+# It was 100 W, which on both of the owner's sites was eight times the real noise:
 # their median sample-to-sample change is 3 to 5 W, so the measured figure
 # would have been 12 to 20 W and the floor was the binding constraint on
 # everything. A fridge compressor steps 60 to 150 W and could never clear it,
@@ -50,7 +50,7 @@ WEEK_SECONDS = 7 * 24 * 3600.0
 # MEASURED rather than assumed.
 MIN_NOISE_W = 10.0
 # ...and a reading wanders more when more is flowing through it, so the floor
-# is not the whole story either (Anze, 2026-09-18: "can the noise scale with
+# is not the whole story either (2026-09-18: "can the noise scale with
 # total load or be adaptive in some other way?").
 #
 # It can, and the share is MEASURED rather than picked, because the two sites
@@ -80,7 +80,7 @@ NOISE_REL_FLOOR_FACTOR = 1.5
 # at -3000 W and the next back at 26 - and that +3000 step back is the exact
 # shape of a load switching on, on all three phases at once. Rare (134 of
 # 195,890 samples on one phase over ten days) but each one is a phantom
-# 3 kW load (Anze, 2026-09-18).
+# 3 kW load (2026-09-18).
 GLITCH_FLOOR_W = 200.0
 # 5 since the noise is measured by how the reading moves (NOISE_FROM_MOVES):
 # at 4 Home's house phase C came down to 60 W, just under a 65 W load cycling
@@ -88,7 +88,7 @@ GLITCH_FLOOR_W = 200.0
 # (5.9 h of the mat outside its heating, against 1.8); at 3 the load was seen
 # whole and crowded the groups (Home purity 71.0 %, 10.2 kWh wrongly placed).
 # Ten days, 2026-10-01 - see the experiments branch's commit for the table.
-NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: Anze wants the 65 W load seen (2026-10-01)
+NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: the owner wants the 65 W load seen (2026-10-01)
 # The noise is re-learned from how far the reading MOVES between samples, as
 # the seed measures it, not from how far it sits from the level. A load
 # cycling just inside the band - Hiša's phase C, 65 W every 25-50 s - sat
@@ -104,7 +104,7 @@ NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: Anze wants 
 # A new level is confirmed by TIME, SUSTAIN_CADENCES of the meter's own
 # reading cadence (its shortest usual gap), never by a count of readings: the
 # recorder writes only changes, so a meter that says nothing for that long has
-# HELD its value, and its silence confirms the level as a reading would (Anze,
+# HELD its value, and its silence confirms the level as a reading would (the owner,
 # 2026-10-01). Counting readings, the hidrofor's plug - polled every 10 s, one
 # zero after the pump stopped and nothing written for 15 minutes - could not
 # confirm the stop, declared -253 of its -809 and carried a phantom 590 W into
@@ -112,7 +112,7 @@ NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: Anze wants 
 # One rule for every meter, change-driven or polled: silence up to
 # SUSTAIN_CADENCES of its cadence is the ordinary spacing of its readings,
 # longer is its value HELD, unwritten. So a level is confirmed over that long
-# (the hidrofor's plug, every 10 s: 20 s - Anze), a change seen first after a
+# (the hidrofor's plug, every 10 s: 20 s - the owner), a change seen first after a
 # silence happened at most that long before (a span's start - see
 # PhaseState.span_start), and a silence that long confirms a pending level
 # (see PhaseState.silence_due). Confirmed over the PERIOD - the median gap - instead,
@@ -134,7 +134,7 @@ SUSTAIN_CADENCES = 3.0
 # level held, nor a gap between readings. Those pairs are all under 0.2 s
 # (140,270 of Home's within 50 ms); real readings come 0.8-1.0 s apart -
 # Home's grid meter 3,064 times, the Victron's refresh 607 times between 0.5
-# and 1.0 s - and nothing between (Anze: some meters do update every second).
+# and 1.0 s - and nothing between (the owner: some meters do update every second).
 SAME_UPDATE_S = 0.5
 SUSTAIN_SAMPLES = 2            # a level change must hold this many samples...
 SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own interval is known
@@ -309,7 +309,7 @@ PAIR_TIE_BAND = 1.0
 # and what each number read. Edges cluster into a library of their own,
 # whatever they get paired with, so a load's stop teaches its stop cluster
 # even when the pairing got it wrong; a device is then the start, step and stop
-# clusters its runs used (Anze, 2026-09-29: "separate objects that we then just
+# clusters its runs used (2026-09-29: "separate objects that we then just
 # group to devices"). How far an input's change is looked for either side:
 EDGE_LAG_REACH_S = 60.0
 EDGE_LAG_BIN_S = 2.0
@@ -347,7 +347,7 @@ EDGE_LIBRARY = 150             # clusters kept per phase and direction
 # rides the daily swing (following the noise both ways was ruled out,
 # AGENTS). Home's card, hidden / circuits / fed devices 19.7/15.9 -> 33.9/16.7,
 # 32.9/16.1 -> 44.0/12.9, 53.9/11.0 -> 67.3/7.6 % capture/impurity; Kozolec
-# and Andrej identical, their units already at the floor (2026-10-04).
+# and the third site identical, their units already at the floor (2026-10-04).
 # A fixed 15 W unit suited Home (whose phases' noise is 10, 35 and 114 W) and ran every small fall at quiet
 # Kozolec (10 W) into one cluster - its fridges' runs then closed at 8 % of
 # their length (75 of 248 right, against 175 at 5 W). Benched at a quarter,
@@ -376,11 +376,11 @@ EDGE_TAU_S = 10 * 86400.0
 # (840, 850, 830) and (900, 0, 0). The legs switch together; what spreads
 # them on the meter is the reading cadence - each phase's step is stamped at
 # the first reading that shows it - so the window is that many of the slowest
-# phase's intervals (Anze: from the sensor's readout, not a constant). Home's
+# phase's intervals (the owner: from the sensor's readout, not a constant). Home's
 # phases tick every 2 s and the legs' offsets there run to 4.2 s at the 90th
 # percentile, 0.0 s median (ten days, 2026-09-30); the pump gets a false
 # companion within 5 s 1 % of the time. A real multi-phase load shows on its
-# other phases at far more than 20 % (Anze). Rises only: a fall closes a run
+# other phases at far more than 20 % (the owner). Rises only: a fall closes a run
 # on its own phase at once, so it keeps its per-phase cluster.
 # Three, measured (Home, 19-20 Sep 2026): at two intervals the compressor's
 # three-leg event never formed (13 'abc' steps in two days, no cluster of
@@ -400,7 +400,7 @@ EVENT_BALANCE = 0.2
 # together). Benched on 2026-10-12 with ten days of Home's signed var: Home
 # fed devices capture +3.7 / impurity -1.3, hidden partition +3.9 / -1.9, Hiša
 # hidden +9.9 / -4.0, Kozolec hidden impurity -5.5 (its unsigned V x I var still
-# separates), Andrej +1.3 / -1.7; fragmentation no worse. A step with no var
+# separates), the third site +1.3 / -1.7; fragmentation no worse. A step with no var
 # reading has no angle and is cut by size alone.
 EDGE_ANGLE_BIN = 3.0           # degrees
 EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
@@ -409,20 +409,20 @@ EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
 # _meter_steps), and the rest. Kozolec's boiler pulses 1.9 kW about
 # once a minute, and a car charge that started in the same reading was booked
 # at 5.3 kW - then closed when the boiler's pulse ended, the 8 h charge lost
-# (27.09 10:17). The meter knows its own share (Anze, 2026-09-30: use the
+# (27.09 10:17). The meter knows its own share (2026-09-30: use the
 # sub-meters to avoid it).
 # ^ SPLIT_BY_METERS: always on, the name this note goes by elsewhere
 # A single-phase step's place - the innermost meter that saw all of it - is
 # part of what kind of edge it is: Home's 65 W load cycling inside Hisa and
 # the NASA strip's small loads under Mansarda share a size on phase C and
-# nothing else (Anze, 2026-10-01: "detect it fully"). Only a start is placed:
+# nothing else (2026-10-01: "detect it fully"). Only a start is placed:
 # a device is its start cluster. Benched and ruled out (2026-10-01, AGENTS.md's
 # experiments table): "soft" - a place keys the group only where its steps
 # pile up above chance - and placing every step.
 # ^ EDGE_BY_METER: the name this note goes by elsewhere
 # A meter's step is the step its OWN detector declared - held until settled,
 # the median of what it held - exactly as the grid's is measured, never two
-# raw readings either side of a window: one measure, no second method (Anze,
+# raw readings either side of a window: one measure, no second method (the owner,
 # 2026-10-01). A meter's step is all of the grid's within both meters' noise
 # together plus METER_CAL_SLACK of the step, once each meter's own gain
 # against the grid is learned (METER_GAIN_MIN steps both saw clearly, for its
@@ -437,10 +437,10 @@ METER_GAIN_BOUND = 0.25       # a learned gain stays within this of one either w
 # every step either declared whose span reaches into it, up to this many of
 # the SLOWER meter's reach - the grid's event window, or the sub-meter's own
 # sustain, as far back as its span can start: each meter's net change there
-# (Anze, 2026-10-01). Of the grid's window alone, Home's cap was 24 s and a
+# (2026-10-01). Of the grid's window alone, Home's cap was 24 s and a
 # 10 s plug's span, three cadences, 30 s.
 UNION_CAP_WINDOWS = 4.0
-# How sure the detector is of each step and run, 0..1 (Anze, 2026-10-01): a
+# How sure the detector is of each step and run, 0..1 (2026-10-01): a
 # step's size against the noise at its level (full at QUALITY_SNR_FULL times
 # it), how closely the readings it settled on agree, and whether another step
 # on its phase came just before it; a run's is the lesser of its start's and
@@ -461,7 +461,7 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # Chernoff bound must put the odds of its count under 1 in ABOVE_CHANCE_ODDS.
 # It replaced fixed shares (30 % of both clusters' closes, and 20 % for the
 # device links that have since gone), which were numbers to tune
-# (Anze, 2026-09-30: "can we have it tune itself?"): Home's floor mat 21.7 ->
+# (2026-09-30: "can we have it tune itself?"): Home's floor mat 21.7 ->
 # 11.5 h counted while its thermostat was not heating, everything else within
 # a run or two. The odds do not matter - 10, 100 and 1000 bench identically:
 # a real pair is hundreds of times above chance.
@@ -472,7 +472,7 @@ ABOVE_CHANCE_ODDS = 100.0
 # on a fixed grid of the clock, so a pass's length cannot decide it.
 MODEL_REFRESH_S = 3600.0
 # Each meter's lag against the grid, learned from the steps the two share
-# (Fleet._learn_lags, Anze 2026-10-02: "how long we need to wait before we
+# (Fleet._learn_lags, the owner 2026-10-02: "how long we need to wait before we
 # have complete data from all sensors"): looked for this far either side of a
 # grid step, kept over the last LAG_SAMPLES, believed from LAG_MIN_SAMPLES, at
 # this percentile - the wait that rarely comes up short.
@@ -480,7 +480,7 @@ LAG_REACH_S = 300.0
 LAG_SAMPLES = 200
 LAG_MIN_SAMPLES = 20
 LAG_PERCENTILE = 0.95
-# ...and signed (Anze, 2026-10-14: "they should be able to go negative"): a
+# ...and signed (2026-10-14: "they should be able to go negative"): a
 # meter whose readings run AHEAD of the grid's has its lags below zero, and
 # the other tail, the (1 - LAG_PERCENTILE) one, is how far ahead - its LEAD
 # (PhaseState.lead). Clipped at zero, a meter's span never reached the grid's
@@ -488,7 +488,7 @@ LAG_PERCENTILE = 0.95
 # 3EM's in 63 % of the Hiša moments that did not add up, Blaž's plug 92 %
 # (the first edge card, 2026-10-14).
 # The lags are learned from every step the two show, not only the clear,
-# one-of-a-kind ones (Anze, 2026-10-14: "more pairs / longer time match
+# one-of-a-kind ones (2026-10-14: "more pairs / longer time match
 # window"): each grid step's nearest step that way of its size on the meter
 # within EDGE_LAG_REACH_S, chance and all, and the percentiles are taken over
 # those where the lags PILE UP (_shared, as an input's lag window is found):
@@ -507,7 +507,7 @@ LAG_PERCENTILE = 0.95
 # one for a device not seen before; signatures whose runs are one device's are
 # one signature. No run is filed, and no two signatures merged, because their
 # power looks alike: that was a second grouping beside the devices, and the
-# one that undid what the edges knew (Anze, 2026-09-30: "is this old layer even
+# one that undid what the edges knew (2026-09-30: "is this old layer even
 # necessary still? ... this will clean up a lot of redundant code"). A
 # sub-meter's word, the switch gate and a rare input value still decide first.
 # Against filing by likeness: Home 82.6 / 64.6 -> 82.4 / 68.7 % with 98
@@ -517,7 +517,7 @@ LAG_PERCENTILE = 0.95
 # C - pairing by them: a fall first closes an open run its cluster's accepted
 # pair starts with, at the learned size, whatever plain sizes say; only a fall
 # with no pair model falls back on sizes. And the old guess that a drop fitting
-# nothing is the newest bigger load stepping down goes (Anze, 2026-09-29: "the
+# nothing is the newest bigger load stepping down goes (2026-09-29: "the
 # 200w step should just stay unmatched") - except a load settling just after
 # its start.
 # ^ PAIR_PAIRING: always on, as the 2026-09-30 ablation found (AGENTS.md)
@@ -545,7 +545,7 @@ HELD_DROPS = 8
 # of its device went to.
 # Run length and how often a load runs are what a load DOES, not what it is:
 # they raise or lower the confidence in a device and its guess, and play no part
-# in grouping runs into devices or edges into runs (Anze, 2026-09-29: "much
+# in grouping runs into devices or edges into runs (2026-09-29: "much
 # less important than the plain electrical properties ... I don't think using
 # it for grouping is doing us any good"). NASA's computers never switch off and
 # Home's pump runs seconds or hours; nothing matches, merges or pairs on it,
@@ -586,7 +586,7 @@ COMBINE_SETTLE_S = 0.3
 # smallest-to-largest ratio inside kiln-sized groups sat at a median of 0.98.
 # Grouping on timing alone married a 2025 W load on A to a 163 W blip on C
 # and filed the pair as one 2.2 kW two-phase load, which both invented a
-# phantom and stole the session from the real single-phase one (Anze,
+# phantom and stole the session from the real single-phase one (the owner,
 # 2026-09-18). Below this they are simply two loads that started together,
 # which is what they are.
 PHASE_BALANCE_MIN = 0.4
@@ -602,12 +602,12 @@ WELL_SAMPLED = 12.0
 # signature keeps following change at a fixed rate: about 1% per sighting,
 # so a real shift is tracked over a few dozen runs rather than never.
 # count itself keeps counting - this bounds the WEIGHT, not the history
-# (Anze, 2026-09-18, who picked 100 over the 50 I proposed).
+# (2026-09-18, who picked 100 over the 50 I proposed).
 ABSORB_WINDOW = 100.0
 NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
 NOISE_SESSION_S = 20.0
 # A motor draws several times its running current for the moment it starts,
-# and a meter catches one sample of it: Anze's pressure pump reads 8886 W in
+# and a meter catches one sample of it: the owner's pressure pump reads 8886 W in
 # one sample and 830 W in every sample after, four times over in a day. Held
 # for the length of a sample that single reading dominates the run - a 40 s
 # session came out at 2.8 kW for an 830 W pump - so a quarter of Kozolec's
@@ -642,7 +642,7 @@ MATCH_DURATION_FACTOR = 3.0
 # often minutes on a busy main one, where the down-step pairs with a
 # different edge. A wide bound is only safe because the cross-meter match
 # scores every passing pair and takes the closest - with first-fit it made
-# things worse (Anze, 2026-09-18).
+# things worse (2026-09-18).
 CROSS_METER_DURATION_FACTOR = 12.0
 # How close a device meter's ENERGY over a main-meter session's window must be
 # to that session's own energy for the two to be the same load. Measured at
@@ -671,7 +671,7 @@ MATCH_PATIENCE_S = 20 * 60.0
 # cadence behind them (Fleet._horizon), and never more than this cap: a meter
 # slower than it is judged with what it has said by then. Until 2026-10-02
 # the wait was SUSTAIN_CADENCES of the slowest meter as each pass ended,
-# capped at 45 s, so it moved with the pass. Anze (2026-10-02) accepts up to
+# capped at 45 s, so it moved with the pass. The owner (2026-10-02) accepts up to
 # five minutes: the named loads' live readings lag by the horizon, their
 # energy does not. Set on the detection settings page; 0 judges every step at
 # once.
@@ -697,7 +697,7 @@ PHASE_MAP_MIN_VOTES = 30
 # multi-channel meter (a 3EM) still votes, and is mapped, channel by phase.
 # ...or as much energy in its votes as PHASE_MAP_MIN_VOTES of the site's
 # votes carry on average: a meter's few long runs are as much evidence as
-# many short ones (Anze, 2026-10-03: "score by both the no of events/runs and
+# many short ones (2026-10-03: "score by both the no of events/runs and
 # by their energy"). Home's Susilna plug, a dehumidifier running 20 hours a
 # night, votes 2-4 times in ten days - 5.8 kWh, where 30 of the site's votes
 # carry 650 Wh - and never learned its phase on the count. The map one
@@ -721,7 +721,7 @@ PHASE_MAP_AGREE = 0.5
 # L1 charges came in; on either it holds abc from 10-08 08:00, and its fed
 # capture went 75.7 -> 77.7 %, impurity 3.3 -> 2.7 %.
 PHASE_SET_MIN = 0.1
-# A detection on a sub-meter overrides the house meter's (Anze, 2026-09-22:
+# A detection on a sub-meter overrides the house meter's (2026-09-22:
 # "a detection on a sub meter level should always override one on a higher
 # level, especially if it is the less noisy one"). Not by handing detection to
 # the sub-meter - they are quieter but SLOWER, and the kiln on its circuit's
@@ -752,7 +752,7 @@ SUB_DEVICE_SHARE = 0.5
 # it is too young to say and takes anything. The Hidrofor plug on phase A was
 # credited a 308 + 421 W load on A and B, and a 124 W one on B, because a
 # meter the votes do not place is matched by its total and moment alone
-# (Anze, 2026-09-28: "the plug is single phase, no multi phase load should be
+# (2026-09-28: "the plug is single phase, no multi phase load should be
 # attributed there"). A count, so a load two sightings strong never sets it.
 METER_PHASES_MIN = 20
 # An entity that says WHEN a load is on - a thermostat's heating, a relay, a
@@ -760,7 +760,7 @@ METER_PHASES_MIN = 20
 # known, stopping) with one of its on-periods is credited to it: SWITCH_PREFIX
 # names it among the meters. Home's bathroom floor mat (Termostat Kopalnica)
 # starts and stops within seconds of the thermostat's heating on 11 of 12 runs,
-# and was named by hand from exactly that (Anze, 2026-09-28).
+# and was named by hand from exactly that (2026-09-28).
 SWITCH_PREFIX = "switch:"
 # A load placed at a switch is powered through it - Home's floor mat through
 # its thermostat's relay - so a run the switch was off for throughout cannot
@@ -782,7 +782,7 @@ SWITCH_END_SHARE = 0.25
 SWITCH_MEMORY_S = 4 * 3600.0
 # A setting a device reports - a washer's cycle phase, a fan's speed - is
 # learned against each load: the value it had while the load ran, against
-# what that value's share of the time would give by chance (Anze,
+# what that value's share of the time would give by chance (the owner,
 # 2026-09-28: inputs of one device, "the washer's cycle/sub cycle sensors").
 # A load runs IN a value once it has this many runs (recency-weighted over
 # INPUT_TIME_TAU_S, so a washer used daily keeps about 14), this share of
@@ -799,7 +799,7 @@ INPUT_TIME_TAU_S = 14 * 86400.0
 # joins only signatures born in it (or twins that took them back, below), and
 # a run outside joins none of them. The washer's heater, 1.8 kW on A, shared
 # its signature with every other 1.8 kW thing on A, so it could never be
-# seen to run in the wash phase (Anze, 2026-09-29). 0 is off.
+# seen to run in the wash phase (2026-09-29). 0 is off.
 # ^ INPUT_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A value this rare or rarer - its share of the time - is one runs are
 # filed in; and only once the shares have been counted for this long.
@@ -820,12 +820,12 @@ INPUT_MIN_COVERAGE = 0.5
 # the backfill reaches: when a load is named, its meter's history is written
 # into Home Assistant's statistics from this, so the Energy dashboard shows
 # the ten days it was already seen rather than starting at the naming
-# (Anze, 2026-09-29).
+# (2026-09-29).
 HOURLY_KEEP_S = 11 * 86400.0
 # ...and past that, for a year, the hours of an unnamed load confident enough
 # to be named one day - seen this often, using this much in all, with the
 # naming page's evidence bar (DEFAULT_MIN_EVIDENCE) - so naming it brings its
-# year onto its meter, not ten days (Anze, 2026-10-04). Signature.older,
+# year onto its meter, not ten days (2026-10-04). Signature.older,
 # stored apart from the library; a named load's history is its meter's.
 OLDER_MIN_COUNT = 10
 OLDER_MIN_WH = 500.0
@@ -877,7 +877,7 @@ MAX_SIGNATURES = 200
 # kiln fired twice a year, or a pump that only runs in a wet spring, has a
 # strong signature and deserves to be measured and tracked exactly as well
 # as the kettle. Evidence is the gate; age is only the backstop for an
-# appliance that has genuinely left the house (Anze, 2026-09-18). One-offs
+# appliance that has genuinely left the house (2026-09-18). One-offs
 # are excluded by evidence, not by age: they never reach 0.5.
 ESTABLISHED_EVIDENCE = 0.5
 ESTABLISHED_HORIZON_S = 400 * 86400.0
@@ -888,7 +888,7 @@ YOUNG_COUNT = 3
 # name should follow the load. Detecting that is guesswork, so it is never
 # done silently: a named signature gone quiet this long, with an unnamed one
 # on the same phases of a similar shape, records a HINT for the naming page
-# to offer. Nothing is renamed without the user (Anze, 2026-09-18).
+# to offer. Nothing is renamed without the user (2026-09-18).
 SUCCESSOR_QUIET_S = 7 * 86400.0
 # ...but a week means nothing to a load that runs twice a year, so "quiet"
 # is really "silent for far longer than it has ever been between runs".
@@ -899,7 +899,7 @@ SUCCESSOR_MIN_COUNT = 5
 # believed. Every one of these is a COUNT, never a number of watts: the
 # quantum itself is measured from each sensor's own history, so the same
 # constant means 23 VA at Kozolec's 0.1 A Victron and 2.3 VA at Home's
-# 0.01 A SolarEdge without either site being configured (Anze, 2026-09-22:
+# 0.01 A SolarEdge without either site being configured (2026-09-22:
 # "the goal is to get the integration to work well across both sites
 # without the need for you to manually set parameters").
 #
@@ -936,7 +936,7 @@ QUANTUM_LATTICE_SHARE = 0.9
 
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
-# A named load's power is live (Anze, 2026-10-13): the watts of its open runs
+# A named load's power is live (2026-10-13): the watts of its open runs
 # from the moment their start is declared - an open run being a name's where
 # LIVE_NAME_SHARE of its start cluster's filed runs went to that name, over
 # at least LIVE_NAME_MIN_RUNS - plus, spread over the stretch of data, the
@@ -954,7 +954,7 @@ LIVE_STALE_FACTOR = 2.0
 # was asked of the rolling session list, which a busy house burns through in
 # about two hours - 40 sessions spanning 2.1 h and holding 11 of Home's 199
 # signatures - so the kiln, last fired 8.6 days ago, could never be compared
-# with anything (Anze, 2026-09-22).
+# with anything (2026-09-22).
 RUN_MEMORY = 12
 # The widest a device's settings may span before they are two devices. See
 # suggest_levels: generous, because it only has to beat 36 to 1.
@@ -1039,7 +1039,7 @@ class Session:
     # How many meter samples the run actually spanned. A 43-second load read
     # every 5 s is eight numbers; the same load read every second is
     # forty-three, and the second measurement deserves more weight and a
-    # tighter tolerance than the first. Anze asked whether the fingerprint
+    # tighter tolerance than the first. The owner asked whether the fingerprint
     # could take the sampling rate into account (2026-09-18) - this is where
     # it enters. 0 means unknown, which is treated as well-measured so that
     # nothing stored before this existed is suddenly distrusted.
@@ -1047,7 +1047,7 @@ class Session:
     # The lowest and highest the load itself read during the run. Kept as
     # WATTS rather than as the ratio between them, because "varies between
     # 104 and 247 W" is a thing someone recognises about their own pump and
-    # "varies by 69%" is not (Anze, 2026-09-18). None when two loads
+    # "varies by 69%" is not (2026-09-18). None when two loads
     # overlapped and the wander could not be attributed to either.
     low: Optional[float] = None
     high: Optional[float] = None
@@ -1058,7 +1058,7 @@ class Session:
     # a DISPLAY list capped at 200 - so a backfill slice that filed more than
     # that lost the answer for all but the last few, and with it every
     # location. Backfill is exactly when a load's place should be established
-    # (Anze, 2026-09-18: 173 signatures at Kozolec, every one of them "main",
+    # (2026-09-18: 173 signatures at Kozolec, every one of them "main",
     # on a site where the boiler and the car charger have their own meters).
     signature_id: Optional[int] = None
     # (start cluster, stop cluster) of the edges that opened and closed it
@@ -1187,7 +1187,7 @@ def _trim(value, places: int):
     A watt-hour figure written as 276.1825572400394 spends fifteen digits on
     a quantity the energy meter publishes to two decimal places of a
     kilowatt-hour. Over a library of two hundred signatures that is a third
-    of the stored state, rewritten every pass (Anze, 2026-09-18).
+    of the stored state, rewritten every pass (2026-09-18).
 
     Energy is trimmed to whole watt-hours rather than integers on the way
     in: what is stored is what a restart restores, and an energy total that
@@ -1230,7 +1230,7 @@ def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
     it contributes output minus input, so the grid term it passed on does not
     get counted twice. Whatever sits between the utility meter and an
     inverter's own AC input falls out of the same sum. Verified against
-    Anze's home over 246,000 samples on three phases: identical to the
+    The owner's home over 246,000 samples on three phases: identical to the
     template sensors he had built by hand, to the watt (2026-09-18).
 
     A sum recomputed whenever EITHER input updates, against the other's last
@@ -1331,7 +1331,7 @@ def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
     The meter's own reactive power, where it publishes one and it covers the
     window, is taken as it is: signed, so a step's change is the load's own.
     The root of (V x I) squared minus P squared has no sign, and a load whose
-    reactive power runs against the floor's reads the wrong size (Anze,
+    reactive power runs against the floor's reads the wrong size (the owner,
     2026-09-30). Else the meter's own apparent power, then V x I, then the
     power factor: finest first. Each paired with the power reading of the
     same update - see SAME_UPDATE_S."""
@@ -1376,7 +1376,7 @@ def unit_scale(unit: Optional[str]) -> float:
     publishes W, so its 2 kW charging session arrived as the number 2 and
     could never match the 2000 W session the main meter saw. The load stayed
     unattributed and turned up in the naming list as an unexplained car -
-    which is how Anze found this (2026-09-18). Fourteen entities at that site
+    which is how the owner found this (2026-09-18). Fourteen entities at that site
     report kW.
 
     An unrecognised unit scales by 1 rather than being dropped: a reading
@@ -1423,7 +1423,7 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
     cannot describe a 66-second run - it gets three samples and its session
     power comes out at half the truth - but the energy it recorded over that
     minute is right, because energy integrates and sampling error cancels
-    where power's does not (Anze, 2026-09-19, on a Zigbee meter that cannot
+    where power's does not (2026-09-19, on a Zigbee meter that cannot
     be made faster at all).
 
     None when the window is not covered by the reading. ``hi``: read only
@@ -1524,7 +1524,7 @@ def carries_generation(rows: Sequence[Tuple[float, float]]) -> Optional[bool]:
     statistics: a reading that includes generation goes BELOW ZERO whenever
     the site exports, and one that carries only the house cannot.
 
-    I tried correlating the two series' changes first, and Anze's own data
+    I tried correlating the two series' changes first, and the owner's own data
     threw it out (2026-09-18): on a day when the grid meter exported 4.5 kW
     the correlation called the array absent from it. Sampling the two series
     at different instants is enough to destroy that signal, while "did it go
@@ -1542,7 +1542,7 @@ def exports_positive(grid_rows: Sequence[Tuple[float, float]],
     """Which way round is this grid meter wired?
 
     "House = the meter plus the inverter" holds only in the dashboard's
-    convention, where importing is positive. Anze's SolarEdge M1 is the
+    convention, where importing is positive. The owner's SolarEdge M1 is the
     other way round - verified on a real day, 2177 of 2177 samples positive
     while the array was over 12 kW - and summing it would have counted the
     array twice instead of cancelling it.
@@ -1584,7 +1584,7 @@ def carries_load(rows: Sequence[Tuple[float, float]]) -> bool:
     perfectly coherent triple, and all three sit at zero because the
     generator behind them is off. Coherence is necessary and not sufficient:
     a reference for reactive power has to be a circuit something flows
-    through (Anze, 2026-09-18).
+    through (2026-09-18).
 
     However few readings a pass holds: a dead port reads zero at any count,
     and asking for thirty turned Home's phase A away on every one-minute pass
@@ -1604,7 +1604,7 @@ def measure_quantum(values: Sequence[float]) -> float:
     sits rock steady on a coarse value measures ZERO of it and falls back to
     the global floor - and then its first quantum jump is taken for a load.
     Home's workshop boiler publishes in 46 W steps and was credited with
-    4 kW of "noise" on exactly that basis (Anze, 2026-09-22).
+    4 kW of "noise" on exactly that basis (2026-09-22).
 
     A quantised reading changes by exactly one quantum most times it changes
     at all, so a low percentile of its non-zero changes IS the quantum. A
@@ -1666,7 +1666,7 @@ def _pf_from(watts: float, var: Optional[float]) -> Optional[float]:
     """The LOAD's power factor, from its OWN step in real and reactive power.
 
     The meter's power factor is the whole site's and says nothing about the
-    load that just started (Anze, 2026-09-17). Watts and VAr add across loads,
+    load that just started (2026-09-17). Watts and VAr add across loads,
     a ratio does not, so the load's factor comes from how much each of them
     moved when it switched - not from how the meter's factor read.
     """
@@ -1689,7 +1689,7 @@ class _Open:
     # A resistive element holds its level; anything behind a variable-speed
     # drive glides between them without ever taking a step big enough to be
     # a LEVEL. Kozolec's Grundfos Scala2 runs 104 to 247 W and reads as one
-    # flat level, which is why it classified as a small heater (Anze,
+    # flat level, which is why it classified as a small heater (the owner,
     # 2026-09-18).
     lo: Optional[float] = None
     hi: Optional[float] = None
@@ -1728,7 +1728,7 @@ class PhaseState:
     back to its idle floor - the first design - only works on a phase that
     goes quiet between loads, and a house main never does: the kettle starts
     while the fridge is running, so the excursion that opened at breakfast
-    closed at midnight. Anze's home meter proved it (2026-09-17): 76
+    closed at midnight. The owner's home meter proved it (2026-09-17): 76
     signatures from 160 sessions, 61 % of them seen once, the longest single
     "load" 155 hours and 778 kWh, and four with NEGATIVE power because the
     sun pushed the grid meter below its own floor.
@@ -1749,11 +1749,11 @@ class PhaseState:
     # from 259 var at night to 2447 at midday with the inverter's voltage
     # support, and a 0.02 EMA lags that badly enough to swamp a load's own
     # step. Measured on the kiln: 0.934 from the EMA, 0.989 from the median,
-    # and the classifier's heater band starts at 0.93 (Anze, 2026-09-18).
+    # and the classifier's heater band starts at 0.93 (2026-09-18).
     q_recent: List[float] = field(default_factory=list)
     pv_level: Optional[float] = None             # what the array was making then
     # True where this reading is the house alone, which cannot go below
-    # zero. Anze's per-phase template dips negative for 49 samples out of
+    # zero. The owner's per-phase template dips negative for 49 samples out of
     # 20764 - the moments its own inputs do not line up - and one of those
     # dragged the idle floor to -569 W for the rest of the day, so every
     # step after it was measured from nonsense (2026-09-18).
@@ -1964,10 +1964,10 @@ class PhaseState:
             self.last_ts = ts
         # The array moved under this reading by its noise or more: what the
         # reading does then is the array's timing as much as the house - the
-        # grid meter and the inverter are not read at one moment (Andrej's M1
+        # grid meter and the inverter are not read at one moment (the third site's M1
         # takes two thirds of each change of the inverter's at once, the rest
         # a poll later) - so it teaches neither the idle noise nor the floor.
-        # Andrej's house moved 13 W a reading by day where the inverter moved,
+        # the third site's house moved 13 W a reading by day where the inverter moved,
         # 4.7 where it did not (2026-10-04, exp12).
         sun_moving = pv is not None and self.pv_last is not None and abs(pv - self.pv_last) >= self.noise
         if pv is not None and not held:
@@ -2174,7 +2174,7 @@ class PhaseState:
         interval, or its report lag against the grid where that is longer
         (``lag``, learned from the steps it shares with the grid - see
         Fleet._learn_lags; the grid itself is the reference and has none).
-        Anze (2026-10-02) asked for the lag in place of the repeat interval
+        The owner (2026-10-02) asked for the lag in place of the repeat interval
         everywhere; for a meter's own levels it is not enough: a level that
         one repeat interval leaves uncontradicted lets a half-caught reading
         found a load, at the grid as at a plug - Home with its meters fed,
@@ -2215,7 +2215,7 @@ class PhaseState:
         silence is the old value held, unwritten.
         Taken from the last steady reading alone, a meter whose value had held
         for a minute had a span reaching a minute back, and chained in other
-        loads' steps (the hidrofor's plug; Anze, 2026-10-01)."""
+        loads' steps (the hidrofor's plug; the owner, 2026-10-01)."""
         held_until = self.steady_ts
         if held_until is not None and first_off - held_until <= SAME_UPDATE_S:
             held_until = self.steady_before         # the change's own update
@@ -2318,7 +2318,7 @@ class PhaseState:
 
         The flat 300 W it replaces was wrong in both directions at once: too
         low for Home, whose phase C measures 37 W of noise and so needs 740,
-        and too high for Kozolec at 10 W, which needs 200 (Anze, 2026-09-22).
+        and too high for Kozolec at 10 W, which needs 200 (2026-09-22).
         """
         return NOISE_REL_FLOOR_FACTOR * max(self.quantum, self.noise) / NOISE_REL_CAP
 
@@ -2373,7 +2373,7 @@ class PhaseState:
         Its stop landed in the same reading as another load's step: Home's
         floor mat against the hob pulsing 2 kW every five seconds, left open
         nine hours until an unrelated drop of its size closed it. Measured on
-        the WHOLE reading, not above the idle floor (Anze: "closes a session
+        the WHOLE reading, not above the idle floor (the owner: "closes a session
         once the meter's total draw is lower than the devices absolutely
         should be"): the floor of a phase that is never idle is a guess, and
         reading above it was worse. Against the mat's thermostat (89.9 h
@@ -2401,7 +2401,7 @@ class PhaseState:
                 return [self._end(o, at, size)]
         # A shortfall nothing fits still rules out any run bigger ON ITS OWN
         # than the whole reading: it cannot be on. Kozolec's 10.5 kW run held
-        # 289 min on a phase reading far less, and took 50 kWh (Anze,
+        # 289 min on a phase reading far less, and took 50 kWh (the owner,
         # 2026-09-30: "should be stopped as soon as the site's total power has
         # dropped under the 10.5 kW mark for a couple readings").
         # On the run's OWN size, never what it is followed to draw now: that
@@ -2564,7 +2564,7 @@ class PhaseState:
             # to a plug's coincident wobble and a 286 W rest, and the second
             # dip (-402), matching nothing, joint-stopped a 515 W run 102
             # minutes old (Home 09-24 20:55). The newest run such a rise
-            # opened is the one ending now (Anze, 2026-10-03)
+            # opened is the one ending now (2026-10-03)
             for i in range(len(self.open_edges) - 1, -1, -1):
                 o = self.open_edges[i]
                 if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
@@ -2706,7 +2706,7 @@ class PhaseState:
             # beside it, Home 09-26 20:28). Where they do not, the smaller: a
             # 514 W run closed by a 2,027 W fall was booked at 1,270 W for two
             # hours (Kozolec 09-22, 2026-10-02); under-report over over-report
-            # (Anze)
+            # (the owner)
             start = levels[0][1]
             agree = (abs(start - watts) <= self._tol(start, watts)
                      or (o.now is not None and o.now > 0 and abs(o.now - watts) <= self._tol(o.now, watts)
@@ -2722,7 +2722,7 @@ class PhaseState:
         # three quanta, sqrt(S^2 - P^2) clamps to zero on 7 % of samples and
         # reads PF 1.00, and 63 % of all samples came out at unity. Believing
         # that split the library into 86 signatures where suppressing it
-        # gives 24 (Anze, 2026-09-22).
+        # gives 24 (2026-09-22).
         stop_q = self.stop_q if self.stop_q is not None else QUALITY_UNSEEN_STOP
         agree = abs(o.watts - watts) / max(o.watts, abs(watts), 1e-9)
         f_pair = min(1.0, max(0.0, 1.0 - agree / (2.0 * MATCH_EDGE_REL)))
@@ -2828,7 +2828,7 @@ class Signature:
     # Where this load's ENERGY goes, in watt-hours, by hour of day and by
     # weekday (Monday first). Counting starts answered "how often"; what it
     # actually costs on a Saturday is its runtime times its draw, and that
-    # is the thing worth looking at (Anze, 2026-09-17).
+    # is the thing worth looking at (2026-09-17).
     hour_wh: List[float] = field(default_factory=lambda: [0.0] * 24)
     day_wh: List[float] = field(default_factory=lambda: [0.0] * 7)
     level_count: float = 1.0
@@ -2852,7 +2852,7 @@ class Signature:
     # be the deviation of the TOTAL while the bands it met were one leg's, so
     # a three-phase load was judged by a single-phase yardstick: its total
     # wanders about three times what one leg does, and it was refused merges
-    # an identical single-phase load was granted (Anze: "why don't we just
+    # an identical single-phase load was granted (the owner: "why don't we just
     # assume the noise level per phase everywhere", 2026-09-22).
     power_mad: float = 0.0
     pf_mad: float = 0.0
@@ -2860,7 +2860,7 @@ class Signature:
     runs: List[Tuple[float, float]] = field(default_factory=list)
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
     # motor does this and nothing else in a house does, so it is evidence
-    # rather than noise once it is kept out of the power (Anze, 2026-09-22:
+    # rather than noise once it is kept out of the power (2026-09-22:
     # "that spike is a very good device signature, but it has to be taken
     # into account properly to not show as separate loads").
     inrush_w: float = 0.0
@@ -2914,7 +2914,7 @@ class Signature:
         # must still be tight enough to be called one load: what it has
         # already absorbed, plus the distance it is about to travel, has to
         # stay inside the same tolerance that let the pair match
-        # (Anze asked why consolidation used a fixed figure, 2026-09-21).
+        # (the owner asked why consolidation used a fixed figure, 2026-09-21).
         a, b = max(self.count, 1), max(other.count, 1)
         mine_w, theirs_w = sum(self.power.values()), sum(other.power.values())
         mid_w = (mine_w * a + theirs_w * b) / (a + b)
@@ -3009,7 +3009,7 @@ class Signature:
         # one-for-one. Eight samples of a 43-second run and forty-three of the
         # same run are not equally good evidence of its power, and letting the
         # first move the mean as hard as the second is how a well-established
-        # figure gets dragged about by its worst sightings (Anze, 2026-09-18).
+        # figure gets dragged about by its worst sightings (2026-09-18).
         n = min(float(self.count), ABSORB_WINDOW)
         k = s.confidence
         pw = s.power_by_phase()
@@ -3140,9 +3140,9 @@ class Signature:
         it might be - and underneath, a line that WRAPS, so it can say the
         rest without losing any of it. One line had to choose between the
         week in words and the week drawn; the second line has room for both
-        (Anze, 2026-09-23: the naming page "does not fit all the text")."""
+        (2026-09-23: the naming page "does not fit all the text")."""
         # "runs" and "starts every", in so many words: a bare "2 min" read as
-        # either how long it runs or how often it comes (Anze, 2026-09-23)
+        # either how long it runs or how often it comes (2026-09-23)
         head = [f"{_fmt_w(self.watts)} {on_phases(self.phases)}", f"runs {_fmt_s(self.duration_s)}"]
         tag = self.guess().tag
         if tag:
@@ -3183,7 +3183,7 @@ class Signature:
 
         Counted, not the spacing's running mean: one long gap, or one run the
         detector merged, throws that out - Kozolec's fridge starts 13 times a
-        day and its spacing read 5.5 h. A person counts starts, too (Anze,
+        day and its spacing read 5.5 h. A person counts starts, too (the owner,
         2026-09-28: "can we say how many cycles per day instead of the every
         x hours?"). None until it has been seen across a day, since five
         runs in two hours are not sixty a day."""
@@ -3224,7 +3224,7 @@ class Signature:
         load, and from the guess, which asks what kind. This asks whether the
         ROW carries enough for a person to recognise their own house in it,
         because a list sorted only by energy puts an anonymous 600 W
-        something above a machine that runs every Saturday at noon (Anze,
+        something above a machine that runs every Saturday at noon (the owner,
         2026-09-18).
 
         What helps a person: a time it keeps to, a day it keeps to, a clock
@@ -3346,7 +3346,7 @@ class Signature:
         week = day_histogram(self.day_wh)
         if week:
             # every chart is scaled to its own tallest bar, so without this
-            # you cannot tell one sighting from twenty (Anze, 2026-09-17)
+            # you cannot tell one sighting from twenty (2026-09-17)
             lines += [f"And by day of week - tallest bar {_fmt_wh(max(self.day_wh))} "
                       f"of {_fmt_wh(sum(self.day_wh))}:", "", "```", *week, "```", ""]
         guess = self.guess()
@@ -3497,7 +3497,7 @@ def when_phrase(hour_wh: Sequence[float], day_wh: Optional[Sequence[float]] = No
     This is a MEASUREMENT where the appliance guess is a prior: "runs at six in
     the evening" is a fact about this house, not a belief about houses. It is
     also what its owner recognises first - "the thing that runs overnight" is a
-    better handle on a load than the size of its step (Anze, 2026-09-22).
+    better handle on a load than the size of its step (2026-09-22).
 
     Said only when the load actually keeps to a time. A load scattered through
     the day gets no phrase rather than a misleading one.
@@ -3515,7 +3515,7 @@ def when_phrase(hour_wh: Sequence[float], day_wh: Optional[Sequence[float]] = No
         # Per DAY, not per group. There are five weekdays and two weekend
         # days, so a load running uniformly puts 71 % of its energy on
         # weekdays and reads as a weekday load - which put "weekdays" on
-        # twenty of Anze's twenty-four rows, distinguishing nothing from
+        # twenty of the owner's twenty-four rows, distinguishing nothing from
         # nothing (2026-09-22).
         week, end = sum(day_wh[:5]) / 5.0, sum(day_wh[5:]) / 2.0
         total = week + end
@@ -3534,7 +3534,7 @@ def last_run_phrase(last_seen: float, now: Optional[float], running: bool = Fals
     the one thing the page did not say. Someone naming a load has just been
     living in the house: they know the dishwasher went on after dinner and
     that nothing has run in the workshop since Tuesday. A row that says it is
-    on RIGHT NOW turns naming into walking over and looking (Anze, 2026-09-22:
+    on RIGHT NOW turns naming into walking over and looking (2026-09-22:
     "is a last run or currently running something we could display on the
     naming menu pages?")."""
     if running:
@@ -3557,7 +3557,7 @@ def _balanced(group: List[Session], candidate: Session) -> bool:
     of 0.98 and only 4% below 0.4. Timing alone married a 2025 W load on A to
     a 163 W blip on C and called the pair one 2.2 kW two-phase load: a phantom
     invented, and the session stolen from the real single-phase one it
-    belonged to (Anze, 2026-09-18).
+    belonged to (2026-09-18).
 
     Below the threshold they are two loads that happened to start together,
     and saying so costs nothing - each is still filed on its own phase."""
@@ -4126,7 +4126,7 @@ class Detector:
         one and is balanced with it. "Stopping" is either that it has already
         closed, within the same window, or that its own reading at this
         instant shows the same drop. A real multi-phase device switches its
-        legs together, every time - Anze's point about co-occurrence - so one
+        legs together, every time - the owner's point about co-occurrence - so one
         leg seeing its gap is evidence the other's short gap was real too.
         A single-phase load never has a partner and is never affected."""
         index = {}
@@ -4492,7 +4492,7 @@ class Detector:
         that is part of it takes that part and leaves the rest a start of its
         own - Home's Susilna plug (265 W) switching on with a 48 W fan, a +313
         W start the plug neither owned nor matched, cut minutes later with the
-        fan's stop (09-21, 09-24; Anze, 2026-10-02: a separate fan in all
+        fan's stop (09-21, 09-24; the owner, 2026-10-02: a separate fan in all
         likelihood). A rise on several phases at once is one load and is never
         cut phase by phase."""
         st = self.phases.get(m["ph"])
@@ -4631,7 +4631,7 @@ class Detector:
         the step falls in, or None for a new one; the keys a new one gets).
 
         What the inputs did is part of the clustering, not a split made before
-        it (Anze, 2026-09-30): a step that came with an input's change joins a
+        it (2026-09-30): a step that came with an input's change joins a
         cluster of its own only where such steps pile up in the segment far
         above chance - the floor mat's +630 W with its thermostat, beside a
         look-alike's +630 W with nothing - and otherwise the segment's plain
@@ -5148,7 +5148,7 @@ class Detector:
         is always the weakest, so on a full library it was pruned in the same
         call that created it, and a new load could only survive if it had
         already been seen twice - which it never had. 2,705 created, 2,355
-        evicted, the kiln founded and lost 296 times (Anze, 2026-09-18).
+        evicted, the kiln founded and lost 296 times (2026-09-18).
 
         Everything else is fair game, weakest first. The first attempt at
         this protected by RECENCY instead, and 195 of 200 slots filled with
@@ -5523,7 +5523,7 @@ class Fleet:
     # Each device's raw samples, channel by channel, kept long enough to
     # answer "how much energy did you record while this was running" - a
     # meter too slow to produce a session of its own can still answer that -
-    # and what each channel read: a 3EM's phases are its own (Anze,
+    # and what each channel read: a 3EM's phases are its own (the owner,
     # 2026-10-03). meter -> channel -> [(ts, value)]; the total, _sub_total.
     sub_rows: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict)
     # ...the first moment of the total kept (the value in force at the cut,
@@ -5738,7 +5738,7 @@ class Fleet:
             setattr(self.main, hook, getattr(self, "_" + hook))
 
     def _sync_views(self) -> None:
-        """The fleet as a tree (Anze, 2026-10-03): every meter others hang
+        """The fleet as a tree (2026-10-03): every meter others hang
         under reads the meters inside it, as the grid reads every meter - a
         fleet of its own (``views``) whose main is that meter's detector and
         whose subs are the meters under it at any depth, with its own say
@@ -5890,11 +5890,11 @@ class Fleet:
         every meter has had its say on a grid step before the grid's is
         judged; at least EDGE_LAG_REACH_S where inputs are fed, whose changes
         are looked for that far either side of a step. Never past
-        wait_cap_s (Anze, 2026-10-02: up to five minutes): a meter slower
+        wait_cap_s (2026-10-02: up to five minutes): a meter slower
         than that is judged with what it has said by then. Only a meter that
         has shared a step with the grid sets it - its lag once learned, twice
         its latency until then: one that never shares a step (Home's Server
-        UPS, a 60 s heartbeat) has nothing the grid waits for (Anze,
+        UPS, a 60 s heartbeat) has nothing the grid waits for (the owner,
         2026-10-02) - until then Home sat at the cap for it. Only the learned
         ones setting it left Kozolec's first hours at no horizon at all (its
         pond EVSE 99 -> 88 % captured). A meter in horizon_skip - the settings
@@ -5931,7 +5931,7 @@ class Fleet:
         """Does the map give meter ``name``'s channel ``c`` several phases (a
         total, PHASE_MAP_MIN_VOTES)? Then its falls end no run on a grid
         phase (_meter_stop, _meter_ended): the grid's own legs pair the
-        stop. Ended by the total's fall, read at a third, Andrej's go-e
+        stop. Ended by the total's fall, read at a third, the third site's go-e
         (mapped "abc") fed capture fell 94.0 -> 81.3 %, and to 71.7 % with the
         fall used once per phase; with neither path ending them 95.5 %
         (2026-10-14)."""
@@ -6315,7 +6315,7 @@ class Fleet:
     def _insort(rows: list, row: tuple) -> None:
         """``row`` into ``rows`` by when it is due, and at one moment by its
         session's start - one order the data fixes, whatever the slicing
-        (Anze, 2026-10-02)."""
+        (2026-10-02)."""
         key = (row[0], row[-1].start)
         i = bisect.bisect_right([(r[0], r[-1].start) for r in rows], key)
         rows.insert(i, row)
@@ -6568,7 +6568,7 @@ class Fleet:
         nobody has, as guess_one_device says? This is what hides a meter's
         loads from naming, ties it to its device's phases, lets its sessions
         and energy decide a run's identity (_file_as, _decide) - one notion
-        everywhere (Anze, 2026-10-03)."""
+        everywhere (2026-10-03)."""
         if name.startswith(SWITCH_PREFIX):
             return True                   # a switch switches one load
         if name in self.single:
@@ -6651,7 +6651,7 @@ class Fleet:
     def _file_as(self, m: Session, name: str, s: Session) -> None:
         """File the house's session ``m`` as the sub-meter session ``s`` says:
         a one-device meter's sessions pick the signature its device's went
-        to (identity). A meter holding several is where the load lives (Anze,
+        to (identity). A meter holding several is where the load lives (the owner,
         2026-10-03: "if a same load is detected by both meters, shouldn't the
         reading collapse into a single device anyway?"): it saw the load on
         its own circuit, so the run is its session's signature's (``owner``)
@@ -6689,7 +6689,7 @@ class Fleet:
         """What a device meter can RESOLVE, as its own detector measured it
         (PhaseState.quantum). The energy answer is an integral of its rows, so
         their quantisation is its error bar - and Home has a workshop boiler
-        publishing in 46 W steps about every seven minutes (Anze, 2026-09-22).
+        publishing in 46 W steps about every seven minutes (2026-09-22).
         Measured once a pass over the rows kept, it read ten days in one call
         and eight hours in a backfill's slice."""
         det = self.subs.get(name)
@@ -6842,7 +6842,7 @@ class Fleet:
         that - the one the fall accounts for best, once what the channel changed
         by from just before the run started to after this fall
         (_change_since) is below the run's size beyond the pairing tolerance -
-        the run cannot still be running on less than it started with (Anze,
+        the run cannot still be running on less than it started with (the owner,
         2026-10-03) - and the fall is the run's size or leaves the channel too
         little to carry it. One rule for every meter (the unify audit,
         2026-10-03): a plug idling near nothing reads what it did before, and
@@ -6984,7 +6984,7 @@ class Fleet:
         ``ph`` at ``since`` - [since, since] where the grid declared none
         there - and that were on ``ph`` (_on_phase). One window for every
         question of what a meter did at a grid step, the one _meter_totals
-        asks it over (Anze, 2026-10-01): a meter's span already reaches its
+        asks it over (2026-10-01): a meter's span already reaches its
         latency back (PhaseState.span_start), and a moment padded by the
         latency counted it twice (the unify audit, 2026-10-03)."""
         st = self.subs[name].phases[c]
@@ -7062,7 +7062,7 @@ class Fleet:
         days), or one whose step and the grid's disagreed in size or span -
         the plug's 265 W inside a +313 W start with a fan (_split_rise).
         Every meter alike: a 3EM's channel owns a run through its rise as a
-        plug does - the kiln's legs at Hiša (Anze, 2026-10-03). Whether it
+        plug does - the kiln's legs at Hiša (2026-10-03). Whether it
         holds one device does not matter - a strip's load starting shows on
         the strip and the grid alike, and the strip shows it stop. See
         PhaseState.owned."""
@@ -7590,7 +7590,7 @@ class Fleet:
         for, not the first that passes - first fit let a session that merely
         fitted take the meter's session a better one needed, and at Kozolec a
         boiler with its own meter and 367 sightings collected thirteen
-        locations (Anze, 2026-09-18). Tried when it is filed and once more
+        locations (2026-09-18). Tried when it is filed and once more
         MATCH_PATIENCE_S after its end, by when a slow meter has written past
         it."""
         sig = self.main.signature_of(m)
@@ -7609,7 +7609,7 @@ class Fleet:
     # ------------------------------------------------ names: any meter's signature may wear one
     # A signature is (meter, id), the grid's under "": a load inside a meter
     # holding several devices is that meter's own signature (_file_as), and
-    # named there it is a named load like any other (Anze, 2026-10-03).
+    # named there it is a named load like any other (2026-10-03).
     def detectors(self) -> List[Tuple[str, "Detector"]]:
         """Every meter's detector, the grid's under "" first, then by name."""
         return [("", self.main)] + sorted(self.subs.items(), key=lambda kv: kv[0])
@@ -7732,22 +7732,22 @@ class Fleet:
     def namable(self, one_device, min_count: int, min_wh: float) -> Dict[str, List[Tuple[Tuple[str, int], "Signature"]]]:
         """What a person could name, by where it lives - ``where`` -> [((meter,
         id), signature)], biggest first by what it costs and whether its row
-        says enough to recognise it (Anze, 2026-09-18): not named yet, seen at
-        least ``min_count`` times and used ``min_wh`` (Anze, 2026-09-17: "as
+        says enough to recognise it (2026-09-18): not named yet, seen at
+        least ``min_count`` times and used ``min_wh`` (2026-09-17: "as
         for signatures only seen once, dont show them") - or what a named one
         may have become, whatever its size.
 
         Each meter offers its own signatures under its name, the grid its own
         under "main": a load a meter below saw lives there - one holding one
         device (``one_device``) IS that device, one holding several offers it
-        from its own library, seen alone on its circuit (Anze, 2026-10-03:
+        from its own library, seen alone on its circuit (2026-10-03:
         "shouldn't we display the most reliable sources"). A switch's stays
         with the switch. A meter's signature whose runs the grid files under a
         name the user gave there is that named load already (_file_as)."""
         groups: Dict[str, list] = {}
         for meter, det in self.detectors():
             if meter and one_device(meter):
-                continue              # its own readings are that device (Anze, 2026-09-28)
+                continue              # its own readings are that device (2026-09-28)
             twins = (self.identity.get(meter) or {}) if meter else {}
             for s in det.signatures:
                 heir = det.predecessor_of(s.id) is not None
@@ -7946,7 +7946,7 @@ def _same_load(a: Session, b: Session, mapping: Optional[Dict[str, str]] = None,
     read through ``mapping`` (Fleet.phase_map) and ``gain`` - the same load as
     the main-meter session ``a``? Always the same moment; then the same size.
 
-    One comparison for every meter (the unify audit, 2026-10-03; Anze: per
+    One comparison for every meter (the unify audit, 2026-10-03; the owner: per
     phase, by the peak, 3EMs too): a channel the map places is compared on
     its phase, and the channels it places nowhere yet as one against the
     phases of ``a`` no placed channel claims - a plug's one channel, whose
@@ -7960,7 +7960,7 @@ def _same_load(a: Session, b: Session, mapping: Optional[Dict[str, str]] = None,
     # pair with a different edge, so the session runs on. Measured there:
     # 443 boiler cycles started within a minute of a main-meter session and
     # their ends differed by 7 s at the median but 438 s at the third
-    # quartile, so only 27 were accepted (Anze, 2026-09-18).
+    # quartile, so only 27 were accepted (2026-09-18).
     #
     # And ``tol_s`` is not a constant either, because two meters do not
     # report together: at Kozolec the GX publishes the inverter's output
@@ -7982,7 +7982,7 @@ def _same_load(a: Session, b: Session, mapping: Optional[Dict[str, str]] = None,
     # load was off: Kozolec's boiler runs 66 seconds and its Shelly
     # reports every 52, so its own sessions measured 953 W against the
     # 1813 W the main meter saw - a factor of two, and the size test threw
-    # out 343 of 381 otherwise-good pairs on it (Anze, 2026-09-18). What
+    # out 343 of 381 otherwise-good pairs on it (2026-09-18). What
     # a load PEAKS at survives coarse sampling; what it averages does not.
     pa, pb, mp = _peaks(a), _peaks(b), mapping or {}
     placed: Dict[str, float] = {}            # a phase, or the phases one channel carries together -> its peak
@@ -8036,7 +8036,7 @@ def drop_stale_load_override(detection: dict) -> dict:
     pages, the flat fields from before stayed where they were, and nothing
     offers them any more: the Grid connection page keeps every key it does not
     own, so a meter configured before the change sits in BOTH places and the
-    older copy quietly wins. At Anze's house that meant the grid meter being
+    older copy quietly wins. At the owner's house that meant the grid meter being
     read as the house - sign inverted, solar never added back, the detector
     settling on a baseline of minus six kilowatts - while the pages he had just
     filled in did nothing (2026-09-22).
@@ -8071,7 +8071,7 @@ def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: flo
     big house's real loads for ever, set low it opens with two hundred rows and
     is put down unread. So the page opens with a handful and lengthens each
     time one is named - the right number of rows being a property of how much
-    work someone has already done rather than of their house (Anze,
+    work someone has already done rather than of their house (the owner,
     2026-09-22). Nothing is hidden for good; the library keeps every signature
     and naming one brings more.
     """
@@ -8087,7 +8087,7 @@ def clears_for_naming(worth: Sequence["Signature"], min_evidence: float,
 
     It said nothing: the caller had only the already-shortened list, so it
     subtracted that list from itself and told every user "0 more than fit
-    here" - Kozolec showing 6 of 12 and Home 14 of 60 (Anze's screenshots,
+    here" - Kozolec showing 6 of 12 and Home 14 of 60 (the owner's screenshots,
     2026-09-22). A page that lengthens as you name things has to be able to
     promise there is something to lengthen INTO, and that promise was reading
     as "this is all there is"."""
@@ -8129,12 +8129,12 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         # A NAMED signature belongs in this: naming one setting of a device is
         # the moment its owner proved it real, and excluding it from the pool
         # switched off the very suggestion that would have found the other
-        # fifteen settings of the same machine (Anze's kiln, 2026-09-22).
+        # fifteen settings of the same machine (the owner's kiln, 2026-09-22).
         # Two loads named DIFFERENTLY were told apart on purpose.
         if a.name and b.name and a.name != b.name:
             return False
         # Identical phase sets, deliberately. A device with two elements does
-        # draw on A alone, on C alone and on both - Anze's kiln does exactly
+        # draw on A alone, on C alone and on both - the owner's kiln does exactly
         # that, 3031 W on A and 2680 W on C being the 5918 W on A+C it is
         # named for - so allowing one set inside another was tried. It groups
         # the kiln, and it also groups a 156 W load with it, because this
@@ -8151,7 +8151,7 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         # but DURATION is a different question, and leaving it out was what
         # let a 178 W thing and a 2.7 kW one be called one device. A hob on
         # three settings boils the same pan for about as long each time; what
-        # differs is the power. At Anze's house this is exactly the line
+        # differs is the power. At the owner's house this is exactly the line
         # between the kiln's elements, all firing for 23 to 51 seconds, and
         # the three other loads on the same phases and factor that run for
         # 106, 203 and 517 (2026-09-22).
@@ -8173,7 +8173,7 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
         # finite - two hundred against a library several times that at a busy
         # house - so for most pairs there is nothing recorded either way, and
         # reading that silence as "they never overlap" is what let a 149 W
-        # thing and a 2.7 kW one be offered as one device (Anze's house,
+        # thing and a 2.7 kW one be offered as one device (the owner's house,
         # 2026-09-22). Both sides have to have been seen before their not
         # having been seen together means anything.
         if not times.get(a.id) or not times.get(b.id):
@@ -8241,7 +8241,7 @@ _BARS = " ▁▂▃▄▅▆▇█"
 
 def on_phases(phases: str) -> str:
     """"on phase A", "on phases A and C", "on all three phases" - read
-    rather than decoded. "(A)" was what the naming page said (Anze,
+    rather than decoded. "(A)" was what the naming page said (the owner,
     2026-09-23)."""
     ps = [p.upper() for p in phases]
     if len(ps) == 1:
@@ -8255,7 +8255,7 @@ def same_device_phrase(others: Sequence["Signature"], limit: int = 2) -> str:
     """What the naming page says about a load that may be another setting of
     the same device: the OTHER loads, described, since the rows they are on
     are often not on the page at all. "set 4 of one device" said nothing to
-    anyone looking at five rows in five different sets (Anze, 2026-09-23)."""
+    anyone looking at five rows in five different sets (2026-09-23)."""
     if not others:
         return ""
     named = [f"the {_fmt_w(o.watts)}, {_fmt_s(o.duration_s)} load" for o in others[:limit]]
@@ -8270,7 +8270,7 @@ def sparkline(counts: Sequence[float]) -> str:
     """One line of bars, for a place that has only one line - a menu row.
 
     Each row of a flow menu is a single label, so the shape of the day has
-    to fit on it or not appear at all (Anze, 2026-09-18)."""
+    to fit on it or not appear at all (2026-09-18)."""
     top = max(counts) if counts else 0
     if top <= 0:
         return ""
@@ -8326,7 +8326,7 @@ def day_histogram(counts: Sequence[int], rows: int = 3, width: int = 3) -> List[
 
     Which DAYS a load runs on separates a washing machine from a dishwasher
     far better than the hour does, and the hour histogram alone could not
-    show it (Anze, 2026-09-17)."""
+    show it (2026-09-17)."""
     out = _blocks(counts, rows, width)
     if out:
         out.append(" " + "".join(name[:width].ljust(width) for name in DAY_NAMES[:len(counts)]))

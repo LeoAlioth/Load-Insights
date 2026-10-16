@@ -6,7 +6,7 @@ it, HA logs a warning saying the database will suffer and stores nothing. So a
 sensor whose attributes carry a whole library has to exclude them - and the
 exclusion list drifted out of date the moment it was a HAND-WRITTEN SUBSET,
 which is what happened to Detected loads: three keys were named, ten more were
-added over time, and Anze's house logged the warning 989 times (2026-09-22).
+added over time, and the owner's house logged the warning 989 times (2026-09-22).
 
 This reads the dict each ``extra_state_attributes`` returns and checks the keys
 against what the class excludes, so the two cannot drift apart again. Sensors

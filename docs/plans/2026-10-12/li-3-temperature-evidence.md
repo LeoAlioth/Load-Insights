@@ -1,7 +1,7 @@
 # LI 3 - covariates engage on statistical evidence, not after a fixed two weeks (plan, 2026-10-12)
 
 Personal project (Load Insights). Never log to any work-context file.
-Repo `/Users/anzek/Projects/Load_Insights`, branch `dev`, head `482aa9a`, tree clean.
+Repo `~/Projects/Load_Insights`, branch `dev`, head `482aa9a`, tree clean.
 Plan only: nothing below has run. Forecast work is re-opened for this item (and li-4) only; the rest of
 the 2026-10-03 back-burner stays parked.
 
@@ -102,7 +102,7 @@ also still drives `Nowcast.band_shrink`.
 | constant | value | reason |
 |---|---|---|
 | `ALPHA` | 0.005 | False-engagement rate per term per fit. A site has ~20-30 series × 1-3 terms, refit every 15 min, so 0.005 keeps chance engagements to roughly 0.1-0.3 terms per site at any time. The bar it sets: t ≥ 5.84 at 4 days, 3.50 at 8 days, 2.98 at 15, 2.75 at 31, 2.6 at 12 weeks. Every one of these is well above t = 1, which is where a term starts lowering out-of-sample error (expected gain ∝ Var(β̂)·Var(x)·(t² − 1)). So a kept term is expected to pay for itself. Swept in step 7 (0.05 / 0.005 / 0.0005). |
-| `MIN_DAYS` | 4 | The test needs ≥ 3 degrees of freedom to say anything; at G = 3 even t = 9.9 is the bar at this α. 4 days = 96 h, against 336 h now (Anze suggested ~72 h). A strong real response passes in 4-5 days; a weak one waits for its evidence, which is the point. |
+| `MIN_DAYS` | 4 | The test needs ≥ 3 degrees of freedom to say anything; at G = 3 even t = 9.9 is the bar at this α. 4 days = 96 h, against 336 h now (the owner suggested ~72 h). A strong real response passes in 4-5 days; a weak one waits for its evidence, which is the point. |
 | `MIN_SPREAD_C` | 1.0 °C | **Temperature only.** It is the only covariate with a physical unit whose horizon value (a forecast cold snap) can sit far outside what the fit saw. A coefficient is fitted only if its slot-centred feature's weighted SD ≥ 1 °C (`sxx ≥ MIN_SPREAD_C² · W`). That is far below an ordinary week's day-to-day variation, and above a fog week's (±0.3 °C), so "a flat week cannot pass". The nowcast needs no such floor: a state that does not vary gets a huge SE and fails the t-test by itself. Calendars use "on and off each on ≥ MIN_DAYS days" instead (step 4). |
 | `HEATING_BASE_C` / `COOLING_BASE_C` | 15 / 24 | unchanged |
 | `JOINT_RIDGE`, `MIN_PER_HOUR_OF_DAY`, `FACTOR_CLAMP`, `MIN_RESIDUAL_MS`, `MIN_RESIDUAL_SHARE` | unchanged | Numerical guards and table fallbacks, not engagement gates. |
@@ -234,7 +234,7 @@ Gate: `python3.14 tests/run_all.py` passes before step 7.
 - **Config.** `GET /api/diagnostics/config_entry/<entry>` gives the options verbatim (temperature entity,
   weather entity, calendars, inputs, links). Entry ids are in `HA_Configs/tools/li_flow.py`: Home
   `01M2MHR02E73618M7Y0JY5GEEK`, Kozolec `01M2TB111THS8W6GF66PRKYDM8`. Tokens are in `data/<host>`.
-- **Energy prefs and statistics** via `node /Users/anzek/Projects/HA_Configs/tools/ws.mjs <site> cmds.json`:
+- **Energy prefs and statistics** via `node ~/Projects/HA_Configs/tools/ws.mjs <site> cmds.json`:
   - `energy/get_prefs`
   - `recorder/statistics_during_period`, `period: "hour"`:
     - `types: ["change"], units: {energy: "kWh"}` for `SiteModel.from_prefs(prefs).all_statistic_ids()`
@@ -267,7 +267,7 @@ Gate: `python3.14 tests/run_all.py` passes before step 7.
   - `SIGNALS` = 0/1.
 - Output: one JSON per run in `data/forecast/results/`, plus a per-series table on stdout.
 - `python3.14`; series × origins in a `multiprocessing.Pool`.
-- ≤ 8 at once on the Mac. libench only if Anze is not using it.
+- ≤ 8 at once on the Mac. libench only if the owner is not using it.
 
 ### 7.3 Runs
 
@@ -338,9 +338,9 @@ Run every row on W1, then the chosen row and OLD on W2.
    - After step 7: the final commit with the dials removed (proven changes ship without toggles) and the
      evidence in the message (AGENTS "Commit messages carry the evidence").
    - `python3.14 tests/run_all.py` passes at each commit.
-2. **Do not push.** Pushing `dev` auto-deploys. Wait for Anze's word.
+2. **Do not push.** Pushing `dev` auto-deploys. Wait for the owner's word.
 3. When he says push:
-   - HA_Configs snapshot before and after on **Home and Kozolec only**. Andrej's site gets nothing unless
+   - HA_Configs snapshot before and after on **Home and Kozolec only**. The third site gets nothing unless
      he says.
    - Sites install the dev build and restart.
    - Forecast only: no `DETECTOR_GENERATION` bump, no reset.
@@ -353,7 +353,7 @@ Run every row on W1, then the chosen row and OLD on W2.
 
 ---
 
-## Open for Anze (defaults in brackets, the plan runs on them)
+## Open for the owner (defaults in brackets, the plan runs on them)
 
 1. ALPHA [0.005; the sweep decides between 0.05 / 0.005 / 0.0005].
 2. MIN_EXPLAINED [dropped; it comes back only if the 0.03 variant wins at either site].

@@ -1,7 +1,7 @@
 """Run load detection over an exported history, with no Home Assistant.
 
 Shipping a build to a live site to see what the detector makes of it is a
-slow way to learn anything (Anze, 2026-09-18). This takes the CSV that
+slow way to learn anything (2026-09-18). This takes the CSV that
 Home Assistant's History panel downloads - the one with entity_id, state
 and last_changed - and feeds it through exactly the code that runs there,
 then prints the library the naming page would show.
@@ -64,7 +64,7 @@ def drop_aggregates(rows):
     everything older. An hour's mean cannot show a 44-second burst, and fed
     to the detector each one looks like a step, so a month of them would
     invent a load an hour. They give themselves away by landing on the hour
-    after a long gap (Anze exporting 30 days, 2026-09-18)."""
+    after a long gap (the owner exporting 30 days, 2026-09-18)."""
     kept, dropped, previous = [], 0, None
     for ts, value in rows:
         on_the_hour = abs((ts + 30) % 3600.0 - 30) < 5.0
@@ -79,7 +79,7 @@ def drop_aggregates(rows):
 
 def expand(paths):
     """Files, or every .csv inside a directory - a long window has to come
-    out of the History panel a day at a time (Anze, 2026-09-18), so a folder
+    out of the History panel a day at a time (2026-09-18), so a folder
     of them is the normal case."""
     out = []
     for raw in paths:
@@ -225,7 +225,7 @@ def carried(before, row) -> bool:
     fed as a reading production never gets. Every UTC offset is a whole
     number of quarter hours; every such row in the history repeats the
     reading before it (2026-10-04: 2,869 at Home, 822 at Kozolec, 603 at
-    Andrej's, none that differ)."""
+    The third site's, none that differ)."""
     return row[0] % 900.0 == 0.0 and row[1] == before[1]
 
 
@@ -258,7 +258,7 @@ def guess_roles(series, say=print):
     volts and amps beside it. The harness has what the config flow does not -
     the actual data - so it settles it the way physics does: a reading that
     goes below zero contains the site's generation and is not what the house
-    draws (Anze's home, 2026-09-18, where that mistake put the idle floor at
+    draws (the owner's home, 2026-09-18, where that mistake put the idle floor at
     -8 kW)."""
     rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid,
              "device_id": pseudo_device(eid)}
@@ -569,7 +569,7 @@ def run(args, transform=None, say=print):
         """The rows in [a, b) the way the recorder answers for that window:
         with include_start_time_state, which production asks for, the first
         row is the state AS OF a, stamped a - a copy of the last reading,
-        repeated at every slice start (checked on Anze's home, 2026-09-23). At
+        repeated at every slice start (checked on the owner's home, 2026-09-23). At
         one-minute ticks that is one extra reading a minute on every phase."""
         i, j = bisect.bisect_left(rows, (a, -math.inf)), bisect.bisect_left(rows, (b, -math.inf))
         part = rows[i:j]

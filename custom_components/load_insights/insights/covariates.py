@@ -52,7 +52,7 @@ class TemperatureResponse:
     # same row of zeros, so a site whose forecast ignored the weather could
     # not tell "no overlapping history" from "the fit ran and explained
     # nothing" - which at a mid-September site are very different answers
-    # (Anze, 2026-09-17).
+    # (2026-09-17).
     reason: str = ""
 
     @property

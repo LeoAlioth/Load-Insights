@@ -541,7 +541,7 @@ def _at(fleet, s, meter):
 def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
     """Susilna's plug (265 W) switching on in the same reading as a 48 W fan
     (Home 09-21 and 09-24 18:00: a +313 W start the plug neither owned nor
-    matched, cut with the fan's stop; Anze: "a separate fan in all
+    matched, cut with the fan's stop; the owner: "a separate fan in all
     likelihood"). The plug's rise inside the bigger start takes its part - a
     20-hour run at 265 W, the plug's - and the rest is the fan's own run,
     closed by its stop three hours on. On the busy phase the fan, unmetered,
@@ -622,7 +622,7 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
 def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     """The Hidrofor plug on phase A was credited a 308 + 421 W load on A and B:
     a meter the votes do not place yet is matched by its total and moment
-    alone, and that load started with a pump run of about its size (Anze,
+    alone, and that load started with a pump run of about its size (the owner,
     2026-09-28). Its one device's phases restrict it (meter_phases); once the
     votes place it, the map does, whatever it holds."""
     fleet = D.Fleet()
@@ -764,7 +764,7 @@ def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
     # Naming one does NOT settle the others, which is what the old rule
     # assumed: it dropped named signatures from the pool, so naming a single
     # setting switched off the suggestion that would have found the rest of
-    # the same machine. Anze's kiln is split across sixteen balanced A+C
+    # the same machine. The owner's kiln is split across sixteen balanced A+C
     # signatures holding 304 sessions and only 205 of them are named, and it
     # was never offered a single one of them (2026-09-22).
     det.rename(groups[0][0], "Hob")
@@ -789,7 +789,7 @@ def test_overlapping_signatures_are_never_suggested_as_one_device():
 def test_a_load_that_starts_while_another_runs_still_closes():
     """The regression that made the whole library useless: the phase never
     returned to its idle floor, so ONE session ran for 155 hours and 778 kWh
-    at Anze's home meter. Each load must close on its own step down."""
+    at the owner's home meter. Each load must close on its own step down."""
     def two(s):
         w = 0.0
         if 300 <= s < 3900:      # the fridge-sized one, an hour
@@ -987,7 +987,7 @@ def test_two_loads_stopping_together_both_close():
 
 def test_back_at_the_idle_floor_nothing_is_left_running():
     """A stop that was never matched must not leave a load 'on' for hours -
-    at Anze's home meter eight of them had piled up on phase A, adding to
+    at the owner's home meter eight of them had piled up on phase A, adding to
     an unknown-load figure of nearly 12 kW."""
     det = D.Detector()
     rows = series(600, lambda s: 0.0)
@@ -1096,7 +1096,7 @@ def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
 
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
     """Physics, not statistics. I tried correlating the two series' changes
-    first and Anze's own data threw it out: on a day when the grid meter
+    first and the owner's own data threw it out: on a day when the grid meter
     exported 4.5 kW the correlation called the array absent from it."""
     import random
     rnd = random.Random(3)
@@ -1133,7 +1133,7 @@ def test_a_short_pass_cannot_switch_the_house_floor_guard_off():
 
 
 def test_a_glitch_below_zero_cannot_drag_the_floor_down():
-    """A consumption reading cannot go below zero, and Anze's template dips
+    """A consumption reading cannot go below zero, and the owner's template dips
     there for 49 samples out of 20764 when its own inputs do not line up.
     One of those dragged the idle floor to -569 W and every step after it
     was measured from nonsense (2026-09-18)."""
@@ -1472,7 +1472,7 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
 
 def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     """A menu row's label is cut at the dialog's width, so the naming page
-    lost the end of every row (Anze, 2026-09-23). The headline carries what
+    lost the end of every row (2026-09-23). The headline carries what
     tells loads apart; everything else goes underneath, where it wraps."""
     import datetime as _dt
     tz = _dt.timezone.utc
@@ -1483,7 +1483,7 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     clock.day_wh = [100.0, 0.0, 50.0, 0.0, 0.0, 0.0, 10.0]
     head, rest = clock.menu_row(tz, clock.last_seen + 600.0)
     assert len(head) <= 45, head
-    assert "12 times a day" in rest, rest   # starts counted a day (Anze, 2026-09-28)
+    assert "12 times a day" in rest, rest   # starts counted a day (2026-09-28)
     assert "a week" in rest and "a run" in rest and "last ran" in rest, rest
     assert "Mon-Sun" in rest, "the week drawn as well as in words - there is room now"
     assert " " not in rest.split("Mon-Sun")[1], "no day of the week may be a place to wrap"
@@ -1494,7 +1494,7 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
 
 def test_a_possible_second_setting_is_described_not_numbered():
     """"set 4 of one device" meant nothing on a page where no other row was in
-    set 4. Say what the other load looks like instead (Anze, 2026-09-23)."""
+    set 4. Say what the other load looks like instead (2026-09-23)."""
     other = _sig(9, 1000.0, 600.0, 20, pf=0.99)
     assert D.same_device_phrase([other]) == "maybe the same device as the 1.0 kW, 10 min load"
     assert D.same_device_phrase([]) == ""
@@ -1615,7 +1615,7 @@ def test_the_day_is_drawn_as_a_block_chart():
 def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
     """Runtime times draw, not a count of starts: what a load costs you on a
     Saturday is the thing worth seeing, and a run from 23:40 to 01:20
-    belongs to three hours and two days (Anze, 2026-09-17)."""
+    belongs to three hours and two days (2026-09-17)."""
     from datetime import datetime, timezone
     det = D.Detector()
     start = datetime(2026, 9, 18, 23, 40, tzinfo=timezone.utc).timestamp()   # a Friday
@@ -1652,7 +1652,7 @@ def test_the_wiring_follows_from_the_same_reading():
 
 def test_which_way_round_the_grid_meter_is_wired():
     """"House = meter + inverter" holds only where importing is positive.
-    Anze's SolarEdge M1 is the other way up, and summing it unflipped would
+    The owner's SolarEdge M1 is the other way up, and summing it unflipped would
     count the array twice instead of cancelling it."""
     n = 600
     def solar(i):                       # a day: nothing, then a broad arc
@@ -1723,7 +1723,7 @@ def test_the_idle_noise_is_not_learned_while_the_array_moves_under_the_reading()
     """A house built from a grid meter and an inverter that are not read at
     one moment wanders with every cloud: here 30 % of each change of the
     array's shows a poll before the meter has it. Learned from those moves,
-    the idle noise rose with the sun (Andrej by day 12.5-14.5 W, 10 at night)
+    the idle noise rose with the sun (the third site by day 12.5-14.5 W, 10 at night)
     and so did the floor's footing; learned only while the array holds still,
     it is the house's own (2026-10-04, exp12)."""
     rnd = random.Random(2)
@@ -1946,7 +1946,7 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
 def test_a_sub_meter_decides_which_signature_a_session_joins():
     """A detection on a sub-meter overrides the house's: the device's own meter
     saw it run, so its signature takes the run whatever the house's power
-    reading of it looks like (Anze, 2026-09-22; trusted whether or not it
+    reading of it looks like (2026-09-22; trusted whether or not it
     fits since 2026-09-30: Home 79.8 / 76.0 -> 86.0 / 85.4 %)."""
     det = D.Detector()
     for p in "a":
@@ -2060,7 +2060,7 @@ def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
     """power_mad and the distance travelled are TOTALS across the phases;
     the tolerance that bounds them is one phase's. A three-phase load's total
     wanders about three times what one leg does, so it was refused merges an
-    identical single-phase load was granted (Anze, 2026-09-22)."""
+    identical single-phase load was granted (2026-09-22)."""
     def leg(i, per_phase, count, phases, mad=0.0):
         sig = _sig(i, per_phase * len(phases), 60.0, count, phases=phases, last_seen=1.0, power_mad=mad)
         sig.hour_wh = [10.0] * 24
@@ -2094,7 +2094,7 @@ def test_a_name_outlives_the_library_it_was_written_on():
     """Naming a load is the one thing in the library the user put there. A
     reset re-learns everything else from history in minutes; it must not take
     the name, the device it created, or the energy meter on the Energy
-    dashboard with it (Anze, 2026-09-22: "we dont want people loosing their
+    dashboard with it (2026-09-22: "we dont want people loosing their
     named entities if they update integration")."""
     det = D.Detector()
     samples, t = _session(T0, 2000.0, 600.0)
@@ -2233,7 +2233,7 @@ def test_a_generation_bump_keeps_names():
     at once on the next update. It is simulated here against a store in the
     shape the current code writes - which is what an installation would
     actually be holding - because the alternative is discovering it went wrong
-    from someone's Energy dashboard (Anze, 2026-09-22: "i just want this fixed
+    from someone's Energy dashboard (2026-09-22: "i just want this fixed
     for future updates/of the detection library versions/resets")."""
     det = D.Detector()
     samples, t = _session(T0, 2000.0, 600.0)
@@ -2340,7 +2340,7 @@ def test_the_weekday_split_is_per_day_not_per_group():
     """There are five weekdays and two weekend days, so a load running
     UNIFORMLY puts 71 % of its energy on weekdays. Comparing the groups'
     totals therefore called almost everything a weekday load - twenty of
-    Anze's twenty-four rows, which distinguished nothing from nothing."""
+    The owner's twenty-four rows, which distinguished nothing from nothing."""
     week = 14 * 86400.0
     flat = [50.0] * 24
     assert D.when_phrase(flat, [10.0] * 7, week, 30) == ""
@@ -2368,7 +2368,7 @@ def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     finite - two hundred entries against a library several times that at a
     busy house - so for most pairs there is nothing recorded either way, and
     reading that silence as "they never overlap" offered a 149 W load and a
-    2.7 kW one as one device (Anze's house, 2026-09-22)."""
+    2.7 kW one as one device (the owner's house, 2026-09-22)."""
     a, b = _sig(1, 1000.0, 100.0, pf=0.96), _sig(2, 2700.0, 100.0, pf=0.96, last_seen=1.0)
     assert D.suggest_levels([a, b], []) == []               # nothing seen of either
     seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
@@ -2433,7 +2433,7 @@ def test_the_naming_page_lengthens_as_loads_are_named():
     """No percentile suits two sites: set high it hides a big house's real
     loads for ever, set low it opens with two hundred rows and is put down
     unread. The right number of rows is not a property of the site but of how
-    much work the person has already done (Anze, 2026-09-22)."""
+    much work the person has already done (2026-09-22)."""
     sigs = []
     for i in range(40):
         sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
@@ -2468,7 +2468,7 @@ def test_the_page_can_say_how_many_are_waiting():
 
     It could not: the caller had only the already-shortened list and
     subtracted it from itself, so every site read "0 more than fit here" -
-    Kozolec showing 6 of 12, Home 14 of 60 (Anze's screenshots, 2026-09-22)."""
+    Kozolec showing 6 of 12, Home 14 of 60 (the owner's screenshots, 2026-09-22)."""
     sigs = []
     for i in range(30):
         sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
@@ -2511,7 +2511,7 @@ def test_a_power_factor_carries_how_far_wrong_it_could_be():
     """A factor from coarse amps is not thrown away - it is given its error
     bar, and the bar is what stops it constraining anything.
 
-    Anze asked for this rather than the outright gate it replaces: one
+    The owner asked for this rather than the outright gate it replaces: one
     mechanism reads cleaner than a cliff, and a factor that IS well measured
     on a small load still gets to count (2026-09-22)."""
     coarse = D.PhaseState(min_noise=5.0)
@@ -2571,7 +2571,7 @@ def test_where_a_relative_noise_figure_starts_to_mean_something():
 
 def test_the_same_constant_serves_both_sites():
     """Every gate is a COUNT of a reading's own quanta, so neither site is
-    configured for (Anze, 2026-09-22)."""
+    configured for (2026-09-22)."""
     for value in (D.PF_MIN_QUANTA, D.ENERGY_MIN_QUANTA):
         assert 1.0 <= value <= 50.0, "a count, not a number of watts"
     # Kozolec's 0.1 A at 230 V and Home's 0.01 A: one rule, two answers
@@ -2584,7 +2584,7 @@ def test_a_grid_meter_filed_as_the_house_is_dropped():
     over grid-plus-inverters. When setup became three pages the flat fields
     from before stayed put and nothing offers them any more, so a meter
     configured before the change sits in BOTH roles and the older copy quietly
-    wins. At Anze's house that was the grid meter read as the house - sign
+    wins. At the owner's house that was the grid meter read as the house - sign
     inverted, solar never added back, the detector settling on a baseline of
     minus six kilowatts - while the pages he had just filled in did nothing
     (2026-09-22)."""
@@ -2638,7 +2638,7 @@ def test_a_small_load_is_described_in_watts():
     kettle and useless for everything a submeter sees. A whole library of an
     office plug - a couple of computers and a power station behind one meter -
     read "0.0 kW on A" line after line, every row identical and none of them
-    wrong (Anze, 2026-09-22)."""
+    wrong (2026-09-22)."""
     def row(watts):
         sig = _sig(1, float(watts), 180.0, 50, pf=0.95, last_seen=9 * 86400.0)
         return sig.describe(timezone.utc)
@@ -2654,7 +2654,7 @@ def test_a_small_load_is_described_in_watts():
 
 
 def test_a_motors_starting_surge_is_not_a_load_of_its_own():
-    """Anze's pressure pump reads 8886 W in one sample and 830 W in every
+    """The owner's pressure pump reads 8886 W in one sample and 830 W in every
     sample after, four times over in a day. Held for the length of a sample
     that single reading dominates the run - a 40 s session came out at 2.8 kW
     for an 830 W pump - and the power it recorded depended on how long the
@@ -2688,7 +2688,7 @@ def test_a_first_stage_that_lasts_is_not_a_surge():
 
 def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
     """It is the most diagnostic thing a house produces - only a motor does it
-    - so once it is out of the power it is worth keeping as a feature (Anze,
+    - so once it is out of the power it is worth keeping as a feature (the owner,
     2026-09-22: "that spike is a very good device signature, but it has to be
     taken into account properly to not show as separate loads")."""
     det = D.Detector()
@@ -2732,7 +2732,7 @@ def test_what_a_switch_and_a_number_taught_follows_a_rename():
 def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
     """A washer's heater runs while its cycle phase says Wash, a small share
     of the day; a fridge runs whatever the washer is doing. Only the heater
-    is tied to the phase, and being tied is what vouches for it (Anze,
+    is tied to the phase, and being tied is what vouches for it (the owner,
     2026-09-28: "its cycle/sub cycle sensors could help with load detection")."""
     fleet = D.Fleet()
     rnd = random.Random(5)
@@ -2833,7 +2833,7 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
     """The washer's 2 kW heater and a 2 kW kettle on the same phase: filed
     by the phase they ran in, the heater ends up tied to Wash and the kettle
     apart from it, while a fridge that runs right through every wash is not
-    split in two (Anze, 2026-09-29)."""
+    split in two (2026-09-29)."""
     fleet = D.Fleet()
     rnd = random.Random(11)
     phase = []
@@ -3017,7 +3017,7 @@ def _feed(fleet, t, steps):
 
 
 def test_a_named_load_reads_its_power_while_its_run_is_still_open():
-    """Anze, 2026-10-13: the kettle's power shows as soon as its start is
+    """The owner, 2026-10-13: the kettle's power shows as soon as its start is
     declared, not when its run has closed - and a start whose stop never comes
     stops counting instead of sitting high (LIVE_STALE_FACTOR)."""
     fleet, t = _named_kettle()
@@ -3414,7 +3414,7 @@ def test_a_meter_that_held_its_value_did_not_take_the_step():
 def test_the_grid_is_read_as_far_behind_as_its_slowest_meter_needs():
     """The horizon: how long a meter takes to declare a step it shares with
     the grid, learned from those steps, the slowest meter's, capped at five
-    minutes (Anze, 2026-10-02) - and only a meter that has shared a step sets
+    minutes (2026-10-02) - and only a meter that has shared a step sets
     it, twice its latency until its lag is believed: one that never shares a
     step has nothing the grid waits for. A meter left out on the settings
     page does not set it. With an input fed, at least the reach its changes
@@ -3443,7 +3443,7 @@ def test_a_meter_that_never_shares_a_step_does_not_set_the_horizon():
     """Home's Server UPS: a 60 s heartbeat that never shows a step the grid
     shows, so no lag can be learned. Its fallback - twice its latency, 360 s
     - held Home's horizon at the 300 s cap; it has nothing the grid waits
-    for, and the horizon is the 3EMs' (Anze, 2026-10-02)."""
+    for, and the horizon is the 3EMs' (2026-10-02)."""
     f = D.Fleet()
     f.wait_cap_s = D.METER_WAIT_CAP_S
     for name, cad in (("Server UPS", 60.0), ("Hisa", 5.0), ("Mansarda", 4.9)):
@@ -3613,7 +3613,7 @@ def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
 def test_a_fall_ends_the_run_the_rise_of_its_size_opened_seconds_ago():
     """Home 09-24 20:55 UTC: a 400 W workshop load dipped twice for 6 s (3980
     -> 3581 -> 3973 -> 3572 -> 3973 W). The first dip closed its run and the
-    return (+392) opened a new one - right, and it stays (Anze) - but a plug's
+    return (+392) opened a new one - right, and it stays (the owner) - but a plug's
     coincident wobble took 107 W of the return, leaving a 286 W rest that
     the second dip (-402) did not match; it joint-stopped a 515 W run 102
     minutes old with a held 113 W drop instead. The newest run a rise of the
@@ -3673,7 +3673,7 @@ def test_a_ramp_two_meters_declared_over_different_stretches_is_placed_by_the_gr
     each other's tolerance, so nobody's: the run ran on 49 minutes past its
     end at 05:54:48. Over both steps' window the grid read 543 W before and
     ~850 after, +307: the panel's step agrees with that, the run is placed at
-    Mansarda (its own), booked at the ramp's whole size, and Anze's rule ends
+    Mansarda (its own), booked at the ramp's whole size, and the owner's rule ends
     it when the panel reads below it - at 05:54:48. The next start the same."""
     rows, panel, s1, e1, s2, e2, end = _washer_dryer_day()
     fleet = D.Fleet()
@@ -3731,7 +3731,7 @@ def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
 
 
 def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
-    """A run cannot still be running on less than it started with (Anze,
+    """A run cannot still be running on less than it started with (the owner,
     2026-10-03): a meter reporting a total that holds several devices - a
     strip, or a plug its library takes for one, as Home's Susilna plug -
     ends a run it owns once its own reading after its fall is below the run's
@@ -3784,7 +3784,7 @@ def test_a_channel_the_votes_do_not_place_yet_may_carry_any_phase():
 
 def test_any_meters_rise_owns_a_start_and_the_innermost_of_alike():
     """A 3EM's channel owns a start through its rise as a plug does - the
-    kiln's legs at Hiša (Anze, 2026-10-03) - on a channel the votes have not
+    kiln's legs at Hiša (2026-10-03) - on a channel the votes have not
     placed yet; and where a meter inside it rose alike, that meter: its
     channel is the load's alone."""
     f = _fleet_with_meters({})
@@ -3805,7 +3805,7 @@ def test_any_meters_rise_owns_a_start_and_the_innermost_of_alike():
 
 def test_a_meters_steps_are_asked_over_the_grid_steps_span():
     """One window for what a meter did at a grid step - the grid step's own
-    span, as the meters' totals are (Anze, 2026-10-01): a meter's span
+    span, as the meters' totals are (2026-10-01): a meter's span
     already reaches its latency back, and a moment padded by its latency
     counted it twice (the unify audit, 2026-10-03). A step of the meter's
     that ended before the grid's began, though within its latency of it,
@@ -3842,7 +3842,7 @@ def test_a_circuits_stop_ends_its_run_by_its_change_not_its_level():
 
 
 def test_every_meters_session_is_matched_by_its_peak_in_the_grids_terms():
-    """One match for every meter (the unify audit; Anze, 2026-10-03): per
+    """One match for every meter (the unify audit; the owner, 2026-10-03): per
     phase, by the PEAK, times the meter's gain. A slow 3EM channel dilutes a
     66 s boiler pulse's mean (1,241 W of 1,813) as Kozolec's Shelly did, and
     still pairs by what it peaked at; a meter reading 20 % low pairs once its
@@ -4013,7 +4013,7 @@ def _tree_fleet(hours=12, f=None, since=0):
 
 
 def test_a_meter_others_hang_under_reads_them_as_the_grid_reads_every_meter():
-    """The fleet as a tree (Anze, 2026-10-03): Hiša's own detector reads Blaž
+    """The fleet as a tree (2026-10-03): Hiša's own detector reads Blaž
     PC inside it - its own fleet, its sessions filed after the PC's have had
     their say - so its library knows which of its loads is the PC, as the
     grid's does; the PC is read by both, and only the grid's fleet learns a
@@ -4044,7 +4044,7 @@ def _kw(det):
 
 
 def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
-    """Mansarda's fridge and freezer (Anze, 2026-10-03: "if a same load is
+    """Mansarda's fridge and freezer (2026-10-03: "if a same load is
     detected by both meters, shouldn't the reading collapse into a single
     device anyway?"): a load a meter holding several devices saw is that
     meter's own signature - the grid files its runs as that meter's
@@ -4104,7 +4104,7 @@ def test_a_name_given_on_the_grid_stays_on_the_grid():
     """Home's kiln was named on the grid's signature before its circuit's
     own counted (Peč za glino, inside Hiša): the grid keeps filing the runs
     its device takes into that named signature, and a reset hands the name
-    back there too - a name stays where it was given; moving it is Anze's
+    back there too - a name stays where it was given; moving it is the owner's
     call. Hiša's own signature of it is that named load, not offered."""
     f = D.Fleet()
     f.wait_cap_s = D.METER_WAIT_CAP_S
@@ -4183,7 +4183,7 @@ def test_a_meters_stop_the_grid_did_not_show_ends_its_run():
 
 
 def test_a_channels_phase_is_learned_from_the_count_or_the_energy_of_its_votes():
-    """Anze (2026-10-03): score the votes by both their number and their
+    """The owner (2026-10-03): score the votes by both their number and their
     energy. Home's Susilna plug votes 2-4 times in ten days, each a 20-hour
     run: as much energy as PHASE_MAP_MIN_VOTES of the site's votes carry
     places it, as that many votes would. A few tiny votes do not, nor do
@@ -4271,7 +4271,7 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
 
 
 def test_a_meters_sessions_decide_identity_as_its_declaration_says():
-    """One notion of "holds one device" (Anze, 2026-10-03): a meter's
+    """One notion of "holds one device" (2026-10-03): a meter's
     session decides which signature a run joins - and its energy places one
     it has no session for - where the meter holds one device, as the user
     declared it or, undeclared, as its library's shape says. A circuit's
@@ -4705,7 +4705,7 @@ def test_a_pause_the_plug_read_plainly_ends_its_run_and_the_restart_is_a_new_one
     """Kozolec 09-20: two 20-s pauses of the car charger that neither the plug
     nor the grid declared - three readings below 70 W, the fourth back at
     2 kW - so the 14:34 run ran on to 17:57 and closed, with the 16:23 run,
-    on the one 2.2 kW fall there (Anze: one session end was missed). A
+    on the one 2.2 kW fall there (the owner: one session end was missed). A
     plateau the next reading leaves is a level once it held for the latency,
     and a total-only plug's declared fall ends its run though the map does
     not place it: four runs, each the plug's. The charger's runs are those of

@@ -6,7 +6,7 @@ edges beside the detector, which is unchanged.
     python3.14 tests/edge_bench.py diff A.json B.json
     python3.14 tests/edge_bench.py SITE FOLDER [DIAL=value ...] [OUT=run.json]
 
-card    Home, Kozolec and Andrej's site (or the SITEs given) with every meter
+card    Home, Kozolec and the third site (or the SITEs given) with every meter
         production reads fed (SUBS=prod, and HOUSE=prod where the house is
         built), each replayed in one call (SLICE=0), in 6-hour slices (SLICE=6)
         and with the last day in 1-minute passes (LIVE=1), BENCH_PARALLEL at
@@ -362,7 +362,7 @@ def _worklist(site: str, runs: dict, diffs: dict) -> list:
 
 
 def card(args: list) -> None:
-    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "andrejg"]
+    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "third"]
     label = next((a[6:] for a in args if a.startswith("LABEL=")), None)
     dials = [a for a in args if "=" in a and not a.startswith("LABEL=")]
     keys = sorted([(site, sl) for site in sites for sl in SLICINGS], key=lambda k: (k[0] != "home", k[1] != "0"))
