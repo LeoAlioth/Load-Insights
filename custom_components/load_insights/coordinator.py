@@ -27,6 +27,7 @@ from .const import (
     CONF_BATTERY_CAPACITY_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
+    CONF_FORECAST_EXCLUDE,
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -90,6 +91,7 @@ class InsightsData:
     remainder_complete_since: Optional[datetime] = None
     devices_without_statistics: tuple = ()
     holidays_known: bool = False
+    forecast_left_out: tuple = ()      # labels of the devices taken off the consumption forecast
     holidays_in_horizon: tuple = ()
     weather_entity: Optional[str] = None
     temperature_entity: Optional[str] = None
@@ -223,6 +225,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
+        # Loads the owner leaves out of the consumption forecast come off the
+        # series it is fitted on, and scored against (the remainder is
+        # already without every listed device).
+        left_out = [e for e in (opts.get(CONF_FORECAST_EXCLUDE) or []) if e in series]
+        if left_out:
+            consumption = subtract_all(consumption, series, left_out)
         remainder_ids = [d.energy for d in site.remainder_devices()]
         remainder = subtract_all(consumption, series, remainder_ids) if remainder_ids else []
         complete_since, missing = coverage(series, remainder_ids) if remainder_ids else (None, [])
@@ -330,6 +338,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
+            forecast_left_out=tuple(labels.get(e, e) for e in left_out),
             holidays_known=hols is not None,
             holidays_in_horizon=tuple(sorted(d.isoformat() for d in (hols or ()) if now.date() <= d <= end_h.date())),
             weather_entity=weather_entity,

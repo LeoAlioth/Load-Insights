@@ -15,6 +15,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, floor_registry as fr, selector
 
 from .const import (
+    CONF_FORECAST_EXCLUDE,
     CONF_GRID_DEVICE,
     CONF_LAYOUT,
     GRID_PREFIX,
@@ -323,11 +324,14 @@ def _single_weather_entity(hass) -> str | None:
 
 # What the inputs page (and the first form) owns.
 _INPUT_KEYS = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES,
-               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY)
+               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY, CONF_FORECAST_EXCLUDE)
 
 
-def _inputs_schema(defaults: dict) -> dict:
-    return {
+def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
+    """``devices`` (statistic id -> label) adds the pick of loads to leave out
+    of the consumption forecast - only on the options page, where the
+    dashboard's devices are at hand."""
+    out = {
         vol.Optional(CONF_WEATHER_ENTITY, description={"suggested_value": defaults.get(CONF_WEATHER_ENTITY)}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="weather")),
         **_entity(CONF_OUTDOOR_TEMPERATURE_ENTITY, defaults, "temperature"),
@@ -337,6 +341,13 @@ def _inputs_schema(defaults: dict) -> dict:
             selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
         **_entity(CONF_BATTERY_CAPACITY_ENTITY, defaults, "energy_storage"),
     }
+    if devices:
+        out[vol.Optional(CONF_FORECAST_EXCLUDE, description={"suggested_value": [
+            e for e in defaults.get(CONF_FORECAST_EXCLUDE) or [] if e in devices]})] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
+                multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+    return out
 
 
 class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -828,7 +839,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):
             current[CONF_WEATHER_ENTITY] = _single_weather_entity(self.hass)
-        return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current)))
+        manager = await async_get_manager(self.hass)
+        devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
+        return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current, devices)))
 
     async def _link_targets(self) -> dict:
         """What an input can be linked to: every device of the Energy

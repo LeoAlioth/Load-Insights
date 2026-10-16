@@ -36,6 +36,22 @@ def test_a_steady_weekly_pattern_is_reproduced_exactly():
     assert fc.sample_count == 8 * 168 and fc.span_weeks > 7.9
 
 
+def test_a_load_left_out_stops_shaping_the_history_and_the_level():
+    """The coordinator takes an owner-chosen device off the site series
+    (series.subtract_all) before fitting it: an EV that charged all of
+    yesterday would otherwise lift the level correction and its hours the
+    slots."""
+    S = load("insights.series")
+    base = weeks_of(NOW, 8)
+    ev = {t.timestamp(): (3.0 if (NOW - t) < timedelta(hours=24) else 0.0) for t, _ in base}
+    total = [(t, v + ev[t.timestamp()]) for t, v in base]
+    assert P.forecast(total, NOW).level > 1.3
+    left = S.subtract_all(total, {"ev": [(t, ev[t.timestamp()]) for t, _ in base]}, ["ev"])
+    fc = P.forecast(left, NOW)
+    assert math.isclose(fc.level, 1.0)
+    assert all(math.isclose(v, pattern(t), abs_tol=1e-9) for t, v in fc.hourly)
+
+
 def test_the_current_hour_is_not_fitted():
     """Its statistic is still accumulating: a partial hour must not drag the slot."""
     samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]
