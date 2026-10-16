@@ -41,7 +41,7 @@ step's true moment is anywhere in the beat before the reading; on a
 change-driven one it is at the reading. The detector's per-phase `interval`
 (median gap) already carries the useful part of this for pairing tolerances;
 a periodic flag would add the timing-uncertainty shape only, so nothing was
-built (Anze asked whether knowing helps, 2026-09-30).
+built (the owner asked whether knowing helps, 2026-09-30).
 The Shellys' 60 s beat was not the devices' limit: their outbound WebSocket
 to Home Assistant was off, so the integration only polled them once a minute.
 Enabled on all of Home's Wi-Fi Shellys 2026-09-30 (as at Kozolec before); from
@@ -117,7 +117,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `ALIKE_MAD_SHARE` | **0.10** | share of two signatures' spread that may widen a name's return after a reset (`alike` now serves only that) | ratio | 0–0.20 | swept for merging, which is gone; kept for name recovery |
 | `MATCH_DURATION_FACTOR` | 3.0 | duration tolerance for a load that keeps time | ratio | 1.5–6 | not tested |
 | `MATCH_PF_TOL` | 0.15 | power-factor tolerance, now widened by both sides' `pf_mad` | ratio | 0.05–0.3 | not swept; the `pf_mad` widening replaced a hard gate and took Kozolec 86 → 30 signatures |
-| `ABSORB_WINDOW` | 100 | caps the weight of history in a signature's running means | budget | 20–500 | not tested (Anze chose 100 over 50) |
+| `ABSORB_WINDOW` | 100 | caps the weight of history in a signature's running means | budget | 20–500 | not tested (the owner chose 100 over 50) |
 
 ### Power factor
 
@@ -134,8 +134,8 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `ENERGY_MIN_QUANTA` | 2.0 | an energy rise must span this many power quanta × duration | count | 1–4 | not tested |
 | `IDLE_WINDOW_S` | 900 | the preceding window the rise is measured against | physical | 300–1800 | not tested |
 | `MATCH_PATIENCE_S` | 1200 | how long a main session waits for a slow device meter, and a meter's session for the grid's that started with it to vote on | physical | 300–3600 | set from observed Shelly reporting lag; not swept |
-| `METER_WAIT_CAP_S` | 300 | the most the grid is read behind its meters; the horizon itself is the slowest meter's declaring lag (`Fleet._horizon`), at least `EDGE_LAG_REACH_S` with inputs fed; *Wait for slower meters, at most* on the settings page | physical / policy | 0–300 | Anze's bound (2026-10-02: "up to 5 minutes"); the horizons the ten days come to are under *A pass is only a pause* |
-| `LAG_REACH_S` / `LAG_SAMPLES` / `LAG_MIN_SAMPLES` / `LAG_PERCENTILE` | 300 s / 200 / 20 / 0.95 | each meter's lag against the grid, from the clear steps the two share: looked for this far either side, the last 200, believed from 20, at the 95th percentile - its report lag sets its latency (`PhaseState.latency`), its declaring lag the horizon | s / budget / count / ratio | — | not swept (2026-10-02, Anze: latency replaces the cadence) |
+| `METER_WAIT_CAP_S` | 300 | the most the grid is read behind its meters; the horizon itself is the slowest meter's declaring lag (`Fleet._horizon`), at least `EDGE_LAG_REACH_S` with inputs fed; *Wait for slower meters, at most* on the settings page | physical / policy | 0–300 | the owner's bound (2026-10-02: "up to 5 minutes"); the horizons the ten days come to are under *A pass is only a pause* |
+| `LAG_REACH_S` / `LAG_SAMPLES` / `LAG_MIN_SAMPLES` / `LAG_PERCENTILE` | 300 s / 200 / 20 / 0.95 | each meter's lag against the grid, from the clear steps the two share: looked for this far either side, the last 200, believed from 20, at the 95th percentile - its report lag sets its latency (`PhaseState.latency`), its declaring lag the horizon | s / budget / count / ratio | — | not swept (2026-10-02, the owner: latency replaces the cadence) |
 | `MODEL_REFRESH_S` | 3600 | how often, on the readings' clock, the horizon is worked out again from the lags learned | budget | — | not swept; a fixed grid of the clock so the slicing cannot move it |
 | `CROSS_METER_DURATION_FACTOR` | 12.0 | duration tolerance between a main and a device session | ratio | 3–30 | not tested |
 | `SUB_SAMPLE_TAIL_S` | 7200 | device readings kept for the energy answer: at least this before a pass's first, and back to the oldest run or session still to be placed (2026-10-02) | budget | 3600–43200 | not tested |
@@ -152,10 +152,10 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `INPUT_SPLIT` (`INPUT_RARE_SHARE` 0.25, `INPUT_SPLIT_MIN_TIME_S` 1 d, `INPUT_SPLIT_LIFT` 3, `INPUT_MIN_EPISODES` 3, `INPUT_MIN_COVERAGE` 0.5) | always on (the switch removed 2026-09-30) | a run made while a setting holds a rare value joins only signatures born in it; one born by chance goes back into an alike twin (pair lift < 3) or turns ordinary once it has run in under half of the value's episodes since its birth (at least 3) | switch | — | **benched, shipped (2026-09-29).** Home 18-27 Sep with the Sock Eater's phase, state and sub-phase: purity 63.8 → 65.4 %, wconc 29.8 → 30.5 % (office plug 19 → 16 %); kiln and pump benches identical (no washer there). Judged by runs alone, the kiln firing through one afternoon's washing split into Wash/Rinse/Spin/Dry signatures (a burst read as 7× chance) and the floor mat grew a Delayed Start one; by episodes they go back. Tied now: 119 W A+C in Rinse, 61 W C in Dry, 98 W B in End Of Cycle. The heater (~2 kW on A, 2-60 min, in wash AND dry) scatters into one- and two-run signatures and does not tie on 13 washes |
 | ~~`HOLD_MIN_INTERVAL_S` / `HOLD_SUSTAIN_S`~~ | 20 s / 30 s, replaced by `SUSTAIN_CADENCES` (2026-10-01: one rule for every meter; see *A meter's cadence*) | on a meter this slow in a steady state (a Shelly heartbeating once a minute, a Zigbee plug reporting on change), a pending change counts as having held until the next reading, and holding 30 s is enough | s | — | **benched, shipped (2026-09-29).** Kozolec's IR panel meter alone: 13 runs of 164 min → 46 of 48 min (its readings: 52 runs, mean 40 min, off 2.4 min between); the house's ~500 W signature credited to the panel 8 → 27 of 63; the Boiler meter's library 132 runs of 36 min at 937 W (pulses merged) → 1467 of 3 min at 1906 W (its element: 1546 pulses of ~1 min at 1.9 kW). Kozolec purity 98.3 %, wconc 93.9 → 94.0 %; Home 63.8/29.8 → 63.9/29.6 % (production meters 64.1/29.1 → 64.1/29.2 %); kiln, pump, fridges identical. The Shelly needs no change: it reports each switch within 1-4 s |
 | `HOURLY_KEEP_S` | 11 d | how far back each signature keeps its energy by clock hour (`hourly`): the window a named load's statistics are written from (`plan_rewrite`) - at its sensor's first hour, by `load_insights.backfill_statistics`, and checked every hour after (`DetectionRunner._check_named`: rewritten from the first hour more than `REWRITE_TOLERANCE_KWH`, 0.01 kWh, off). Hours age out as a run is filed and once an hour (`Signature.age`); the window never starts before now minus this | s | — | not a detector dial; sized to the 10-day backfill |
-| `OLDER_MIN_COUNT` / `OLDER_MIN_WH` / `OLDER_MIN_EVIDENCE` / `OLDER_KEEP_S` | 10 / 500 Wh / 0.7 / 365 d | an unnamed load seen this often, this much in all, this sure, keeps the hours that age out of `hourly` in `older` for a year; naming it writes them onto its meter before the window (`plan_carry`), once. Stored apart: `load_insights.<entry>.detection.history`, written with the library, dropped with it | count / Wh / score / s | — | policy, not swept (Anze, 2026-10-04) |
+| `OLDER_MIN_COUNT` / `OLDER_MIN_WH` / `OLDER_MIN_EVIDENCE` / `OLDER_KEEP_S` | 10 / 500 Wh / 0.7 / 365 d | an unnamed load seen this often, this much in all, this sure, keeps the hours that age out of `hourly` in `older` for a year; naming it writes them onto its meter before the window (`plan_carry`), once. Stored apart: `load_insights.<entry>.detection.history`, written with the library, dropped with it | count / Wh / score / s | — | policy, not swept (2026-10-04) |
 | `EDGE_LAG_REACH_S` / `EDGE_LAG_BIN_S` / `EDGE_LAG_MIN` / `EDGE_WINDOW_DEFAULT_S` | 60 s / 2 s / 50 / 10 s | how far either side of an edge an input's change is looked for, the lag histogram's bins, the changes seen before a lag is believed (`lag_window`: a peak 4x the even spread), and the window before that | s | — | not swept; Home's thermostat learned (-11, 0) s from 17k edges, the mat's edges at -5.8 +- 1.7 s |
 | `EDGE_LIBRARY` | 150 | edge clusters kept per phase and direction, the weakest evicted as a new one is born (at a pass's end until 2026-10-02) | count | — | not swept; Home used ~400 in all |
-| `EDGE_NOISE_SHARE` / `EDGE_SCALE_REL` | **0.25** / 0.02 | one measurement error on the edge-size scale: this share of the phase's measured noise at small steps, this share of the step at large | ratio | 0.25–1 | **swept 0.25 / 0.5 / 1 (2026-09-30)**: Home 82.6/66.4 vs 80.9/61.3 vs 76.3/50.2, pump 1153 / 915 / 410, Kozolec fridges 188 / 154 / 81. A fixed 15 W ran every small fall at Kozolec into one cluster. **The noise is the quietest measured** (2026-10-04): frozen at a group's first step, Home's A and C units were 93 and 55 W on 23 Sep - 2 Oct (a dawn seed's 372 / 218 W), one A cluster held starts of 12-370 W and "started again" was 15.9 % of hidden closes; re-binned down as the noise falls (`_rescale`), 9.7 %, and Home's card hidden / circuits / fed devices 19.7/15.9 -> 33.9/16.7, 32.9/16.1 -> 44.0/12.9, 53.9/11.0 -> 67.3/7.6, Kozolec and Andrej identical |
+| `EDGE_NOISE_SHARE` / `EDGE_SCALE_REL` | **0.25** / 0.02 | one measurement error on the edge-size scale: this share of the phase's measured noise at small steps, this share of the step at large | ratio | 0.25–1 | **swept 0.25 / 0.5 / 1 (2026-09-30)**: Home 82.6/66.4 vs 80.9/61.3 vs 76.3/50.2, pump 1153 / 915 / 410, Kozolec fridges 188 / 154 / 81. A fixed 15 W ran every small fall at Kozolec into one cluster. **The noise is the quietest measured** (2026-10-04): frozen at a group's first step, Home's A and C units were 93 and 55 W on 23 Sep - 2 Oct (a dawn seed's 372 / 218 W), one A cluster held starts of 12-370 W and "started again" was 15.9 % of hidden closes; re-binned down as the noise falls (`_rescale`), 9.7 %, and Home's card hidden / circuits / fed devices 19.7/15.9 -> 33.9/16.7, 32.9/16.1 -> 44.0/12.9, 53.9/11.0 -> 67.3/7.6, Kozolec and the third site identical |
 | `EDGE_KERNEL` / `EDGE_BIN` / `EDGE_TAU_S` / ~~`EDGE_RECUT`~~ | 1.0 / 0.25 / 10 d / every step (32 steps until 2026-10-04) | smoothing of the size histogram (in measurement errors), its bin, how fast it fades; its valleys are cut again at every step, the step in it | count | — | offline: 1 error wins among 1, 1.5, 2, 3 on physics grounds; the score always prefers wider (only 15 % labelled). Every 32 steps counted from the group's first, a step dropped moved every later cut (exp4); on the clock (600 / 3600 s) as robust but 3-5 points less pure at Home hidden |
 | `EDGE_ANGLE` (`EDGE_ANGLE_BIN` 3°, `EDGE_ANGLE_KERNEL` 6°) | **off** | the step's reactive angle, atan2(dQ, dP), as a second clustering dimension: within a size segment, steps are cut again at the valleys of their angle density, so a pump (~35°) and a heater (0°) of one size are two kinds of edge | switch | — | **not yet measurable**: only a SIGNED var gives the angle, and Home's grid meter signs it only from 2026-09-30 07:57 - ten days of it exist from about 2026-10-10 (Kozolec's Victron and the 3EMs are unsigned). Synthetic test only (900 W at 0 and at 630 var: one cluster off, two on). Bench it on Home's ten days then, against the purity, the pump (its cluster shares A with the compressor's leg) and the kiln, whose legs read 0.866 with opposite-signed var |
 | `PAIR_MIN_RUNS` / `ABOVE_CHANCE_ODDS` | 8 / 100 | a pair is accepted once it has this many runs and a Chernoff bound puts the odds of its count by chance under 1 in `ABOVE_CHANCE_ODDS` - from the run that makes it (worked out once a pass until 2026-10-02) | count | — | **replaced shares of 30 % and 20 % (2026-09-30)**: mat hours outside heating 21.7 -> 11.5; odds 10, 100 and 1000 identical. `LINK_MIN` and the device union-find went with the all-phase events (a device is its start cluster) |
@@ -204,7 +204,7 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `NAMING_MIN_WH` | 50 | energy a load must have used to be worth naming | 10–200 |
 | `WHEN_*` | 0.65 / 7 d / 2 d / 3 | when "usually runs mornings" etc. may be said | — |
 
-Two settings were REMOVED from the detection page on 2026-09-23 at Anze's
+Two settings were REMOVED from the detection page on 2026-09-23 at the owner's
 request; their values are fixed (`DEFAULT_MIN_EVIDENCE`, `MIN_NOISE_W`) and a
 stored choice is ignored. What they did, measured before removing them:
 "How sure before offering a load" (min evidence) only filters the naming
@@ -417,7 +417,7 @@ change's span can start: SUSTAIN_CADENCES (3) of the meter's cadence.
   missing; the shortfall fix alone costs Home a point of purity and 1.8 of
   pooled energy precision for 5 pump runs, 3 kiln single-legs and Kozolec's
   charger; together every precision figure is at or above the old one but
-  the fridges' A/B purity (87 -> 86 %, one run: the two fridges Anze would
+  the fridges' A/B purity (87 -> 86 %, one run: the two fridges the owner would
   rather see as one). What the fix gives back of the estimator's Home
   precision (85.8 -> 82.8 pooled) is the trade still open: the pump
   signature's extra wrong energy is a handful of 25-67 min runs starting
@@ -454,7 +454,7 @@ wconc 36 against the baseline's 48).
 Open defects, with what is measured and what is guessed. Numbers are from the
 two sites' ten-day exports unless stated.
 
-### To explore or discuss (Anze, 2026-10-03)
+### To explore or discuss (2026-10-03)
 
 - [ ] **Explore: a daily retroactive repair pass.** The statistics can be
   rewritten, so once a day a more thorough pass could re-file the day's runs
@@ -472,7 +472,7 @@ two sites' ten-day exports unless stated.
   the day, by time) - the excess off the runs no meter measured, the one open
   longest first - and their signatures' hours with them; the hourly
   statistics check then rewrites the named loads' hours. Impurity down at
-  every site (Andrej hidden 9.7 -> 7.3, Kozolec hidden 4.0 -> 2.2, Home fed
+  every site (the third site hidden 9.7 -> 7.3, Kozolec hidden 4.0 -> 2.2, Home fed
   devices 8.6 -> 6.7) for about a point of capture. The two candidates
   above, re-checked with the day's meters, moved 5 runs in ten days (the
   stream's held-meter and phase tests already catch them), and re-filing
@@ -663,7 +663,7 @@ whose stops are never matched, up to 12 at once. Not caused by the sustain
 problem (peak open edges is unchanged when that is fixed).
 
 **A sub-meter's detection now overrides the main meter's - built (gen 14).**
-Anze asked for it on 2026-09-22 and it was not built then (see "When Anze
+The owner asked for it on 2026-09-22 and it was not built then (see "When the owner
 lists several things"): *a detection on a sub-meter should always override
 one at a higher level, especially if it is the less noisy one.* As built
 (`SUB_OVERRIDE`, `SUB_METER_IDENTITY`): the main meter keeps the TIMING, and a
@@ -684,7 +684,7 @@ That decides both halves:
   the whole house 80.6 % purity; less its sub-meters 64.3 %, with 106 sessions
   still labelled as the hidrofor that had been subtracted (phantoms at its
   switching moments). What is LEFT does gain a little - the workshop boiler,
-  under no sub-meter, 34 -> 39 in its main cluster. Anze asked whether putting
+  under no sub-meter, 34 -> 39 in its main cluster. The owner asked whether putting
   every series on one clock first would help: interpolating the sub-meters
   onto the house's readings gave 64.2 % and 92 phantoms; resampling everything
   to 1 s gave 57.9 % and 409, since the house's own steps become ramps. A
@@ -717,10 +717,10 @@ up on when the phase shows it is no longer running, not by the clock.
 open, with no session at all - nearly all of the card's "starts never
 closed": the grid's detector, SLICE=6, Home 1,212 / 1,183 / 907 runs (16.9 /
 15.2 / 12.9 kWh at their start size) hidden / circuits / fed, Kozolec 40 / 12,
-home-hisa 399 / 388, home-mansarda 73 / 71, Andrej 161 / 169; the meters' own
+home-hisa 399 / 388, home-mansarda 73 / 71, the third site 161 / 169; the meters' own
 detectors, fed, Home 649 runs and 81 kWh (the EVBox's tapering charges 41, the
 Hiša 3EM 13, Susilna's 20-hour dehumidifier runs 12, Mansarda 11), Kozolec 60
-/ 3.4, Andrej's go-e 17 / 5.8. Mostly short and small (median 61 W, 42 s at
+/ 3.4, the third site's go-e 17 / 5.8. Mostly short and small (median 61 W, 42 s at
 Home), a few hours long. Now the runs the fall's unpaired part covers close at
 their share of it, the rest at their own size, as the conservation stop
 closes a run the reading cannot carry; "starts never closed" is 0.0 % at every
@@ -729,7 +729,7 @@ and NOOP=drop:10000:1 and :2 on both sides): Home's capture up in every mode
 and replicate (devices hidden 33.9 / 16.7 -> 36.1 / 16.3, circuits 44.0 / 12.9
 -> 49.6 / 10.1, fed 67.3 / 7.6 -> 70.9 / 6.6; partition 49.8 / 16.5 -> 51.4 /
 16.4, 62.1 / 9.0 -> 65.1 / 7.0, 73.4 / 6.9 -> 77.2 / 6.8), its impurity flat on
-average; Andrej fed the go-e 83.4 / 4.3 -> 92.8 / 7.7 (+3.4 impurity in all
+average; the third site fed the go-e 83.4 / 4.3 -> 92.8 / 7.7 (+3.4 impurity in all
 three, the Rest's 13.6 -> 6.1); Kozolec +0.1 impurity; kiln and mat unchanged;
 invariance 0. Closing only the covered runs (298 of Home's 1,212 hidden) moved
 Home's hidden card nowhere. The washer-dryer's 03:56 and 05:47 cycles of
@@ -770,7 +770,7 @@ same moves in two paired NOOP replicates: Home fed devices 70.9 / 6.6 ->
 captured). The grid's runs of 1 kW or more the EVBox switched on with, fed:
 86.2 kWh booked against the 113.8 the meter drew over them -> 113.3. Not
 reached: runs no meter owns (hidden, circuits) and meters holding several
-(bench.PROD_SINGLE does not declare Andrej's go-e; declared, a replay's fed
+(bench.PROD_SINGLE does not declare the third site's go-e; declared, a replay's fed
 devices 92.9 / 8.0 -> 98.7 / 9.0). Following a run alone on its phase at the
 phase's level above its floor was benched and left out: the grid's floor holds
 cycling loads, and Home's hidden Hiša lost right energy as fast as wrong
@@ -805,7 +805,7 @@ and exp8's "on until the meter shows it off" on top (neutral at Home now, +0.3
 impurity at Kozolec).
 
 **A load inside a meter holding several devices is that meter's (2026-10-03).**
-Anze, naming Mansarda's fridge and freezer: "if a same load is detected by
+The owner, naming Mansarda's fridge and freezer: "if a same load is detected by
 both meters, shouldn't the reading collapse into a single device anyway?" A
 parent's run (the grid's, or a meter's others hang under) that a child meter
 holding several devices filed a session of - same moment, same size, its own
@@ -815,7 +815,7 @@ meter's word stays identity, as before. Two exceptions, both so a name stays
 where it was given: the run's device files into a parent signature the user
 named (`Detector.device_signature`), or a name a reset carries looks like the
 run (`Detector.awaited`) - Home's Peč za glino and Inkubator sit in Hiša,
-Kompresor in the Delavnica, all named on the grid; moving a name is Anze's
+Kompresor in the Delavnica, all named on the grid; moving a name is the owner's
 call. A name lives on any detector's signature, (meter, id) with the grid
 under "" (`Fleet.names`, `energy_by_name`, `active_by_name`, `rename`,
 `adopt`, `name_descriptors` / `carry_names` - a reset hands a meter's name
@@ -858,7 +858,7 @@ the single-phase sessions it shares with the main meter - a permutation, so
 the kiln stepping on two phases cannot tie - and matching uses it: the attic's
 credited sessions rose 214 -> 279 on held-out days. It is pure and
 self-contained because Load Juggler needs the same answer to be easier to set
-up (Anze, 2026-09-23).
+up (2026-09-23).
 
 **A pass is only a pause (2026-10-02).** Production reads the recorder six
 hours at a time while it catches up and a minute at a time after, and until
@@ -879,7 +879,7 @@ meters (`Fleet._ready_at`), a meter session's vote (`_vote_blocked`) - fires
 when its moment comes on that clock, before the next reading or in the next
 pass; what is not due when a pass ends is carried, and stored (`pending_rises`,
 the timed `unfiled` / `pending_main` / `unvoted` lists). Sessions are filed when
-they become decidable, ties by start - one order the data fixes (Anze) - and
+they become decidable, ties by start - one order the data fixes (the owner) - and
 device merges run after each filing, never into a signature a run was kept out
 of (`Signature.apart`). The horizon is the slowest meter's DECLARING lag against
 the grid, learned from the steps the two share where each is the only one of
@@ -890,7 +890,7 @@ a meter's own levels are confirmed over three of its repeat intervals or its
 learned report lag, whichever is longer - over the lag alone, Home's fed
 impurity doubled (14.9 -> 24.7 %: half-caught readings founded levels, the
 hidrofor's runs split over two signatures). Only a meter that has shared a
-step with the grid sets the horizon (Anze: one that never does has nothing
+step with the grid sets the horizon (the owner: one that never does has nothing
 the grid waits for - Home's Server UPS, a 60 s heartbeat, had held Home at
 the 300 s cap at twice its latency); a meter with a step shared but fewer
 than 20 sets it at twice its latency until its lag is believed - only the
@@ -931,7 +931,7 @@ and both are credited its draw, a scorer quirk); home-hisa hidden 8.7 / 31.7 ->
 7.2 / 9.9, fed 2.4 / 31.5 -> 22.3 / 36.7; home-mansarda hidden 24.3 / 15.8 ->
 27.9 / 11.2, fed 30.8 / 6.8 -> 32.3 / 6.4. A meter's rise inside a bigger start
 takes its part since 2026-10-02 evening (`_split_rise`, `_meter_started`: the
-plug's 265 W and a fan's 48 W switching on in one reading - Anze: "a separate
+plug's 265 W and a fan's 48 W switching on in one reading - the owner: "a separate
 fan in all likelihood"), a leg of a multi-phase event can be a total-only
 meter's, and a meter's own settling fall or a reading that dipped under the
 run does not end it. Against the scorer-fixed card `0928354-20261002T175951Z`
@@ -985,14 +985,14 @@ last reading of each burst instead, which needs no judgement about freshness.
 
 **...and the two are not read at one moment** (exp12, 2026-10-04). Polled
 together, the M1 reports part of each change of the inverter's a poll later:
-least squares of its moves on the inverter's over ten days, Andrej 66 % at
+least squares of its moves on the inverter's over ten days, the third site 66 % at
 once, 22 % at the next 5 s poll, 8 % the poll before; Home 77-80 % at once,
 17-19 % 2 s later. So every cloud shows in the house as a load for a reading,
 and a ramp holds a phantom while it lasts: by day where the inverter moved
-Andrej's house moved 13 W a reading (4.7 where it did not; Home 19-23 against
+The third site's house moved 13 W a reading (4.7 where it did not; Home 19-23 against
 5-14), and the idle noise learned from those moves sat at 12.5-14.5 W by day
 against 10 at night (Home's A 14.5 / 10). Of the house steps declared by day,
-the grid meter itself moved less than half of 11 % at Andrej (613 of 5,651)
+the grid meter itself moved less than half of 11 % at the third site (613 of 5,651)
 and 3.7 % at Home (1,222 of 32,899), the inverter the rest; at night 8 and 11.
 Kept: the detector is handed what the inverters add to each phase of a house
 built from them (`detection.array_in_house`, the bench's `|array` series) and
@@ -1001,14 +1001,14 @@ the array moved under by the noise or more. Card, SLICE=6, capture / impurity,
 three paired draws (plain, drop:10000:1, :2), mean move [band]: Home fed
 devices +2.2 / -1.8 [2.2 / 1.0], partition +1.1 / -1.6 [0.8 / 0.8], hidden
 +1.8 / -0.5 and +1.4 / -0.2 [1.7 / 2.5, 1.0 / 1.9], circuits +1.9 / -0.4 and
-+2.0 / +0.7; Andrej's charger -2.0 / -0.8 hidden, -2.1 / +0.6 fed [0.9 / 1.9,
-0.7 / 1.5] - a trade, Andrej's capture lost in every draw, its impurity
++2.0 / +0.7; the third site's charger -2.0 / -0.8 hidden, -2.1 / +0.6 fed [0.9 / 1.9,
+0.7 / 1.5] - a trade, the third site's capture lost in every draw, its impurity
 inside the band; Kozolec and the circuit sites read no inverter. Tried and dropped (patch
 `exp12-dials.patch`): reading the inverter late by its measured share of a
-poll (`_read_late`, 0.30 at Andrej, 0.22 at Home; the house's moves fall by a
+poll (`_read_late`, 0.30 at the third site, 0.22 at Home; the house's moves fall by a
 third, the day noise to the night's, but the card moves inside its band); a
 house step declared only where the grid meter moved its way (a sun ramp under
-a real step looks the same - Andrej +3.5 to +4.5 impurity).
+a real step looks the same - the third site +3.5 to +4.5 impurity).
 
 ### Instrument limits, not bugs
 
@@ -1035,7 +1035,7 @@ before until a `reset_detection` re-runs the backfill.
 
 Don't re-chase these; each cost real time.
 
-- **All-phase events read off the raw house readings** (2026-09-30, Anze's window
+- **All-phase events read off the raw house readings** (2026-09-30, the owner's window
   rule: each phase's level from the K readings nearest the step on each side,
   the window reaching at most 30 s and cut at the previous / next trigger on any
   phase, components under the phase's noise zero). Against 5,100 meter-labelled
@@ -1048,12 +1048,12 @@ Don't re-chase these; each cost real time.
   per-phase DETECTED steps by time (V 0.466, device-in-top 0.387 vs 0.489 /
   0.322 per phase) is the viable form of a multi-phase event; scripts
   `vector_events_c.py` (raw windows) and `vector_events.py` (joined steps).
-  Anze's objection (2026-09-30): the first comparison changed two things at
+  The owner's objection (2026-09-30): the first comparison changed two things at
   once - the detector's steps carry a sustain check, the raw vectors did not.
   Re-run with each component required to hold across the next K readings
   (SUSTAIN=1): V 0.325 (K 2) and 0.374 (K 3) against 0.320 / 0.375 without,
   the detector's groups 0.477 / 0.479 on the same events. The sustain check
-  is not the difference. Anze's second objection: "multi-phase" counted any
+  is not the difference. The owner's second objection: "multi-phase" counted any
   component over its phase's own noise floor, so a 40 W wobble on B beside a
   900 W start on A made an 'ab' event. With a component counted only above a
   share of the event's biggest one (REL): K 3, sustain, 0.2 -> V 0.403,
@@ -1076,7 +1076,7 @@ Don't re-chase these; each cost real time.
   the per-phase groups on the SAME events 0.460 / 0.867 / 0.373. Even. The
   kiln comes out 'ac' on 660 of 664 events without any device link, which is
   the structural gain; the labelled set cannot score it. BALANCE hardly
-  matters, as Anze said (a real multi-phase load shows on its other phases at
+  matters, as the owner said (a real multi-phase load shows on its other phases at
   well over 20 %).
 - **Capping an edge cluster's width** at what the meter resolves (8 units of the
   size scale, a noise either side at small steps, ~8 % at large; segments cut
@@ -1168,7 +1168,7 @@ Don't re-chase these; each cost real time.
   and 95 % of pulses within 0.04 of sqrt(3)/2, none near 1.0). One resistive
   element between two phases draws one current 30 degrees off each phase
   voltage, so each phase reads PF 0.866 with reactive parts of opposite sign;
-  two elements to neutral would read 1.0 on both. Anze expected phase to
+  two elements to neutral would read 1.0 on both. The owner expected phase to
   neutral; the house meter's V x I gave 0.92, blurred by the baseline. So the
   kiln is always a two-phase load with equal currents on A and C, its per-phase
   power factor 0.87 is geometry, not the element, and with the signed var its
@@ -1207,7 +1207,7 @@ Don't re-chase these; each cost real time.
   is pairing on learned edge pairs and devices with levels (stages B and C),
   not more rules on this one.
 - **`_unseen_stop` waiting for the shortfall to hold across N settled levels**
-  (Anze: "a couple impossible readings before we decide", 2026-09-29), checked
+  (The owner: "a couple impossible readings before we decide", 2026-09-29), checked
   at rises as well as drops. The closes that fall within 30 s of a >1 kW solar
   swing did not fall (23-30 % of sunny closes at N 1-3, against 13 % of sunny
   moments): the shortfall there persists, so it is not a one-reading blip. The
@@ -1252,7 +1252,7 @@ Don't re-chase these; each cost real time.
   `SUB_POWER` (the quieter sub-meter's power: NASA 26 -> 22). And run length in
   grouping at all - `keeps_time`, `duration_factor`, `LOOSE_DURATION_FACTOR`,
   `DURATION_IDENTITY_*`, the pairs' overdue close (`PAIR_OVERDUE`) and the
-  newest-bigger-load step-down guess (`STEP_DOWN_GUESS`): Anze, 2026-09-29, run
+  newest-bigger-load step-down guess (`STEP_DOWN_GUESS`): the owner, 2026-09-29, run
   length and frequency raise confidence, they do not group. Without them Home
   76.0 / 56.2 % against 75.9 / 53.7 with, 147 signatures against 197.
 - **Fixed dials and their dead branches, removed 2026-10-01** (pure deletion:
@@ -1278,7 +1278,7 @@ Don't re-chase these; each cost real time.
   Kozolec 98.3 / 94.1, fridges 167 at the right length. Removed as neutral:
   `START_SHAPE_SPLIT` and its shape machinery (Kozolec's two fridges kept apart
   by their starts: everything within noise, and one right combined fridge is
-  what Anze wants), `PAIR_HOME` (identical: a device's home decides first),
+  what the owner wants), `PAIR_HOME` (identical: a device's home decides first),
   `ORPHAN_MARGIN` (was off). Kept, each clearly needed off it: the three
   cross-leg corroboration rules (kiln 864 -> 787 without the stop one),
   `SAG_CLOSE` (fridges 167 -> 92), `SAME_CLUSTER_ENDS` and `INPUT_ENDS` (mat
@@ -1326,4 +1326,14 @@ Don't re-chase these; each cost real time.
   phase's shift over 20 s before and 6-24 s after any trigger): V 0.379 against
   0.466 joining per-phase steps within 3 s at a balance of 1:2, and 0.489
   per-phase - the wide windows took in other loads' changes. Measure the size
-  over +-2 readings and widen only while no other phase triggers (Anze).
+  over +-2 readings and widen only while no other phase triggers (the owner).
+
+## Working rules behind the dials
+
+- **Explore boldly, do not fine-tune** (2026-09-29, redesign work). Build the whole mechanism end to end on a branch, commit freely, bench it, and iterate before judging. A regression means dig further, not revert: stopping at the first dip keeps the work at the old pipeline's local maximum. Production changes still get backups and identical-or-better benches.
+- **Fewest special rules** (2026-09-30). Remove overly specific rules whose effect on the end result is within bench noise (about 0.5 purity, a few kiln or pump runs, a few mat hours), with their dial and tests. Prefer a general mechanism (edge library, devices, input keys) over a rule for one load. When adding a fix, first ask whether an existing general mechanism should carry it.
+- **One accurate detection over two unreliable ones** (2026-09-29). When two look-alike devices cannot be told apart reliably (Kozolec's two fridges), one accurate combined detection beats two noisy halves. Do not spend effort keeping look-alikes apart unless that also improves their combined accuracy.
+- **Under-report over over-report** (2026-09-30): "Capturing 80% of actual energy a device (group) consumed is much preferred over assigning 20% over." Energy credited to a named load that it never drew is misinformation on the Energy dashboard and in forecasts. Weigh precision above recall; prefer closing runs early, gating, and keeping look-alikes out over catching every run.
+- **Imbalance alone is not two loads** (2026-09-22). An unbalanced multi-phase signature may be one machine: a three-phase motor plus single-phase parts. Never split on imbalance alone. Rank the evidence: how reliably the legs co-occur first (one contactor switches them together), size second (real multi-phase loads here are large and balanced), imbalance last.
+- **Old names are not worth chasing** (2026-09-30). After a library reset, names that do not find their load again are not worth engineering for, and the owner would drop them. Do not add matching logic to re-attach carried names; if the orphan-carrying mechanism (`orphan_names`, `_reclaim`, `carry_names`, `name_descriptors`) gets in the way, propose deleting it.
+- **A load's power factor is its movement**, not the meter's factor (2026-09-17): how far its watts and its VAr moved when it switched. Ratios are not additive; watts and VAr are.

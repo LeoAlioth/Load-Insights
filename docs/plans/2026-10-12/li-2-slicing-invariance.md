@@ -1,9 +1,9 @@
 # LI-2 - Slicing and restart invariance, recorder flush: verify and ship (plan, 2026-10-12)
 
 Personal project (Load Insights). Never log to any work-context file.
-Repo `/Users/anzek/Projects/Load_Insights`, branch `dev`, head `482aa9a` (pushed: origin/dev = dev).
+Repo `~/Projects/Load_Insights`, branch `dev`, head `482aa9a` (pushed: origin/dev = dev).
 Background: `~/.claude/plans/okay-while-the-other-refactored-sedgewick.md`, "Phase 2".
-Anze's decisions (2026-10-12): verify and ship; yes to the RESTART dial (sections 3-4) and to the
+The owner's decisions (2026-10-12): verify and ship; yes to the RESTART dial (sections 3-4) and to the
 recorder flush before each pass (section 5). This file is a plan only - nothing below has run.
 
 ## 0. Where phase 2 stands (git log, AGENTS.md, data/scorecard)
@@ -37,7 +37,7 @@ already has the bullet "The same history gives the same answer, however it is re
   387-508 s from a pass boundary). Gone on later code (0005337 NOOP cards: 0), never explained.
 - **Last recorded: 2026-10-04 10:25Z, `nogit-exp11p-bn3` (Load_Insights-invariance tree at
   8da9de1-dirty): 0 sessions / 0.0 kWh, all 11 site-modes x 3 pairs** (home hidden/circuits/fed,
-  kozolec hidden/fed, home-hisa and home-mansarda hidden/fed, andrejg hidden/fed). Last on a dev
+  kozolec hidden/fed, home-hisa and home-mansarda hidden/fed, third hidden/fed). Last on a dev
   commit: `9b7c69c-baseline-fixedscore`, 10-04 07:01Z, also 0. Both on 23 Sep - 2 Oct.
 
 **Not measured since** (card replays one slicing since 50cef4e, 10-09; history now 2-11 Oct).
@@ -49,7 +49,7 @@ already has the bullet "The same history gives the same answer, however it is re
 5. bd93df0 - step angle always on (`edge_hist_angle`)
 6. 26575f8, 0089156, 21a6043, b6832db, 963f949, 5362664 (refactor, "same output" at SLICE=6)
 
-**Still open, now in scope (Anze, 2026-10-12: yes to both):**
+**Still open, now in scope (2026-10-12: yes to both):**
 - Restart-only state (AGENTS "A pass is only a pause"). The bench never restarts mid-stream, so
   invariance covers passes held in memory only. Fields that are in memory and not in `to_dict`:
   PhaseState `declared`, `steady_ts`, `held_drops`, `recent_closed`, `_moved` (l.1704-1732); Detector
@@ -64,11 +64,11 @@ already has the bullet "The same history gives the same answer, however it is re
 
 ## 1. Verification run (at the current dev head)
 
-Before: check plan usage (< 90 %, CLAUDE.md); libench only if Anze is not using it, else the Mac; no
+Before: check plan usage (< 90 %, CLAUDE.md); libench only if the owner is not using it, else the Mac; no
 other bench on the Mac (else `BENCH_PARALLEL=4`); no `fetch_history` writing into `data/history/*`.
 
 ```bash
-cd /Users/anzek/Projects/Load_Insights
+cd ~/Projects/Load_Insights
 SCRATCH=<the running session's scratchpad dir>   # untracked outputs and scripts go here
 git status --short                      # clean; note `git rev-parse --short HEAD`
 python3.14 tests/run_all.py             # all pass (incl. test_a_pass_is_only_a_pause & co.)
@@ -77,7 +77,7 @@ BENCH_PARALLEL=8 python3.14 tests/energy_bench.py card SLICINGS=all LABEL=invari
 ```
 
 One command covers every site the tool knows: home (hidden, circuits, fed), kozolec (hidden, fed),
-home-hisa and home-mansarda (hidden, fed), andrejg (hidden, fed) - 11 site-modes x SLICE=0 / 6 / 1 /
+home-hisa and home-mansarda (hidden, fed), third (hidden, fed) - 11 site-modes x SLICE=0 / 6 / 1 /
 LIVE=1 = 44 replays, PYTHONHASHSEED=0 in each. Estimate on the Mac: ~20-30 min (today's one-slicing
 card takes 300-450 s for 11 replays; one call and LIVE=1 cost more than SLICE=6); libench ~10 min.
 
@@ -87,7 +87,7 @@ Per site, to re-run only what differs (4 replays each; fed unless `SUBS=`):
 B="env BENCH_PARALLEL=8 python3.14 tests/energy_bench.py invariance"
 $B home data/history/home SUBS=none;      $B home data/history/home SUBS=circuits;  $B home data/history/home
 $B kozolec data/history/kozolec SUBS=none; $B kozolec data/history/kozolec
-$B andrejg data/history/andrejg SUBS=none; $B andrejg data/history/andrejg
+$B third data/history/third SUBS=none; $B third data/history/third
 $B home-hisa data/history/home SUBS=none;  $B home-hisa data/history/home
 $B home-mansarda data/history/home SUBS=none; $B home-mansarda data/history/home
 ```
@@ -108,7 +108,7 @@ anything differs, do section 2 first. Restart work goes on top of a code base th
 
 ## 2. Whatever still differs: triage, then fix
 
-Per differing site-mode, smallest replay first (kozolec < andrejg < circuit sites < home hidden <
+Per differing site-mode, smallest replay first (kozolec < third < circuit sites < home hidden <
 circuits < fed):
 1. **Earliest first, not biggest.** The worklist is sorted by kWh; sort by start. Later differences are
    usually a library that already diverged. Fix the earliest; re-run; repeat.
@@ -240,7 +240,7 @@ the last hourly snapshot. The bench covers that path with SLICE=6 + LIVE=1, plus
   New `to_dict` fields get defaults, so an old store loads with them empty, exactly as today. Upgrading
   is one last restart that still loses the in-memory state.
 - Reset (`load_insights.reset_detection`, names kept): only if the fixed differences on 6~L1 or
-  L1~L1R are material, meaning more than about 1 % of a site's detected kWh. Anze decides. Otherwise the
+  L1~L1R are material, meaning more than about 1 % of a site's detected kWh. The owner decides. Otherwise the
   libraries heal as days roll out of the ten.
 
 ## 7. Docs, release notes, deploy
@@ -273,9 +273,9 @@ gives the same answer, however it is read":
 - If slicing fixes landed: "Checked again on the ten days to 11 October: (N runs, X kWh had differed:
   <one plain sentence per cause>)."
 
-Deploy, only when Anze says:
-- Push `dev`. It auto-builds a pre-release, and Home and Kozolec pull it. Andrej's site gets it only
-  when Anze says.
+Deploy, only when the owner says:
+- Push `dev`. It auto-builds a pre-release, and Home and Kozolec pull it. The third site gets it only
+  when the owner says.
 - Restart each site (AGENTS "Deploying"). No reset unless section 6 decided one.
 - After `caught_up`, check `last_pass.flush_s` in each site's diagnostics.
 - Optional: one restart a few hours later, then confirm detection resumes with no failures in the log.
@@ -296,7 +296,7 @@ construction, but that is not yet proven on current dev. li-1's restart item (`_
    `test_the_days_repair_after_a_restart` becomes an instance of the general rule.
 6. li-1's own bench work and changes, read against the restart-clean card from step 5.
 7. Last: one `SLICINGS=all` card on the final commit (all five pairs 0). It goes in the AGENTS headline
-   (section 7), and one push covers both plans, when Anze says.
+   (section 7), and one push covers both plans, when the owner says.
 
 ## Done when
 - `card SLICINGS=all` at the head shows 0 sessions / 0.0 kWh for 11 site-modes x 5 pairs
@@ -305,4 +305,4 @@ construction, but that is not yet proven on current dev. li-1's restart item (`_
 - Every fix has its test (two slicings or a restart at the case's boundary) and a card + diff in its
   commit message. Home's store size before/after is stated.
 - The recorder flush is committed and `flush_s` is published.
-- AGENTS.md and RELEASE_NOTES.md are updated and committed locally on dev. The push waits for Anze.
+- AGENTS.md and RELEASE_NOTES.md are updated and committed locally on dev. The push waits for the owner.

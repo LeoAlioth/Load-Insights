@@ -61,7 +61,7 @@ from . import detect as _d   # read at call time, so the bench's dials reach the
 # of 2026-10-14 that the properties were first measured with). A moment is
 # decided only once every meter's readings reach this far past it.
 PROPS_REACH_S = 90.0
-# A step's levels are read over WINDOWS of its channel's readings (Anze,
+# A step's levels are read over WINDOWS of its channel's readings (the owner,
 # 2026-10-14: "an edge should include a couple readings before and after the
 # actual step ... up to my 5 minute max delay ... and of course to the
 # next/previous event"): before it from this long back or the channel's
@@ -72,7 +72,7 @@ WINDOW_S = 300.0
 # A clear step (conservation and coverage, see _clear): one at least the
 # meters' idle noises added together (PhaseState.noise, a step's floor) - the
 # parent's channels and every child leg involved - with no factor on top
-# (Anze, 2026-10-14: no multiplier). Conservation judges only those moments
+# (2026-10-14: no multiplier). Conservation judges only those moments
 # and counts the rest apart: of the grid>Hiša moments that did not add up,
 # 4,461 of the 4,945 with a step of their size nearby had children under
 # 100 W, their parent's step of that size anywhere in the two minutes looked
@@ -542,7 +542,7 @@ class Assembler:
         return rows[i][0] if i < len(rows) and rows[i][0] <= x.t + PROPS_REACH_S else x.t
 
     def _settle_once(self) -> Tuple[List[Step], Dict[int, Step]]:
-        """A level a meter read once is no level (Anze, 2026-10-14): a step
+        """A level a meter read once is no level (2026-10-14): a step
         whose channel's next reading starts a step back toward where it came
         from, no more than half its size, is measured to where the meter
         settled - that second step is its settle, not a step of its own, and
@@ -692,20 +692,20 @@ class Assembler:
 
     def signed(self, legs: Sequence[Step]) -> bool:
         """Do ``legs``' channels read a SIGNED reactive power then (``qsigned``:
-        the meter publishes one - Home's grid from 30 Sep, Andrej's from
+        the meter publishes one - Home's grid from 30 Sep, the third site's from
         8 Oct; one worked out from the apparent power, as Home's 3EMs', has
         no sign)?"""
         return all(self.qsigned.get((x.meter, x.ch), math.inf) <= x.t for x in legs)
 
     def _reactive(self, meter: str, places: List[Step], held: List[Step]):
-        """The edge's reactive angle (Anze, 2026-10-14): its size from the
+        """The edge's reactive angle (2026-10-14): its size from the
         innermost meter of its chain that reads a reactive power, its sign
         from the innermost that reads it signed - the place's own where it
         has them, else a meter's above whose entry is the same step (its
         step and the place's agree within both meters' noise, as
         conservation judges them) and whose reactive step clears that
         meter's own reactive noise (its windows' spread, ``windows``).
-        With no signed meter on the chain (Kozolec's V x I, Andrej's history)
+        With no signed meter on the chain (Kozolec's V x I, the third site's history)
         nothing is lent: the place's own reactive step, signed as it reads -
         lent unsigned, the grid's |angle| on Kozolec's plugs took the mirror
         78.1 -> 68.8 % (2026-10-15).
@@ -915,7 +915,7 @@ def _err(e: dict, p: str) -> Optional[float]:
 def stats(items: Sequence[dict]) -> dict:
     """A group's centre and error per scored property (and the resistance):
     (median, hypot(its edges' median error, its own spread), count) - each
-    edge's error refined by what the group shows (Anze, 2026-10-15: "per
+    edge's error refined by what the group shows (2026-10-15: "per
     meter for each edge, and then later for the group")."""
     out = {}
     for p in ("size", "r", "angle", "surge", "wobble"):
@@ -939,7 +939,7 @@ def _one(e: dict) -> dict:
 def distance(a: dict, b: dict, props: Sequence[str] = SCORED) -> Tuple[float, int]:
     """Two groups' (``stats``) distance: the sum over properties of (their
     difference / their errors together)^2 - a well measured property pulls
-    hard, a vague one hardly at all (Anze, 2026-10-15: "if two loads are
+    hard, a vague one hardly at all (2026-10-15: "if two loads are
     scored strongly on PF, they should be more eagerly grouped by that") -
     and how many were compared. The size is compared as the resistance where
     both have one (V^2 normalises the voltage: the oven's elements 0.5 %
@@ -1033,7 +1033,7 @@ def _cut(es: List[dict]) -> List[List[dict]]:
 
 def group(edges: Sequence[dict]) -> List[dict]:
     """Edges grouped per (place, direction, phase pattern) by their measured
-    errors (Anze, 2026-10-15): cut at the valleys of the size density in the
+    errors (2026-10-15): cut at the valleys of the size density in the
     windows' own error (pe, not a unit and EDGE_SCALE_REL 2 %) and then of
     the angle density, smoothed by the segment's angle error (``_cut``). An
     edge whose tolerance - its own errors and a group's, every scored

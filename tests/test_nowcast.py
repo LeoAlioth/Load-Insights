@@ -118,7 +118,7 @@ def _two_state_setup(weeks=10, seed=2, second_is_copy=False):
 
 
 def test_two_states_that_each_drive_the_device_are_both_kept():
-    """A floor mat's thermostat reads the room and the floor (Anze, 2026-09-28):
+    """A floor mat's thermostat reads the room and the floor (2026-09-28):
     both, where both carry something."""
     a, b, samples = _two_state_setup()
     fc = P.forecast(samples, NOW, state_history=[a, b], state_now=[30.0, 15.0])

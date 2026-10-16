@@ -49,7 +49,7 @@ CONF_GRID_DEVICE = "grid_device"
 # subtraction artefact. Home did exactly that: the load reading was a
 # template of house consumption while the volts and amps came off the grid
 # meter, and the reactive power derived from the pair turned 121 signatures
-# into 199 in a single day (Anze, 2026-09-18). The load's own set has no prefix.
+# into 199 in a single day (2026-09-18). The load's own set has no prefix.
 GRID_PREFIX = "grid_"
 # Inverters, as a LIST from the start: one site already has two - a SolarEdge
 # cabled to a Deye hybrid's load port - and retrofitting a list onto a
@@ -69,7 +69,7 @@ LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
 # WHAT is connected there, which the topology does not say. An AC input is
 # an AC input whether the utility or a generator is behind it, and Kozolec
 # has the second: an off-grid site whose MultiPlus input port feeds from a
-# generator, idle - and so reading zero - almost all the time (Anze,
+# generator, idle - and so reading zero - almost all the time (the owner,
 # 2026-09-18). It changes nothing electrically and everything about what a
 # shortfall MEANS: energy bought at a tariff, a generator someone has to
 # start, or a load that simply goes unserved.
@@ -98,7 +98,7 @@ CONF_HORIZON_SKIP = "horizon_skip"
 # How often the recorder is re-read: every minute. The pass itself costs well
 # under a millisecond and its overheads no longer scale with it - one query
 # rather than one per entity, and the state written hourly rather than every
-# pass (Anze, 2026-09-18). It was a setting until 2026-10-01, for a large site
+# pass (2026-09-18). It was a setting until 2026-10-01, for a large site
 # or slow storage; a slower one bought latency, not accuracy, and an entry
 # that stored one keeps it unread.
 DETECTION_INTERVAL_MINUTES = 1
@@ -122,7 +122,7 @@ HISTORY_SAVE_INTERVAL_S = 86400.0
 NAMING_MAX_STALE_S = 3600.0
 # How sure the detector must be that a signature is a real repeating load
 # before it is offered for naming. A house makes far more shapes than it has
-# appliances, and a list of two hundred is a list nobody reads (Anze,
+# appliances, and a list of two hundred is a list nobody reads (the owner,
 # 2026-09-18). Evidence is the score: how often it has been seen and how
 # tightly its power and duration repeat. A fixed policy since 2026-09-23 - it
 # was a setting nobody could judge a value for.
@@ -140,7 +140,7 @@ NAMING_MIN_ROWS = 5
 # The naming page earns its length. It opens with a handful - the few loads the
 # library is surest of - and lengthens as the user names them, because the
 # right number of rows is not a property of the site but of how much work the
-# person has already done (Anze, 2026-09-22). A static bar cannot do this: set
+# person has already done (2026-09-22). A static bar cannot do this: set
 # high it hides a big house's real loads for ever, set low it opens with two
 # hundred rows and is put down unread. Nothing is lost either way - the library
 # holds every signature and the page says how many are waiting.
@@ -162,7 +162,7 @@ HISTORY_WEEKS = 12
 # The model is hourly - it can only change when a completed hour's statistic
 # arrives - so the forecast is recomputed once an hour, a little after the
 # mark so the recorder has compiled that hour. It was every quarter hour;
-# three of those four refreshes carried nothing new (Anže, 2026-09-16).
+# three of those four refreshes carried nothing new (2026-09-16).
 REFRESH_MINUTES = (0,)
 REFRESH_SECOND = 30
 

@@ -1,4 +1,4 @@
-"""Known truths for the cross-meter edges (Anze, 2026-10-15: "judge the
+"""Known truths for the cross-meter edges (2026-10-15: "judge the
 groupings against known truths from now on"). Beside tests/edge_bench.py,
 whose replay and edge machinery it reuses (_instrument, the Assembler,
 edges.group); no devices, the detector unchanged.

@@ -180,7 +180,7 @@ def _group_title(where: str, hass=None) -> str:
 def _helpers(hass, sig, edges=()) -> list:
     """(input, what it says about this load) for each input that helped find
     it - so an input added for the whole site can be linked to the load it
-    turned out to explain once it is named (Anze, 2026-09-28)."""
+    turned out to explain once it is named (2026-09-28)."""
     out = []
     story = edge_story(edges, sig)
     said = {}
@@ -257,7 +257,7 @@ def _meter_wait_field(defaults: dict) -> dict:
 
     The rest of what was here is fixed now, and a stored choice is ignored.
     "How sure before offering a load" and "smallest change to notice" went
-    first (Anze, 2026-09-23): the first only filtered the naming page, which
+    first (2026-09-23): the first only filtered the naming page, which
     already lengthens as loads are named and never runs dry, and nobody can
     say what an evidence of 0.7 should be; the second is a floor under each
     phase's MEASURED noise that 1 to 10 W left the scored loads alone at both
@@ -283,7 +283,7 @@ def _disabled_readings(hass, device_id: str) -> int:
     A disabled entity has no state and no history, so discovery cannot use
     it and the device page hides it behind "+N entities not shown". That is
     how a meter can appear to publish nothing useful while the reading you
-    want is one click from existing (Anze, 2026-09-17)."""
+    want is one click from existing (2026-09-17)."""
     registry = er.async_get(hass)
     wanted = set(KIND_BY_DEVICE_CLASS)
     return len([
@@ -494,7 +494,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         ``menu_options.<key>``, and the frontend passes this step's
         description_placeholders into that lookup - so a fixed key whose
         template is nothing but a placeholder carries whatever we put there,
-        which is how each row shows its own numbers and its own day (Anze,
+        which is how each row shows its own numbers and its own day (the owner,
         2026-09-18)."""
         runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
@@ -577,7 +577,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         # same: the list arrives already shortened to the length the user has
         # earned, so subtracting the menu from it said "0 more" to everyone -
         # and a page whose whole promise is that it lengthens as you name
-        # things then read as "this is all there is" (Anze, 2026-09-22).
+        # things then read as "this is all there is" (2026-09-22).
         placeholders = {"group": "Named loads" if where == NAMED else _group_title(where, self.hass),
                         "count": str(len(shown)),
                         "hidden": str(waiting + max(0, len(candidates) - len(shown)))}
@@ -585,7 +585,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         for index, (ref, sig) in enumerate(shown):
             # Two lines: a menu row's own label is cut at the dialog's width,
             # so it carries only what tells one load from another, and the rest
-            # goes in the row's description, which wraps (Anze, 2026-09-23: the
+            # goes in the row's description, which wraps (2026-09-23: the
             # page "does not fit all the text").
             label, rest = sig.menu_row(tz, now_ts, ref in running)
             if sig.name:
@@ -667,7 +667,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
         A MENU, not a form: a form's only control is Submit, so going back to
         the list used to mean submitting an empty name box. As a menu, back is
-        a row like any other (Anze, 2026-09-23: "when i click on an entry i
+        a row like any other (2026-09-23: "when i click on an entry i
         would like a back button"), and naming is one click further in."""
         runner, ref, sig = self._picked()
         if runner is None:
@@ -704,7 +704,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         """The name itself. An empty box changes nothing and goes back to the
         load, where Back is. Or the device it is, picked from the meters that
         hold one: the load is named exactly as that meter, which makes it
-        that device (see insights.named) without a typo in the way (Anze,
+        that device (see insights.named) without a typo in the way (the owner,
         2026-09-29)."""
         runner, ref, sig = self._picked()
         if runner is None or sig is None:
@@ -768,7 +768,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
         It used to ask for the meter as well, and that was asking for the
         answer: given the grid connection and the inverters, what the house
-        draws is determined, not chosen (Anze, 2026-09-18). So the readings
+        draws is determined, not chosen (2026-09-18). So the readings
         live on those two pages and this one keeps the two things that are
         genuinely preferences.
 
@@ -853,7 +853,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_input_links(self, user_input: dict[str, Any] | None = None):
         """Pick an input, then what it belongs to. Every input counts for the
         whole site; a link adds a device - and every device it sits inside -
-        whose next hours a number then nudges (Anze, 2026-09-28)."""
+        whose next hours a number then nudges (2026-09-28)."""
         inputs = list(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
         if not inputs:
             return self.async_abort(reason="no_inputs")

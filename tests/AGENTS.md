@@ -2,7 +2,7 @@
 
 ## Never ship a detector change unmeasured
 
-**The local history is the last ten days** (Anze, 2026-09-30): the sites'
+**The local history is the last ten days** (2026-09-30): the sites'
 recorders keep ten days, production's reset re-reads ten, so a longer replay
 measures a library production can never hold. `data/history/<site>/` holds
 Home 19-28 Sep and Kozolec 20-29 Sep; older CSVs moved to
@@ -85,7 +85,7 @@ spurious sessions went and real ones consolidated.
 
 Production derives a reactive power for every sub-meter from what it
 publishes beside its power; the replay handed sub-meters none, so on the
-graphs every step of Home's two 3EMs sat at "no power factor" (Anze,
+graphs every step of Home's two 3EMs sat at "no power factor" (the owner,
 2026-09-30). The export now pulls the 3EMs' per-phase power factor and
 apparent power (`shellys-pf` group; the recorder held them from 2026-09-20 only,
 earlier days came back empty), and `replay.py` derives
@@ -100,7 +100,7 @@ and every count halved (caught in the recapture, 2026-09-30).
 ### The scorecard (`tests/energy_bench.py`)
 
 One question per MEASURED load - how well is it estimated from the main meter
-- in two numbers (Anze, 2026-10-02; a boiler that used 10 kWh, 9.5 kWh
+- in two numbers (2026-10-02; a boiler that used 10 kWh, 9.5 kWh
 attributed to it, 9 rightly):
 
 - **capture** = energy rightly attributed to the load / its measured energy - 9 / 10 = 90 %
@@ -126,7 +126,7 @@ only) and **fed** (`SUBS=prod`, every meter production reads); the meters are
 the truth in all three, read from the history. And two circuit sites,
 `home-hisa` and `home-mansarda`: a 3EM as the main meter, scored on the device
 inside it (replayed without reactive power: the 3EMs publish no volts or amps).
-And **Andrej's site** (`andrejg`, since 2026-10-04): the house production
+And **the third site** (`third`, since 2026-10-04): the house production
 builds (`bench.PROD_HOUSE`: a third of the inverter less the M1, per phase),
 one measured load - the go-e charger's own total (`sensor.goe_216841_nrg_11`, W
 every ~5 s; production's OCPP reading has 154 rows in ten days) - its partition
@@ -135,7 +135,7 @@ masked over any charge the house did not draw (`_away`: a span at 6 A or more
 on a phase whose energy the house, half a minute before to a minute after,
 drew under half of) - over 23 Sep - 2 Oct nothing; the trip reported for 24
 Sep 14:30-16:50 does not show (every pulse there the house drew at 0.9-1.3x).
-Andrej's Rest holds a second ~10.7 kW three-phase load for hours (09-27,
+The third site's Rest holds a second ~10.7 kW three-phase load for hours (09-27,
 09-28, 09-29 ...), likely the second charger (`charger_nova`), unfetched.
 
 **Units** (2026-10-04): the CSVs carry no unit, and until then every reading
@@ -144,7 +144,7 @@ was replayed as W - Home's EVBox (OCPP, `Polnilnica`, kW) was a 10.8 W
 production never sees. `fetch_history` now writes `units.json` beside a site's
 CSVs (each electrical entity's unit from its live state) and `replay.read_csv`
 scales by it as production does (`detect.unit_scale`); a folder of symlinks
-reads its site's. kW: Home's EVBox and Andrej's two OCPP chargers; %: the
+reads its site's. kW: Home's EVBox and the third site's two OCPP chargers; %: the
 SolarEdge M1s' power factors (unread by the replay); everything else W, A, V,
 VA, var. Every card before e7f17b3 read Polnilnica as nothing.
 
@@ -217,7 +217,7 @@ and its share impurity is 96 %). Over the noise cards it trims the band's tail
 headline: it is what a name would show; read it with the band.
 
 **Overnight baseline (2026-10-04, 77c3159, 23 Sep - 2 Oct; units fixed,
-Andrej added; `data/scorecard/77c3159-overnight-baseline-20261003T225349Z.json`,
+The third site added; `data/scorecard/77c3159-overnight-baseline-20261003T225349Z.json`,
 band `noise-77c3159-20261003T231940Z.json` over it and NOOP=drop:10000:1, 2, 3
 and jitter:1:1), capture / impurity, hidden -> circuits -> fed, every slicing
 agreeing and invariance 0:** Home's devices 19.7 / 15.9 -> 32.9 / 16.1 -> 53.9 /
@@ -227,18 +227,18 @@ hidrofor 62.8 / 27.2 -> 64.3 / 26.2 -> 47.0 / 17.9; the workshop boiler 3.1 ->
 53.8 / 12.1 -> 61.8 / 9.1 (Delavnica, 123.62 kWh with the EVBox out of it,
 49.2 / 24.7 -> 51.2 / 21.4 -> 46.5 / 16.3). Kozolec devices 89.3 / 3.0 -> 95.0 /
 3.2 fed, partition 86.7 / 4.4 -> 91.7 / 3.9. home-hisa 1.4 / 27.9 -> 10.9 /
-5.0, home-mansarda 39.6 / 15.1 -> 54.0 / 10.1. Andrej's charger 75.9 / 3.0 ->
+5.0, home-mansarda 39.6 / 15.1 -> 54.0 / 10.1. The third site's charger 75.9 / 3.0 ->
 83.4 / 4.3, partition 77.2 / 13.7 -> 80.2 / 9.0. The band, points of capture /
 impurity for the site: Home devices 3.2 / 7.3, 2.6 / 1.9, 5.4 / 3.3 (hidden,
 circuits, fed), partition 0.5 / 0.9, 0.8 / 1.5, 3.5 / 1.7; Kozolec <= 0.2;
-home-hisa 0.1-2.0, home-mansarda 8 / 1-5; Andrej's charger 7.5 / 0.9 hidden,
+home-hisa 0.1-2.0, home-mansarda 8 / 1-5; the third site's charger 7.5 / 0.9 hidden,
 7.4 / 1.6 fed. Per load at Home it reaches 17-27 points of capture fed (the
 hidrofor, Susilna) and 30-44 of impurity on loads with little attributed (the
 workshop boiler hidden, the UPS fed): one reading in ten thousand dropped
 turned Home circuits' 813 signatures into 828-925, and at Kozolec moves
 nothing beyond 2 points but the water pump's partition figure (14.5).
 
-**What a meter is worth** (`energy_bench.py worth SITE`, Anze, 2026-10-02: "how
+**What a meter is worth** (`energy_bench.py worth SITE`, the owner, 2026-10-02: "how
 much adding a sensor to device X improves the prediction for device Y"): none
 fed, all fed, and per meter X only X fed (add-one) and all but X (remove-one),
 every target scored each time at SLICE=6; two matrices, targets Y by meters X,
@@ -332,7 +332,7 @@ blob, one signature of 16,876 runs and ~470 kWh holding 4-9 % of every device.
 ### Confirmed, unfixed
 
 **The bench read a slightly different input than production at Home.** The
-replay read Anze's template sensor; production sums grid and inverter itself.
+replay read the owner's template sensor; production sums grid and inverter itself.
 Values agree to 0.1 W, but timestamps and change-only recording differ, and
 the scores did too (purity 67.6 vs 68.4 %). Replay Home through
 `combine()` - `bench.py`'s `HOUSE=prod` - so it matches production. Checked
@@ -341,3 +341,10 @@ start instant, the bench's kiln signatures came out x338 / x39 against live's
 x335 / x38. From midnight instead they came out x319: the library's history
 before a load shows up moves signature counts by tens. Compare runs over the
 same span only.
+
+## Bench rules from working notes
+
+- **Judge groupings on known truth, too** (from the owner, 2026-10-15). Every edge or grouping change is also scored against the known-truth set next to the edge card: Le Hottie's HA program windows (microwave vs oven elements, Mansarda C), the kettle mornings and the 12 Oct panini-press run (Mansarda B), and plugs replayed hidden from the detector so their real steps label the grid's edges. Report the truth-set results first and the proxy scores second. Compare methods at equal group counts: "mixed" favours methods that split into many groups or ignore the property that decides, so a pattern grouping that looks purer may only be fragmenting. Edge-pattern snippets lost on this set (2026-10-15); keep the scalar surge and settle.
+- **Stage 1 is edges and grouping only** (2026-10-14). While the cross-meter edges work is in stage 1, judge changes on the edge card alone (conservation, coverage, invariance, tightness, mixed, duplicates, count, mirror), and do not run or cite the energy card as pass or fail. A device-assignment problem (a meter step claimed twice, say) is recorded as "later", not proposed as the next step. See `docs/roadmap.md`.
+- **CPython, not PyPy** (2026-10-02). PyPy was tried on a Home replay and declined: it stops at 3.11, and the gain was not worth it. Benches run on python3.14; speed comes from the bench and detector code.
+- **The bench PC is the owner's desktop** (2026-10-04). When he says he is using it, start no new jobs there: run cards on the Mac (python3.14, `PYTHONHASHSEED=0`, at most about 8 processes in total) and tell running agents the same. Go back to the bench PC only when he says it is free. See `docs/bench-machine.md`.

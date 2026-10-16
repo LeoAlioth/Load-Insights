@@ -268,7 +268,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # the same window, and its live value now.
         # A number linked to a device nudges its next hours, jointly with any
         # other linked to it (fit_joint keeps each only if it adds) - and its
-        # parents' too, which the device is part of (Anze, 2026-09-28: are
+        # parents' too, which the device is part of (2026-09-28: are
         # they "still taken into account by all of the parent meters?"). The
         # site takes every input, linked or not, among its signals above; a
         # device, the unlinked ones and those linked to it or to a device

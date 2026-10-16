@@ -10,7 +10,7 @@ site and ten at once on a laptop.
     python3 tests/bench.py home   FOLDER [DIAL=VALUE ...]   score, mat, kiln and pump off two replays
     python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER [DIAL=VALUE ...]
 
-SITE is a key of SITES below (home, kozolec, andrejg); FOLDER a directory of the
+SITE is a key of SITES below (home, kozolec, third); FOLDER a directory of the
 per-day CSVs fetch_history.py writes. Build tuning and hold-out folders of
 symlinks rather than pointing at data/history/<site> while a fetch is
 writing to it - runs started seconds apart would read different days.
@@ -20,10 +20,10 @@ bench's own:
 
     HOUSE=prod   build the house reading the way PRODUCTION does - the grid
                  meter negated plus a third of the inverter, through combine()
-                 with COMBINE_SETTLE_S (PROD_HOUSE) - rather than reading Anze's
+                 with COMBINE_SETTLE_S (PROD_HOUSE) - rather than reading the owner's
                  template sensor. They agree to 0.1 W but not in timing, and the
                  scores differed (purity 67.6 vs 68.4 %). Always use it at Home;
-                 Andrej's site has no other house reading.
+                 The third site has no other house reading.
     SLICE=6      feed the replay in slices this many hours long, as
                  production's backfill does (the default); 0 for one call
     LIVE=5       ...but the last this many days in one-minute passes, as a
@@ -103,18 +103,18 @@ SITES = {
                   "subs": {"Blaževa Soba": "sensor.blaz_pc_power"}},
     "home-mansarda": {"main": {p: f"sensor.mansarda_phase_{p}_active_power" for p in "abc"},
                       "subs": {"NASA station": "sensor.attic_office_power"}},
-    # Andrej's site (2026-10-03): no house reading of its own, HOUSE=prod builds
+    # the third site (2026-10-03): no house reading of its own, HOUSE=prod builds
     # it under these ids. The charger's truth is the go-e's own total, every ~5 s
-    "andrejg": {"main": {p: f"sensor.andrejg_load_power_phase_{p}" for p in "abc"},
+    "third": {"main": {p: f"sensor.andrejg_load_power_phase_{p}" for p in "abc"},
                 "subs": {"Stara Polnilnica": "sensor.goe_216841_nrg_11"}},
 }
 # What production's _derive_load sums into the house at each site that has a
 # grid meter and an inverter: (the grid meter per phase, the grid's sign, the
 # inverter's one total, a third on each phase). Both SolarEdge M1s read export
-# POSITIVE - Andrej's Energy dashboard declares its grid inverted - so -1.
+# POSITIVE - the third site's Energy dashboard declares its grid inverted - so -1.
 PROD_HOUSE = {
     "home": ({p: f"sensor.solaredge_se17k_m1_ac_power_{p}" for p in "abc"}, -1.0, "sensor.solaredge_se17k_i1_ac_power"),
-    "andrejg": ({p: f"sensor.solaredge_i2_m1_ac_power_{p}" for p in "abc"}, -1.0, "sensor.solaredge_i2_ac_power"),
+    "third": ({p: f"sensor.solaredge_i2_m1_ac_power_{p}" for p in "abc"}, -1.0, "sensor.solaredge_i2_ac_power"),
 }
 MIN_SESSIONS = 60                      # devices below this are too few to read
 # Every meter production reads, the way _resolve_submeters hands them over:
@@ -155,7 +155,7 @@ PROD_SUBS = {
     # production reads the charger through OCPP (sensor.charger_power_active_import,
     # kW, clock-aligned every 900 s while charging - 154 readings in ten days); the
     # go-e's own total stands in for it - the same charger, in W every ~5 s
-    "andrejg": {"Stara Polnilnica": "sensor.goe_216841_nrg_11"},
+    "third": {"Stara Polnilnica": "sensor.goe_216841_nrg_11"},
 }
 # Meters production's set of 2026-09-30 lacks, their first days fetched into
 # data/history/home-extra (fetch_history's fans and blinds groups, the recorder
@@ -406,7 +406,7 @@ HOME_OF = {
              "Susilna": ("Susilna",), "EVBox": ("Polnilnica",), "Attic AC": ("Attic AC", "Mansarda")},
     "kozolec": {"Boiler": ("Boiler",), "Hidrofor": ("Water pump",), "Well pump": ("Well pump",),
                 "Pond EVSE": ("Pond EVSE",), "Pastir": ("Pastir",), "Bug lamp": ("Bug lamp",)},
-    "andrejg": {"Stara Polnilnica": ("Stara Polnilnica",)},
+    "third": {"Stara Polnilnica": ("Stara Polnilnica",)},
 }
 
 
@@ -799,7 +799,7 @@ def mat(folder: str, dials) -> None:
     """Home's floor mat against its thermostat's heating (no sub-meter): the
     signature holding the most runs that start 5.5 s after the thermostat goes
     on, its hours counted once, and how many of them the thermostat was NOT
-    heating for - the over-report Anze would rather not have (2026-09-30:
+    heating for - the over-report the owner would rather not have (2026-09-30:
     "capturing 80 % of actual energy ... is much preferred over assigning 20 %
     over"). Local days from the first to the last of heating on record."""
     tag = _apply(dials + [f"SWITCH={MAT_THERMOSTAT}"] if f"SWITCH={MAT_THERMOSTAT}" not in dials else dials)

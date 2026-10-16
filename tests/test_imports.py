@@ -5,7 +5,7 @@ Assistant layer, so a NameError in a page nobody opens during a test ships
 happily. It shipped twice in one afternoon: a coordinator reading self.entry
 when its attribute is config_entry, and the Inverters page using
 LAYOUT_PARALLEL after an edit took that import out with a neighbouring one
-(Anze, 2026-09-18: "the inverters setup page just shows an error").
+(2026-09-18: "the inverters setup page just shows an error").
 
 This reads the source rather than importing it, so it needs no Home
 Assistant installed - which is the whole premise of the pure tier.
@@ -113,7 +113,7 @@ def test_every_way_the_library_is_thrown_away_carries_the_names():
     their meter readings across. A third path added later would take a user's
     named devices, their energy sensors and their place on the Energy
     dashboard with it, silently, on every installation at once. This fails
-    when one appears (Anze, 2026-09-22)."""
+    when one appears (2026-09-22)."""
     root = pathlib.Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
     tree = ast.parse((root / "detection.py").read_text(encoding="utf-8"))
     bad = []

@@ -171,7 +171,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
         # The POWER config too, polarity included: whether a meter reports
         # export as positive decides whether the house is the grid reading
         # plus the inverter or minus it, and a dump that leaves it out
-        # cannot answer the question (Anze, 2026-09-18).
+        # cannot answer the question (2026-09-18).
         "grid_power": _power_specs(site.grid_power),
         "solar": list(site.solar), "solar_power": list(site.solar_power),
         "solar_forecast_entries": list(site.solar_forecast_entries),

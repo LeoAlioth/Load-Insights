@@ -71,7 +71,7 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # A phase with a power reading but no current AND voltage (and no power
     # factor sensor) can never tell a heater from a motor: the watts are the
     # same and only the reactive part separates them. Kozolec has this on two
-    # of its three phases (Anze, 2026-09-17), and it is invisible until you
+    # of its three phases (2026-09-17), and it is invisible until you
     # notice that every guess there is missing.
     runner = runner_of(entry)
     cfg = (runner.config or {}) if runner is not None and runner.enabled else {}
@@ -83,14 +83,14 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # A meter that never moves. Kozolec is off grid, so the MultiPlus AC
     # INPUT it was pointed at is zero by definition, and ten days of backfill
     # over a flat line taught it nothing - which looked like a broken
-    # detector rather than the wrong sensor (Anze, 2026-09-17).
+    # detector rather than the wrong sensor (2026-09-17).
     nothing = bool(cfg) and runner.caught_up and not runner.detector.signatures
     _set(hass, entry, FOUND_NOTHING, nothing,
          {"samples": str(runner.samples_read if runner is not None else 0)})
 
     # A house that idles deeply negative is not a house. Nothing breaks -
     # sessions open and close and signatures form - and every one of them is
-    # nonsense, which is exactly why it needs saying (Anze's Home ran for days
+    # nonsense, which is exactly why it needs saying (the owner's Home ran for days
     # at -6318 W on phase A, its grid meter read as the house with its sign
     # inverted and its solar never added back, 2026-09-22).
     floors = {p: st.baseline for p, st in runner.detector.phases.items()} if cfg else {}

@@ -12,7 +12,7 @@ wave of known size and timing, to score a load no meter watches.
     python3 tests/energy_bench.py SITE FOLDER [DIAL=value ...] [PLANT=...] [QGATE=x] [WORTH=1] [OUT=run.json]
     python3 tests/energy_bench.py check
 
-Two numbers per measured load L (Anze, 2026-10-02; a boiler that used 10 kWh,
+Two numbers per measured load L (2026-10-02; a boiler that used 10 kWh,
 9.5 kWh attributed to it, 9 kWh of that rightly):
     capture  = energy rightly attributed to L / L's measured energy    9 / 10    = 90 %
     impurity = energy wrongly attributed to L / all attributed to L    0.5 / 9.5 = 5.3 %
@@ -25,7 +25,7 @@ meter switched on with it (_started_with), as far as the meter drew above its
 floor while it ran (_above). Over a site: capture weighted by energy, impurity
 pooled (all wrong / all attributed).
 
-Beside them the SHARE-CREDITED pair (Anze, 2026-10-04: the >= 50 % line flips -
+Beside them the SHARE-CREDITED pair (2026-10-04: the >= 50 % line flips -
 one signature moved the hidrofor 41 points): every signature counts for L by
 L's share of its energy instead of all-or-nothing - as if each signature were
 named after a load drawn by its share. Attributed to L: the sum of its energy
@@ -38,8 +38,7 @@ under the grid connection plus Blaževa Soba (inside Hiša) and the office
 (inside Mansarda), a session credited to a device inside a circuit and never
 to the circuit - and its PARTITION: the meters directly under the main meter
 and, named in REST, what is left of the main without them (Home's Delavnica,
-Kozolec's and Andrej's Rest) - everything the main meter reads, once. Andrej's
-site (andrejg) is one meter, the go-e charger's own total, its truth masked
+Kozolec's and the third site's Rest) - everything the main meter reads, once. The third site (third) is one meter, the go-e charger's own total, its truth masked
 over any charge the house did not draw - a portable unit charging elsewhere
 (PORTABLE, _away). Home and home-hisa add a table of their own, fridge: the
 kitchen fridge under the incubator on Hiša's C (overnight #64) - a HEURISTIC
@@ -53,7 +52,7 @@ two 3EMs) and fed (SUBS=prod - every meter production reads). The meters are
 the truth in every mode, read from the history.
 
 card        every site (default home, kozolec, the circuits home-hisa and
-            home-mansarda, and andrejg) in every mode at SLICE=6, PARALLEL replays
+            home-mansarda, and third) in every mode at SLICE=6, PARALLEL replays
             at once, and how runs were closed (the pairing). SLICINGS=all replays
             each at SLICE=0, 6 and 1 and LIVE=1 too - one figure where the
             slicings agree, each one's (0|6|1|L1) where they do not, and the
@@ -78,7 +77,7 @@ noise       the noise band: cards of the same code apart only by a perturbation
             is read unperturbed), how far each load's figures spread at SLICE=6
             - max less min over the cards - per site, mode and table; written
             to data/scorecard/noise-<commit>-<utc>.json.
-worth       what a meter is worth (Anze, 2026-10-02: "how much adding a sensor
+worth       what a meter is worth (2026-10-02: "how much adding a sensor
             to device X improves the prediction for device Y"): none fed, all
             fed, and per meter X only X fed (add-one) and all but X
             (remove-one), WORTH_PARALLEL replays at once at SLICE=6; every
@@ -130,8 +129,8 @@ SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here
 PLANTS: list = []          # (name, watts, phase, [(on, off), ...])
 GRID = "sensor.solaredge_se17k_m1_ac_"
 SETS = {"set1": ["1200:480:18000:a", "150:1200:10800:b", "40:2700:7200:b"]}
-REST = {"home": "Delavnica", "kozolec": "Rest", "andrejg": "Rest"}    # what the main meter reads and no meter below it
-PORTABLE = {"andrejg": "Stara Polnilnica"}   # a charger that leaves the site: its truth masked where the house did not draw it (_away)
+REST = {"home": "Delavnica", "kozolec": "Rest", "third": "Rest"}    # what the main meter reads and no meter below it
+PORTABLE = {"third": "Stara Polnilnica"}   # a charger that leaves the site: its truth masked where the house did not draw it (_away)
 CHARGE_MIN_W = 6 * 230.0   # the least an EV charges at, 6 A on one phase (IEC 61851): a charge is a span at or above it
 MODES = {"hidden": "SUBS=none", "circuits": "SUBS=circuits", "fed": "SUBS=prod"}
 SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"]}
@@ -143,9 +142,9 @@ KINDS = {"_unseen_stop": "unseen stop", "<genexpr>": "multi-close", "_joint_stop
          "end_older": "started again", "_input_ended": "input ended", "_pair": "leg split off"}
 # worth's targets no meter reads (WORTH=1)
 CEILING = "Ceiling fan"    # Home's CasaFan Eco Neo III 132 - MODELLED truth, see _fan_rows
-CEILING_W = (0.0, 2.3, 3.5, 6.3, 11.2, 18.3, 27.0)   # its watts at speed 0-6 (Anze, 2026-10-02)
+CEILING_W = (0.0, 2.3, 3.5, 6.3, 11.2, 18.3, 27.0)   # its watts at speed 0-6 (2026-10-02)
 FRIDGE_RUN_S = 30.0        # Kozolec's fridges - HEURISTIC truth: a run is the session starting this near it
-FRIDGES = "Fridges"        # ...both as one load, a table of its own: two look-alikes are as good as one (Anze)
+FRIDGES = "Fridges"        # ...both as one load, a table of its own: two look-alikes are as good as one (the owner)
 KITCHEN = "Kitchen fridge" # Home's, under the incubator on Hiša's C - HEURISTIC truth (bench._kitchen_fridge_runs), a table of its own
 KITCHEN_RUN_S = 60.0       # ...a run is the session starting this near it: its start is good to an incubator pulse
 WORTH_FED = {"home": ["Bathroom fan"]}   # worth's meters beyond PROD_SUBS
@@ -428,7 +427,7 @@ def _away(meter: list, house: list) -> list:
     kWh)]: each span its meter read CHARGE_MIN_W or more over which, from
     half a minute before to a minute after for the meters' lag, the house
     drew less than half of what the charger did - at home the house holds the
-    charger's draw and more. Andrej's go-e counts what it charges elsewhere.
+    charger's draw and more. The third site's go-e counts what it charges elsewhere.
     A charge before the house's first reading is not judged."""
     spans, on = [], None
     for t, w in meter:
@@ -1002,7 +1001,7 @@ def _parallel(jobs: list, n: int = PARALLEL) -> list:
 
 
 def _site_dials(site: str) -> list:
-    return ["HOUSE=prod"] if site in B.PROD_HOUSE else []   # always at Home, and Andrej has no other house - see bench.py
+    return ["HOUSE=prod"] if site in B.PROD_HOUSE else []   # always at Home, and the third site has no other house - see bench.py
 
 
 def _fig(vals: list, signed: bool = False) -> str:
@@ -1012,7 +1011,7 @@ def _fig(vals: list, signed: bool = False) -> str:
 
 
 def card(args: list) -> None:
-    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda", "andrejg"]
+    sites = [a for a in args if "=" not in a] or ["home", "kozolec", "home-hisa", "home-mansarda", "third"]
     label = next((a[6:] for a in args if a.startswith("LABEL=")), None)
     # One slicing - since 2026-10-02 they file the same sessions (AGENTS.md),
     # so the other three only cost three replays each. SLICINGS=all replays
@@ -1295,7 +1294,7 @@ def check() -> None:
     # the floor: 5 W for 900 s, 1005 W for 100 s - the level of a tenth of the time
     wh, floor, floor_wh = _truth([(0.0, 5.0), (900.0, 1005.0), (1000.0, 5.0)])
     assert floor == 5.0 and round(wh, 2) == 27.78 and round(floor_wh, 2) == 1.39
-    # Anze's boiler: 10 kWh used, its signature 9.5 kWh of which 9 its own -
+    # the owner's boiler: 10 kWh used, its signature 9.5 kWh of which 9 its own -
     # capture 90 %, impurity 5.3 %; a signature nobody holds half of is nobody's
     per_sig = {1: {"total": 9500.0, "n": 40, "Boiler": 9000.0, "Pump": 300.0},
                2: {"total": 1000.0, "n": 5, "Boiler": 400.0, "Pump": 450.0}}

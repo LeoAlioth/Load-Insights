@@ -34,13 +34,13 @@ MOTOR = "a motor"
 # A balanced three-phase motor is a MEASUREMENT, not a guess about a house:
 # the same power on all three legs at a motor's power factor is a thing
 # nothing else in a home does. It earns its own name in the family layer
-# rather than the weaker appliance one (Anze, 2026-09-18).
+# rather than the weaker appliance one (2026-09-18).
 MOTOR_3P = "a three-phase motor"
 SUPPLY = "electronics"
 # Named for what someone would SEE, not for the electronics inside. It was
 # "an inverter-driven appliance", which is jargon and, worse, collides with
 # the solar inverters on their own configuration page - the same word for two
-# unrelated things in one integration (Anze, 2026-09-18).
+# unrelated things in one integration (2026-09-18).
 VARIABLE = "an appliance that varies its own power"
 PROGRAMME = "an appliance running a programme"
 CAR = "a car charging"
@@ -134,7 +134,7 @@ def _fmt_w(x: float) -> str:
     Everything was printed as kilowatts to one decimal, which is fine for a
     kettle and useless for everything a submeter sees: a whole library of a
     computer, a UPS and an office plug read "0.0 kW on A" line after line,
-    every row identical and none of them wrong (Anze, 2026-09-22)."""
+    every row identical and none of them wrong (2026-09-22)."""
     return f"{x:.0f} W" if abs(x) < 1000 else f"{x / 1000:.1f} kW"
 
 
@@ -159,7 +159,7 @@ def _fmt_s(x: Optional[float]) -> str:
 # appliance is only ever offered as a question, needs several things to agree
 # at once, and never outranks the family it sits inside.
 #
-# Built against the two houses these run in rather than a catalogue (Anze,
+# Built against the two houses these run in rather than a catalogue (the owner,
 # 2026-09-18): a workshop of three-phase woodworking machines, two dishwashers,
 # an industrial washer with NO heaters, a heat-pump washer-dryer, hot water
 # tanks, a single-hob electric stove and a double induction hob, well and
@@ -184,14 +184,14 @@ APPLIANCE_SHORT = {WORKSHOP: "workshop", PUMP: "pump", WATER_TANK: "hot water",
 # wrote "Boiler" on it. A name is knowledge; the rest is inference.
 #
 # Both languages the integration ships in, because the names are the owner's
-# and Anze's two sites run half in each - "Hidrofor" and "Water Pump" are the
+# and the owner's two sites run half in each - "Hidrofor" and "Water Pump" are the
 # same thing on the same page. Matched on whole words against the friendly
 # name AND the entity id, since a device the Energy dashboard knows only by
 # its statistic shows up as sensor.workshop_boiler_energy.
 #
 # Device words only. Most meters are named after ROOMS - Mansarda, Hiša,
 # Blaževa Soba, Vtičnice - pisarna - and a room says nothing about what is
-# plugged into it (Anze, 2026-09-22).
+# plugged into it (2026-09-22).
 NAME_HINTS = (
     (WATER_TANK, ("boiler", "bojler", "tank", "hot_water", "water_heater",
                   "grelnik", "vodni_grelnik", "bojlerja")),
@@ -241,7 +241,7 @@ WORKING = tuple(range(8, 20))
 
 # A charger's limits are stated in AMPS PER PHASE, not in watts: 6 A is the
 # floor in IEC 61851 (a Tesla will go to 5), 32 A is the common ceiling, 63 A
-# on three phases and about 80 A on one are the extremes (Anze, 2026-09-22).
+# on three phases and about 80 A on one are the extremes (2026-09-22).
 # A band on total watts therefore describes nothing real - it calls a
 # three-phase charger at its 6 A minimum a 4.1 kW load and scores it as large,
 # while the same 4.1 kW on one phase is 18 A and quite different. Dividing by
@@ -309,7 +309,7 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
         s[WORKSHOP] = (_band(watts, 700, 1200, 7000, 12000)
                        * _band(duration_s, 2, 6, 600, 3600)
                        * (0.4 + 0.6 * (_share(hour_wh, WORKING) or 0.5)))
-    # A pump comes in two electrical flavours, and both of Anze's houses have
+    # A pump comes in two electrical flavours, and both of the owner's houses have
     # one of each (2026-09-18). Straight to the line, it is an induction motor
     # and reads like one: the Metabo at home, about a kilowatt at a motor's
     # power factor. Behind a variable-speed drive it corrects its own factor
@@ -335,7 +335,7 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
                          * _band(duration_s, 900, 1800, 18000, 28800))
         # 3.5 kW is one ring. A whole induction hob in Europe is commonly
         # wired across two phases and peaks around 7 kW, which the old
-        # ceiling scored at zero (Anze, 2026-09-22).
+        # ceiling scored at zero (2026-09-22).
         s[COOKING] = (_band(watts, 700, 1000, 7000, 9000)
                       * _band(duration_s, 120, 240, 3600, 7200)
                       * (0.2 + 0.8 * (_share(hour_wh, MEALS) or 0.3)))
@@ -350,7 +350,7 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
         # duration alone, which is why neither profile asks for a heat spike.
         # Both ceilings were too low by half. An eco cycle runs a dishwasher
         # to four hours, and a washer-dryer combination does a washing and a
-        # drying programme back to back - eight hours is not unusual (Anze,
+        # drying programme back to back - eight hours is not unusual (the owner,
         # 2026-09-22, who has one). Widening them makes the two overlap more,
         # and the margin test below then declines to choose rather than
         # guessing - which is the honest answer, and the meter's own name
@@ -408,7 +408,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     # not hold it: stepping between levels, which LEVELS counts, and gliding,
     # which only RIPPLE sees. A pressure pump behind a variable-speed drive
     # runs 104 to 247 W without ever taking a step, so it read as one flat
-    # level and classified as a small heater (Anze, 2026-09-18).
+    # level and classified as a small heater (2026-09-18).
     # The band is measured on ONE phase against a baseline that drifts, while
     # watts is the session's whole draw, so the two can disagree - a 649 W
     # load came back with a 333-345 W band. Where they do, the band is
@@ -425,7 +425,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     # speed, and nothing else in a house produces it. Where it is seen it
     # carries the family on its own - a pump behind a variable-speed drive
     # corrects its power factor to near unity and reads as a heating element
-    # without this (Anze, 2026-09-22). Judged against the load's OWN running
+    # without this (2026-09-22). Judged against the load's OWN running
     # power, since a surge is a multiple of it rather than a number of watts.
     surge = _band(inrush_w / max(watts, 1.0), 0.8, 1.5, 40.0, 80.0)
 
@@ -433,7 +433,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
         # The top used to sit at 9 kW, which quietly ruled out the biggest
         # resistive loads there are: an electric boiler, or the backup heat in
         # a heat pump's air handler, is 10 to 20 kW and nothing else about it
-        # is unusual (Anze, 2026-09-22). The duration ceiling moves with it,
+        # is unusual (2026-09-22). The duration ceiling moves with it,
         # but only to two hours - a heating element and a car charging share a
         # power factor, and DURATION is most of what separates them, so buying
         # room for whole-house heat costs exactly the discrimination that
@@ -468,7 +468,7 @@ def classify(watts: float, pf: Optional[float] = None, levels: float = 1.0,
     # It still has to be the right SIZE and last long enough - a name explains
     # what a reading is, it does not excuse one that disagrees - and where no
     # power factor is configured the name supplies exactly the term that was
-    # missing rather than the whole answer (Anze, 2026-09-22).
+    # missing rather than the whole answer (2026-09-22).
     if where and family_from_name(where) == CAR:
         shape = (_car_size(watts, phases)
                  * _band(duration_s, 1800, 3600, 86400, 86400))

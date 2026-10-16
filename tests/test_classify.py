@@ -82,7 +82,7 @@ def test_gliding_is_not_holding_a_level_even_when_no_step_is_taken():
 
 
 def test_a_pump_is_recognised_whether_or_not_it_has_a_drive():
-    """Both of Anze's houses have a pressure pump and they are electrically
+    """Both of the owner's houses have a pressure pump and they are electrically
     opposite: the Metabo goes straight to the line and reads like the
     induction motor it is, the Scala2 sits behind a drive that corrects its
     own power factor back to unity. A window that fits one excludes the
@@ -134,7 +134,7 @@ def test_a_room_is_not_a_device():
 
 
 def test_both_languages_and_the_entity_id_when_that_is_all_there_is():
-    """The names are the owner's. Anze's two sites run half in Slovene, and a
+    """The names are the owner's. The owner's two sites run half in Slovene, and a
     device the Energy dashboard knows only by its statistic arrives as
     sensor.workshop_boiler_energy rather than as a name at all."""
     assert C.appliance_from_name("Water Pump") == C.PUMP
@@ -161,7 +161,7 @@ def test_a_named_charger_still_has_to_look_like_one():
 def test_a_charger_is_measured_in_amps_per_phase_not_in_watts():
     """What a charger is limited to, and set to, is CURRENT: 6 A is the floor
     in IEC 61851 and a Tesla will go to 5, 32 A is the common ceiling, 63 A on
-    three phases and about 80 A on one are the extremes (Anze, 2026-09-22). A
+    three phases and about 80 A on one are the extremes (2026-09-22). A
     band on total watts describes none of that - it calls a three-phase
     charger idling at its 6 A minimum a 4.1 kW load and scores it as large,
     while the same 4.1 kW on one phase is 18 A and quite a different thing."""
@@ -227,7 +227,7 @@ def test_a_starting_surge_says_motor_where_the_power_factor_cannot():
     """A pump behind a variable-speed drive corrects its factor to near unity
     and reads as a heating element. The surge settles it: an induction motor
     draws several times its running current until it is up to speed, and
-    nothing else in a house does that (Anze, 2026-09-22)."""
+    nothing else in a house does that (2026-09-22)."""
     pump = dict(watts=830, pf=0.97, levels=1.0, duration_s=40, phases="a")
     assert C.classify(**pump).kind == C.HEATER          # what the factor alone says
     seen = C.classify(inrush_w=8053.0, **pump)

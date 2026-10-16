@@ -1,7 +1,7 @@
 # LI 1 - daily retroactive repair pass: ship it (plan, 2026-10-12)
 
 Personal project (Load Insights). Never log to work-context.md.
-Repo `/Users/anzek/Projects/Load_Insights`, branch `dev` at 482aa9a (= origin/dev).
+Repo `~/Projects/Load_Insights`, branch `dev` at 482aa9a (= origin/dev).
 
 ## 0. Finding: exp15 is not lost - it is already on dev, always on, and pushed
 
@@ -26,14 +26,14 @@ Repo `/Users/anzek/Projects/Load_Insights`, branch `dev` at 482aa9a (= origin/de
   cache, driver regression dropped, HELD_DROPS 0 semantics, angle always on bd93df0, refactors 5362664 /
   788b60f, multi-close remembers 482aa9a). `git log -S_repair` shows only c689283: the code is untouched,
   but **it has never been re-benched on top of those changes**. Its scorecards (26575f8 four-way card,
-  the overnight Andrej numbers) are not in `data/scorecard/`.
+  the overnight the third site numbers) are not in `data/scorecard/`.
 - **What is actually missing**: (a) a measurement on current dev; (b) the slicing test is vacuous for the
   repair - checked today: its kiln scenario books 12,544.47 Wh with the repair and with it off
   (`REPAIR_SLACK_NOISE=1e9`), i.e. the repair cuts nothing there; (c) AGENTS.md still lists it under
   "To explore", unticked, and the dial tables have no `REPAIR_*` rows.
 
 So "ship it" = measure it on today's dev, close the test gap, fix the docs. No detector change, no dial
-to add or remove, no generation bump, no deploy beyond what Anze already pushed.
+to add or remove, no generation bump, no deploy beyond what the owner already pushed.
 
 ## 1. Ablation - no code needed
 
@@ -42,11 +42,11 @@ always negative, nothing is taken); `bench._apply` accepts it (checked). This is
 nothing is committed for it.
 
 Prereqs: `git status` clean, `python3.14 tests/run_all.py` passes, nothing writing to `data/history/*`
-(no fetch running), libench only if Anze is not using it - otherwise the Mac with `BENCH_PARALLEL=8`.
+(no fetch running), libench only if the owner is not using it - otherwise the Mac with `BENCH_PARALLEL=8`.
 Data: the ten days in `data/history/<site>/` as they are (2-11 Oct).
 
 ```bash
-cd /Users/anzek/Projects/Load_Insights
+cd ~/Projects/Load_Insights
 export BENCH_PARALLEL=8
 python3.14 tests/energy_bench.py card LABEL=repair-on
 python3.14 tests/energy_bench.py card REPAIR_SLACK_NOISE=1e9 LABEL=repair-off
@@ -76,14 +76,14 @@ Pass when all hold:
 
 1. **Impurity down** (pooled, the headline) at every site and mode where something is attributed:
    Home devices and partition - hidden, circuits, fed; Kozolec devices and partition - hidden, fed;
-   Andrej charger and partition - hidden, fed; home-hisa, home-mansarda. "Down" = lower, or within its
+   The third site charger and partition - hidden, fed; home-hisa, home-mansarda. "Down" = lower, or within its
    band where the exp15 run showed no gain (Kozolec fed).
 2. **Capture**: site figure loses about a point or less (exp15: ~1); any loss beyond 2 points on a site
    figure, or beyond its band, is a stop-and-ask.
 3. **No load collapses**: no per-load capture drop marked `[band!]` that also exceeds 10 points on a load
    with >= 1 kWh measured. Check by name: Home - Polnilnica (EVBox), hidrofor, workshop boiler, Sušilna,
    office, Blaževa Soba, Server UPS, Kitchen fridge (heuristic table); Kozolec - boiler, pond EVSE, car
-   charger, water pump, well pump, IR panel, Fridges (heuristic); Andrej - go-e charger. Long-running and
+   charger, water pump, well pump, IR panel, Fridges (heuristic); the third site - go-e charger. Long-running and
    tapering loads (chargers, boiler, Sušilna's 20 h runs) are the ones the cap can cut wrongly - read them
    first.
 4. **Ownership flips**: list every signature whose owner changed (exp15 flipped the office plug's,
@@ -93,7 +93,7 @@ Pass when all hold:
    difference is a fault to trace before anything else.
 6. `SLICINGS=all` card: one figure per cell, invariance 0.
 
-Fail -> do not change anything alone. Already live since 10-04, so the options go to Anze: keep; sweep
+Fail -> do not change anything alone. Already live since 10-04, so the options go to the owner: keep; sweep
 `REPAIR_SLACK_NOISE` 1 / 2 / 4 and `REPAIR_FLOOR_SHARE` 0.05 / 0.1 / 0.2 (bench dials, one card each); or
 remove (revert c689283's detect.py hunks, generation unchanged - Wh lowered in libraries already rebuild
 away within ten days).
@@ -112,7 +112,7 @@ away within ten days).
   where rows exist; the floor is the 10 %-by-time level of the rows since the restart. Restart late in a
   busy evening -> the floor can read a running load's level -> that day's unmetered runs capped low.
   Errs towards under-report (the accepted side). [Add the restart test, step 4; measure nothing more
-  unless Anze asks. Upgrade path if it ever shows: persist `_repaired_to` and skip a phase whose rows
+  unless the owner asks. Upgrade path if it ever shows: persist `_repaired_to` and skip a phase whose rows
   cover under half the day - not now, fewest special rules.]
 - **Reset / generation bump**: the 10-day backfill passes through every day's due, so each finished day is
   repaired during the re-read and `_rewrite_named` writes them all at its end. [none]
@@ -122,8 +122,7 @@ away within ten days).
   `Session.wh` and `Signature.hourly` keep their meaning, just smaller values; no new stored field.
   **No `DETECTOR_GENERATION` bump** (c689283 made none - correct).
 - **Upgrade path for existing installs**: Home and Kozolec already run it (since the 10-04 builds); days
-  before their first repaired day keep the old hours, as RELEASE_NOTES says. No reset needed. Andrej's
-  site: not until Anze releases there.
+  before their first repaired day keep the old hours, as RELEASE_NOTES says. No reset needed. The third site: not until the owner releases there.
 
 ## 4. Tests to add (`tests/test_detect.py`; only after the bench passes)
 
@@ -162,25 +161,25 @@ away within ten days).
     (floor from the rows since then; under-reports, never over); DST shifts the day boundary until a
     restart.
 - **RELEASE_NOTES.md**: the 0.4.1 entry exists. Change only the bench figures in its parentheses to the
-  re-bench's (e.g. "bench, 2-11 Oct: impurity Home x -> y with meters, Kozolec ..., Andrej ...; about a
+  re-bench's (e.g. "bench, 2-11 Oct: impurity Home x -> y with meters, Kozolec ..., the third site ...; about a
   point of capture"); add nothing new - it is not a new feature of a later build.
 - **Job note** `data/scorecard/jobs/repair-2026-10-12.md` in the angle note's format: data range, the
   on/off diff per site and mode, band file, ownership flips, verdict.
 
-## 6. Commit, then deploy only when Anze says
+## 6. Commit, then deploy only when the owner says
 
 1. One local commit on dev: tests + AGENTS.md + RELEASE_NOTES.md, message carrying the re-bench evidence
    ("The day's repair re-benched on 482aa9a (REPAIR_SLACK_NOISE=1e9 off vs on, 2-11 Oct): Home ...,
-   Kozolec ..., Andrej ...; band noise-482aa9a-...; slicings agree, invariance 0. Tests: the repair at
+   Kozolec ..., the third site ...; band noise-482aa9a-...; slicings agree, invariance 0. Tests: the repair at
    three slicings and across a restart. AGENTS: out of To explore into The dials. run_all passes.").
    No new branch, no worktree, **no push**.
 2. Production check (read-only, any time): on Home and Kozolec read the installed Load Insights version
    (>= 0.4.1-dev.20261004.1524) and, after the next 01:00 local hourly compile, the log line "Rewrote
    <name> ... kWh less than recorded" for a named load - the repair reaching the Energy dashboard.
-3. Push dev only on Anze's word. It auto-deploys to Home and Kozolec (HACS webhook) - docs and tests only,
-   so no restart needed for behaviour, no reset, no generation bump. Not Andrej's site.
+3. Push dev only on the owner's word. It auto-deploys to Home and Kozolec (HACS webhook) - docs and tests only,
+   so no restart needed for behaviour, no reset, no generation bump. Not the third site.
 
 ## Order of work
 
 1 two plain cards -> read -> 2 acceptance -> (pass) noise cards + SLICINGS=all -> 4 tests -> 5 docs and
-job note -> 6.1 local commit -> report to Anze -> 6.2/6.3 on his word.
+job note -> 6.1 local commit -> report to the owner -> 6.2/6.3 on his word.

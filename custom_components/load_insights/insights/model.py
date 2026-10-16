@@ -46,7 +46,7 @@ class PowerSpec:
 
         The dashboard already asks this - none, normal, inverted, or a pair
         of sensors - so it is DECLARED here and should never be guessed at
-        (Anze, 2026-09-18, about a SolarEdge M1 that reports export
+        (2026-09-18, about a SolarEdge M1 that reports export
         positive). A pair needs no polarity: each sensor names its own
         direction, so it answers +1 for the import half.
 
@@ -219,7 +219,7 @@ def migrate_inputs(options: dict) -> dict:
     """The options as they were before 2026-09-28 - the site's inputs, and
     each device's own under ``device_state_sensors`` - as ONE list of inputs
     in ``input_entities``, each with what it is linked to in ``input_links``
-    (Anze, 2026-09-28: "a single storage with the tags only deciding to which
+    (2026-09-28: "a single storage with the tags only deciding to which
     things it connects to"). Every input counts for the whole site; a link
     adds a device, and that device's parents with it. Unchanged when there
     is nothing to move."""
@@ -244,7 +244,7 @@ def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
 
 
 def scoped(signals, links: dict, within, stat: Optional[str]) -> list:
-    """The signals the forecast of ``stat`` takes (Anze, 2026-10-03). An
+    """The signals the forecast of ``stat`` takes (2026-10-03). An
     input linked to nothing acts on every forecast. One linked to devices
     acts on those, on every meter they sit inside - ``within(target)``, the
     walk the nowcast's links take - and on the site (``stat`` None), which
@@ -259,7 +259,7 @@ def follow_renames(value, renames: dict):
     """``value`` - options, data, anything JSON-shaped - with every string
     that IS a renamed entity id, key or value, swapped for its new id. Home
     Assistant moves an entity's history on a rename but not the settings that
-    name it: after Anze's renames of 2026-09-28 every input, link and meter
+    name it: after the owner's renames of 2026-09-28 every input, link and meter
     here had to be picked again by hand."""
     if isinstance(value, str):
         return renames.get(value, value)

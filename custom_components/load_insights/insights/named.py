@@ -15,7 +15,7 @@ def metered_device(name: Optional[str], meters: Iterable[str]) -> Optional[str]:
     single device - with the same name, whatever the case and the spaces
     round it. Such a load was named to join its device ("name it Water Pump
     so it merges"), and the meter's own readings and forecast stand for it,
-    so it gets no detected entities (Anze, 2026-09-29)."""
+    so it gets no detected entities (2026-09-29)."""
     key = _key(name)
     return next((m for m in meters if key and _key(m) == key), None)
 

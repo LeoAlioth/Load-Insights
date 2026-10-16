@@ -49,7 +49,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
     async def _name_load(call) -> None:
         """Name a load by its id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
-        the page's bar (Anze, 2026-09-28). An empty name clears it."""
+        the page's bar (2026-09-28). An empty name clears it."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
         ref = ((call.data.get("meter") or "").strip(), int(call.data["load_id"]))
         name = (call.data.get("name") or "").strip() or None
