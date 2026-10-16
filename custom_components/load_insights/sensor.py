@@ -247,6 +247,8 @@ class ForecastPowerSensor(_PowerW, _Base):
                 for m in fc.calendars
             ],
         }
+        if self._which == "consumption" and data.forecast_left_out:
+            attrs["left_out_devices"] = list(data.forecast_left_out)
         if self._which == "remainder":
             attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]
             # Before this instant at least one device was not yet metered, so

@@ -31,6 +31,11 @@ CONF_BATTERY_CAPACITY_ENTITY = "battery_capacity_entity"
 # 2026-09-28 each device kept its own under "device_state_sensors" - see
 # insights.model.migrate_inputs.
 CONF_INPUT_LINKS = "input_links"
+# Energy dashboard devices (statistic ids) left out of the site's consumption
+# forecast: their hours are taken off the site series before it is fitted, so
+# they shape neither its history nor its level correction. Their own forecast
+# sensors are unchanged.
+CONF_FORECAST_EXCLUDE = "forecast_exclude"
 
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the

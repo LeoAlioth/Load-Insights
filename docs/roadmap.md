@@ -47,12 +47,20 @@ checking usage is back under 90 %, run without asking again:
    scratchpad scores-report.md.
 2. **Kettle merge allowed** (the owner: "that merging is probably ok") - the kettle's groups may merge with the
    matching unlabelled Mansarda B steps (likely kettle boils the 90-240 s truth pairing misses).
-3. **Leave chosen loads out of the consumption forecast, in Load Insights itself** (the owner 2026-10-15, chose
-   the HA-template route for now - the Kozolec helpers already subtract Pond EVSE, Power Strip, Well Pump
-   forecasts since 9-10 Oct): a per-load "not in the consumption forecast" option, so those loads also stop
-   shaping the forecast's history and level correction; plus a way to leave abnormal days out of the
-   learning (the 14-15 Oct full-cycle test pushed Kozolec's level_correction to x1.15; 14 Oct actual
-   53.7 kWh vs 22.5 predicted). Then a release to Kozolec (and Home) - the owner's say on releases.
+3. **Leave chosen loads out of the consumption forecast, in Load Insights itself** (the owner 2026-10-15):
+   BUILT 2026-10-16 - Inputs page, "Not in the consumption forecast" (option `forecast_exclude`, dashboard
+   devices): their hours come off the series the site forecast is fitted and scored on, so they stop shaping
+   its history and level correction (the grid forecast, built from it, leaves them out too). Per-load
+   forecast sensors are unchanged. Scored with `tests/forecast_bench.py` (Kozolec Pond EVSE + Power Strip +
+   Well Pump, 15 Aug-16 Oct, hourly origins) against the HA-template route (fit all, subtract the loads'
+   forecasts): hour-ahead 330.0 vs 331.0 W, day-ahead 326.4 vs 326.8, noon-tomorrow 2.52 vs 2.58 kWh; Home
+   (EVBox + Workshop Charger): 771 vs 813, 782 vs 816, 8.37 vs 8.80. Abnormal days: an automatic rule (a day
+   whose actual/expected ln-ratio is > z robust sigmas off the median, runs <= 3 days, left out of the fit
+   and level, or of the level only; z 2-4) did NOT win - neutral on Kozolec with the loads left out, worse
+   on Kozolec as is (hour-ahead 814 -> 819-838 W) and neutral-to-worse on Home - so it is not shipped;
+   nor did a different LEVEL_DAMPING (0.25-0.7). After (a) the 14 Oct day is ratio 1.49, not 2.4; the level
+   still read x1.33 at 15 Oct 12:00 (boiler, dryer, test loads) and is back to 0.78 by the 16th. A manual
+   "ignore these dates" option is open for the owner.
 4. Decided: pond = no special rule (angle score ~0 already); Shelly 5 % rule dropped.
 
 **Also after the reset (the owner 2026-10-15): check whether these 2 Oct detector ideas still matter on current code (82bd24b+)** - only check, report, then the owner decides:
