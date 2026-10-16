@@ -412,5 +412,14 @@ def test_grouping_smooths_the_angle_by_its_measured_error():
         assert sorted(len(g["items"]) for g in E.group(es) if len(g["items"]) > 4) == want, qe
 
 
+def test_groups_agreeing_within_their_edges_errors_are_one():
+    """Two cut groups whose size and angle agree within the edges' own errors
+    (no group spread) are merged; one 20 errors away is not."""
+    def part(size, ang, n=4):
+        return [{"size": size + k * 0.5, "angle": ang, "pe": 5.0, "noise": 5.0, "entries": {}} for k in range(n)]
+    got = E._merge([part(1000.0, 0.0), part(1003.0, 0.2), part(1100.0, 0.0), part(1000.0, 30.0)])
+    assert sorted(len(g) for g in got) == [4, 4, 8]
+
+
 if __name__ == "__main__":
     run_main(globals())

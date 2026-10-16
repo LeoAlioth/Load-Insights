@@ -254,11 +254,14 @@ def plug_truth(site: str, steps: list, hidden: dict, latency: dict) -> tuple:
 
 
 # ------------------------------------------------------------- scoring
-def dominated(groups: list, lab: dict, unknown=frozenset()) -> dict:
+def dominated(groups: list, lab: dict, unknown=frozenset(), unlabelled_ok: bool = False) -> dict:
     """Per class: the share of its labelled edges in a group whose most
     common label (unlabelled counted as one) is not the class - a tie is
     not the class's; ``unknown`` edges (outside the truth's reach) not
-    counted at all."""
+    counted at all. ``unlabelled_ok``: unlabelled edges are not counted, so
+    a group of the class and unlabelled edges is the class's (the kettle,
+    2026-10-17: its unlabelled Mansarda B neighbours may be boils the
+    90-240 s pairing misses)."""
     of = collections.defaultdict(list)
     for i, g in enumerate(groups):
         if i not in unknown:
@@ -267,6 +270,8 @@ def dominated(groups: list, lab: dict, unknown=frozenset()) -> dict:
     for i, cls in lab.items():
         n[cls] += 1
         c = collections.Counter(lab.get(j, "") for j in of[groups[i]])
+        if unlabelled_ok:
+            c.pop("", None)
         top = max(c.values())
         if c[cls] < top or sum(1 for v in c.values() if v == top) > 1:
             bad[cls] += 1
@@ -404,6 +409,7 @@ def score(site: str, fed: dict, hidden: dict, ns=None) -> dict:
         which = kettle_steps(steps)
         lab, found = carried(fed["edges"], steps, which)
         res["kettle"] = score_set(fed["edges"], lab, which, found, gf, True)
+        res["kettle"]["ok"] = {m: dominated(g, lab, unlabelled_ok=True) for m, g in gf.items()}
     truth, lab, found = plug_truth(site, steps, hidden, fed["latency"])
     res["plugs"] = score_set(hidden["edges"], lab, truth, found, groupings(hidden), False)
     return res
@@ -442,6 +448,9 @@ def lines(res: dict) -> list:
             for cls, c in s["classes"].items():
                 out.append(f"  {cls:22s} {c['truth']:6d} {_pct(c['found'] / c['truth'] if c['truth'] else None):>7s} {c['edges']:6d}   "
                            + " " * 13 + " ".join(f"{_pct(s['dominated'][m].get(cls)):>6s}" for m in ms))
+            if "ok" in s:
+                out.append("  dominated % with unlabelled edges not counted: " + ", ".join(
+                    f"{m} " + " ".join(f"{c} {_pct(v).strip()}" for c, v in s["ok"][m].items()) for m in ms))
             if "nn" in s:
                 out.append("  1-NN accuracy rise / fall / both (both balanced: the classes' mean): " + "; ".join(
                     f"{p} " + "/".join(_pct(s["nn"][d][p]["acc"]).strip() for d in ("rise", "fall", "both"))

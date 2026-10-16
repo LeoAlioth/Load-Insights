@@ -912,7 +912,7 @@ def _err(e: dict, p: str) -> Optional[float]:
     return e.get({"r": "re"}.get(p, p + "_e"))
 
 
-def stats(items: Sequence[dict]) -> dict:
+def stats(items: Sequence[dict], spread: bool = True) -> dict:
     """A group's centre and error per scored property (and the resistance):
     (median, hypot(its edges' median error, its own spread), count) - each
     edge's error refined by what the group shows (2026-10-15: "per
@@ -922,7 +922,7 @@ def stats(items: Sequence[dict]) -> dict:
         xs = [(e[p], s) for e in items for s in (_err(e, p),) if s is not None]
         if xs:
             vals = [x for x, _ in xs]
-            out[p] = (_median(vals), math.hypot(_median([s for _, s in xs]), _spread(vals) or 0.0), len(xs))
+            out[p] = (_median(vals), math.hypot(_median([s for _, s in xs]), (_spread(vals) or 0.0) if spread else 0.0), len(xs))
     return out
 
 
@@ -1005,7 +1005,10 @@ def _cut(es: List[dict]) -> List[List[dict]]:
     segment's largest part.
     ponytail: one error for the whole key (its median pe), linear in watts,
     so large steps are cut finer than their own error (Home's >= 1 kW groups
-    of one 680 -> 1,257); a kernel per edge of its own pe is the upgrade. An
+    of one 680 -> 1,257). A kernel per edge of its own pe, in size and in angle,
+    was benched (2026-10-17) and lost the truths (Workshop boiler 39 -> 59-84 %,
+    E165 1.4 -> 5.6-11 %, kettle 24 -> 33-83 %) while the singles barely fell:
+    most are cut off by the angle. An
     error that grows with the step (asinh, the key's small half's pe and its
     large half's pe / size) lost the truths (kettle 24 -> 98 %, Susilna
     63 -> 84 %, Workshop boiler 39 -> 98 %, 2026-10-15)."""
@@ -1031,6 +1034,48 @@ def _cut(es: List[dict]) -> List[List[dict]]:
     return parts
 
 
+def _merge(parts: List[List[dict]]) -> List[List[dict]]:
+    """The group-level pass: two groups of a key whose scored properties
+    agree within their EDGES' own measured errors (``distance`` over
+    ``stats`` without the groups' spreads, ``_within``) are one, closest
+    first, each merge's centre and errors read again. The spreads stay out
+    on purpose: with them a loose group agrees with everything near it."""
+    import heapq
+    groups = [list(p) for p in parts]
+    st = [stats(g, False) for g in groups]
+    alive = [True] * len(groups)
+    ver = [0] * len(groups)
+    order = sorted((st[i]["size"][0], i) for i in range(len(groups)) if st[i].get("size"))
+    xs = [x for x, _ in order]
+    top = max((_reach(st[i]) for _, i in order), default=0.0)
+    heap: list = []
+
+    def push(i):
+        si, ri = st[i]["size"][0], _reach(st[i])
+        w = 3.0 * (ri + top)
+        for _, j in order[bisect.bisect_left(xs, si - w):bisect.bisect_right(xs, si + w)]:
+            if j == i or not alive[j]:
+                continue
+            d, n = distance(st[i], st[j])
+            if _within(d, n):
+                heapq.heappush(heap, (d / max(n, 1), min(i, j), max(i, j), ver[i], ver[j], i, j))
+    for _, i in order:
+        push(i)
+    while heap:
+        _, _, _, vi, vj, i, j = heapq.heappop(heap)
+        a, b = (i, j) if i < j else (j, i)
+        va, vb = (vi, vj) if i < j else (vj, vi)
+        if not (alive[a] and alive[b]) or ver[a] != va or ver[b] != vb:
+            continue
+        groups[a] += groups[b]
+        alive[b] = False
+        ver[a] += 1
+        st[a] = stats(groups[a], False)
+        top = max(top, _reach(st[a]))
+        push(a)
+    return [g for g, ok in zip(groups, alive) if ok]
+
+
 def group(edges: Sequence[dict]) -> List[dict]:
     """Edges grouped per (place, direction, phase pattern) by their measured
     errors (2026-10-15): cut at the valleys of the size density in the
@@ -1043,9 +1088,13 @@ def group(edges: Sequence[dict]) -> List[dict]:
     relative term measured from the meters' disagreement (rho, Home 3.8-8 %,
     Kozolec 1.3 %) in the size and angle errors cost the oven and the kettle
     (MW 4.9 -> 12-27 %, E165 2.8 -> 97 %, kettle 98 % dominated): a pair's
-    disagreement is the meter above's other loads, not the place's error. A
-    merge of groups agreeing within their errors (with or without their
-    spreads) cost the kettle (24 -> 39-83 %); groups built from sure edges
+    disagreement is the meter above's other loads, not the place's error. The
+    cut groups are then merged where they agree within their EDGES' errors
+    (``_merge``; the kettle 24 -> 39 % dominated, all of it unlabelled
+    Mansarda B steps that may be boils the truth's 90-240 s pairing misses -
+    0 % with unlabelled not counted - the owner OK'd it, 2026-10-17; with
+    the groups' spreads too it ran loose groups together, kettle 83 %,
+    Workshop boiler 57 %). Groups built from sure edges
     only, the unsure attached where one group holds them, cost the oven
     (E265 72 % loose). The fixed 6 deg smoothing ran Le Hottie's microwave
     (~15 deg) into its 1.65 kW element (~0 deg); the reactive step's error
@@ -1059,7 +1108,7 @@ def group(edges: Sequence[dict]) -> List[dict]:
     for key in sorted(by):
         es = sorted(by[key], key=lambda e: e["t"])
         unit = _d.EDGE_NOISE_SHARE * max(min(e["noise"] for e in es), _d.MIN_NOISE_W)   # tightness's
-        parts = _cut(es)
+        parts = _merge(_cut(es))
         ix = _Index([stats(p) for p in parts])
         for k, p in enumerate(parts):
             for e in p:
