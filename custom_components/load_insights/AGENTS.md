@@ -1327,6 +1327,21 @@ Don't re-chase these; each cost real time.
   0.466 joining per-phase steps within 3 s at a balance of 1:2, and 0.489
   per-phase - the wide windows took in other loads' changes. Measure the size
   over +-2 readings and widen only while no other phase triggers (the owner).
+- **Edge grouping cut sized by each edge's own error** (2026-10-17; offline regroups of the 82bd24b
+  replays, Home 10-03..12 / Kozolec 10-02..11, truth card first). The size density smoothed by every
+  edge's own pe instead of the key's median (peak- or area-normalised kernels, x1 and x2, floored at the
+  median or not), the angle density by each edge's own angle error or the key's median, with or without
+  the segment's: the truths always lose what fine cuts hold - Home kettle 24 -> 33-83 %, Workshop boiler
+  39 -> 59-84 %, E165 1.4 -> 5.6-11 %, Susilna 63 -> 69-74 % (MW 83 % with the key's angle error) -
+  and the large steps barely stop fragmenting: Home >= 1 kW groups of one 1,257 -> 1,141-1,161 at the
+  same kernel, 716-875 only at twice it. Cause: of those 1,257, 333 are alone after the size cut
+  already and the rest are cut off by the angle (error ~0.2 deg at 1 kW); most sit within 2 combined
+  errors of a group but not 1. Per-edge angle kernels alone (size as before) are within noise of the
+  committed cut (E165 1.4 -> 2.8, Workshop 39 -> 43, dup 20.5 -> 19.8, singles 1,249): not kept. The
+  fragmentation is the price of the truths' fine cut; singles are under-reporting, not mixing.
+- **Merge pass with the groups' spreads in the error** (2026-10-15 and 17): kettle 24 -> 83 % dominated
+  (all of it unlabelled Mansarda B steps: 0 % with unlabelled edges not counted, as for every variant),
+  Workshop boiler 39 -> 57 %; the edges' errors alone (kept) 39 / 45.5 %.
 
 ## Working rules behind the dials
 
