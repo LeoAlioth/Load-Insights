@@ -46,7 +46,7 @@ python3 tests/energy_bench.py card [DIAL=V ...]           # THE score: capture /
 python3 tests/energy_bench.py invariance SITE FOLDER      # what the pass slicing changes, session by session
 python3 tests/energy_bench.py diff A.json B.json          # two scorecards, load by load
 python3 tests/energy_bench.py worth SITE [DIAL=V ...]     # what each meter is worth to every other load
-python3.14 tests/forecast_bench.py SITE START END STEP_H [OUT=ids] [MODE=helper] [SINCE=date] [module.CONST=V]  # forecast backtest: hour-/day-ahead MAE, noon-tomorrow kWh; data/forecast/<site>-{prefs,stats}.json from energy/get_prefs + recorder/statistics_during_period (hour, change, kWh) via HA_Configs/tools/ws.mjs
+python3.14 tests/forecast_bench.py SITE START END STEP_H [OUT=ids] [MODE=helper|parts] [SINCE=date] [module.CONST=V]  # forecast backtest: hour-/day-ahead MAE, noon-tomorrow kWh; data/forecast/<site>-{prefs,stats}.json from energy/get_prefs + recorder/statistics_during_period (hour, change, kWh) via HA_Configs/tools/ws.mjs
 python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration (diagnostics)
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln

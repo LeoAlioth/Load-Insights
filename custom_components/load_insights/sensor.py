@@ -156,7 +156,12 @@ class _Base(CoordinatorEntity, SensorEntity):
 class ForecastPowerSensor(_PowerW, _Base):
     """State: expected average power over the coming hour, in W.
     Attributes: the 7-day hourly forecast in the shape the solar forecast
-    integrations use, so a card built for one plots the other."""
+    integrations use, so a card built for one plots the other.
+
+    The house forecast and a meter's with parts inside it are BUILT: the
+    meter's own part plus its mature parts' forecasts (``parts``). Their
+    level, temperature and signals attributes describe the fit of the whole,
+    which supplies only the band."""
 
     # ~10 KB of attributes changing every quarter hour on every forecast
     # sensor would go into the recorder with each state - for nothing, since
@@ -247,6 +252,8 @@ class ForecastPowerSensor(_PowerW, _Base):
                 for m in fc.calendars
             ],
         }
+        if fc.parts:
+            attrs["parts"] = list(fc.parts)       # what the (built) forecast is the sum of
         if self._which == "consumption" and data.forecast_left_out:
             attrs["left_out_devices"] = list(data.forecast_left_out)
         if self._which == "remainder":

@@ -34,7 +34,8 @@ def combine(series_by_id: Dict[str, Sequence[Sample]], terms: Iterable[Tuple[str
     return [(when[k], sum(m[k] * sign for m, sign in maps)) for k in sorted(hours)]
 
 
-def subtract_all(base: Sequence[Sample], parts: Dict[str, Sequence[Sample]], ids: Iterable[str]) -> List[Sample]:
+def subtract_all(base: Sequence[Sample], parts: Dict[str, Sequence[Sample]], ids: Iterable[str],
+                 floor: Optional[float] = 0.0) -> List[Sample]:
     """``base`` minus every series in ``ids``, hour by hour, never below zero
     (a device metering more than the site is a meter fault, not negative
     household).
@@ -46,7 +47,8 @@ def subtract_all(base: Sequence[Sample], parts: Dict[str, Sequence[Sample]], ids
     weeks ago cut 10.5 weeks of remainder history to 2.8 (2026-09-16). AFTER
     its first row a missing hour is a real gap (sensor dropout) and the hour
     is dropped, as in ``combine``. A device with no rows at all is zero
-    throughout; ``coverage`` reports it.
+    throughout; ``coverage`` reports it. ``floor`` None leaves the result
+    signed (the own part of a meter, see ``profile.forecast``).
     """
     ids = list(ids)
     if not ids:
@@ -66,7 +68,7 @@ def subtract_all(base: Sequence[Sample], parts: Dict[str, Sequence[Sample]], ids
                 break               # metered by then but this hour is missing
             total += m[k]
         else:
-            out.append((t, max(0.0, v - total)))
+            out.append((t, v - total if floor is None else max(floor, v - total)))
     return out
 
 

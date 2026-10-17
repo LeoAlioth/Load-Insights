@@ -190,8 +190,15 @@ class SiteModel:
         device except those whose consumption another LISTED device already
         contains, so a sub-metered heater inside a metered workshop is not
         subtracted twice."""
+        return self.parts_of(None)
+
+    def parts_of(self, parent: Optional[str]) -> tuple:
+        """The listed devices directly inside ``parent`` (None = the site). A
+        device whose ``included_in`` names an unlisted statistic counts as
+        top-level."""
         listed = {d.energy for d in self.devices}
-        return tuple(d for d in self.devices if not (d.included_in and d.included_in in listed))
+        return tuple(d for d in self.devices
+                     if (d.included_in if d.included_in in listed else None) == parent)
 
     def all_statistic_ids(self) -> set:
         ids = {s for s, _ in self.consumption_terms()}
@@ -253,6 +260,15 @@ def scoped(signals, links: dict, within, stat: Optional[str]) -> list:
     on Blaz's PC and engaged there."""
     return [g for g in signals
             if stat is None or not links.get(g.entity) or any(stat in within(t) for t in links[g.entity])]
+
+
+def own_scoped(signals, links: dict, within, stat: Optional[str]) -> list:
+    """The signals the OWN part of ``stat`` takes (its series less its mature
+    parts): the inputs linked to nothing, and those linked to ``stat`` itself.
+    One linked to a part belongs to that part. For the site (None) that is
+    the unlinked ones alone, as the unmetered remainder always took them."""
+    return [g for g in signals
+            if not links.get(g.entity) or (stat is not None and any(within(t)[:1] == [stat] for t in links[g.entity]))]
 
 
 def follow_renames(value, renames: dict):

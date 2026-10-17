@@ -21,7 +21,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `tests/bench.py` | the bench every dial was chosen with: `score`, `kiln`, `surge`, and `HOUSE=prod` to read Home as production does; ground-truth scoring and each site's device-meter list (`SITES`) |
 | `tests/energy_bench.py` | the scorecard: capture and impurity per measured load, hidden / circuits / fed, the slicing invariance, and what each meter is worth to every other load (`card`, `invariance`, `diff`, `worth`) |
 | `tests/truth_bench.py` | the cross-meter edges (`insights/edges.py`, `tests/edge_bench.py`) against known truths: Le Hottie's programs on Mansarda C, the kettle and the panini press on Mansarda B, and every plug's own steps with the plugs hidden (`card`, `diff`, `fetch`) |
-| `tests/forecast_bench.py` | the forecast backtest on exported long-term statistics: hour-/day-ahead MAE and the noon "tomorrow" error for the site series, with devices left out (`OUT=`) either fitted away or subtracted as forecasts (`MODE=helper`); profile and level only, no temperature or calendars |
+| `tests/forecast_bench.py` | the forecast backtest on exported long-term statistics: hour-/day-ahead MAE and the noon "tomorrow" error for the site series, with devices left out (`OUT=`) either fitted away, subtracted as forecasts (`MODE=helper`) or never added to the house built from its parts (`MODE=parts`, `profile.assemble`); profile and level only, no temperature or calendars |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything

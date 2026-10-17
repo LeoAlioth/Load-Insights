@@ -201,6 +201,10 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     if data.remainder is not None:
         out["forecasts"].append(_forecast(data.remainder, "remainder"))
     out["forecasts"] += [_forecast(fc, sid) for sid, fc in (data.devices or {}).items()]
+    # the house series fitted on its own, and each meter's own part: compare them with the built forecasts above
+    if data.consumption_fitted is not None:
+        out["forecasts"].append(_forecast(data.consumption_fitted, "consumption_fitted"))
+    out["forecasts"] += [_forecast(fc, f"own:{sid}") for sid, fc in (data.own_parts or {}).items()]
     out["grid"] = _jsonable(data.grid) if data.grid else None
     out["scoring"] = {
         key: {"errors": {str(lead): len(rows) for lead, rows in led.errors.items()},

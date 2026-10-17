@@ -45,7 +45,9 @@ def run(site, start, end, step_h=3, out=(), mode="new", dials=None, since=None):
     """-> dict of metrics for the consumption-less-``out`` series.
     mode "new": fit the series with ``out`` already subtracted.
     mode "helper": fit consumption and each out load apart, subtract forecasts
-    (what Kozolec's HA templates do)."""
+    (what Kozolec's HA templates do).
+    mode "parts": every device fitted on its own, the house built from them
+    by profile.assemble (own part + mature parts, ``out`` never added back)."""
     for k, v in (dials or {}).items():
         mod, name = k.rsplit(".", 1)
         setattr(P if mod == "profile" else load(f"insights.{mod}"), name, v)
@@ -54,6 +56,11 @@ def run(site, start, end, step_h=3, out=(), mode="new", dials=None, since=None):
     target = S.subtract_all(cons, series, list(out)) if out else cons
     actual = {t.timestamp(): v for t, v in target}
     fits = {"x": cons, **{o: series[o] for o in out}} if mode == "helper" else {"x": target}
+    kids = {}
+    if mode == "parts":
+        listed = {d.energy for d in model.devices}
+        for d in model.devices:
+            kids.setdefault(d.included_in if d.included_in in listed else None, []).append(d.energy)
     ledger = SC.Ledger()
     t0 = datetime.fromisoformat(start).replace(tzinfo=TZ)
     t1 = datetime.fromisoformat(end).replace(tzinfo=TZ)
@@ -64,6 +71,14 @@ def run(site, start, end, step_h=3, out=(), mode="new", dials=None, since=None):
             fc[key] = P.forecast([r for r in rows if r[0].timestamp() < now.timestamp()], now, 168)
         base = fc["x"]
         hourly = list(base.hourly)
+        if mode == "parts":
+            nk = now.timestamp()
+            cut = {k: [r for r in v if r[0].timestamp() < nk] for k, v in series.items()}
+            cut[None] = [r for r in cons if r[0].timestamp() < nk]
+            fit = lambda stat, rows, signed=False: P.forecast(rows, now, 168, signed=signed)  # noqa: E731
+            fitted = {None: fit(None, cut[None]), **{k: fit(k, v) for k, v in cut.items() if k and v}}
+            house = P.assemble(cut, kids, out, fitted, fit, now, {})[2]
+            hourly = list(house.hourly)
         if mode == "helper":
             sub = [sum(fc[o].hourly[i][1] for o in out) for i in range(168)]
             hourly = [(t, max(0.0, v - s)) for (t, v), s in zip(hourly, sub)]

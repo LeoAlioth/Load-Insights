@@ -52,6 +52,69 @@ def test_a_load_left_out_stops_shaping_the_history_and_the_level():
     assert all(math.isclose(v, pattern(t), abs_tol=1e-9) for t, v in fc.hourly)
 
 
+def _parts_world(weeks_c=8):
+    """The site's 1.0 kWh/h is B's 0.8 (C's 0.3 inside it) and 0.2 of its own."""
+    flat = lambda v, weeks: [(t, v) for t, _ in weeks_of(NOW, weeks)]  # noqa: E731
+    return {None: flat(1.0, 8), "b": flat(0.8, 8), "c": flat(0.3, weeks_c)}
+
+
+def _walk(rows, kids, excluded=()):
+    fit = lambda stat, ser, signed=False: P.forecast(ser, NOW, 24, signed=signed)  # noqa: E731
+    fitted = {k: fit(k, v) for k, v in rows.items()}
+    return P.assemble(rows, kids, list(excluded), fitted, fit, NOW)
+
+
+def test_assemble_sums_own_parts_means_and_keeps_the_whole_band():
+    """Site 1.0 = own 0.2 + B 0.8 (= own 0.5 + C 0.3): the built house is the
+    sum, the nesting adds up on B too, and the band holds the centre."""
+    rows = _parts_world()
+    built, own, house = _walk(rows, {None: ("b",), "b": ("c",)})
+    assert all(math.isclose(v, 1.0, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(math.isclose(v, 0.8, abs_tol=1e-9) for _, v in built["b"].hourly)
+    assert all(math.isclose(v, 0.2, abs_tol=1e-9) for _, v in own[None][1].hourly)
+    assert house.parts == ("b",) and built["b"].parts == ("c",)
+    assert all(lo <= v <= hi for (_, v), (lo, hi) in zip(house.hourly, house.bands))
+    assert math.isclose(house.today_kwh, 24.0, abs_tol=1e-6)
+
+
+def test_assemble_leaves_a_young_part_inside_its_parent():
+    """A part under PART_MIN_WEEKS is not summed; its energy stays in the own
+    part's rows, so nothing is counted twice or dropped."""
+    rows = _parts_world(weeks_c=1)
+    built, own, house = _walk(rows, {None: ("b",), "b": ("c",)})
+    assert "b" not in built                          # nothing mature inside B: it keeps its own fit
+    assert all(math.isclose(v, 1.0, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(math.isclose(v, 0.8, abs_tol=1e-9) for _, v in own["b"][1].hourly)
+
+
+def test_a_negative_own_part_keeps_the_sum_exact():
+    """Meters that disagree: the site reads 0.9 where its one part reads 1.0.
+    The own part is -0.1, kept signed so the built house is the site's 0.9;
+    clamped at zero it would read 1.0 (Home: -99 W became +117 W). The
+    remainder as it is shown stays clamped."""
+    flat = lambda v: [(t, v) for t, _ in weeks_of(NOW, 8)]  # noqa: E731
+    built, own, house = _walk({None: flat(0.9), "b": flat(1.0)}, {None: ("b",)})
+    assert all(math.isclose(v, 0.9, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(v == 0.0 for _, v in own[None][1].hourly)
+    assert all(v < 0 for _, v in P.forecast(flat(-0.1), NOW, 24, signed=True).hourly)
+    assert all(v == 0 for _, v in P.forecast(flat(-0.1), NOW, 24).hourly)
+
+
+def test_an_excluded_load_never_comes_back_even_while_young():
+    """C (one week old, inside B) is left out of the house forecast: it comes
+    out of B's own part although it is no mature part, and is not added back.
+    B ran 0.5 kWh/h before C was metered and 0.8 with it."""
+    rows = _parts_world(weeks_c=1)
+    c_start = rows["c"][0][0].timestamp()
+    rows["b"] = [(t, 0.8 if t.timestamp() >= c_start else 0.5) for t, _ in rows["b"]]
+    rows[None] = [(t, v + 0.2) for t, v in rows["b"]]
+    kids = {None: ("b",), "b": ("c",)}
+    built, own, house = _walk(rows, kids, excluded=("c",))
+    assert all(math.isclose(v, 0.7, abs_tol=1e-9) for _, v in house.hourly)
+    # not excluded, the same young C stays inside B's own part: the house reads more
+    assert min(v for _, v in _walk(rows, kids)[2].hourly) > 0.75
+
+
 def test_the_current_hour_is_not_fitted():
     """Its statistic is still accumulating: a partial hour must not drag the slot."""
     samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]

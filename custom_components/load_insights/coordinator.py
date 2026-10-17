@@ -49,8 +49,8 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.model import LOAD_PREFIX, SiteModel, scoped
-from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
+from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
+from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
 from .insights.series import combine, coverage, subtract_all
 from .repairs import async_check
@@ -91,7 +91,9 @@ class InsightsData:
     remainder_complete_since: Optional[datetime] = None
     devices_without_statistics: tuple = ()
     holidays_known: bool = False
-    forecast_left_out: tuple = ()      # labels of the devices taken off the consumption forecast
+    forecast_left_out: tuple = ()      # labels of the devices never added to the house forecast
+    consumption_fitted: Optional[Forecast] = None   # the house series fitted on its own: supplies the band, kept for comparison
+    own_parts: Dict[str, Forecast] = None  # type: ignore[assignment]   # each meter's own part (its series less its mature parts)
     holidays_in_horizon: tuple = ()
     weather_entity: Optional[str] = None
     temperature_entity: Optional[str] = None
@@ -225,14 +227,13 @@ class InsightsCoordinator(DataUpdateCoordinator):
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
-        # Loads the owner leaves out of the consumption forecast come off the
-        # series it is fitted on, and scored against (the remainder is
-        # already without every listed device).
+        # Loads the owner leaves out ("Not in the house forecast") are never
+        # added to the house forecast; what is scored against is the
+        # consumption without them. (The remainder is already without every
+        # listed device.)
         left_out = [e for e in (opts.get(CONF_FORECAST_EXCLUDE) or []) if e in series]
-        if left_out:
-            consumption = subtract_all(consumption, series, left_out)
+        scored = subtract_all(consumption, series, left_out) if left_out else consumption
         remainder_ids = [d.energy for d in site.remainder_devices()]
-        remainder = subtract_all(consumption, series, remainder_ids) if remainder_ids else []
         complete_since, missing = coverage(series, remainder_ids) if remainder_ids else (None, [])
         labels = {d.energy: d.label for d in site.devices}
 
@@ -256,8 +257,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         fit = lambda rows, signals: self.hass.async_add_executor_job(  # noqa: E731
             forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None, signals or None
         )
-        cons_fc = await fit(consumption, cal_signals)
-        rem_fc = await fit(remainder, scoped(cal_signals, links, within, REMAINDER_KEY)) if remainder else None
+        cons_fit = await fit(consumption, cal_signals)
 
         # --- scoring: settle what has arrived, record what is now predicted ---
         ledgers = await self._load_ledgers()
@@ -267,9 +267,6 @@ class InsightsCoordinator(DataUpdateCoordinator):
             led.settle(now, actual)
             led.record(now, fc.hourly, fc.bands, fc.tomorrow_kwh)
 
-        score(SITE_KEY, cons_fc, consumption)
-        if rem_fc is not None:
-            score(REMAINDER_KEY, rem_fc, remainder)
         # Every listed device, nested ones included - the series are already
         # in hand for the remainder, so this is only the fits. A device with a
         # state sensor also gets its nowcast: the sensor's hourly means over
@@ -313,7 +310,31 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 kept = [numbers[i] for i in fc.nowcast.used] if fc.nowcast.used else numbers[:1]
                 state_used[d.energy] = ", ".join(e for e, _, _ in kept)
                 state_now[d.energy] = kept[0][2] if len(kept) == 1 else None
-            score(d.energy, device_fc[d.energy], rows)
+
+        # --- the house, and every meter with parts, built from them: its own
+        # part (its series less its mature parts) plus each mature part's
+        # forecast, bottom-up (profile.assemble). The independent fit of the
+        # whole supplies only the band.
+        kids_of = {k: tuple(d.energy for d in site.parts_of(k)) for k in [None, *labels]}
+        rows_of: Dict[Optional[str], list] = {None: consumption, **{k: v for k, v in series.items() if k in labels and v}}
+        fitted: Dict[Optional[str], Forecast] = {None: cons_fit, **device_fc}
+        fit_part = lambda stat, rows, signed: forecast(  # noqa: E731
+            rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
+            own_scoped(cal_signals, links, within, stat) or None, signed=signed)
+        fit_whole = lambda stat, rows: forecast(  # noqa: E731
+            rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
+            (cal_signals if stat is None else scoped(cal_signals, links, within, stat)) or None)
+        built, own, house = await self.hass.async_add_executor_job(
+            assemble, rows_of, kids_of, left_out, fitted, fit_part, now, labels, fit_whole)
+        device_fc.update({k: v for k, v in built.items() if k})
+        cons_fc = house or cons_fit
+        rem_rows, rem_fc = own.get(None, (None, None))
+
+        score(SITE_KEY, cons_fc, scored)
+        if rem_fc is not None:
+            score(REMAINDER_KEY, rem_fc, rem_rows)
+        for k, fc in device_fc.items():
+            score(k, fc, rows_of[k])
         await self._save_ledgers()
 
         # --- what the meter will do: consumption less the PV the dashboard's
@@ -339,6 +360,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
             forecast_left_out=tuple(labels.get(e, e) for e in left_out),
+            consumption_fitted=cons_fit,
+            own_parts={k: v[1] for k, v in own.items() if k},
             holidays_known=hols is not None,
             holidays_in_horizon=tuple(sorted(d.isoformat() for d in (hols or ()) if now.date() <= d <= end_h.date())),
             weather_entity=weather_entity,
