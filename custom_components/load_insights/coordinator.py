@@ -60,7 +60,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.planning import plan_all, spread_evenly
+from .insights.planning import plan_all, spread_evenly, sun_window
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
@@ -72,6 +72,9 @@ SITE_KEY = "consumption"
 REMAINDER_KEY = "remainder"
 
 _LOGGER = logging.getLogger(__name__)
+
+# a planning reading that cannot be refreshed stands for this long, then the sensor goes unavailable
+PLAN_HOLD_MAX = timedelta(hours=12)
 
 
 def holiday_dates(country: Optional[str], years) -> Optional[Set[date]]:
@@ -339,8 +342,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
         fit_whole = lambda stat, rows: forecast(  # noqa: E731
             rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
             (cal_signals if stat is None else scoped(cal_signals, links, within, stat)) or None)
-        built, own, house = await self.hass.async_add_executor_job(
-            assemble, rows_of, kids_of, left_out, fitted, fit_part, now, labels, fit_whole)
+        try:
+            built, own, house = await self.hass.async_add_executor_job(
+                assemble, rows_of, kids_of, left_out, fitted, fit_part, now, labels, fit_whole)
+        except Exception:  # noqa: BLE001 - one bad fit must not take every forecast with it
+            _LOGGER.exception("House forecast from its parts failed; using the independent fits")
+            built, own, house = {}, {}, None
         device_fc.update({k: v for k, v in built.items() if k})
         cons_fc = house or cons_fit
         rem_rows, rem_fc = own.get(None, (None, None))
@@ -369,7 +376,11 @@ class InsightsCoordinator(DataUpdateCoordinator):
             functools.partial(build_grid, cons_fc.hourly, pv, soc,
                               site.battery_capacity_kwh, topology=topology),
         )
-        plan = self._plan(site, now, cons_fc, device_fc, left_out, pv, soc, opts)
+        try:
+            plan = self._plan(site, now, cons_fc, device_fc, left_out, pv, soc, opts)
+        except Exception:  # noqa: BLE001 - the last readings stand, the forecasts go on
+            _LOGGER.exception("SOC planning failed; keeping its last readings")
+            plan = dict(self._plan_last)
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
@@ -430,8 +441,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 self._plan_last[n] = {**r, "held_since": None}
             elif n in self._plan_last:
                 last = self._plan_last[n]
-                self._plan_last[n] = {**last, "held_since": last.get("held_since") or now.isoformat()}
+                since = last.get("held_since") or now.isoformat()
+                if now - dt_util.parse_datetime(since) > PLAN_HOLD_MAX:
+                    del self._plan_last[n]       # an input broken for good must not serve a value for ever
+                else:
+                    self._plan_last[n] = {**last, "held_since": since}
             out[n] = self._plan_last.get(n)
+        # when the forecast sun starts and stops: a function of the sun forecast alone,
+        # not of the 120 hours or the pack the three readings above need
+        starts, ends = sun_window(now, pv, get(CONF_PLAN_PRODUCTION_SCALE), now.tzinfo)
+        out["sun"] = {"starts": starts, "ends": ends} if starts else None
         return out
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:

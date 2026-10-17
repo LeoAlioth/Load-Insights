@@ -499,50 +499,51 @@ def assemble(rows: Dict[Optional[str], Sequence[Sample]], kids_of: Dict[Optional
     has nothing to build from)."""
     labels = labels or {}
     cache: Dict[tuple, tuple] = {}
+    fits = {"own": (None, lambda stat, ser: fit_own(stat, ser, True)),      # signed: the sum of parts is what is clamped
+            "rem": (0.0, lambda stat, ser: fit_own(stat, ser, False)),      # the unmetered remainder, as it reads
+            "whole": (0.0, fit_whole or (lambda stat, ser: fit_own(stat, ser, False)))}
 
-    fit_whole = fit_whole or (lambda stat, ser: fit_own(stat, ser, False))
-
-    def fit_cached(stat, drop, tag):
-        key = (stat, tuple(sorted(drop)), tag)
+    def fit_cached(stat, drop, kind):
+        key = (stat, tuple(sorted(drop)), kind)
         if key not in cache:
-            signed = tag == "own"
-            ser = subtract_all(rows[stat], rows, drop, floor=None if signed else 0.0) if drop else rows[stat]
-            cache[key] = (ser, fit_own(stat, ser, True) if signed else
-                          fit_own(stat, ser, False) if tag == "rem" else fit_whole(stat, ser))
+            floor, fit = fits[kind]
+            ser = subtract_all(rows[stat], rows, drop, floor=floor) if drop else rows[stat]
+            cache[key] = (ser, fit(stat, ser))
         return cache[key]
+
+    def sort_parts(x, excl, direct=True):
+        """x's parts: mature, left out, and (direct only) young. A young part stays in the own part,
+        so what is inside it is sorted too: its left-out loads come out, its mature ones go on."""
+        mature, left, young = [], [], []
+        for c in kids_of.get(x, ()):
+            if c in excl:
+                left.append(c)
+            elif c in fitted and fitted[c].span_weeks >= PART_MIN_WEEKS:
+                mature.append(c)
+            else:
+                if direct:
+                    young.append(c)
+                m, l, _ = sort_parts(c, excl, False)
+                mature += m
+                left += l
+        return mature, left, young
 
     def walk(excl):
         built, own = {}, {}
 
         def go(x):
             kids = tuple(kids_of.get(x, ())) if x in rows else ()
+            if not kids:
+                return
             for c in kids:
                 if c not in excl:
                     go(c)
-            mature, left, young = [], [], []
-
-            def scan(p, direct):
-                for c in kids_of.get(p, ()):
-                    if c in excl:
-                        left.append(c)
-                    elif c in fitted and fitted[c].span_weeks >= PART_MIN_WEEKS:
-                        mature.append(c)
-                    else:
-                        if direct:
-                            young.append(c)
-                        scan(c, False)       # it stays in the own part, its excluded loads do not
-
-            scan(x, True)
-            if not kids:
-                return
-            ser, own_fc = fit_cached(x, mature + left, "own")      # signed: the sum of parts is what is clamped
-            own[x] = fit_cached(x, mature + left, "rem") if x is None else (ser, own_fc)   # the unmetered remainder, as it reads
+            mature, left, young = sort_parts(x, excl)
+            ser, own_fc = fit_cached(x, mature + left, "own")
+            own[x] = fit_cached(x, mature + left, "rem") if x is None else (ser, own_fc)
             if not mature and not left:
                 return
-            if left:
-                w_ser, whole = fit_cached(x, left, "whole")
-            else:
-                w_ser, whole = rows[x], fitted[x]
+            w_ser, whole = fit_cached(x, left, "whole") if left else (rows[x], fitted[x])
             if not mature:
                 built[x] = whole
                 return

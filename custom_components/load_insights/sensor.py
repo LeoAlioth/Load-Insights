@@ -61,7 +61,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # SOC planning needs the sun forecast the Energy dashboard links and the
     # pack's size; without both there is nothing to plan from.
     if site.solar_forecast_entries and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
-        entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES]
+        entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES
+                     if which != "excess" or site.battery_soc]      # the excess needs the SOC
         entities += [SunWindowSensor(coordinator, entry, key, which) for key, which in SUN_ENTITIES]
     else:
         for key, _ in PLAN_ENTITIES + SUN_ENTITIES:
@@ -605,8 +606,8 @@ class SunWindowSensor(CoordinatorEntity, SensorEntity):
 
     def _reading(self) -> Optional[datetime]:
         data: Optional[InsightsData] = self.coordinator.data
-        plan = ((data.plan or {}).get("target")) if data is not None else None
-        iso = plan["attributes"].get(f"production_{self._which}_at") if plan else None
+        sun = (data.plan or {}).get("sun") if data is not None else None
+        iso = sun.get(self._which) if sun else None
         return dt_util.parse_datetime(iso) if iso else None
 
     @property
