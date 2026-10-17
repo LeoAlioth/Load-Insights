@@ -67,6 +67,12 @@
             },
             "daily_excess": {
                 "name": "Dnevni presežek"
+            },
+            "production_starts": {
+                "name": "Začetek proizvodnje"
+            },
+            "production_ends": {
+                "name": "Konec proizvodnje"
             }
         },
         "binary_sensor": {

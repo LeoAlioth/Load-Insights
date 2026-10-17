@@ -62,8 +62,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # pack's size; without both there is nothing to plan from.
     if site.solar_forecast_entries and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
         entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES]
+        entities += [SunWindowSensor(coordinator, entry, key, which) for key, which in SUN_ENTITIES]
     else:
-        for key, _ in PLAN_ENTITIES:
+        for key, _ in PLAN_ENTITIES + SUN_ENTITIES:
             _forget(hass, "sensor", f"{entry.entry_id}_{key}")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = entry.runtime_data.runner
@@ -585,6 +586,36 @@ class BatterySocForecastSensor(_GridBase):
 
 
 PLAN_ENTITIES = (("soc_target", "target"), ("soc_minimum", "minimum"), ("daily_excess", "excess"))
+
+
+SUN_ENTITIES = (("production_starts", "starts"), ("production_ends", "ends"))
+
+
+class SunWindowSensor(CoordinatorEntity, SensorEntity):
+    """When the sun forecast says production starts / stops on the day
+    (insights/planning.py ``sun_window``): today's by day, tomorrow's once the
+    day is over. What a paced load's horizon is read from, and handy on a
+    dashboard."""
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, key: str, which: str) -> None:
+        super().__init__(coordinator)
+        self._which = which
+        on_site(self, entry, key)
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def _reading(self) -> Optional[datetime]:
+        data: Optional[InsightsData] = self.coordinator.data
+        plan = ((data.plan or {}).get("target")) if data is not None else None
+        iso = plan["attributes"].get(f"production_{self._which}_at") if plan else None
+        return dt_util.parse_datetime(iso) if iso else None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._reading() is not None
+
+    @property
+    def native_value(self) -> Optional[datetime]:
+        return self._reading()
 
 
 class PlanSensor(CoordinatorEntity, SensorEntity):
