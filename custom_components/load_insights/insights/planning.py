@@ -205,8 +205,7 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
     ps, cs = cfg["production_scale"], cfg["consumption_scale"]
     spec = {n: Spec(Side(*cfg["weights"][n][0]), Side(*cfg["weights"][n][1])) for n in cfg["weights"]}
     common = {
-        "production_starts_at": sun_window(now, production, ps, tz)[0],
-        "production_ends_at": sun_window(now, production, ps, tz)[1],
+        **dict(zip(("production_starts_at", "production_ends_at"), sun_window(now, production, ps, tz))),
         "inputs": {"horizon_days": days, "production_scale": ps, "consumption_scale": cs,
                    "capacity_kwh": round(capacity, 2), "production_hours": len(production), "use_hours": len(use)},
     }
