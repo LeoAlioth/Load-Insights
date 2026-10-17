@@ -900,7 +900,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             keep = {k: v for k, v in self.config_entry.options.items() if k not in own}
             # a 0 is an answer (no derate, no floor), an emptied selector clears
             return self.async_create_entry(data={**keep, **{
-                k: v for k, v in user_input.items() if k in own and (v or v == 0) and v is not None}})
+                k: v for k, v in user_input.items() if k in own and v or v == 0}})
         manager = await async_get_manager(self.hass)
         devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
         return self.async_show_form(

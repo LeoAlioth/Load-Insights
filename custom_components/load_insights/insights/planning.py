@@ -54,8 +54,7 @@ def hours_until_day(now: datetime, days: int) -> int:
     """Hours from the one under way to local midnight ``days`` calendar days
     after today's start - the span the daily excess runs over."""
     first = now.replace(minute=0, second=0, microsecond=0)
-    end = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days + 1)).replace(
-        hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days)
     return int(round((end.timestamp() - first.timestamp()) / HOUR))
 
 
@@ -76,11 +75,12 @@ def spread_evenly(use: Dict[float, float], parts: Sequence[Dict[float, float]]) 
 
 def production_hour(production: Dict[float, float], k: float) -> Optional[float]:
     """The forecast sun in the hour starting ``k``. A forecast integration
-    may leave out its zero (night) hours: inside the span it covers a missing
-    hour is zero, beyond its end it is unknown."""
+    may leave out its zero (night) hours: up to the last hour it covers a
+    missing hour is zero (the night before its first day too), beyond its end
+    it is unknown."""
     if k in production:
         return production[k]
-    if production and min(production) < k < max(production):
+    if production and k <= max(production):
         return 0.0
     return None
 
@@ -174,17 +174,18 @@ def excess(bal: Balance, days: int, until_full_kwh: float, tz) -> Tuple[Optional
 
 def sun_window(now: datetime, production: Dict[float, float], scale: float, tz) -> tuple:
     """When the forecast sun starts and stops on the first day that still has
-    any from now on (today by day, tomorrow by night): the start of its first
-    and the end of its last hour above 1 % of that day's peak hour, so a few
-    watts at dawn do not count as production. -> (starts_at, ends_at) ISO
-    strings, (None, None) with no forecast sun. A load paced off the day's
-    excess is paced until the end."""
+    any from now on (today by day, tomorrow once today is over): the start of
+    that whole day's first and the end of its last hour above 1 % of the day's
+    peak hour, so a few watts at dawn or dusk do not count. -> (starts_at,
+    ends_at) ISO strings, (None, None) with no forecast sun. A load paced off
+    the day's excess is paced until the end."""
     first = now.replace(minute=0, second=0, microsecond=0).timestamp()
     live = sorted(k for k, v in production.items() if k >= first and v * scale > 0.001)
     if not live:
         return None, None
     day = datetime.fromtimestamp(live[0], tz).date()
-    hours = sorted(k for k in live if datetime.fromtimestamp(k, tz).date() == day)
+    hours = sorted(k for k, v in production.items()
+                   if datetime.fromtimestamp(k, tz).date() == day and v * scale > 0.001)
     bar = max(production[k] for k in hours) * 0.01
     lit = [k for k in hours if production[k] >= bar]
     return _at(lit[0], tz), _at(lit[-1] + HOUR, tz)
@@ -205,7 +206,6 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
     ps, cs = cfg["production_scale"], cfg["consumption_scale"]
     spec = {n: Spec(Side(*cfg["weights"][n][0]), Side(*cfg["weights"][n][1])) for n in cfg["weights"]}
     common = {
-        **dict(zip(("production_starts_at", "production_ends_at"), sun_window(now, production, ps, tz))),
         "inputs": {"horizon_days": days, "production_scale": ps, "consumption_scale": cs,
                    "capacity_kwh": round(capacity, 2), "production_hours": len(production), "use_hours": len(use)},
     }

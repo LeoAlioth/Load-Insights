@@ -111,6 +111,23 @@ def test_sun_window_ignores_a_few_watts_at_the_edges():
     assert start.startswith("2026-10-17T06:00") and end.startswith("2026-10-17T17:00")
 
 
+def test_sun_window_starts_at_the_days_sunrise_even_after_it_has_passed():
+    # at 10:20 the 08:00 hour is behind us; "Production starts" still says 08:00, not the hour under way
+    base = NOW.replace(hour=0, minute=0).timestamp()
+    prod = {base + h * 3600: v for h, v in {8: 0.6, 9: 1.2, 10: 1.8, 11: 2.4, 12: 3.0, 13: 2.4, 16: 0.6}.items()}
+    start, end = PL.sun_window(NOW, prod, 1.0, TZ)
+    assert start.startswith("2026-10-17T08:00") and end.startswith("2026-10-17T17:00")
+
+
+def test_a_night_before_the_first_forecast_hour_is_zero_sun_not_unknown():
+    # an integration that leaves out its night zeros and starts at sunrise: at 03:00 the hours before it are 0,
+    # the hours after its last day's end stay unknown
+    prod = {NOW.replace(hour=h, minute=0).timestamp(): 1.0 for h in range(8, 17)}
+    assert PL.production_hour(prod, NOW.replace(hour=3, minute=0).timestamp()) == 0.0
+    assert PL.production_hour(prod, NOW.replace(hour=12, minute=0).timestamp()) == 1.0
+    assert PL.production_hour(prod, NOW.replace(hour=20, minute=0).timestamp()) is None
+
+
 def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     cfg = {"days": 5, "production_scale": 0.95, "consumption_scale": 1.0, "floor": 10,
            "weights": {"target": ((24, 0.9), (24, 0.9)), "minimum": ((48, 0.5), (48, 0.5)), "excess": ((24, 0), (24, 0))}}
@@ -118,7 +135,7 @@ def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     out = PL.plan_all(NOW, use, day_sun(3.0), 50.0, 60.0, 90.0, cfg)
     assert set(out) == {"target", "minimum", "excess"} and all(out.values())
     assert out["excess"]["value"] == out["excess"]["attributes"]["excess_kwh"][0]
-    assert len(out["excess"]["attributes"]["days"]) == 5 and out["target"]["attributes"]["production_ends_at"]
+    assert len(out["excess"]["attributes"]["days"]) == 5
     # sun that stops after 3 days: the 5-day readings are None, so the caller keeps its last value
     short = {k: v for k, v in day_sun(3.0).items() if k < KEYS[0] + 72 * 3600}
     assert PL.plan_all(NOW, use, short, 50.0, 60.0, 90.0, cfg) == {"target": None, "minimum": None, "excess": None}
