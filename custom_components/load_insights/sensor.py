@@ -27,7 +27,7 @@ from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confide
                               most_specific, ref_label, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
-from .insights.profile import Forecast
+from .insights.profile import PART_MIN_WEEKS, Forecast
 from .insights.scoring import LEADS, Ledger
 
 
@@ -266,7 +266,11 @@ class ForecastPowerSensor(_PowerW, _Base):
         if self._which == "consumption" and data.forecast_left_out:
             attrs["left_out_devices"] = list(data.forecast_left_out)
         if self._which == "remainder":
-            attrs["subtracted_devices"] = [d.label for d in data.site.remainder_devices()]
+            # a young top-level device (own fit under PART_MIN_WEEKS) stays in the remainder
+            attrs["subtracted_devices"] = [
+                d.label for d in data.site.remainder_devices()
+                if d.label in data.forecast_left_out
+                or (d.energy in data.devices and data.devices[d.energy].span_weeks >= PART_MIN_WEEKS)]
             # Before this instant at least one device was not yet metered, so
             # its energy is inside the remainder for those hours - by design.
             attrs["remainder_complete_since"] = (
