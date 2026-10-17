@@ -22,6 +22,7 @@ Shellys) and **Kozolec** (off-grid, single-phase, Victron MultiPlus II).
 | `tests/energy_bench.py` | the scorecard: capture and impurity per measured load, hidden / circuits / fed, the slicing invariance, and what each meter is worth to every other load (`card`, `invariance`, `diff`, `worth`) |
 | `tests/truth_bench.py` | the cross-meter edges (`insights/edges.py`, `tests/edge_bench.py`) against known truths: Le Hottie's programs on Mansarda C, the kettle and the panini press on Mansarda B, and every plug's own steps with the plugs hidden (`card`, `diff`, `fetch`) |
 | `tests/forecast_bench.py` | the forecast backtest on exported long-term statistics: hour-/day-ahead MAE and the noon "tomorrow" error for the site series, with devices left out (`OUT=`) either fitted away, subtracted as forecasts (`MODE=helper`) or never added to the house built from its parts (`MODE=parts`, `profile.assemble`); profile and level only, no temperature or calendars |
+| `custom_components/load_insights/insights/planning.py` | the SOC planning maths (target, minimum, daily excess) from the house forecast and the sun forecast; pure, replayable (`plan_all`). Options page "SOC planning", sensors `PlanSensor`. |
 | `tests/run_all.py` | every pure test file |
 
 Keep new logic in `insights/` where it can be replayed and tested. Anything

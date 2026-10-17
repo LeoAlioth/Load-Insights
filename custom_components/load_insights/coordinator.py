@@ -31,6 +31,17 @@ from .const import (
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_PLAN_CONSUMPTION_SCALE,
+    CONF_PLAN_DAYS,
+    CONF_PLAN_FULL_SOC,
+    CONF_PLAN_FULL_SOC_ENTITY,
+    CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_PRODUCTION_SCALE,
+    CONF_PLAN_SPREAD,
+    PLAN_DEFAULTS,
+    PLAN_SENSORS,
+    PLAN_WEIGHTS,
+    plan_key,
     CONF_WEATHER_ENTITY,
     DOMAIN,
     HISTORY_WEEKS,
@@ -49,6 +60,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
+from .insights.planning import plan_all, spread_evenly
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
@@ -109,6 +121,8 @@ class InsightsData:
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     grid: Optional[GridForecast] = None
+    # SOC planning: sensor (target / minimum / excess) -> {value, attributes, held_since}; None while it has never read
+    plan: Dict[str, Optional[dict]] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
@@ -130,6 +144,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.scoring")
         self._ledgers: Optional[Dict[str, Ledger]] = None
         self._capacity_kwh: Optional[float] = None  # the capacity sensor's last good reading
+        self._plan_last: Dict[str, dict] = {}       # each planning sensor's last complete reading
 
     def _battery_capacity(self) -> Optional[float]:
         """The capacity sensor's kWh, held at its last good reading while it is
@@ -354,6 +369,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             functools.partial(build_grid, cons_fc.hourly, pv, soc,
                               site.battery_capacity_kwh, topology=topology),
         )
+        plan = self._plan(site, now, cons_fc, device_fc, left_out, pv, soc, opts)
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
@@ -370,6 +386,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temperature_forecast_hours=len(temps_fc),
             ledgers=dict(ledgers),
             grid=grid,
+            plan=plan,
             calendar_entities=cal_entities,
             input_entities=input_entities,
             input_kinds=input_kinds,
@@ -382,6 +399,40 @@ class InsightsCoordinator(DataUpdateCoordinator):
         if self.config_entry is not None:
             async_check(self.hass, self.config_entry, data)
         return data
+
+    def _plan(self, site: SiteModel, now: datetime, cons_fc: Forecast, device_fc: Dict[str, Forecast],
+              left_out: List[str], pv: Dict[float, float], soc: Optional[float], opts) -> Dict[str, Optional[dict]]:
+        """The three SOC planning readings (insights/planning.py) from the
+        house forecast and the dashboard's sun forecast. One that cannot be
+        read this time - an hour of the horizon is missing - keeps its last
+        reading, and says since when (``held_since``)."""
+        use = {t.timestamp(): v for t, v in cons_fc.hourly}
+        spread = [{t.timestamp(): v for t, v in device_fc[s].hourly}
+                  for s in opts.get(CONF_PLAN_SPREAD) or [] if s in device_fc and s not in left_out]
+        get = lambda key: opts.get(key, PLAN_DEFAULTS[key])  # noqa: E731
+        weights = {}
+        for n in PLAN_SENSORS:
+            full_h, derate = PLAN_WEIGHTS[n]
+            weights[n] = tuple((opts.get(plan_key(n, side, "full_hours"), full_h), opts.get(plan_key(n, side, "derate"), derate))
+                               for side in ("consumption", "production"))
+        full = _read_number(self.hass, [opts.get(CONF_PLAN_FULL_SOC_ENTITY)]) if opts.get(CONF_PLAN_FULL_SOC_ENTITY) else None
+        cfg = {"days": get(CONF_PLAN_DAYS), "production_scale": get(CONF_PLAN_PRODUCTION_SCALE),
+               "consumption_scale": get(CONF_PLAN_CONSUMPTION_SCALE), "floor": get(CONF_PLAN_MINIMUM_FLOOR),
+               "weights": weights}
+        fresh = plan_all(now, spread_evenly(use, spread), pv, site.battery_capacity_kwh, soc,
+                         full if full is not None else get(CONF_PLAN_FULL_SOC), cfg)
+        names = {s: next((d.label for d in site.devices if d.energy == s), s) for s in opts.get(CONF_PLAN_SPREAD) or []}
+        out: Dict[str, Optional[dict]] = {}
+        for n, r in fresh.items():
+            if r is not None:
+                r["attributes"]["inputs"].update({"spread_evenly": [names[s] for s in names if s in device_fc and s not in left_out],
+                                                  "left_out": [d.label for d in site.devices if d.energy in left_out]})
+                self._plan_last[n] = {**r, "held_since": None}
+            elif n in self._plan_last:
+                last = self._plan_last[n]
+                self._plan_last[n] = {**last, "held_since": last.get("held_since") or now.isoformat()}
+            out[n] = self._plan_last.get(n)
+        return out
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:
         """Hour key -> forecast PV kWh, from the forecast integrations the

@@ -226,6 +226,11 @@ same placeholders. A menu is also the only way to give a page a Back row: a
 form's one control is Submit, which is why a load's own page is a menu and
 its name box is one step further in.
 
+### The house forecast and the SOC planning sensors (2026-10-17)
+
+- **House forecast = its parts.** `profile.assemble` (pure; the coordinator and `tests/forecast_bench.py MODE=parts` call the same walk): a meter's own part is its series less its mature parts (`PART_MIN_WEEKS` = 6, swept 0-12), built = own + mature parts' forecasts, the whole's independent fit supplies the band only. The own part is SIGNED (`forecast(signed=True)`, `subtract_all(floor=None)`): Home's grid-derived consumption sits 99 W below its top-level meters, and a remainder clamped at zero put +216 W into the sum. Only the sum is clamped; the remainder sensor stays clamped. `forecast_exclude` ("Not in the house forecast") is never added back and always comes out of its holder's own part.
+- **Planning sensors** (`insights/planning.py`, `PlanSensor`; options page "SOC planning", keys in `const.py`): `soc_target`, `soc_minimum`, `daily_excess`, one balance `net_i = w_p(i) x production_scale x production_i - w_c(i) x consumption_scale x use_i`, raw values, last reading kept (`held_since`) when an hour of the horizon is missing. Ported from Kozolec's three template helpers; `plan_all` is what the coordinator and a replay both call. The sun is `_solar_forecast` (the dashboard's forecast integrations, arrays summed) - identical to the Open-Meteo day sensors' `wh_period` over the hours they share (checked 2026-10-17, max difference 0.0 Wh). Planning-only per-device flag `plan_spread_evenly` (the tanks): their energy spread evenly over the horizon, as the helpers did.
+
 ## Storage and generations
 
 `DETECTOR_GENERATION` (in `detection.py`) gates the stored signature library.

@@ -58,6 +58,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         entities.append(BatterySocForecastSensor(coordinator, entry, "battery_soc_forecast"))
     else:
         _forget(hass, "sensor", f"{entry.entry_id}_battery_soc_forecast")
+    # SOC planning needs the sun forecast the Energy dashboard links and the
+    # pack's size; without both there is nothing to plan from.
+    if site.solar_forecast_entries and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
+        entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES]
+    else:
+        for key, _ in PLAN_ENTITIES:
+            _forget(hass, "sensor", f"{entry.entry_id}_{key}")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
@@ -575,6 +582,50 @@ class BatterySocForecastSensor(_GridBase):
             "minimum": round(min(socs), 1) if socs else None,
             "maximum": round(max(socs), 1) if socs else None,
         }
+
+
+PLAN_ENTITIES = (("soc_target", "target"), ("soc_minimum", "minimum"), ("daily_excess", "excess"))
+
+
+class PlanSensor(CoordinatorEntity, SensorEntity):
+    """One SOC planning reading (insights/planning.py): the target and the
+    minimum in % of the pack, the daily excess in kWh (state: today's, the
+    days in the ``days`` attribute). The values are RAW - negative where the
+    sun outruns the pack - and the consumer clamps. When an hour of the
+    horizon is missing the last reading stands, and ``held_since`` says so."""
+
+    _unrecorded_attributes = frozenset({"days", "inputs", "weights", "excess_kwh"})
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, key: str, which: str) -> None:
+        super().__init__(coordinator)
+        self._which = which
+        on_site(self, entry, key)
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        if which == "excess":
+            self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            self._attr_suggested_display_precision = 1
+        else:
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_device_class = SensorDeviceClass.BATTERY
+            self._attr_suggested_display_precision = 0
+
+    def _reading(self) -> Optional[dict]:
+        data: Optional[InsightsData] = self.coordinator.data
+        return ((data.plan or {}).get(self._which)) if data is not None else None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._reading() is not None
+
+    @property
+    def native_value(self) -> Optional[float]:
+        r = self._reading()
+        return None if r is None else r["value"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        r = self._reading()
+        return {} if r is None else {**r["attributes"], "held_since": r.get("held_since")}
 
 
 class BaseLoadSensor(_PowerW, _DetectionBase):
