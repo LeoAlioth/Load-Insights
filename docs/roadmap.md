@@ -22,6 +22,10 @@ whole-house forecast is built from its parts (remainder + each device, respectin
 minimum SOC helper excludes the Pond EVSE and Power Strip forecasts - "loads running over target only". The rest
 of forecasting stays parked.
 
+Built 2026-10-17 (plan li-4 Part A plus the never-added-back exclusion, spec 2026-10-17-soc-planning-and-pacing.md): the house forecast is
+`profile.assemble` over the meter nesting. Signed own part (clamped only in the sum) was the fix that made it match: Home's grid-derived
+consumption sits 99 W under its top-level meters, and clamping that remainder at zero put +216 W into the built total. `PART_MIN_WEEKS` 6.
+
 Also parked (2026-10-04): **ramping loads** - an inverter heat pump (the third site's Ecodan ramps 0.2 -> 2.8 kW over 10-15 min, sharp stop) or a slow EV ramp, where no single start step exists. Don't start that experiment until he asks.
 
 ## Current stage: cross-meter edges

@@ -99,7 +99,7 @@
                     "calendar_entities": "Koledarji",
                     "input_entities": "Drugi vhodi",
                     "battery_capacity_entity": "Senzor kapacitete baterije",
-                    "forecast_exclude": "Ni v napovedi porabe"
+                    "forecast_exclude": "Ni v napovedi porabe hiše"
                 },
                 "data_description": {
                     "weather_entity": "Da temperature za prihodnji teden. Predizpolnjeno, kadar ima instanca natanko eno vremensko entiteto.",
@@ -107,7 +107,7 @@
                     "calendar_entities": "Povežite poljubne koledarje. Load Insights iz preteklih dogodkov ugotovi, kaj vsak pomeni za porabo - koledar odsotnosti, koledar rezervacij - in prezre tistega, ki se izkaže za nepomembnega. Naslovi dogodkov se učijo ločeno, kjer se razlikujejo od povprečja koledarja.",
                     "input_entities": "Poljubna entiteta, ki bi lahko pojasnila porabo - časovni blok tarife, cena elektrike, obsevanost, senzor prisotnosti, termostat. Load Insights iz zabeležene zgodovine ugotovi, ali porabo pojasnjuje, in jo sicer prezre. Senzor z malo vrednostmi se uporabi tak, kot je; številski se razdeli v razrede. Bere jih tudi zaznavanje porabnikov: stikalo, ogrevanje termostata ali karkoli drugega, kar se vklaplja in izklaplja, pove, kdaj breme teče.",
                     "battery_capacity_entity": "Neobvezno. Senzor (Wh ali kWh) z uporabno kapaciteto baterije - na primer vgrajeni Ah x zdravje baterije x nazivna napetost iz BMS, da velikost sledi staranju baterije. Dokler daje vrednost, nadomesti kapaciteto, vpisano na nadzorni plošči Energija; ko ni na voljo, velja njegova zadnja vrednost.",
-                    "forecast_exclude": "Naprave z nadzorne plošče, ki naj ne bodo v napovedi porabe objekta - polnilnica avtomobila, črpalka na zahtevo. Njihove ure se odštejejo od porabe, iz katere se napoved uči, zato ne oblikujejo več njene zgodovine in popravka ravni. Njihove lastne napovedi ostanejo enake."
+                    "forecast_exclude": "Naprave z nadzorne plošče, ki naj ne bodo v napovedi porabe hiše - polnilnica avtomobila, črpalka na zahtevo. Napoved hiše se sestavi iz delov in teh se ji nikoli ne prišteje: njihova energija vedno gre iz dela, ki jih vsebuje, tudi dokler so premladi, da bi veljali za del. Njihove lastne napovedi ostanejo enake."
                 }
             },
             "detection": {

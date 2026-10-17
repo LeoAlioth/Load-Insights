@@ -94,6 +94,29 @@ def test_included_in_an_unlisted_device_still_counts():
     assert [d.energy for d in s.remainder_devices()] == ["sensor.a"]
 
 
+def test_parts_of_walks_three_levels():
+    """Home's tree: Centralna holds Obtocni, Pisarna holds EcoFlow; an
+    included_in naming an unlisted statistic counts as top-level."""
+    def dev(e, parent=None):
+        return {"stat_consumption": e, **({"included_in_stat": parent} if parent else {})}
+    prefs = {"energy_sources": [{"type": "grid", "stat_energy_from": "sensor.g"}], "device_consumption": [
+        dev("w"), dev("c", "w"), dev("o", "c"), dev("m"), dev("p", "m"), dev("e", "p"), dev("x", "unlisted")]}
+    s = SiteModel.from_prefs(prefs)
+    names = lambda parent: [d.energy for d in s.parts_of(parent)]  # noqa: E731
+    assert names(None) == ["w", "m", "x"] and names("w") == ["c"] and names("c") == ["o"]
+    assert names("m") == ["p"] and names("p") == ["e"] and names("e") == []
+
+
+def test_own_scoped_takes_the_unlinked_and_those_linked_to_the_meter_itself():
+    class G:
+        def __init__(self, e): self.entity = e  # noqa: E704
+    sig = [G("free"), G("on_c"), G("on_o")]
+    links = {"on_c": ["c"], "on_o": ["o"]}
+    within = {"c": ["c", "w"], "o": ["o", "c", "w"]}.get
+    got = lambda stat: [g.entity for g in model.own_scoped(sig, links, within, stat)]  # noqa: E731
+    assert got(None) == ["free"] and got("c") == ["free", "on_c"] and got("w") == ["free"]
+
+
 def test_no_dashboard_means_no_sources():
     assert not SiteModel.from_prefs(None).has_sources
     assert not SiteModel.from_prefs({}).has_sources
