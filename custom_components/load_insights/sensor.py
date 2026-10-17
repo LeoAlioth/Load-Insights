@@ -64,6 +64,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES
                      if which != "excess" or site.battery_soc]      # the excess needs the SOC
         entities += [SunWindowSensor(coordinator, entry, key, which) for key, which in SUN_ENTITIES]
+        if not site.battery_soc:
+            _forget(hass, "sensor", f"{entry.entry_id}_daily_excess")      # made before a SOC was linked
     else:
         for key, _ in PLAN_ENTITIES + SUN_ENTITIES:
             _forget(hass, "sensor", f"{entry.entry_id}_{key}")
