@@ -67,6 +67,12 @@
             },
             "daily_excess": {
                 "name": "Daily excess"
+            },
+            "production_starts": {
+                "name": "Production starts"
+            },
+            "production_ends": {
+                "name": "Production ends"
             }
         },
         "binary_sensor": {

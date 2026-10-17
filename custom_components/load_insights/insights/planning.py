@@ -172,17 +172,22 @@ def excess(bal: Balance, days: int, until_full_kwh: float, tz) -> Tuple[Optional
                                    "until_full_kwh": round(until_full_kwh, 2)}
 
 
-def production_ends_at(now: datetime, production: Dict[float, float], scale: float, tz) -> Optional[str]:
-    """The end of the last hour with forecast sun on the first day that still
-    has any from now on - tonight's sunset by day, tomorrow's by night: the
-    time a load paced off the day's excess is paced until."""
+def sun_window(now: datetime, production: Dict[float, float], scale: float, tz) -> tuple:
+    """When the forecast sun starts and stops on the first day that still has
+    any from now on (today by day, tomorrow by night): the start of its first
+    and the end of its last hour above 1 % of that day's peak hour, so a few
+    watts at dawn do not count as production. -> (starts_at, ends_at) ISO
+    strings, (None, None) with no forecast sun. A load paced off the day's
+    excess is paced until the end."""
     first = now.replace(minute=0, second=0, microsecond=0).timestamp()
     live = sorted(k for k, v in production.items() if k >= first and v * scale > 0.001)
     if not live:
-        return None
+        return None, None
     day = datetime.fromtimestamp(live[0], tz).date()
-    last = max(k for k in live if datetime.fromtimestamp(k, tz).date() == day)
-    return _at(last + HOUR, tz)
+    hours = sorted(k for k in live if datetime.fromtimestamp(k, tz).date() == day)
+    bar = max(production[k] for k in hours) * 0.01
+    lit = [k for k in hours if production[k] >= bar]
+    return _at(lit[0], tz), _at(lit[-1] + HOUR, tz)
 
 
 def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, float], capacity: Optional[float],
@@ -200,7 +205,8 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
     ps, cs = cfg["production_scale"], cfg["consumption_scale"]
     spec = {n: Spec(Side(*cfg["weights"][n][0]), Side(*cfg["weights"][n][1])) for n in cfg["weights"]}
     common = {
-        "production_ends_at": production_ends_at(now, production, ps, tz),
+        "production_starts_at": sun_window(now, production, ps, tz)[0],
+        "production_ends_at": sun_window(now, production, ps, tz)[1],
         "inputs": {"horizon_days": days, "production_scale": ps, "consumption_scale": cs,
                    "capacity_kwh": round(capacity, 2), "production_hours": len(production), "use_hours": len(use)},
     }

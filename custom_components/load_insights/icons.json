@@ -36,6 +36,12 @@
             },
             "daily_excess": {
                 "default": "mdi:solar-power-variant-outline"
+            },
+            "production_starts": {
+                "default": "mdi:weather-sunset-up"
+            },
+            "production_ends": {
+                "default": "mdi:weather-sunset-down"
             }
         },
         "binary_sensor": {

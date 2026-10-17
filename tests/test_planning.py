@@ -92,11 +92,23 @@ def test_spread_evenly_keeps_the_energy_and_moves_it_round_the_clock():
     assert abs(out[KEYS[12]] - (3.0 - 2.0 + 2.0 / 24)) < 1e-9 and abs(out[KEYS[0]] - (3.0 + 2.0 / 24)) < 1e-9
 
 
-def test_production_ends_at_the_last_sunlit_hour_of_the_first_day_with_any_left():
+def test_sun_window_is_the_first_and_last_sunlit_hour_of_the_first_day_with_any_left():
     prod = day_sun(3.0)
-    assert PL.production_ends_at(NOW, prod, 1.0, TZ).startswith("2026-10-17T17:00")
+    start, end = PL.sun_window(NOW, prod, 1.0, TZ)
+    assert end.startswith("2026-10-17T17:00") and start.startswith("2026-10-17T")
     late = NOW.replace(hour=20)
-    assert PL.production_ends_at(late, prod, 1.0, TZ).startswith("2026-10-18T17:00")
+    start2, end2 = PL.sun_window(late, prod, 1.0, TZ)
+    assert end2.startswith("2026-10-18T17:00") and start2.startswith("2026-10-18T")
+    assert PL.sun_window(NOW, {}, 1.0, TZ) == (None, None)
+
+
+def test_sun_window_ignores_a_few_watts_at_the_edges():
+    prod = {k: 0.0 for k in KEYS}
+    base = NOW.replace(hour=0, minute=0).timestamp()
+    for h, v in {5: 0.005, 6: 0.4, 7: 1.5, 12: 2.0, 16: 0.5, 17: 0.004}.items():
+        prod[base + h * 3600] = v
+    start, end = PL.sun_window(NOW.replace(hour=1), prod, 1.0, TZ)
+    assert start.startswith("2026-10-17T06:00") and end.startswith("2026-10-17T17:00")
 
 
 def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
