@@ -27,6 +27,15 @@
             },
             "named_load_power": {
                 "default": "mdi:flash"
+            },
+            "soc_target": {
+                "default": "mdi:battery-arrow-up-outline"
+            },
+            "soc_minimum": {
+                "default": "mdi:battery-arrow-down-outline"
+            },
+            "daily_excess": {
+                "default": "mdi:solar-power-variant-outline"
             }
         },
         "binary_sensor": {

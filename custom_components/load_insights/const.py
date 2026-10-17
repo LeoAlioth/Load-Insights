@@ -31,11 +31,35 @@ CONF_BATTERY_CAPACITY_ENTITY = "battery_capacity_entity"
 # 2026-09-28 each device kept its own under "device_state_sensors" - see
 # insights.model.migrate_inputs.
 CONF_INPUT_LINKS = "input_links"
-# Energy dashboard devices (statistic ids) left out of the site's consumption
-# forecast: their hours are taken off the site series before it is fitted, so
-# they shape neither its history nor its level correction. Their own forecast
-# sensors are unchanged.
+# Energy dashboard devices (statistic ids) "Not in the house forecast": never
+# added to it, their energy always comes out of the own part of the meter that
+# holds them (insights.profile.assemble). Their own forecast sensors are unchanged.
 CONF_FORECAST_EXCLUDE = "forecast_exclude"
+
+# SOC planning (the "SOC planning" options page; insights/planning.py).
+# One horizon for the page, and one scale for each side shared by the three
+# sensors; each sensor then has its own weights, per side: full weight for
+# <side>_full_hours hours, then <side>_derate percent less per hour. The
+# owner's values are the defaults (2026-10-17).
+CONF_PLAN_DAYS = "plan_days"
+CONF_PLAN_PRODUCTION_SCALE = "plan_production_scale"
+CONF_PLAN_CONSUMPTION_SCALE = "plan_consumption_scale"
+CONF_PLAN_FULL_SOC = "plan_full_soc"                  # the target counts down from here, in %
+CONF_PLAN_FULL_SOC_ENTITY = "plan_full_soc_entity"    # a number entity that takes over from it
+CONF_PLAN_MINIMUM_FLOOR = "plan_minimum_floor"
+CONF_PLAN_SPREAD = "plan_spread_evenly"               # devices planned with their energy spread evenly
+PLAN_DEFAULTS = {
+    CONF_PLAN_DAYS: 5, CONF_PLAN_PRODUCTION_SCALE: 1.0, CONF_PLAN_CONSUMPTION_SCALE: 1.0,
+    CONF_PLAN_FULL_SOC: 100, CONF_PLAN_MINIMUM_FLOOR: 10,
+}
+PLAN_SENSORS = ("target", "minimum", "excess")
+# per sensor and side: (full hours, derate %/h)
+PLAN_WEIGHTS = {"target": (24, 0.9), "minimum": (48, 0.5), "excess": (24, 0.0)}
+
+
+def plan_key(sensor: str, side: str, what: str) -> str:
+    """The option for one sensor's one side: ``plan_target_consumption_full_hours``."""
+    return f"plan_{sensor}_{side}_{what}"
 
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the

@@ -16,6 +16,17 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 
 from .const import (
     CONF_FORECAST_EXCLUDE,
+    CONF_PLAN_CONSUMPTION_SCALE,
+    CONF_PLAN_DAYS,
+    CONF_PLAN_FULL_SOC,
+    CONF_PLAN_FULL_SOC_ENTITY,
+    CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_PRODUCTION_SCALE,
+    CONF_PLAN_SPREAD,
+    PLAN_DEFAULTS,
+    PLAN_SENSORS,
+    PLAN_WEIGHTS,
+    plan_key,
     CONF_GRID_DEVICE,
     CONF_LAYOUT,
     GRID_PREFIX,
@@ -350,6 +361,39 @@ def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
     return out
 
 
+def _num(minimum: float, maximum: float, step: float, unit: Optional[str] = None):
+    return selector.NumberSelector(selector.NumberSelectorConfig(
+        min=minimum, max=maximum, step=step, unit_of_measurement=unit, mode=selector.NumberSelectorMode.BOX))
+
+
+# Every number the SOC planning page owns, as (key, default, selector).
+def _plan_fields() -> list:
+    fields = [(CONF_PLAN_DAYS, PLAN_DEFAULTS[CONF_PLAN_DAYS], _num(1, 7, 1, "d")),
+              (CONF_PLAN_PRODUCTION_SCALE, PLAN_DEFAULTS[CONF_PLAN_PRODUCTION_SCALE], _num(0.1, 2, 0.05)),
+              (CONF_PLAN_CONSUMPTION_SCALE, PLAN_DEFAULTS[CONF_PLAN_CONSUMPTION_SCALE], _num(0.1, 2, 0.05)),
+              (CONF_PLAN_FULL_SOC, PLAN_DEFAULTS[CONF_PLAN_FULL_SOC], _num(50, 100, 1, "%")),
+              (CONF_PLAN_MINIMUM_FLOOR, PLAN_DEFAULTS[CONF_PLAN_MINIMUM_FLOOR], _num(0, 100, 1, "%"))]
+    for sensor in PLAN_SENSORS:
+        full_h, derate = PLAN_WEIGHTS[sensor]
+        for side in ("consumption", "production"):
+            fields.append((plan_key(sensor, side, "full_hours"), full_h, _num(0, 168, 1, "h")))
+            fields.append((plan_key(sensor, side, "derate"), derate, _num(0, 20, 0.1, "%/h")))
+    return fields
+
+
+def _plan_schema(current: dict, devices: dict) -> dict:
+    out = {vol.Optional(k, default=current.get(k, default)): sel for k, default, sel in _plan_fields()}
+    out[vol.Optional(CONF_PLAN_FULL_SOC_ENTITY, description={"suggested_value": current.get(CONF_PLAN_FULL_SOC_ENTITY)})] = \
+        selector.EntitySelector(selector.EntitySelectorConfig(domain=["number", "input_number"]))
+    if devices:
+        out[vol.Optional(CONF_PLAN_SPREAD, description={"suggested_value": [
+            e for e in current.get(CONF_PLAN_SPREAD) or [] if e in devices]})] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
+                multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+    return out
+
+
 class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
@@ -398,7 +442,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "detection", "grid",
+            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "plan", "detection", "grid",
                           "inverters", "naming"],
         )
 
@@ -842,6 +886,21 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         manager = await async_get_manager(self.hass)
         devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
         return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current, devices)))
+
+    async def async_step_plan(self, user_input: dict[str, Any] | None = None):
+        """SOC planning: the horizon, the scales and each planning sensor's
+        weights (insights/planning.py). Every other page's options are
+        carried over whole."""
+        if user_input is not None:
+            own = {k for k, _, _ in _plan_fields()} | {CONF_PLAN_FULL_SOC_ENTITY, CONF_PLAN_SPREAD}
+            keep = {k: v for k, v in self.config_entry.options.items() if k not in own}
+            # a 0 is an answer (no derate, no floor), an emptied selector clears
+            return self.async_create_entry(data={**keep, **{
+                k: v for k, v in user_input.items() if k in own and (v or v == 0) and v is not None}})
+        manager = await async_get_manager(self.hass)
+        devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
+        return self.async_show_form(
+            step_id="plan", data_schema=vol.Schema(_plan_schema(dict(self.config_entry.options), devices)))
 
     async def _link_targets(self) -> dict:
         """What an input can be linked to: every device of the Energy

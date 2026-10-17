@@ -58,6 +58,15 @@
             },
             "named_load_energy": {
                 "name": "Energija"
+            },
+            "soc_target": {
+                "name": "Ciljni SOC"
+            },
+            "soc_minimum": {
+                "name": "Minimalni SOC"
+            },
+            "daily_excess": {
+                "name": "Dnevni presežek"
             }
         },
         "binary_sensor": {
@@ -84,6 +93,7 @@
                     "inputs": "Pojasnjevalni vhodi",
                     "input_links": "Poveži vhod s tem, kar pojasnjuje",
                     "suggested_inputs": "Predlagani vhodi",
+                    "plan": "Načrtovanje SOC",
                     "detection": "Zaznavanje porabnikov",
                     "naming": "Poimenuj zaznan porabnik",
                     "grid": "Priključek na omrežje",
@@ -344,6 +354,39 @@
                 "description": "Senzorji v istem območju kot naprava na nadzorni plošči Energija ali števec poimenovanega porabnika, ki še niso vhodi: ali je kdo tam ter temperatura in vlaga v prostoru. Označite tiste, ki jih je vredno preizkusiti. Vsak postane vhod za celotno lokacijo, povezan s to napravo - in kot vsak vhod ga napoved obdrži le, če kaj pojasni.",
                 "data": {
                     "suggested": "Dodaj kot vhode"
+                }
+            },
+            "plan": {
+                "title": "Načrtovanje SOC",
+                "description": "Trije senzorji načrtujejo baterijo iz napovedi hiše in napovedi sonca z nadzorne plošče Energija: cilj (prostor za najmočnejše obdobje), minimum (zaloga za najšibkejše) in dnevni presežek. Vsak šteje stran s polno težo toliko ur, potem pa vsako uro manj, zato oddaljeni dnevi manj vplivajo. Vrednosti so lahko negativne; porabnik jih omeji.",
+                "data": {
+                    "plan_days": "Obzorje (dnevi)",
+                    "plan_production_scale": "Merilo napovedi sonca",
+                    "plan_consumption_scale": "Merilo napovedi porabe",
+                    "plan_full_soc": "Polna baterija (%)",
+                    "plan_full_soc_entity": "Entiteta polne baterije",
+                    "plan_minimum_floor": "Spodnja meja minimuma (%)",
+                    "plan_spread_evenly": "Načrtovane z enakomerno razporejeno energijo",
+                    "plan_target_consumption_full_hours": "Cilj: poraba, polna teža (h)",
+                    "plan_target_consumption_derate": "Cilj: poraba, upad na uro (%/h)",
+                    "plan_target_production_full_hours": "Cilj: sonce, polna teža (h)",
+                    "plan_target_production_derate": "Cilj: sonce, upad na uro (%/h)",
+                    "plan_minimum_consumption_full_hours": "Minimum: poraba, polna teža (h)",
+                    "plan_minimum_consumption_derate": "Minimum: poraba, upad na uro (%/h)",
+                    "plan_minimum_production_full_hours": "Minimum: sonce, polna teža (h)",
+                    "plan_minimum_production_derate": "Minimum: sonce, upad na uro (%/h)",
+                    "plan_excess_consumption_full_hours": "Dnevni presežek: poraba, polna teža (h)",
+                    "plan_excess_consumption_derate": "Dnevni presežek: poraba, upad na uro (%/h)",
+                    "plan_excess_production_full_hours": "Dnevni presežek: sonce, polna teža (h)",
+                    "plan_excess_production_derate": "Dnevni presežek: sonce, upad na uro (%/h)"
+                },
+                "data_description": {
+                    "plan_days": "Kako daleč naprej gledata cilj in minimum in koliko dni našteje dnevni presežek.",
+                    "plan_production_scale": "Delež napovedi sonca z nadzorne plošče Energija, na katerega se računa, za vse tri senzorje.",
+                    "plan_consumption_scale": "Pomnoži napoved hiše, za vse tri senzorje.",
+                    "plan_full_soc": "Cilj šteje navzdol od tod. Velja, kadar spodnja entiteta ni nastavljena ali ne daje vrednosti.",
+                    "plan_full_soc_entity": "Neobvezno. Število z ravnjo polne baterije, na primer meja SOC upravljalca bremen.",
+                    "plan_spread_evenly": "Naprave, katerih energijo trije senzorji načrtovanja enakomerno razporedijo čez obzorje namesto tja, kjer je napovedana - bojler ali grelec, katerega boost se prestavi na poldne, medtem ko oblačno obdobje energijo potrebuje celo dan. Samo za senzorje načrtovanja; njihove napovedi ostanejo enake."
                 }
             }
         },

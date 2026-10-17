@@ -58,6 +58,15 @@
             },
             "named_load_energy": {
                 "name": "Energy"
+            },
+            "soc_target": {
+                "name": "SOC target"
+            },
+            "soc_minimum": {
+                "name": "SOC minimum"
+            },
+            "daily_excess": {
+                "name": "Daily excess"
             }
         },
         "binary_sensor": {
@@ -84,6 +93,7 @@
                     "inputs": "Explanatory inputs",
                     "input_links": "Link an input to what it explains",
                     "suggested_inputs": "Suggested inputs",
+                    "plan": "SOC planning",
                     "detection": "Load detection",
                     "naming": "Name a detected load",
                     "grid": "Grid connection",
@@ -344,6 +354,39 @@
                 "description": "Sensors in the same area as a device on the Energy dashboard, or as a named load's meter, that are not inputs yet: whether someone is there, and the room's temperature and humidity. Tick the ones worth trying. Each becomes an input for the whole site, linked to that device - and like any input, the forecast keeps it only if it explains something.",
                 "data": {
                     "suggested": "Add as inputs"
+                }
+            },
+            "plan": {
+                "title": "SOC planning",
+                "description": "Three sensors plan the battery from the house forecast and the Energy dashboard's sun forecast: the target (room for the strongest stretch), the minimum (cover for the weakest) and the daily excess. Each counts a side at full weight for so many hours, then less per hour, so the far days move it less. Values can be negative; the consumer clamps them.",
+                "data": {
+                    "plan_days": "Horizon (days)",
+                    "plan_production_scale": "Sun forecast scale",
+                    "plan_consumption_scale": "Consumption forecast scale",
+                    "plan_full_soc": "Full SOC (%)",
+                    "plan_full_soc_entity": "Full SOC entity",
+                    "plan_minimum_floor": "Minimum SOC floor (%)",
+                    "plan_spread_evenly": "Planned with their energy spread evenly",
+                    "plan_target_consumption_full_hours": "Target: consumption, full weight (h)",
+                    "plan_target_consumption_derate": "Target: consumption, less per hour (%/h)",
+                    "plan_target_production_full_hours": "Target: sun, full weight (h)",
+                    "plan_target_production_derate": "Target: sun, less per hour (%/h)",
+                    "plan_minimum_consumption_full_hours": "Minimum: consumption, full weight (h)",
+                    "plan_minimum_consumption_derate": "Minimum: consumption, less per hour (%/h)",
+                    "plan_minimum_production_full_hours": "Minimum: sun, full weight (h)",
+                    "plan_minimum_production_derate": "Minimum: sun, less per hour (%/h)",
+                    "plan_excess_consumption_full_hours": "Daily excess: consumption, full weight (h)",
+                    "plan_excess_consumption_derate": "Daily excess: consumption, less per hour (%/h)",
+                    "plan_excess_production_full_hours": "Daily excess: sun, full weight (h)",
+                    "plan_excess_production_derate": "Daily excess: sun, less per hour (%/h)"
+                },
+                "data_description": {
+                    "plan_days": "How far ahead the target and the minimum look, and how many days the daily excess lists.",
+                    "plan_production_scale": "Share of the Energy dashboard's sun forecast to count on, for all three sensors.",
+                    "plan_consumption_scale": "Multiplies the house forecast, for all three sensors.",
+                    "plan_full_soc": "The target counts down from here. Used when no entity below is set or it does not read.",
+                    "plan_full_soc_entity": "Optional. A number that holds the full level, for example the SOC limit a load manager uses.",
+                    "plan_spread_evenly": "Devices whose energy the three planning sensors spread evenly over the horizon instead of where it is forecast - a hot water tank or heater whose boost moves to midday while a dull spell needs it round the clock. Only the planning sensors; their forecasts are unchanged."
                 }
             }
         },
