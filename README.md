@@ -1,7 +1,7 @@
 # Load Insights
 
 Consumption forecasts for a Home Assistant site, from what its **Energy
-dashboard already knows**. Companion to Load Juggler, which controls loads;
+dashboard already knows**. Companion to [Load Juggler](https://github.com/LeoAlioth/Load-Juggler), which controls loads;
 this one understands them. Fully independent - it does not need Load Juggler,
 and Load Juggler does not need it.
 
@@ -250,6 +250,15 @@ meter's backfill again, for when a meter changed or a phase was rewired.
 Names are kept and handed back to the rebuilt load that looks like each one;
 where the site really has changed, nothing matches and the name does not
 return.
+
+## With Load Juggler
+
+Load Insights forecasts and plans; [Load Juggler](https://github.com/LeoAlioth/Load-Juggler)
+switches the loads. Neither needs the other, and they only meet through
+ordinary Home Assistant entities: the SOC planning sensors (SOC target, SOC
+minimum, daily excess) and the sun's production start and end can feed Load
+Juggler's battery thresholds and its forecast-driven settings (pacing a load,
+starting Excess early) on its "Battery and forecast policy" page.
 
 ## Requirements
 
