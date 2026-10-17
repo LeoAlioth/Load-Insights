@@ -362,8 +362,12 @@ def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
 
 
 def _num(minimum: float, maximum: float, step: float, unit: Optional[str] = None):
-    return selector.NumberSelector(selector.NumberSelectorConfig(
-        min=minimum, max=maximum, step=step, unit_of_measurement=unit, mode=selector.NumberSelectorMode.BOX))
+    # unit_of_measurement must be a string: a None fails the selector's schema
+    # (and with it the whole page), so a unitless number leaves it out
+    cfg = {"min": minimum, "max": maximum, "step": step, "mode": selector.NumberSelectorMode.BOX}
+    if unit:
+        cfg["unit_of_measurement"] = unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**cfg))
 
 
 # Every number the SOC planning page owns, as (key, default, selector).
