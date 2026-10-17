@@ -214,23 +214,16 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
         return {"consumption": {"full_hours": spec[n].consumption.full_h, "derate_per_hour": spec[n].consumption.drop},
                 "production": {"full_hours": spec[n].production.full_h, "derate_per_hour": spec[n].production.drop}}
 
-    out: Dict[str, Optional[dict]] = {}
-    bal = balance(now, days * 24, production, use, spec["target"], ps, cs)
-    if bal is None:
-        out["target"] = None
-    else:
-        v, a = target(bal, full_soc, capacity, tz)
-        out["target"] = {"value": v, "attributes": {**a, **common, "weights": weights_of("target")}}
-    bal = balance(now, days * 24, production, use, spec["minimum"], ps, cs)
-    if bal is None:
-        out["minimum"] = None
-    else:
-        v, a = minimum(bal, cfg["floor"], capacity, tz)
-        out["minimum"] = {"value": v, "attributes": {**a, **common, "weights": weights_of("minimum")}}
-    bal = balance(now, hours_until_day(now, days), production, use, spec["excess"], ps, cs, under_way=True)
-    if bal is None or soc is None:
-        out["excess"] = None
-    else:
-        v, a = excess(bal, days, max(0.0, (100.0 - soc) / 100.0 * capacity), tz)
-        out["excess"] = {"value": v, "attributes": {**a, **common, "weights": weights_of("excess"), "soc": soc}}
-    return out
+    def one(n, hours, under_way, read, extra=None):
+        bal = balance(now, hours, production, use, spec[n], ps, cs, under_way=under_way)
+        if bal is None or (n == "excess" and soc is None):
+            return None
+        v, a = read(bal)
+        return {"value": v, "attributes": {**a, **common, "weights": weights_of(n), **(extra or {})}}
+
+    return {
+        "target": one("target", days * 24, False, lambda b: target(b, full_soc, capacity, tz)),
+        "minimum": one("minimum", days * 24, False, lambda b: minimum(b, cfg["floor"], capacity, tz)),
+        "excess": one("excess", hours_until_day(now, days), True,
+                      lambda b: excess(b, days, max(0.0, (100.0 - soc) / 100.0 * capacity), tz), {"soc": soc}),
+    }
