@@ -26,7 +26,7 @@ from .insights.planning import room_to_absorb
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
-                              most_specific, ref_label, suggest_levels)
+                              most_specific, ref_label, running_markdown, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -516,6 +516,8 @@ class DetectedLoadsSensor(_DetectionBase):
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "detected_loads")
+        # HA opens an integration's entry from this, highlighted; it has no link into an options-flow step
+        self._link = f"/config/integrations/integration/{DOMAIN}#config_entry={entry.entry_id}"
 
     @property
     def native_value(self) -> Optional[int]:
@@ -528,8 +530,12 @@ class DetectedLoadsSensor(_DetectionBase):
         tz = dt_util.DEFAULT_TIME_ZONE
         def iso(ts):
             return datetime.fromtimestamp(ts, tz).isoformat()
-        running = det.running_now(now)
+        rows = self._runner.fleet.running(now)
+        running = {i for r in rows for m, i in r["refs"] if m == ""}
         return {
+            # every load on now, once, as a list for a Markdown card (Fleet.running)
+            "running_markdown": running_markdown(
+                rows, self._link, {ref for _, offered, _ in self._runner.naming_groups() for ref, _ in offered}, now=now),
             "active": [
                 {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
                  "signature": a["signature"], "name": a.get("name")}

@@ -43,7 +43,6 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 *Run when the owner says WHEN, in the run order of `docs/plans/2026-10-12/README.md` (interleaved with Load Juggler's plans: see JUG-2, JUG-10, JUG-11, JUG-22). Plans lj-3 (verification) and lj-7 (tank flapping) are done.*
 
 - [ ] **INS-15 [FEATURE] Plan li-3: temperature term engages on statistical evidence** *(`li-3-temperature-evidence.md`, run order 4; temperature and nowcast SHIPPED 2026-10-19, `ALPHA` 0.0005 / `MIN_DAYS` 4, hour-of-day centring (the plan's per-slot centring lost and is ruled out); OPEN: the same rule on calendars and attached sensors fails 7.4 in three cells vs the old gates (Home W1 noon-tomorrow, Kozolec W2 day-ahead and noon-tomorrow) while taking Home signals-on hour-ahead 1366 -> 1241 W (W1) and 1465 -> 1222 W (W2) - the code is behind `calendars.EVIDENCE` in the INS-15 checkpoint commits; the owner decides whether to ship it, and until then Home W2 with signals on is 1.4 % worse hour-ahead than before this item)* - numbers and the ruled-out variants are in `custom_components/load_insights/AGENTS.md` ("Forecast covariates", "Things already ruled out").
-- [ ] **INS-17 [FEATURE] Plan li-5: `running_markdown` attribute** *(`li-5-running-markdown.md`, run order 6; not started)* - running loads (named and unnamed, with links) as one attribute, `#id` on the naming page, named-load on/off sensors move onto per-load runs; English only. Replaces the template the Kozolec Running-now card builds by hand.
 
 ## Other
 

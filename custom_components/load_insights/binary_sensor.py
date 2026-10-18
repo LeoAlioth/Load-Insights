@@ -31,8 +31,10 @@ def _running_uid(entry_id: str, name: str) -> str:
 
 
 class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
-    """On while any signature filed under this name is running. Signatures
-    that share a name are one device, so the entity is per NAME."""
+    """On while a running load is filed under this name, read one load at a
+    time from the grid meter's runs (Fleet.running) - the same answer as the
+    dashboard's list, whatever else shares its phase. Signatures that share a
+    name are one device, so the entity is per NAME."""
 
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.RUNNING
