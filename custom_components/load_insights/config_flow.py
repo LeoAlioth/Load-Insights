@@ -16,6 +16,7 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 
 from .const import (
     CONF_FORECAST_EXCLUDE,
+    CONF_ROOM_THERMOSTATS,
     CONF_PLAN_CONSUMPTION_SCALE,
     CONF_PLAN_DAYS,
     CONF_PLAN_FULL_SOC,
@@ -335,7 +336,8 @@ def _single_weather_entity(hass) -> str | None:
 
 # What the inputs page (and the first form) owns.
 _INPUT_KEYS = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES,
-               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY, CONF_FORECAST_EXCLUDE)
+               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY, CONF_FORECAST_EXCLUDE,
+               CONF_ROOM_THERMOSTATS)
 
 
 def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
@@ -353,11 +355,12 @@ def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
         **_entity(CONF_BATTERY_CAPACITY_ENTITY, defaults, "energy_storage"),
     }
     if devices:
-        out[vol.Optional(CONF_FORECAST_EXCLUDE, description={"suggested_value": [
-            e for e in defaults.get(CONF_FORECAST_EXCLUDE) or [] if e in devices]})] = selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
-                multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+        for key in (CONF_FORECAST_EXCLUDE, CONF_ROOM_THERMOSTATS):
+            out[vol.Optional(key, description={"suggested_value": [
+                e for e in defaults.get(key) or [] if e in devices]})] = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
+                    multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
     return out
 
 

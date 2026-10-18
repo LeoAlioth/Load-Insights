@@ -387,7 +387,9 @@ class DeviceForecastSensor(ForecastPowerSensor):
 
 class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
     """How much more a metered device can take today (planning.room_from_series):
-    its heavier days' energy less today's so far. What Load Juggler's early start
+    its heavier days' energy less today's so far - or, for a tank or heater that
+    Load Juggler runs, the degrees to its boost setpoint times its learned kWh per
+    degree (insights/thermal.py). What Load Juggler's early start
     reads for a tank or heater on a metered plug, where the detector names no load
     to carry the sensor (NamedLoadRoom is for those it does)."""
 
@@ -410,6 +412,14 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> Optional[float]:
         data: Optional[InsightsData] = self.coordinator.data
         return None if data is None or not data.device_room else data.device_room.get(self._energy)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Where the figure came from: the thermostat's kWh per degree (a tank or heater that
+        Load Juggler runs) or the history ceiling."""
+        data: Optional[InsightsData] = self.coordinator.data
+        thermal = (data.device_thermal or {}).get(self._energy) if data else None
+        return {"source": "thermal" if thermal else "history", **(thermal or {})}
 
     @property
     def available(self) -> bool:

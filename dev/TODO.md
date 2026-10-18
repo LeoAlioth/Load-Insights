@@ -6,6 +6,7 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *Built and live; each needs only a look on a real site to be removed.*
 
+- [ ] **INS-2 [FEATURE] Energy per degree for thermostat loads: verify on Kozolec** *(built 2026-10-18; pure maths and a replay on the boiler's real data only)* - a Load Juggler tank or heater's *Room to absorb today* is `(boost - temperature now) x learned kWh per degree` (`insights/thermal.py`, plan `docs/specs/2026-10-18-energy-per-degree.md`, source attribute `thermal`). On Kozolec's boiler the replay gave about 0.30 kWh/K (a 260 l tank). Check after a few days: the boiler, the Bee Room Heater (mark it *Heats a room* on the inputs page) and the Pond-side loads show `source: thermal` where a Load Juggler tank matches; room 0.0 when at boost; the heater's figure settles; the early start's kWh agrees.
 - [ ] **INS-1 [FEATURE] Room to absorb today: judge the P90 ceiling** *(built and live on Kozolec 2026-10-18 for detected loads and every Energy-dashboard device; Home has no battery or planning sensors, so it does not apply there)* - the ceiling is the 90th percentile of a load's complete past days, a judgement (the owner, 2026-10-18). After a few days of real values, check it against what the boiler and heaters actually take: is room 0.0 when they are full, and not 0.0 while they could still absorb? Spec `docs/specs/2026-10-17-soc-planning-and-pacing.md` section 10. INS-2 would replace it for thermostat loads.
 
 ## To build
@@ -14,7 +15,6 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *The room sensor's two refinements feed Load Juggler's early start; do them as one stretch.*
 
-- [ ] **INS-2 [FEATURE] Energy per degree for thermostat loads** *(the owner, 2026-10-18)* - learn the kWh a tank or heater needs per degree of change; with the current temperature and the boost setpoint it gives the room directly (kWh = degrees below boost x kWh per degree), better than the P90 ceiling for exactly these loads. Needs a design talk first.
 - [ ] **INS-3 [FEATURE] Rate of absorption beside the room** *(the owner, 2026-10-18)* - how fast a named load can take energy now, so Load Juggler's early-start group power is what the loads can really pull instead of their rated minimums.
 
 ### Edges, stage 1 (one bench session)
