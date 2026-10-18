@@ -266,6 +266,21 @@ def test_every_meter_is_read_on_one_clock():
         assert at == where, step
 
 
+def test_a_step_vote_mark_of_minus_infinity_survives_the_store():
+    """_vote_steps' mark is -inf until a meter's first vote; the store writes
+    that as null, and the next pass read None where it needs a number: "Load
+    detection run failed", TypeError in bisect (Home, 2026-10-18 20:44 UTC)."""
+    f = D.Fleet()
+    f._step_votes_from = {"Plug": -math.inf, "Other": 12.5}
+    raw = json.loads(json.dumps(f.to_dict()).replace("-Infinity", "null"))
+    assert raw["step_votes_from"]["Plug"] is None
+    g = D.Fleet.from_dict(raw)
+    assert g._step_votes_from == {"Other": 12.5}
+    g.subs["Plug"] = D.Detector()
+    g._read_chans = lambda name: ["a"]
+    g._vote_steps(T0)            # raised TypeError with the None
+
+
 def test_a_rise_still_in_its_event_window_waits_across_a_restart():
     """A pass's end no longer forms the rises waiting in their event window,
     so they are stored: a two-phase start whose second leg is declared after
