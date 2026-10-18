@@ -625,11 +625,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temps = await self._hourly_attribute(climate, "current_temperature", start, now)
             energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
             kind = KINDS["room" if sid in rooms else "tank"]
-            runs = heating_runs(energy, temps)
+            seen: Dict[str, int] = {}
+            runs = heating_runs(energy, temps, seen)
             learned = kwh_per_degree(runs, kind)
             if not learned:
                 self._thermal_note(entry, f"{len(runs)} clean heating runs in {len(temps)} hours of temperature, "
-                                          f"{len(energy)} of energy; not enough or too uneven ({kind.name})")
+                                          f"{len(energy)} of energy; not enough or too uneven ({kind.name}); seen {seen}")
             room = room_from_thermal(learned[0], current, boost) if learned else None
             if room is not None:
                 self._thermal_note(entry, f"{learned[0]:.3f} kWh/K from {learned[2]} runs ({kind.name})")
