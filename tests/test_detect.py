@@ -844,7 +844,7 @@ def test_active_power_is_reported_per_name():
     again = series(400, lambda s: 3000.0 if s >= 100 else 0.0, seed=2)
     det2 = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
     det2.process({"a": [(T0 + 800 + t, w) for t, w in [(x - T0, y) for x, y in again]]}, now_ts=T0 + 1200)
-    assert det2.active_by_name(T0 + 1200).get("Kettle", 0) > 2800, det2.active(T0 + 1200)
+    assert D.Fleet(main=det2).active_by_name(T0 + 1200).get("Kettle", 0) > 2800, det2.active(T0 + 1200)
 
 
 def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
@@ -2404,13 +2404,14 @@ def test_running_now_names_the_signatures_that_are_on():
         rows.append((t, 200.0)); t += 10.0
     det.process({"a": rows}, now_ts=t)
     assert det.signatures, "a finished run should have made a signature"
-    assert det.running_now(t) == set(), "nothing is on between runs"
+    ids = lambda: {i for _, i in D.Fleet(main=det).running_refs(t)}      # noqa: E731
+    assert ids() == set(), "nothing is on between runs"
 
     rows2 = []
     for _ in range(20):                     # it starts again, and stays on
         rows2.append((t, 2200.0)); t += 10.0
     det.process({"a": rows2}, now_ts=t)
-    on = det.running_now(t)
+    on = ids()
     assert on, "a load that has not stopped should read as running"
     assert on <= {x.id for x in det.signatures}
 
@@ -4189,11 +4190,166 @@ def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
     _tree_fleet(15, f, since=12)
     now = sum(r["kwh"] for r in his.recent if r["signature"] == his._current(sid)) * 1000.0
     assert now > own + 150.0 and abs(f.energy_by_name()["Bojler"] - now) < 5.0, (f.energy_by_name(), own, now)
-    # ...and it is on while Hiša's detector holds a run of it open
+    # ...and it is on while the grid's run of it, placed by Hiša's own step
+    # (_Open.meter), is open beside Hiša's run of it. Hiša's run alone is not
+    # a load the house is running (one source of truth, Fleet.running): the
+    # grid's run, placed by the meter's step, is what is running (INS-17).
     t = T0 + 16 * 3600.0
     his.phases["a"].open_edges = [D._Open(since=t - 60.0, watts=1000.0, var=None, levels=[(t - 60.0, 1000.0)])]
     his.phases["a"].level = (his.phases["a"].baseline or 0.0) + 1000.0      # the phase really carries it
+    grid = f.main.phases["a"]
+    grid.open_edges = [D._Open(t - 60.0, 1000.0, None, [(t - 60.0, 1000.0)], meter="Hiša")]
+    grid.level = (grid.baseline or 0.0) + 1000.0
+    f._chans = lambda m, ph: ["a"]
+    f._steps_over = lambda m, c, ph, since, up: [(t - 60.0, 1000.0, None, t - 60.0, t - 55.0)]   # Hiša's rise
     assert f.active_by_name(t) == {"Bojler": 1000.0}, f.active_by_name(t)
+    grid.open_edges = []
+    assert f.active_by_name(t) == {}, "Hiša's run without the grid's is not a running load"
+
+
+LINK = "/config/integrations/integration/load_insights#config_entry=E"
+
+
+def _row(name, watts, ref=None, phases="a", since=0.0, tag="", where=None):
+    return {"name": name, "ref": ref, "refs": {ref} if ref else set(), "watts": watts, "phases": phases,
+            "since": since, "where": where, "tag": tag}
+
+
+def test_running_markdown_empty():
+    assert D.running_markdown([], LINK) == "Nothing detected running."
+
+
+def test_running_markdown_order_links_and_new_load():
+    rows = [_row(None, 1200.0, ("", 42), tag="kettle?"), _row(None, 300.0, ("", 57)), _row(None, 640.0),
+            _row("Hladilnik", 95.0, ("", 3), phases="b", where="Mansarda"),
+            _row(None, 270.0, ("Mansarda", 11), where="Mansarda")]
+    md = D.running_markdown(rows, LINK, offered={("", 42), ("Mansarda", 11)}, now=180.0).split("\n")
+    assert md[0] == "- **Hladilnik** · 95 W on phase B · 3 min · Mansarda", md
+    assert md[1] == f"- [Unnamed #42]({LINK}) · 1.2 kW on phase A · 3 min · kettle?", md      # biggest unnamed first
+    assert md[2] == "- New load · 640 W on phase A · 3 min", md
+    assert md[3] == "- Unnamed #57 · 300 W on phase A · 3 min", md                            # not offered: no link
+    assert md[4] == f"- [Unnamed #11]({LINK}) · 270 W on phase A · 3 min · Mansarda", md
+
+
+def test_running_markdown_cap():
+    rows = [_row(None, 100.0 + i, ("Mansarda", 100 + i), where="Mansarda") for i in range(15)]
+    md = D.running_markdown(rows, LINK, offered={r["ref"] for r in rows}, now=3600.0)
+    lines = md.split("\n")
+    assert len(lines) == 11 and lines[-1] == "- … 5 more" and len(md.encode()) < 3000, md
+
+
+def _running_fleet(grid_runs, subs=None, single=None, rise=None):
+    """A Fleet with open runs put straight in: grid_runs = [(phase, _Open)],
+    subs = {meter: Detector}. The two span helpers are stubbed to say the
+    meter's one channel "a" rose at ``rise`` - the test is about the rows."""
+    f = D.Fleet()
+    f.subs = dict(subs or {})
+    f.single = dict(single or {})
+    for ph, o in grid_runs:
+        f.main.phases.setdefault(ph, D.PhaseState()).open_edges.append(o)
+    f._chans = lambda m, ph: ["a"]
+    f._steps_over = lambda m, c, ph, since, up: [] if rise is None else [(rise, 95.0, None, since, since + 5.0)]
+    return f
+
+
+def _open(since, watts, meter=None):
+    return D._Open(since, watts, None, [(since, watts)], meter=meter)
+
+
+def _mansarda(name):
+    """Mansarda's detector: one signature, #11, 95 W on its channel a, named ``name`` or not, and the run
+    of it open since T0 + 100."""
+    det = D.Detector()
+    det.signatures = [_sig(11, 95.0, phases="a", name=name)]
+    det.phases["a"] = D.PhaseState()
+    det.phases["a"].open_edges = [_open(T0 + 100.0, 95.0)]
+    return det
+
+
+def test_running_named_submeter_load_once():
+    t = T0 + 160.0
+    grid = _sig(42, 95.0, phases="b", count=6)                     # the grid's unnamed twin of the fridge
+    f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": _mansarda("Hladilnik")},
+                       {"Mansarda": False}, rise=T0 + 100.0)
+    f.main.signatures = [grid]
+    rows = f.running(t)
+    assert len(rows) == 1, rows
+    r = rows[0]
+    assert (r["name"], r["where"], r["watts"], r["phases"], r["since"]) == ("Hladilnik", "Mansarda", 95.0, "b", T0 + 100.0)
+    assert r["refs"] == {("Mansarda", 11)}
+    md = D.running_markdown(rows, LINK, now=t)
+    assert "**Hladilnik**" in md and "Unnamed #42" not in md and md.count("\n") == 0
+
+
+def test_running_unnamed_submeter_load_links_meter_id():
+    t = T0 + 160.0
+    f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": _mansarda(None)},
+                       {"Mansarda": False}, rise=T0 + 100.0)
+    f.main.signatures = [_sig(42, 95.0, phases="b", count=6)]
+    rows = f.running(t)
+    assert len(rows) == 1 and rows[0]["ref"] == ("Mansarda", 11), rows
+    md = D.running_markdown(rows, LINK, offered={("Mansarda", 11)}, now=t)
+    assert f"[Unnamed #11]({LINK})" in md and md.endswith("· Mansarda"), md
+    assert f.running_refs(t) == {("Mansarda", 11)}
+
+
+def test_running_one_device_meter():
+    f = _running_fleet([("a", _open(T0, 7000.0, "EVBox"))], single={"EVBox": True})
+    rows = f.running(T0 + 60.0)
+    assert len(rows) == 1 and rows[0]["name"] == "EVBox" and rows[0]["ref"] is None and rows[0]["where"] is None, rows
+
+
+def test_running_unmatched_meter_run():
+    """The meter's run already closed (nothing opened at the rise): the grid's own guess, still one row."""
+    t = T0 + 160.0
+    det = _mansarda(None)
+    det.phases["a"].open_edges = []
+    f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": det}, {"Mansarda": False},
+                       rise=T0 + 100.0)
+    f.main.signatures = [_sig(42, 95.0, phases="b", count=6, name="Hladilnik")]
+    rows = f.running(t)
+    assert len(rows) == 1 and rows[0]["name"] == "Hladilnik" and rows[0]["where"] == "Mansarda", rows
+    assert rows[0]["ref"] == ("", 42)
+
+
+def test_running_same_name_merges():
+    f = _running_fleet([("a", _open(T0, 1000.0)), ("c", _open(T0 + 600.0, 1000.0))])
+    f.main.signatures = [_sig(1, 1000.0, phases="a", name="Pec", dur=3600.0),
+                         _sig(2, 1000.0, phases="c", name="Pec", dur=3600.0)]
+    rows = f.running(T0 + 900.0)
+    assert len(rows) == 1 and rows[0]["name"] == "Pec", rows
+    assert rows[0]["watts"] == 2000.0 and rows[0]["phases"] == "ac" and rows[0]["since"] == T0
+    assert rows[0]["refs"] == {("", 1), ("", 2)}
+
+
+def test_named_loads_on_one_phase_are_on_independently():
+    """A 95 W fridge beside a 2 kW boiler on one phase: the phase's total (2095 W) matched neither
+    signature, so both read off. Each run is read alone now."""
+    t = T0 + 700.0
+    boiler, fridge = _open(T0, 2000.0), _open(T0 + 600.0, 95.0)
+    f = _running_fleet([("a", boiler), ("a", fridge)])
+    f.main.signatures = [_sig(1, 2000.0, name="Bojler", dur=3600.0), _sig(2, 95.0, name="Hladilnik", dur=3600.0)]
+
+    def agree(want):
+        assert f.active_by_name(t) == want, f.active_by_name(t)
+        assert set(f.active_by_name(t)) == {r["name"] for r in f.running(t) if r["name"]}
+        md = D.running_markdown(f.running(t), LINK, now=t)
+        assert all(f"**{n}**" in md for n in want), md
+
+    agree({"Bojler": 2000.0, "Hladilnik": 95.0})
+    f.main.phases["a"].open_edges.remove(boiler)
+    agree({"Hladilnik": 95.0})
+    f.main.phases["a"].open_edges.remove(fridge)
+    agree({})
+
+
+def test_running_refs_agree_with_rows():
+    t = T0 + 160.0
+    f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda")), ("a", _open(T0, 2000.0))],
+                       {"Mansarda": _mansarda(None)}, {"Mansarda": False}, rise=T0 + 100.0)
+    f.main.signatures = [_sig(7, 2000.0, dur=3600.0)]
+    rows = f.running(t)
+    assert f.running_refs(t) == set().union(*(r["refs"] for r in rows)) == {("Mansarda", 11), ("", 7)}
 
 
 def test_a_circuits_named_load_survives_a_restart_and_a_reset():

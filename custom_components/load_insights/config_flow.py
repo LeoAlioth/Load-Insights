@@ -622,10 +622,10 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
         tz = dt_util.DEFAULT_TIME_ZONE
         now_ts = dt_util.utcnow().timestamp()
-        running, partners, by_ref = set(), {}, {}
+        running = runner.fleet.running_refs(now_ts)
+        partners, by_ref = {}, {}
         for meter in dict.fromkeys(m for (m, _), _ in shown):
             det = runner.fleet._det(meter)
-            running |= {(meter, i) for i in det.running_now(now_ts)}
             by_ref.update(((meter, x.id), x) for x in det.signatures)
             # the other settings each load may be of the same device as
             for group in suggest_levels(det.signatures, det.recent) + input_groups(det.signatures):
@@ -652,6 +652,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             maybe = same_device_phrase([by_ref[r] for r in partners.get(ref, []) if r in by_ref])
             if maybe:
                 rest += f" · {maybe}"
+            rest += f" · #{ref[1]}"       # what the dashboard's running list links by
             placeholders[f"load_{index}"] = label
             placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")

@@ -1486,6 +1486,35 @@ def ref_label(ref: Tuple[str, int]):
     return f"{ref[0]}#{ref[1]}" if ref[0] else ref[1]
 
 
+RUNNING_ROWS = 10   # a dashboard card, not the library: ~2 KB at most (a judgement, 2026-10-12)
+
+
+def running_markdown(rows: List[dict], link: str, offered=frozenset(), cap: int = RUNNING_ROWS,
+                     now: float = 0.0) -> str:
+    """Fleet.running's rows as a Markdown list for a dashboard card: named
+    loads first, then unnamed, each by watts, at most ``cap`` lines. An
+    unnamed row whose (meter, id) is in ``offered`` - the naming page lists
+    it - links to ``link``; every row says its ``#id`` so the naming page's
+    row of the same id can be found."""
+    named = sorted((r for r in rows if r["name"]), key=lambda r: -r["watts"])
+    unnamed = sorted((r for r in rows if not r["name"]), key=lambda r: -r["watts"])
+    lines = []
+    for r in named + unnamed:
+        if r["name"]:
+            label = f"**{r['name']}**"
+        elif r["ref"] is None:
+            label = "New load"
+        else:
+            label = f"Unnamed #{r['ref'][1]}"
+            if r["ref"] in offered:
+                label = f"[{label}]({link})"
+        lines.append(f"- {label} · {_fmt_w(r['watts'])} {on_phases(r['phases'])} · {_fmt_s(max(0.0, now - r['since']))}"
+                     + (f" · {r['tag']}" if r["tag"] else "") + (f" · {r['where']}" if r["where"] else ""))
+    if not lines:
+        return "Nothing detected running."
+    return "\n".join(lines[:cap] + ([f"- … {len(lines) - cap} more"] if len(lines) > cap else []))
+
+
 def _described(orphan: dict) -> "Signature":
     """A carried name's description as a signature to compare with (alike)."""
     return Signature(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
@@ -5278,15 +5307,6 @@ class Detector:
     def unknown_power(self, now_ts: float) -> float:
         return float(sum(m["watts"] for m in self.active(now_ts)))
 
-    def active_by_name(self, now_ts: float) -> Dict[str, float]:
-        """Watts on right now per NAME - signatures sharing a name are one
-        device, which is what giving two of them the same name means."""
-        out: Dict[str, float] = {}
-        for a in self.active(now_ts):
-            if a.get("name"):
-                out[a["name"]] = out.get(a["name"], 0.0) + float(a["watts"])
-        return out
-
     def hourly_by_name(self, name: str) -> Dict[int, float]:
         """hour start (epoch s) -> Wh the load NAMED so used in it, as far back
         as HOURLY_KEEP_S - what backfills its meter's statistics."""
@@ -5351,10 +5371,6 @@ class Detector:
                 if sig is not None and sig.name:
                     out.append((sig.name, r["start"], float(r.get("wh", r["kwh"] * 1000.0))))
         return out
-
-    def running_now(self, now_ts: float) -> set:
-        """Signature ids believed to be on right now."""
-        return {a.get("signature") for a in self.active(now_ts) if a.get("signature")}
 
     def names(self) -> Dict[str, List[int]]:
         """name -> the signature ids filed under it."""
@@ -7796,9 +7812,84 @@ class Fleet:
                     for h, wh in hours.items():
                         sig.older[int(h)] = sig.older.get(int(h), 0.0) + float(wh)
 
+    def running(self, now: float) -> List[dict]:
+        """Every load running now, ONCE: each grid run (legs started within
+        MERGE_TOLERANCE_S are one, as Detector.active merges them) told
+        through the meter its own step placed it on (_Open.meter) and that
+        meter's run of it (_steps_over's rise -> the _Open opened at it). A
+        meter's run never makes a row of its own: the grid's run of it is the
+        row, so nothing is listed twice. Watts, phases and since are the
+        grid run's. -> {name, ref, refs, watts, phases, since, where, tag}.
+        The one answer to "is this load on" (see AGENTS.md, Naming page)."""
+        legs = sorted(((ph, o, st.open_scale()) for ph, st in self.main.phases.items() for o in st.open_edges),
+                      key=lambda x: x[1].since)
+        runs: List[List[tuple]] = []
+        for leg in legs:
+            run = next((r for r in runs if abs(r[0][1].since - leg[1].since) <= MERGE_TOLERANCE_S
+                        and r[0][1].meter == leg[1].meter), None)
+            if run is None:
+                runs.append([leg])
+            else:
+                run.append(leg)
+        rows: Dict[str, dict] = {}
+        out: List[dict] = []
+        for run in runs:
+            phases = "".join(sorted(ph for ph, _, _ in run))
+            watts = sum(o.watts * k for _, o, k in run)
+            since = min(o.since for _, o, _ in run)
+            meter = run[0][1].meter
+            one = bool(meter) and self.holds_one_device(meter)
+            det, ref_meter, sig_ph, sig_w, where = self.main, "", phases, watts, None
+            if meter and meter in self.subs and not one:
+                sub = self.subs[meter]
+                found: Dict[int, tuple] = {}      # id(_Open) -> (channel, _Open, scale): one meter run, however many rises point at it
+                for ph, o, _ in run:
+                    for c in self._chans(meter, ph):
+                        if c not in sub.phases:
+                            continue
+                        for e in self._steps_over(meter, c, ph, o.since, True):
+                            for x in sub.phases[c].open_edges:
+                                if abs(x.since - e[0]) <= 0.01:
+                                    found[id(x)] = (c, x, sub.phases[c].open_scale())
+                if found:
+                    det, ref_meter = sub, meter
+                    sig_ph = "".join(sorted({c for c, _, _ in found.values()}))
+                    sig_w = sum(x.watts * k for _, x, k in found.values())
+                where = meter
+            sid = det._guess(sig_ph, sig_w, now - since)
+            sig = next((s for s in det.signatures if s.id == sid), None) if sid is not None else None
+            if one:
+                name = (sig.name if sig else None) or meter
+            else:
+                name = sig.name if sig else None
+                if where is None:
+                    where = most_specific(sig.locations, sig.count, self.parents) if sig else "main"
+            ref = (ref_meter, sig.id) if sig else None
+            row = {"name": name, "ref": ref, "refs": {ref} if ref else set(),
+                   "watts": watts, "phases": phases, "since": since,
+                   "where": None if one or where == "main" else where,
+                   "tag": sig.guess().tag if sig and not name else ""}
+            if name and name in rows:             # one device, one row
+                r = rows[name]
+                r["watts"] += watts
+                r["since"] = min(r["since"], since)
+                r["refs"] |= row["refs"]
+                r["phases"] = "".join(sorted(set(r["phases"] + phases)))
+                continue
+            if name:
+                rows[name] = row
+            out.append(row)
+        return out
+
     def active_by_name(self, now_ts: float) -> Dict[str, float]:
-        """Watts on right now per NAME, each read off its own meter."""
-        return self._summed(lambda d: d.active_by_name(now_ts))
+        """Watts on right now per NAME: the named rows of running() - the same
+        answer the dashboard list gives, one load at a time, whatever else
+        shares its phase."""
+        return {r["name"]: float(r["watts"]) for r in self.running(now_ts) if r["name"]}
+
+    def running_refs(self, now_ts: float) -> Set[Tuple[str, int]]:
+        """(meter, id) of every signature believed on right now - running()'s."""
+        return {ref for r in self.running(now_ts) for ref in r["refs"]}
 
     def name_descriptors(self) -> List[dict]:
         """Every name, as a reset carries it (Detector.name_descriptors) - a
