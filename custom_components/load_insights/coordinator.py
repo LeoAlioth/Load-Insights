@@ -561,9 +561,10 @@ class InsightsCoordinator(DataUpdateCoordinator):
 
     def _thermal_note(self, entry, text: str) -> None:
         """Say why a Load Juggler load has no thermal room - once per change of reason."""
-        if self._thermal_said.get(entry.entry_id) != text:
-            self._thermal_said[entry.entry_id] = text
-            _LOGGER.warning("Thermal room for %s: %s", entry.title, text)  # warning only so the system log shows it; info once settled
+        key, title = (entry.entry_id, entry.title) if entry is not None else ("", "all loads")
+        if self._thermal_said.get(key) != text:
+            self._thermal_said[key] = text
+            _LOGGER.warning("Thermal room for %s: %s", title, text)  # warning only so the system log shows it; info once settled
 
     async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
                              start: datetime, opts) -> Dict[str, dict]:
@@ -583,7 +584,11 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 by_device.setdefault(ent.device_id, d.energy)
         rooms = set(opts.get(CONF_ROOM_THERMOSTATS) or ())
         out: Dict[str, dict] = {}
-        for entry in self.hass.config_entries.async_entries(JUGGLER_DOMAIN):
+        entries = self.hass.config_entries.async_entries(JUGGLER_DOMAIN)
+        self._thermal_note(None, f"{len(entries)} Load Juggler entries, "
+                                 f"{sum(1 for e in entries if e.options.get(JUGGLER_DEVICE_TYPE, e.data.get(JUGGLER_DEVICE_TYPE)) == JUGGLER_TANK)} tanks, "
+                                 f"{len(by_device)} dashboard devices on a registry device")
+        for entry in entries:
             def conf(key, entry=entry):
                 return entry.options.get(key, entry.data.get(key))
             if conf(JUGGLER_DEVICE_TYPE) != JUGGLER_TANK:
