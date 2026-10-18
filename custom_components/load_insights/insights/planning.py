@@ -155,6 +155,17 @@ def minimum(bal: Balance, floor: float, capacity: float, tz) -> Tuple[int, dict]
     return value, {**_extremes(bal, tz), "floor": floor, "days": _days(bal, capacity, tz)}
 
 
+def full_at(bal: Balance, until_full_kwh: float, tz) -> Optional[str]:
+    """When the pack is next full by the forecast: the START of the first hour
+    whose running balance covers what the pack still takes (the early side - it
+    is full somewhere inside that hour). An hour already past, or the hour under
+    way, means full now. None when no hour of the window gets there."""
+    for k, s in zip(bal.keys, bal.running):
+        if s >= until_full_kwh:
+            return _at(k, tz)
+    return None
+
+
 def excess(bal: Balance, days: int, until_full_kwh: float, tz) -> Tuple[Optional[float], dict]:
     """For each of ``days`` calendar days from today: the day's peak of S
     less the energy the pack still takes to be full, in kWh. Negative: the
@@ -169,7 +180,8 @@ def excess(bal: Balance, days: int, until_full_kwh: float, tz) -> Tuple[Optional
         d = (today + timedelta(days=n)).isoformat()
         rows.append({"date": d, "excess_kwh": round(peaks[d] - until_full_kwh, 1) if d in peaks else None})
     return rows[0]["excess_kwh"], {"days": rows, "excess_kwh": [r["excess_kwh"] for r in rows],
-                                   "until_full_kwh": round(until_full_kwh, 2)}
+                                   "until_full_kwh": round(until_full_kwh, 2),
+                                   "full_at": full_at(bal, until_full_kwh, tz)}
 
 
 def sun_window(now: datetime, production: Dict[float, float], scale: float, tz) -> tuple:

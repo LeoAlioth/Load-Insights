@@ -451,6 +451,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # not of the 120 hours or the pack the three readings above need
         starts, ends = sun_window(now, pv, get(CONF_PLAN_PRODUCTION_SCALE), now.tzinfo)
         out["sun"] = {"starts": starts, "ends": ends} if starts else None
+        # when the pack is next full: read off the excess balance (held with it)
+        full_at = ((out.get("excess") or {}).get("attributes") or {}).get("full_at")
+        out["full"] = {"at": full_at} if full_at else None
         return out
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:

@@ -73,6 +73,9 @@
             },
             "production_ends": {
                 "name": "Konec proizvodnje"
+            },
+            "next_full_charge": {
+                "name": "Naslednja polna baterija"
             }
         },
         "binary_sensor": {
