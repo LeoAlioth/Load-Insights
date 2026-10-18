@@ -3029,6 +3029,26 @@ def test_a_named_load_reads_its_power_while_its_run_is_still_open():
     assert fleet.main.live_runs(t2 + 3600.0) == []           # open for an hour: no longer counted
 
 
+def test_open_starts_never_add_up_to_more_than_the_phase_carries():
+    """Kozolec's Apartment Fridge read 226 W as 60 + 83 + 83: starts whose stops
+    were never seen stayed open and were summed (2026-10-18). What is on now is
+    clipped to the phase's level above its baseline, per name and in total."""
+    import copy
+    fleet, t = _named_kettle()
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # the kettle is on
+    st = next(x for x in fleet.main.phases.values() if x.open_edges)
+    one = fleet.main.live_runs(t2)
+    assert len(one) == 1 and 1400.0 < one[0][2] < 1600.0, one
+    st.open_edges.append(copy.copy(st.open_edges[0]))      # two more starts that never ended
+    st.open_edges.append(copy.copy(st.open_edges[0]))
+    carried = st.level - st.baseline
+    assert sum(w for _, _, w in fleet.main.live_runs(t2)) <= carried + 1e-6
+    assert fleet.main.active(t2)[0]["watts"] <= round(carried)
+    assert fleet.main.unknown_power(t2) <= carried + 1.0
+    st.baseline = None                                     # nothing to measure against: as before
+    assert st.open_scale() == 1.0
+
+
 def test_a_named_run_that_began_and_ended_between_two_readings_comes_in_as_its_energy():
     """A run no reading saw open still counts, spread over the stretch (the
     kiln's 44 s pulses, 2026-09-18) - and one a reading did see open is not
@@ -4075,6 +4095,7 @@ def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
     # ...and it is on while Hiša's detector holds a run of it open
     t = T0 + 16 * 3600.0
     his.phases["a"].open_edges = [D._Open(since=t - 60.0, watts=1000.0, var=None, levels=[(t - 60.0, 1000.0)])]
+    his.phases["a"].level = (his.phases["a"].baseline or 0.0) + 1000.0      # the phase really carries it
     assert f.active_by_name(t) == {"Bojler": 1000.0}, f.active_by_name(t)
 
 

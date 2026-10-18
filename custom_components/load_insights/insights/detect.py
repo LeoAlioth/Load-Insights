@@ -2739,11 +2739,26 @@ class PhaseState:
                        samples=self._span(o.since, at), low=o.lo, high=o.hi, pair=pair,
                        wh={"": wh} if wh is not None else {})
 
+    def open_scale(self) -> float:
+        """The share of the open starts' summed size the phase can really be
+        carrying: its level above the idle baseline over that sum, at most 1.
+        Open starts are summed as they were declared, and a start whose stop was
+        never seen (a restart's replay, a lost fall) stays on that sum - so
+        the sum can pass what the meter holds (a fridge read 226 W as 60 + 83 +
+        83, a household 2797 W of a measured 1748 W, 2026-10-18). Nothing is
+        known to scale by without a level and a baseline: 1."""
+        total = sum(o.watts for o in self.open_edges)
+        if total <= 0 or self.level is None or self.baseline is None:
+            return 1.0
+        return min(1.0, max(self.level - self.baseline, 0.0) / total)
+
     def active(self, now_ts: float) -> Optional[Tuple[float, float]]:
-        """(since, watts) of everything believed to be running on this phase."""
+        """(since, watts) of everything believed to be running on this phase,
+        never more than the phase carries above its baseline (``open_scale``)."""
         if not self.open_edges:
             return None
-        return min(o.since for o in self.open_edges), sum(o.watts for o in self.open_edges)
+        return (min(o.since for o in self.open_edges),
+                sum(o.watts for o in self.open_edges) * self.open_scale())
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
@@ -5269,10 +5284,11 @@ class Detector:
                 longest[sig.name] = max(longest.get(sig.name, 0.0), max(runs))
         out = []
         for st in self.phases.values():
+            scale = st.open_scale()
             for o in st.open_edges:
                 name = self.start_name(o.cluster)
                 if name and now_ts - o.since <= LIVE_STALE_FACTOR * longest.get(name, 0.0):
-                    out.append((name, o.since, o.now if o.now is not None else o.watts))
+                    out.append((name, o.since, (o.now if o.now is not None else o.watts) * scale))
         return out
 
     def start_name(self, cluster: Optional[int]) -> Optional[str]:
