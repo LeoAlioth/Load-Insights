@@ -1,7 +1,7 @@
 # SOC planning in Load Insights, and pacing in Load Juggler (design draft, 2026-10-17)
 
 Personal project (Load Insights + Load Juggler + Kozolec HA). Never log to a work-context file.
-Status: BUILT AND DEPLOYED 2026-10-17 (the owner's answers are section 8, which overrides sections 4, 5 and 7). Load Insights: house forecast from its parts (2e5ca5f), planning sensors (f310628, 74a244c), production starts / ends (403c8b4), review fixes (b32a721, 8e874d6), audit (4342cac, 3a0ab73). Load Juggler: pacing (319a958), early Excess (e28efba), catch-up (e95be19), review fixes (12cb18a, 058af50, 84f503d). Where the build differs from sections 4 and 5: pacing takes the planned excess energy and the sunset from two hub entities (no battery capacity option), and the early-Excess floor is a hub option (minimum / target / fixed). Forecasting was re-opened by the owner on 2026-10-17 for this
+Status: BUILT AND DEPLOYED 2026-10-17 (the owner's answers are section 8, which overrides sections 4, 5 and 7). Load Insights: house forecast from its parts (2e5ca5f), planning sensors (f310628, 74a244c), production starts / ends (403c8b4), review fixes (b32a721, 8e874d6), audit (4342cac, 3a0ab73). Load Juggler: pacing (319a958), early Excess (e28efba), catch-up (e95be19), review fixes (12cb18a, 058af50, 84f503d). Where the build differs from sections 4 and 5: pacing takes the planned excess energy and the sunset from two hub entities (no battery capacity option), and the early-Excess floor is a hub option (minimum / target / fixed). Changed again 2026-10-18 after the first live night (section 9). Forecasting was re-opened by the owner on 2026-10-17 for this
 work only; update `docs/roadmap.md` when the draft is approved.
 
 ## 1. What the owner wants
@@ -88,3 +88,38 @@ Tests: pure-Python unit tests of the pacing term, and YAML scenarios in `dev/tes
   - Minimum and excess now weight BOTH sides, like the target (their helpers still count the use in full).
 - **Part 3: pacing is a per-load setting, Excess mode only for now, none for Solar Only.** Not a hub-wide switch: each load has a "pace" option (default off). Mechanism to implement (owner's intent: use the planned energy leisurely until the horizon instead of racing): a hub-level pair of optional entities - the energy still to use (kWh; LI's daily-excess for today) and the horizon end (timestamp; LI's `production_ends_at`) - and a paced load in Excess mode is capped at `energy / hours_left` (hours_left floored at 1 h); no entities or the option off = today's behaviour. This replaces the (SOC - target) x capacity formula in section 5 and needs no capacity option. Check it against how Excess mode builds its pool (`_calculate_excess_available`, the Excess branch of `_source_limit`) and say so in the report if the code points to a better place for the cap. An EVSE's minimum current still needs a start threshold with hysteresis.
 - **Open decisions 7.1-7.5**: 7.1 answered (weight them); 7.2 not needed (no Solar Only pacing); 7.3 horizon = the forecast's last hour with production (`production_ends_at`); 7.4 and 7.5 are the implementer's call, said in the report.
+
+## 9. After the first live night, 2026-10-18 (status and changes)
+
+Status: BUILT AND DEPLOYED to Kozolec 2026-10-18 (Home picks the Load Insights build up on its next core-update restart; Home has no early-Excess setup). Load Insights 0.4.1-dev.20261018.0838, Load Juggler 2.1.6-dev.20261018.0847.
+
+**What went wrong.** At 00:00 local the daily excess rolled to the new day (-16.8 -> +16.1 kWh), so the site-wide early-Excess verdict latched with no sun. A tank boosts on its setpoint and its thermostat heats at once whatever the pool holds, so the Kozolec boiler (1.9 kW element, pool smaller than that) flapped 42/75 C every grace period all night and the battery fell from 76 % to 47 %. The Bathroom IR Panel did the same all morning (535 W / 0 every 5-10 min).
+
+**The rule that replaced it (owner, 2026-10-18).** Each load takes the early verdict only when it is that load's turn: planned kWh x 1000 >= the load's minimum power x the hours until the battery is next full. Equivalently the latest start is `next full charge - planned kWh / minimum power`. The owner's reasoning: with 16 kWh planned and a 2 kW element, heating starts about 8 h before the pack is full, not at midnight. The horizon is the time the forecast has the pack **next full** (hourly resolution, rounded down: the early side), not the end of production; pacing keeps the production-end horizon (it spreads energy over the sun hours).
+
+**Built.**
+- Load Insights `3e8c6ca`: sensor `next_full_charge` (timestamp; also `full_at` on the daily-excess attributes) from the same balance as the daily excess; created only where a SOC sensor exists.
+- Load Juggler `9b4d5fd` (rebased to `737e206`): hub option *Next full charge* (`forecast_excess_full_entity_id`, the pacing horizon stands in when unset); `starts_early` per load with a 20 % hold band, latched per load id; `LoadContext.early_start_ok`; the site verdict stays on while at least one taker is due; the status of a waiting load reads for example `Waiting for Power - Early start 14:43 at 1.9 kW`.
+- Load Juggler `2bec1d5`: a load that is not due does not count the forecast top-up as its pool (found live: one due load let the shared top-up start the boiler).
+- Load Juggler `c8d949b`: a tank's boost **setpoint** takes the forecast verdict only when it is that tank's turn (it read the site-wide verdict, so any due load boosted every tank); every tank is a taker for the site verdict and the status note.
+- Pacing is for loads whose power can vary: the option is gone from smart plugs (and ignored for them); EVSE and power station keep it.
+- Load Insights `595b028`: open starts are clipped to what the phase carries above its baseline (`PhaseState.open_scale`), so a named load's live power and the running-now total can no longer pass the meter (Apartment Fridge read 226 W = 60 + 83 + 83 after a restart; Home's Running now 2797 W of 1748 W).
+
+**Kozolec configuration.** Hub option *Next full charge* = `sensor.kozolec_pv_kozolec_insights_next_full_charge`. Dashboard: Running-now card shows *Unidentified* instead of `#None`; Forecasts chart bottom margin 65 / height 335 (labels were cut off). Home: Sonos card `heightPercentage` 55 -> 78. Details and snapshots in `HA_Configs/<site>/NOTES.md`.
+
+**Verified live (Kozolec, 10:55 local).** Boiler, bee room heater and IR panel idle at their normal setpoints, each with its start time and power (boiler 14:43 at 1.9 kW, bee room heater 13:40 at 1.0 kW, IR panel 11:28 at 0.5 kW). Load Juggler suite 1838 passed; Load Insights run_all 20/20 on Python 3.14 (the system Python 3.9 fails two `bisect key=` tests, unrelated).
+
+**Known and open.**
+- The IR panel's thermostat reads `sensor.apartma_t_h_temperature`, which is unavailable for about a minute after every HA restart; the thermostat then heats whatever the setpoint says. Not Load Juggler's doing; a restart-time blip.
+- Catch-up (Solar Only / Solar Priority loads) still tests the planned rate against the production-end horizon, not the next full charge; pace and catch-up are off on every Kozolec load.
+- The full-charge time comes from the weighted forecast (both sides derated with distance), so a time more than a day out is a rough one; it is recomputed every hour.
+- Home's detected-loads dashboard still has the To-name tile only (Running now card removed 2026-10-18); its sub-list wording is not decided.
+
+
+## 10. Group rule and room to absorb, 2026-10-18
+
+Built: Load Juggler's early start is one **group rule** (all loads that can take the verdict share the planned energy and start together at the sum of their minimum powers, capped by the battery charge rating), with direct checks (EVSE plugged and not SuspendedEV, thermostat load >= 2 K below boost, room >= 0.1 kWh). Load Insights has a per-named-load **Room to absorb today** sensor (P90 of complete past days less today so far; unknown under 3 days), and Load Juggler takes it as an optional per-load entity on plugs, tanks and power stations.
+
+Noted for later (owner, 2026-10-18):
+- **Rate of absorption** beside the room: how fast a load can take its energy (its kW), so the group power is what the loads can really pull now, not their rated minimums.
+- **Energy per degree** for thermostat loads: Load Insights learns the kWh a tank or heater needs per degree of temperature change. With the current temperature and the boost setpoint that gives the room directly (kWh = degrees below boost x kWh per degree), a better figure than the P90 ceiling for exactly these loads.

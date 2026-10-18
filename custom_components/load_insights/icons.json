@@ -25,6 +25,9 @@
             "unknown_load_power": {
                 "default": "mdi:help-circle-outline"
             },
+            "named_load_room": {
+                "default": "mdi:battery-charging-medium"
+            },
             "named_load_power": {
                 "default": "mdi:flash"
             },

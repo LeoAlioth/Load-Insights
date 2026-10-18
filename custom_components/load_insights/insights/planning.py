@@ -203,6 +203,35 @@ def sun_window(now: datetime, production: Dict[float, float], scale: float, tz) 
     return _at(lit[0], tz), _at(lit[-1] + HOUR, tz)
 
 
+ROOM_PERCENTILE = 90
+ROOM_MIN_DAYS = 3
+
+
+def room_to_absorb(hourly: Dict[float, float], now: datetime, tz=None) -> Optional[float]:
+    """kWh a named load can still take today: what it has used on its heavier
+    days (the 90th percentile of the complete days before today in ``hourly``,
+    hour start epoch s -> Wh) less what it has used today so far, never below 0.
+    A ceiling from the past, not a measurement now - the owner's, 2026-10-18, for
+    Load Juggler's early start: a tank that has already heated has little room
+    left, whatever its element could draw. None with fewer than ROOM_MIN_DAYS
+    complete days (a new load has no ceiling yet)."""
+    tz = tz or now.tzinfo
+    today = now.astimezone(tz).date()
+    per_day: Dict = {}
+    for k, wh in hourly.items():
+        d = datetime.fromtimestamp(k, tz).date()
+        per_day[d] = per_day.get(d, 0.0) + wh
+    # a day counts once its first hour is inside the data: the oldest, part-covered day is left out
+    first = min(per_day) if per_day else None
+    past = sorted(v / 1000.0 for d, v in per_day.items() if d < today and d != first)
+    if len(past) < ROOM_MIN_DAYS:
+        return None
+    pos = (len(past) - 1) * ROOM_PERCENTILE / 100.0
+    lo = int(pos)
+    p90 = past[lo] + (past[min(lo + 1, len(past) - 1)] - past[lo]) * (pos - lo)
+    return round(max(0.0, p90 - per_day.get(today, 0.0) / 1000.0), 2)
+
+
 def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, float], capacity: Optional[float],
              soc: Optional[float], full_soc: float, cfg: dict, tz=None) -> Dict[str, Optional[dict]]:
     """The three sensors from one set of inputs - what the coordinator and a

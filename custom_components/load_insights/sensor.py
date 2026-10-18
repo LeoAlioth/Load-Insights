@@ -21,6 +21,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_BATTERY_CAPACITY_ENTITY, DOMAIN
 from homeassistant.util import dt as dt_util
 
+from .insights.planning import room_to_absorb
+
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
 from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
@@ -84,8 +86,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             # 2026-09-29: "i would expect that we only add forecasting")
             _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
             _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
+            _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
             continue
-        entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
+        entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n),
+                     NamedLoadRoom(detection, entry, n)]
     add(entities)
     known = set(detection.fleet.names())
 
@@ -106,7 +110,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             return
         known.update(new)
         add([e for n in new if not detection.metered_device(n)
-             for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n))])
+             for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n),
+                       NamedLoadRoom(detection, entry, n))])
 
     entry.async_on_unload(detection.async_add_listener(_follow_names))
 
@@ -728,6 +733,32 @@ class NamedLoadPower(_PowerW, _DetectionBase):
     def native_value(self) -> Optional[float]:
         value = self._runner.live_power.get(self._name)
         return None if value is None else round(value)
+
+
+class NamedLoadRoom(_DetectionBase):
+    """How much more a named load can take today (planning.room_to_absorb): its
+    heavier days' energy less today's so far. What Load Juggler's early start
+    reads to count only the energy a load can still absorb - a tank that has
+    already heated, an EVSE that has had its fill."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
+        super().__init__(runner, entry, "named_load_room")
+        self._name = name
+        self._attr_unique_id = load_uid(entry.entry_id, "room", name)
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return room_to_absorb(self._runner.fleet.hourly_by_name(self._name), dt_util.now())
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
 
 
 class NamedLoadEnergy(_DetectionBase, RestoreSensor):
