@@ -162,6 +162,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         self._ledgers: Optional[Dict[str, Ledger]] = None
         self._capacity_kwh: Optional[float] = None  # the capacity sensor's last good reading
         self._plan_last: Dict[str, dict] = {}       # each planning sensor's last complete reading
+        self._thermal_said: Dict[str, str] = {}      # each Load Juggler load's last thermal-room reason, to log changes only
 
     def _battery_capacity(self) -> Optional[float]:
         """The capacity sensor's kWh, held at its last good reading while it is
@@ -558,6 +559,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 out[k] = current
         return out
 
+    def _thermal_note(self, entry, text: str) -> None:
+        """Say why a Load Juggler load has no thermal room - once per change of reason."""
+        if self._thermal_said.get(entry.entry_id) != text:
+            self._thermal_said[entry.entry_id] = text
+            _LOGGER.info("Thermal room for %s: %s", entry.title, text)
+
     async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
                              start: datetime, opts) -> Dict[str, dict]:
         """The room of each dashboard device that a Load Juggler tank or heater thermostat
@@ -592,10 +599,13 @@ class InsightsCoordinator(DataUpdateCoordinator):
                     break
             state = self.hass.states.get(climate) if climate else None
             if sid is None or state is None:
+                self._thermal_note(entry, "no dashboard device on the thermostat's or power sensor's device" if sid is None
+                                   else "its thermostat has no state")
                 continue
             try:
                 current = float(state.attributes["current_temperature"])
             except (KeyError, TypeError, ValueError):
+                self._thermal_note(entry, "its thermostat reports no current temperature")
                 continue
             boost = None
             for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
@@ -605,13 +615,19 @@ class InsightsCoordinator(DataUpdateCoordinator):
             try:
                 boost = float(boost)
             except (TypeError, ValueError):
+                self._thermal_note(entry, "no boost setpoint")
                 continue
             temps = await self._hourly_attribute(climate, "current_temperature", start, now)
             energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
             kind = KINDS["room" if sid in rooms else "tank"]
-            learned = kwh_per_degree(heating_runs(energy, temps), kind)
+            runs = heating_runs(energy, temps)
+            learned = kwh_per_degree(runs, kind)
+            if not learned:
+                self._thermal_note(entry, f"{len(runs)} clean heating runs in {len(temps)} hours of temperature, "
+                                          f"{len(energy)} of energy; not enough or too uneven ({kind.name})")
             room = room_from_thermal(learned[0], current, boost) if learned else None
             if room is not None:
+                self._thermal_note(entry, f"{learned[0]:.3f} kWh/K from {learned[2]} runs ({kind.name})")
                 out[sid] = {"room": room, "kwh_per_degree": round(learned[0], 3),
                             "spread": round(learned[1], 2), "runs": learned[2], "kind": kind.name,
                             "temperature": current, "boost": boost}
