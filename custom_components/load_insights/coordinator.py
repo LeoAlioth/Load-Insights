@@ -14,6 +14,7 @@ from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -28,6 +29,14 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_FORECAST_EXCLUDE,
+    CONF_ROOM_THERMOSTATS,
+    JUGGLER_BOOST_OPTION,
+    JUGGLER_BOOST_SUFFIX,
+    JUGGLER_CLIMATE,
+    JUGGLER_DEVICE_TYPE,
+    JUGGLER_DOMAIN,
+    JUGGLER_TANK,
+    JUGGLER_TANK_POWER,
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -64,6 +73,7 @@ from .insights.planning import plan_all, room_from_series, spread_evenly, sun_wi
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
+from .insights.thermal import KINDS, heating_runs, kwh_per_degree, room_from_thermal
 from .insights.series import combine, coverage, subtract_all
 from .repairs import async_check
 
@@ -132,6 +142,8 @@ class InsightsData:
     devices: Dict[str, Forecast] = None  # type: ignore[assignment]
     # kWh each individually metered device can still take today (planning.room_from_series), by statistic id
     device_room: Dict[str, Optional[float]] = None  # type: ignore[assignment]
+    # what the thermal reading of a tank or heater (insights/thermal.py) gave, by statistic id: room, kwh_per_degree, spread, runs, kind
+    device_thermal: Dict[str, dict] = None  # type: ignore[assignment]
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -383,12 +395,20 @@ class InsightsCoordinator(DataUpdateCoordinator):
         except Exception:  # noqa: BLE001 - the last readings stand, the forecasts go on
             _LOGGER.exception("SOC planning failed; keeping its last readings")
             plan = dict(self._plan_last)
+        device_room = {d.energy: room_from_series(series.get(d.energy, ()), now) for d in site.devices}
+        try:
+            device_thermal = await self._thermal_rooms(site, series, now, start, opts)
+        except Exception:  # noqa: BLE001 - the history ceilings stand, the forecasts go on
+            _LOGGER.exception("Thermal room reading failed; keeping the history ceilings")
+            device_thermal = {}
+        device_room.update({sid: t["room"] for sid, t in device_thermal.items()})
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
-            device_room={d.energy: room_from_series(series.get(d.energy, ()), now) for d in site.devices},
+            device_room=device_room,
+            device_thermal=device_thermal,
             forecast_left_out=tuple(labels.get(e, e) for e in left_out),
             consumption_fitted=cons_fit,
             own_parts={k: v[1] for k, v in own.items() if k},
@@ -535,6 +555,84 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 current = changes[i][1]
                 i += 1
             if k >= changes[0][0]:
+                out[k] = current
+        return out
+
+    async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
+                             start: datetime, opts) -> Dict[str, dict]:
+        """The room of each dashboard device that a Load Juggler tank or heater thermostat
+        runs, from kWh per degree (insights/thermal.py) and the thermostat's temperature
+        now against its boost setpoint. A device gets an entry only when the figure is
+        known; the others keep the history ceiling. The device is matched through the
+        registry: the tank's power sensor and the dashboard's energy sensor sit on one
+        device. ponytail: the temperature comes from the recorder's raw states, which keep
+        about ten days, so a heater that runs rarely has few runs; persist the runs if that
+        proves too few."""
+        registry = er.async_get(self.hass)
+        by_device = {}
+        for d in site.devices:
+            ent = registry.async_get(d.energy)
+            if ent is not None and ent.device_id:
+                by_device.setdefault(ent.device_id, d.energy)
+        rooms = set(opts.get(CONF_ROOM_THERMOSTATS) or ())
+        out: Dict[str, dict] = {}
+        for entry in self.hass.config_entries.async_entries(JUGGLER_DOMAIN):
+            def conf(key, entry=entry):
+                return entry.options.get(key, entry.data.get(key))
+            if conf(JUGGLER_DEVICE_TYPE) != JUGGLER_TANK:
+                continue
+            power = registry.async_get(conf(JUGGLER_TANK_POWER) or "")
+            sid = by_device.get(power.device_id) if power is not None else None
+            climate = conf(JUGGLER_CLIMATE)
+            state = self.hass.states.get(climate) if climate else None
+            if sid is None or state is None:
+                continue
+            try:
+                current = float(state.attributes["current_temperature"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            boost = None
+            for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+                if ent.domain == "number" and (ent.unique_id or "").endswith(JUGGLER_BOOST_SUFFIX):
+                    boost = _read_number(self.hass, [ent.entity_id])
+            boost = boost if boost is not None else conf(JUGGLER_BOOST_OPTION)
+            try:
+                boost = float(boost)
+            except (TypeError, ValueError):
+                continue
+            temps = await self._hourly_attribute(climate, "current_temperature", start, now)
+            energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
+            kind = KINDS["room" if sid in rooms else "tank"]
+            learned = kwh_per_degree(heating_runs(energy, temps), kind)
+            room = room_from_thermal(learned[0], current, boost) if learned else None
+            if room is not None:
+                out[sid] = {"room": room, "kwh_per_degree": round(learned[0], 3),
+                            "spread": round(learned[1], 2), "runs": learned[2], "kind": kind.name,
+                            "temperature": current, "boost": boost}
+        return out
+
+    async def _hourly_attribute(self, entity_id: str, attribute: str, start: datetime,
+                                end: datetime) -> Dict[float, float]:
+        """hour key -> a numeric attribute of the entity as it stood at the top of that hour,
+        from the recorder's raw states."""
+        states = await get_instance(self.hass).async_add_executor_job(
+            history.state_changes_during_period, self.hass, start, end, entity_id, False, False, None, True,
+        )
+        changes = []
+        for st in states.get(entity_id, []):
+            try:
+                changes.append((st.last_updated.timestamp(), float(st.attributes[attribute])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        changes.sort()
+        out: Dict[float, float] = {}
+        i, current = 0, None
+        for b in hour_buckets(floor_hour(start), int((end - floor_hour(start)).total_seconds() // 3600) + 1):
+            k = b.timestamp()
+            while i < len(changes) and changes[i][0] <= k:
+                current = changes[i][1]
+                i += 1
+            if current is not None:
                 out[k] = current
         return out
 

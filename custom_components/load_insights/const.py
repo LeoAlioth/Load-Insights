@@ -35,6 +35,7 @@ CONF_INPUT_LINKS = "input_links"
 # added to it, their energy always comes out of the own part of the meter that
 # holds them (insights.profile.assemble). Their own forecast sensors are unchanged.
 CONF_FORECAST_EXCLUDE = "forecast_exclude"
+CONF_ROOM_THERMOSTATS = "room_thermostats"   # dashboard devices whose Load Juggler thermostat heats a room, not water
 
 # SOC planning (the "SOC planning" options page; insights/planning.py).
 # One horizon for the page, and one scale for each side shared by the three
@@ -196,3 +197,12 @@ REFRESH_MINUTES = (0,)
 REFRESH_SECOND = 30
 
 HORIZON_HOURS = 168
+
+# Load Juggler's tank entries, read from outside (its config keys and the boost slider's unique id suffix)
+JUGGLER_DOMAIN = "dynamic_ocpp_evse"
+JUGGLER_DEVICE_TYPE = "device_type"
+JUGGLER_TANK = "hot_water_tank"
+JUGGLER_TANK_POWER = "tank_power_entity_id"
+JUGGLER_CLIMATE = "climate_entity_id"
+JUGGLER_BOOST_OPTION = "tank_boost_temperature"
+JUGGLER_BOOST_SUFFIX = "_tank_boost_temperature"
