@@ -564,7 +564,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         runs, from kWh per degree (insights/thermal.py) and the thermostat's temperature
         now against its boost setpoint. A device gets an entry only when the figure is
         known; the others keep the history ceiling. The device is matched through the
-        registry: the tank's power sensor and the dashboard's energy sensor sit on one
+        registry: the tank's power sensor (or its thermostat) and the dashboard's energy sensor sit on one
         device. ponytail: the temperature comes from the recorder's raw states, which keep
         about ten days, so a heater that runs rarely has few runs; persist the runs if that
         proves too few."""
@@ -581,9 +581,15 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 return entry.options.get(key, entry.data.get(key))
             if conf(JUGGLER_DEVICE_TYPE) != JUGGLER_TANK:
                 continue
-            power = registry.async_get(conf(JUGGLER_TANK_POWER) or "")
-            sid = by_device.get(power.device_id) if power is not None else None
             climate = conf(JUGGLER_CLIMATE)
+            # the power sensor when the load has one, else the thermostat itself: a generic
+            # thermostat sits on its heater's device
+            sid = None
+            for ref in (conf(JUGGLER_TANK_POWER), climate):
+                ent = registry.async_get(ref) if ref else None
+                sid = by_device.get(ent.device_id) if ent is not None else None
+                if sid:
+                    break
             state = self.hass.states.get(climate) if climate else None
             if sid is None or state is None:
                 continue
