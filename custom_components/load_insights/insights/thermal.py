@@ -16,8 +16,8 @@ and its rise is the temperature after the run less the temperature before it.
 Two kinds, with their own defaults: a hot water tank's energy has little to do
 with the weather (a long window of runs, a tight spread), a room's loses heat to
 the outside (a short window, so it follows the season, and a wider spread).
-Runs in which the temperature ever falls are dropped (a hot-water draw, an open
-window); the long runs, which weigh most in the figure, take care of the draws that did not show.
+Runs in which a tank's temperature ever falls are dropped (a hot-water draw); a room's
+are kept, judged by their net rise (its thermostat cycles, a door opens); the long runs, which weigh most in the figure, take care of the draws that did not show.
 """
 from __future__ import annotations
 
@@ -43,10 +43,11 @@ class ThermalKind:
     window: int          # the most recent runs that count
     min_runs: int        # below this the figure is unknown
     max_spread: float    # median absolute deviation / median above which it is unknown
+    allow_dips: bool     # a run may show the temperature falling inside it (a room's thermostat cycles, a door opens)
 
 
-TANK = ThermalKind("tank", window=12, min_runs=3, max_spread=0.35)
-ROOM = ThermalKind("room", window=6, min_runs=3, max_spread=0.6)
+TANK = ThermalKind("tank", window=12, min_runs=3, max_spread=0.35, allow_dips=False)
+ROOM = ThermalKind("room", window=6, min_runs=3, max_spread=0.6, allow_dips=True)
 KINDS = {k.name: k for k in (TANK, ROOM)}
 
 
@@ -70,11 +71,12 @@ def _percentile(values: Sequence[float], pct: float) -> float:
 
 
 def heating_runs(energy: Sequence[Tuple[float, float]], temps: Dict[float, float],
-                 why: Optional[Dict[str, int]] = None) -> List[Run]:
+                 why: Optional[Dict[str, int]] = None, allow_dips: bool = False) -> List[Run]:
     """The clean heating runs. ``energy``: (hour start epoch, kWh) in time order;
     ``temps``: hour start epoch -> the thermostat's temperature then. A run is
     kept when the hour before it did not heat, the temperature is known at its
-    start and just after its end, it never falls inside the run and it rises by
+    start and just after its end, it never falls inside the run (unless ``allow_dips``: a room's
+    thermostat cycles, so only the net rise counts) and it rises by
     ``RISE_QUANTA`` of the thermometer's steps. ``why`` (when given) counts what was seen: the heating
     hours, the candidate runs and the reason each rejected one was."""
     why = why if why is not None else {}
@@ -105,7 +107,7 @@ def heating_runs(energy: Sequence[Tuple[float, float]], temps: Dict[float, float
             why["no_temp"] += 1
             continue
         series = [temps[h] for h in hours]
-        if any(b < a for a, b in zip(series, series[1:])):
+        if not allow_dips and any(b < a for a, b in zip(series, series[1:])):
             why["fell"] += 1
             continue
         rise = series[-1] - series[0]

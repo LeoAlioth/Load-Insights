@@ -626,7 +626,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
             kind = KINDS["room" if sid in rooms else "tank"]
             seen: Dict[str, int] = {}
-            runs = heating_runs(energy, temps, seen)
+            runs = heating_runs(energy, temps, seen, kind.allow_dips)
             learned = kwh_per_degree(runs, kind)
             if not learned:
                 self._thermal_note(entry, f"{len(runs)} clean heating runs in {len(temps)} hours of temperature, "

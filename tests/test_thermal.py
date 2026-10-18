@@ -45,6 +45,14 @@ def test_a_run_with_a_draw_in_it_is_dropped():
     assert len(TH.heating_runs(energy, temps)) == base - 1
 
 
+def test_a_room_keeps_a_run_that_dips_inside_it_a_tank_does_not():
+    energy, temps = clean_tank(6)
+    clean = len(TH.heating_runs(energy, temps))
+    temps[sorted(temps)[2 * 24 + 8]] -= 4      # a dip inside the third day's run, its net rise unchanged
+    assert len(TH.heating_runs(energy, temps, allow_dips=True)) == clean
+    assert len(TH.heating_runs(energy, temps)) == clean - 1
+
+
 def test_a_rise_inside_the_thermometers_resolution_is_not_a_run():
     energy, _ = clean_tank(6)
     flat = {k: 40.0 + (0.5 if (k // H) % 24 in (7, 8, 9) else 0.0) for k, _ in energy}
