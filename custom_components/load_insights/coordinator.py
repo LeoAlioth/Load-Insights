@@ -643,8 +643,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
                                 end: datetime) -> Dict[float, float]:
         """hour key -> a numeric attribute of the entity as it stood at the top of that hour,
         from the recorder's raw states."""
+        # every row, attribute-only updates included: state_changes_during_period keeps only the rows
+        # where the state itself changed, and a thermostat's stays "heat" while its temperature moves
         states = await get_instance(self.hass).async_add_executor_job(
-            history.state_changes_during_period, self.hass, start, end, entity_id, False, False, None, True,
+            functools.partial(history.get_significant_states, self.hass, start, end, [entity_id],
+                              include_start_time_state=True, significant_changes_only=False,
+                              minimal_response=False, no_attributes=False),
         )
         changes = []
         for st in states.get(entity_id, []):
