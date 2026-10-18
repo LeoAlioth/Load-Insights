@@ -2,7 +2,7 @@
 
 Personal project (Load Insights + Load Juggler + Kozolec HA). Never log to a work-context file.
 Status: BUILT AND DEPLOYED 2026-10-17 (the owner's answers are section 8, which overrides sections 4, 5 and 7). Load Insights: house forecast from its parts (2e5ca5f), planning sensors (f310628, 74a244c), production starts / ends (403c8b4), review fixes (b32a721, 8e874d6), audit (4342cac, 3a0ab73). Load Juggler: pacing (319a958), early Excess (e28efba), catch-up (e95be19), review fixes (12cb18a, 058af50, 84f503d). Where the build differs from sections 4 and 5: pacing takes the planned excess energy and the sunset from two hub entities (no battery capacity option), and the early-Excess floor is a hub option (minimum / target / fixed). Changed again 2026-10-18 after the first live night (section 9). Forecasting was re-opened by the owner on 2026-10-17 for this
-work only; update `docs/roadmap.md` when the draft is approved.
+work only; update `dev/TODO.md` when the draft is approved.
 
 ## 1. What the owner wants
 

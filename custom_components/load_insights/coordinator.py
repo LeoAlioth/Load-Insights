@@ -60,7 +60,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.planning import plan_all, spread_evenly, sun_window
+from .insights.planning import plan_all, room_from_series, spread_evenly, sun_window
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
@@ -130,6 +130,8 @@ class InsightsData:
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
     devices: Dict[str, Forecast] = None  # type: ignore[assignment]
+    # kWh each individually metered device can still take today (planning.room_from_series), by statistic id
+    device_room: Dict[str, Optional[float]] = None  # type: ignore[assignment]
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -386,6 +388,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
+            device_room={d.energy: room_from_series(series.get(d.energy, ()), now) for d in site.devices},
             forecast_left_out=tuple(labels.get(e, e) for e in left_out),
             consumption_fitted=cons_fit,
             own_parts={k: v[1] for k, v in own.items() if k},

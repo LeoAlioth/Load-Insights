@@ -75,6 +75,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         for key in [e[0] for e in PLAN_ENTITIES + SUN_ENTITIES] + [FULL_ENTITY[0]]:
             _forget(hass, "sensor", f"{entry.entry_id}_{key}")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
+    entities += [DeviceRoomSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
@@ -377,6 +378,37 @@ class DeviceForecastSensor(ForecastPowerSensor):
                         [round(row[j], 4) for row in fc.nowcast.matrix] for j in range(len(fc.nowcast.used))]
                     attrs["nowcast"]["state_means"] = [round(m, 2) for m in fc.nowcast.means]
         return attrs
+
+
+class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
+    """How much more a metered device can take today (planning.room_from_series):
+    its heavier days' energy less today's so far. What Load Juggler's early start
+    reads for a tank or heater on a metered plug, where the detector names no load
+    to carry the sensor (NamedLoadRoom is for those it does)."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, device) -> None:
+        super().__init__(coordinator)
+        self._energy = device.energy
+        self._attr_has_entity_name = True
+        self._attr_translation_key = "named_load_room"          # the same name and icon
+        self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_room"
+        self._attr_device_info = _child_device(
+            entry, f"device_{device.energy}", device.label, "Device forecast"
+        )
+
+    @property
+    def native_value(self) -> Optional[float]:
+        data: Optional[InsightsData] = self.coordinator.data
+        return None if data is None or not data.device_room else data.device_room.get(self._energy)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
 
 
 def _child_device(entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:

@@ -232,6 +232,12 @@ def room_to_absorb(hourly: Dict[float, float], now: datetime, tz=None) -> Option
     return round(max(0.0, p90 - per_day.get(today, 0.0) / 1000.0), 2)
 
 
+def room_from_series(samples, now: datetime) -> Optional[float]:
+    """``room_to_absorb`` for a dashboard device, from the hourly (hour start, kWh) series
+    the forecast already reads for it; None values are skipped."""
+    return room_to_absorb({t.timestamp(): v * 1000.0 for t, v in samples if v is not None}, now)
+
+
 def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, float], capacity: Optional[float],
              soc: Optional[float], full_soc: float, cfg: dict, tz=None) -> Dict[str, Optional[dict]]:
     """The three sensors from one set of inputs - what the coordinator and a

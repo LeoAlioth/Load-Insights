@@ -162,6 +162,15 @@ def test_room_to_absorb_is_unknown_for_a_load_with_too_little_history():
     assert PL.room_to_absorb({}, NOW, TZ) is None
 
 
+def test_room_from_series_reads_a_devices_hourly_kwh_the_same_way():
+    # the coordinator's per-device series is (hour start, kWh); the room is the same ceiling less today's energy
+    series = [(datetime.fromtimestamp(k, TZ), wh / 1000.0)
+              for k, wh in _days({-6: 9.0, -5: 1.0, -4: 2.0, -3: 3.0, -2: 4.0, -1: 5.0, 0: 2.0}).items()]
+    assert PL.room_from_series(series, NOW) == 2.6
+    assert PL.room_from_series([(t, None) for t, _ in series], NOW) is None
+    assert PL.room_from_series([], NOW) is None
+
+
 def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     cfg = {"days": 5, "production_scale": 0.95, "consumption_scale": 1.0, "floor": 10,
            "weights": {"target": ((24, 0.9), (24, 0.9)), "minimum": ((48, 0.5), (48, 0.5)), "excess": ((24, 0), (24, 0))}}
