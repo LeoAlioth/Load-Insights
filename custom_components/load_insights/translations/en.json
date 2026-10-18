@@ -53,6 +53,9 @@
             "base_load": {
                 "name": "Base load"
             },
+            "named_load_room": {
+                "name": "Room to absorb today"
+            },
             "named_load_power": {
                 "name": "Power"
             },

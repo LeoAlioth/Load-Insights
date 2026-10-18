@@ -53,6 +53,9 @@
             "base_load": {
                 "name": "Osnovna poraba"
             },
+            "named_load_room": {
+                "name": "Prostor za porabo danes"
+            },
             "named_load_power": {
                 "name": "Moč"
             },

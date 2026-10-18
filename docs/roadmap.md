@@ -110,3 +110,7 @@ them - likely toward the end of that week, depending on the weekly plan usage.
 **How to apply:** don't start any of them unasked; when he says go, follow the README's order, check usage
 first (pause at 90 %), and keep installs to Home and Kozolec. Related: ,
 , .
+
+Found 2026-10-18 (Load Juggler's early start group rule, spec section 10), to do LATER, owner's notes:
+- **Rate of absorption** next to *Room to absorb today*: how fast a named load can take energy now, so the group's power is what the loads can really pull.
+- **Energy per degree** for thermostat loads: learn the kWh a tank or heater needs per degree of change; with the current temperature and the boost setpoint that gives the room directly.

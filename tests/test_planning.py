@@ -142,6 +142,26 @@ def test_full_at_is_the_start_of_the_hour_the_running_balance_covers_the_pack():
     assert out["excess"]["attributes"]["full_at"] is not None
 
 
+def _days(kwh_by_offset, hour=12):
+    """Hourly Wh with one hour of energy on each day: offset 0 = today, -1 = yesterday."""
+    day0 = NOW.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return {(day0 + timedelta(days=o)).timestamp(): kwh * 1000.0 for o, kwh in kwh_by_offset.items()}
+
+
+def test_room_to_absorb_is_the_heavy_days_ceiling_less_today_so_far():
+    # six days back (the oldest is part-covered and left out): 1..5 kWh a day, 2 kWh so far today
+    hourly = _days({-6: 9.0, -5: 1.0, -4: 2.0, -3: 3.0, -2: 4.0, -1: 5.0, 0: 2.0})
+    # five complete days 1,2,3,4,5: the 90th percentile is 4.6 kWh
+    assert PL.room_to_absorb(hourly, NOW, TZ) == 2.6
+    # already past the ceiling today: never negative
+    assert PL.room_to_absorb(_days({-6: 9.0, -5: 1.0, -4: 2.0, -3: 3.0, -2: 4.0, -1: 5.0, 0: 7.0}), NOW, TZ) == 0.0
+
+
+def test_room_to_absorb_is_unknown_for_a_load_with_too_little_history():
+    assert PL.room_to_absorb(_days({-2: 9.0, -1: 5.0, 0: 1.0}), NOW, TZ) is None
+    assert PL.room_to_absorb({}, NOW, TZ) is None
+
+
 def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     cfg = {"days": 5, "production_scale": 0.95, "consumption_scale": 1.0, "floor": 10,
            "weights": {"target": ((24, 0.9), (24, 0.9)), "minimum": ((48, 0.5), (48, 0.5)), "excess": ((24, 0), (24, 0))}}
