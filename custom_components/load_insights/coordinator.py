@@ -563,7 +563,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         """Say why a Load Juggler load has no thermal room - once per change of reason."""
         if self._thermal_said.get(entry.entry_id) != text:
             self._thermal_said[entry.entry_id] = text
-            _LOGGER.info("Thermal room for %s: %s", entry.title, text)
+            _LOGGER.warning("Thermal room for %s: %s", entry.title, text)  # warning only so the system log shows it; info once settled
 
     async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
                              start: datetime, opts) -> Dict[str, dict]:
