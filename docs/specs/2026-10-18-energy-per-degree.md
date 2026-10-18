@@ -1,6 +1,6 @@
 # INS-2: energy per degree for thermostat loads (plan, for discussion)
 
-Status: built 2026-10-18 (`insights/thermal.py`, `coordinator._thermal_rooms`), answers below. Decided with the owner: (1) the temperature, boost setpoint and matching come from Load Juggler's tank/heater load, matched to the dashboard device through the load's power sensor; (2) the boost is Load Juggler's boost slider; (3) tank and room are separate kinds with their own defaults (tank: 12 runs, spread 0.35; room: 6 runs, spread 0.6), a device is a room when marked on the inputs page; (4) runs where the temperature falls are dropped, and the figure is total energy over total rise so long runs weigh most.
+Status: built 2026-10-18 (`insights/thermal.py`, `coordinator._thermal_rooms`), answers below. Decided with the owner: (1) the temperature, boost setpoint and matching come from Load Juggler's tank/heater load, matched to the dashboard device through the load's power sensor; (2) the boost is Load Juggler's boost slider; (3) tank and room are separate kinds with their own defaults (tank: 12 runs, spread 0.35; room: 6 runs, spread 0.6), a device is a room when its Load Juggler load is a *Room thermostat* (a device type of its own, 2026-10-18; tank and room share all entities); (4) runs where the temperature falls are dropped, and the figure is total energy over total rise so long runs weigh most.
 
 ## Goal
 

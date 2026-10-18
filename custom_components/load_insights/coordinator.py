@@ -29,13 +29,12 @@ from .const import (
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
     CONF_FORECAST_EXCLUDE,
-    CONF_ROOM_THERMOSTATS,
     JUGGLER_BOOST_OPTION,
     JUGGLER_BOOST_SUFFIX,
     JUGGLER_CLIMATE,
     JUGGLER_DEVICE_TYPE,
     JUGGLER_DOMAIN,
-    JUGGLER_TANK,
+    JUGGLER_THERMOSTAT_KINDS,
     JUGGLER_TANK_POWER,
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
@@ -582,16 +581,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
             ent = registry.async_get(d.energy)
             if ent is not None and ent.device_id:
                 by_device.setdefault(ent.device_id, d.energy)
-        rooms = set(opts.get(CONF_ROOM_THERMOSTATS) or ())
         out: Dict[str, dict] = {}
         entries = self.hass.config_entries.async_entries(JUGGLER_DOMAIN)
         self._thermal_note(None, f"{len(entries)} Load Juggler entries, "
-                                 f"{sum(1 for e in entries if e.options.get(JUGGLER_DEVICE_TYPE, e.data.get(JUGGLER_DEVICE_TYPE)) == JUGGLER_TANK)} tanks, "
+                                 f"{sum(1 for e in entries if e.data.get(JUGGLER_DEVICE_TYPE) in JUGGLER_THERMOSTAT_KINDS)} tanks, "
                                  f"{len(by_device)} dashboard devices on a registry device")
         for entry in entries:
             def conf(key, entry=entry):
                 return entry.options.get(key, entry.data.get(key))
-            if conf(JUGGLER_DEVICE_TYPE) != JUGGLER_TANK:
+            kind_name = JUGGLER_THERMOSTAT_KINDS.get(entry.data.get(JUGGLER_DEVICE_TYPE))
+            if kind_name is None:
                 continue
             climate = conf(JUGGLER_CLIMATE)
             # the power sensor when the load has one, else the thermostat itself: a generic
@@ -624,7 +623,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 continue
             temps = await self._hourly_attribute(climate, "current_temperature", start, now)
             energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
-            kind = KINDS["room" if sid in rooms else "tank"]
+            kind = KINDS[kind_name]       # from the load's device type in Load Juggler
             seen: Dict[str, int] = {}
             runs = heating_runs(energy, temps, seen, kind.allow_dips)
             learned = kwh_per_degree(runs, kind)
