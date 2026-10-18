@@ -232,6 +232,31 @@ def room_to_absorb(hourly: Dict[float, float], now: datetime, tz=None) -> Option
     return round(max(0.0, p90 - per_day.get(today, 0.0) / 1000.0), 2)
 
 
+RATE_PERCENTILE = 95        # measured on Kozolec: a boiler rarely runs a whole hour, so P90 of its active hours read 1.1 kW of a 1.9 kW element, P95 1.5, P98 1.85 - low reads only start the early start sooner
+RATE_MIN_HOURS = 5          # active hours before a rate is believed
+RATE_ACTIVE_SHARE = 0.1     # an hour is active at this share of the device's own heaviest hour
+
+
+def absorption_rate(samples) -> Optional[float]:
+    """kW a device really pulls when it runs: the 95th percentile of its active hours' energy
+    (an hour's kWh is its mean kW). ``samples`` are the hourly (hour start, kWh) of the
+    forecast's own series. Active is a share of the device's own heaviest hour, so standby
+    and the part-hour ends of a run do not drag it down; a high percentile keeps the full
+    hours of a thermostat that cycles. None with fewer than RATE_MIN_HOURS active hours.
+    What Load Juggler's early start counts as the load's power instead of its rating
+    (INS-3)."""
+    values = [v for _, v in samples if v is not None and v > 0]
+    if not values:
+        return None
+    floor = RATE_ACTIVE_SHARE * max(values)
+    active = sorted(v for v in values if v >= floor)
+    if len(active) < RATE_MIN_HOURS:
+        return None
+    pos = (len(active) - 1) * RATE_PERCENTILE / 100.0
+    lo = int(pos)
+    return round(active[lo] + (active[min(lo + 1, len(active) - 1)] - active[lo]) * (pos - lo), 3)
+
+
 def room_from_series(samples, now: datetime) -> Optional[float]:
     """``room_to_absorb`` for a dashboard device, from the hourly (hour start, kWh) series
     the forecast already reads for it; None values are skipped."""

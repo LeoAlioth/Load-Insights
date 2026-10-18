@@ -79,6 +79,9 @@
             },
             "next_full_charge": {
                 "name": "Next full charge"
+            },
+            "device_rate": {
+                "name": "Absorption rate"
             }
         },
         "binary_sensor": {

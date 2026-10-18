@@ -48,6 +48,9 @@
             },
             "next_full_charge": {
                 "default": "mdi:battery-charging-100"
+            },
+            "device_rate": {
+                "default": "mdi:speedometer"
             }
         },
         "binary_sensor": {

@@ -76,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             _forget(hass, "sensor", f"{entry.entry_id}_{key}")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     entities += [DeviceRoomSensor(coordinator, entry, d) for d in site.devices]
+    entities += [DeviceRateSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
@@ -420,6 +421,36 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
         data: Optional[InsightsData] = self.coordinator.data
         thermal = (data.device_thermal or {}).get(self._energy) if data else None
         return {"source": "thermal" if thermal else "history", **(thermal or {})}
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
+
+
+class DeviceRateSensor(CoordinatorEntity, SensorEntity):
+    """What a metered device really pulls when it runs (planning.absorption_rate): the
+    95th percentile of its active hours' mean power. What Load Juggler's early start
+    counts as its power, instead of its rating."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, device) -> None:
+        super().__init__(coordinator)
+        self._energy = device.energy
+        self._attr_has_entity_name = True
+        self._attr_translation_key = "device_rate"
+        self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_rate"
+        self._attr_device_info = _child_device(
+            entry, f"device_{device.energy}", device.label, "Device forecast"
+        )
+
+    @property
+    def native_value(self) -> Optional[float]:
+        data: Optional[InsightsData] = self.coordinator.data
+        return None if data is None or not data.device_rate else data.device_rate.get(self._energy)
 
     @property
     def available(self) -> bool:

@@ -79,6 +79,9 @@
             },
             "next_full_charge": {
                 "name": "Naslednja polna baterija"
+            },
+            "device_rate": {
+                "name": "Hitrost sprejema"
             }
         },
         "binary_sensor": {
