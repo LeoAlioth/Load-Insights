@@ -79,7 +79,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
+    device_names = {d.label.casefold() for d in site.devices}
     for n in sorted(detection.fleet.names()):
+        if n.casefold() in device_names:
+            # the dashboard device of that name has its own room sensor, from the meter's statistics
+            _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
         if detection.metered_device(n):
             # named after a meter holding one device, it IS that device:
             # the meter's readings and its forecast stand for it, and
@@ -89,8 +93,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
             _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
             continue
-        entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n),
-                     NamedLoadRoom(detection, entry, n)]
+        entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
+        if n.casefold() not in device_names:
+            entities.append(NamedLoadRoom(detection, entry, n))
     add(entities)
     known = set(detection.fleet.names())
 
@@ -112,7 +117,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         known.update(new)
         add([e for n in new if not detection.metered_device(n)
              for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n),
-                       NamedLoadRoom(detection, entry, n))])
+                       *([] if n.casefold() in device_names else [NamedLoadRoom(detection, entry, n)]))])
 
     entry.async_on_unload(detection.async_add_listener(_follow_names))
 
