@@ -68,7 +68,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.planning import plan_all, room_from_series, spread_evenly, sun_window
+from .insights.planning import absorption_rate, plan_all, room_from_series, spread_evenly, sun_window
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
@@ -143,6 +143,8 @@ class InsightsData:
     device_room: Dict[str, Optional[float]] = None  # type: ignore[assignment]
     # what the thermal reading of a tank or heater (insights/thermal.py) gave, by statistic id: room, kwh_per_degree, spread, runs, kind
     device_thermal: Dict[str, dict] = None  # type: ignore[assignment]
+    # kW each individually metered device pulls when it runs (planning.absorption_rate), by statistic id
+    device_rate: Dict[str, Optional[float]] = None  # type: ignore[assignment]
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -409,6 +411,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             devices=device_fc,
             device_room=device_room,
             device_thermal=device_thermal,
+            device_rate={d.energy: absorption_rate(series.get(d.energy, ())) for d in site.devices},
             forecast_left_out=tuple(labels.get(e, e) for e in left_out),
             consumption_fitted=cons_fit,
             own_parts={k: v[1] for k, v in own.items() if k},

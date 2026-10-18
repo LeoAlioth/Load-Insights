@@ -187,5 +187,20 @@ def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     assert PL.plan_all(NOW, use, day_sun(3.0), 50.0, None, 90.0, cfg)["excess"] is None
 
 
+
+def test_the_absorption_rate_is_what_the_full_hours_pull():
+    full = [(NOW + timedelta(hours=h), 1.9) for h in range(8)]          # a 1.9 kW element, eight full hours
+    ends = [(NOW + timedelta(hours=100 + h), 0.4) for h in range(4)]    # part hours at the ends of runs
+    standby = [(NOW + timedelta(hours=200 + h), 0.01) for h in range(50)]
+    assert PL.absorption_rate(full + ends + standby) == 1.9             # standby and part hours do not drag it down
+    assert PL.absorption_rate(full[:4]) is None                         # too few active hours to believe
+    assert PL.absorption_rate([]) is None and PL.absorption_rate([(NOW, None)]) is None
+
+
+def test_a_cycling_thermostats_rate_is_its_full_hours_not_its_mean():
+    hours = [1.0, 0.3, 1.0, 0.5, 1.0, 1.0, 0.2, 1.0, 0.6, 1.0]          # a heater with a duty cycle
+    assert PL.absorption_rate([(NOW + timedelta(hours=i), v) for i, v in enumerate(hours)]) == 1.0
+
+
 if __name__ == "__main__":
     run_main(globals())
