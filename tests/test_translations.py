@@ -59,7 +59,7 @@ def test_no_label_is_empty():
 def test_every_sensor_translation_key_in_code_has_a_name():
     src = (BASE / "sensor.py").read_text(encoding="utf-8")
     import re
-    used = set(re.findall(r'"(consumption_forecast|remainder_forecast|device_forecast|detected_loads|unknown_load_power|grid_forecast|battery_soc_forecast|base_load|named_load_power|named_load_running)"', src))
+    used = set(re.findall(r'"(consumption_forecast|remainder_forecast|device_forecast|detected_loads|unknown_load_power|grid_forecast|battery_soc_forecast|base_load|named_load_power|named_load_running|named_load_rate|base_consumption)"', src))
     names = set(_load(FILES[0])["entity"]["sensor"])
     names |= set(_load(FILES[0])["entity"].get("binary_sensor") or {})
     assert used <= names, used - names

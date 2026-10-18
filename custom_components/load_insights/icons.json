@@ -51,6 +51,12 @@
             },
             "device_rate": {
                 "default": "mdi:speedometer"
+            },
+            "named_load_rate": {
+                "default": "mdi:speedometer"
+            },
+            "base_consumption": {
+                "default": "mdi:home-clock-outline"
             }
         },
         "binary_sensor": {

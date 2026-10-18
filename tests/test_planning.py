@@ -202,5 +202,57 @@ def test_a_cycling_thermostats_rate_is_its_full_hours_not_its_mean():
     assert PL.absorption_rate([(NOW + timedelta(hours=i), v) for i, v in enumerate(hours)]) == 1.0
 
 
+def test_a_named_loads_rate_reads_its_hourly_wh_as_kw():
+    hourly = {NOW.timestamp() + i * 3600.0: 1900.0 for i in range(8)}      # Wh an hour: 1.9 kW
+    hourly.update({NOW.timestamp() + (100 + i) * 3600.0: 400.0 for i in range(4)})
+    assert PL.rate_from_wh(hourly) == 1.9
+    assert PL.rate_from_wh({}) is None and PL.rate_from_wh({NOW.timestamp(): 1900.0}) is None
+
+
+def _whole_days(use_at):
+    """Sun (kWh, a triangle 08-16 h) and use (kWh an hour, ``use_at(day, hour)``) by the hour for
+    eight days from local midnight today, and the hour keys of the horizon from ``now``'s hour."""
+    midnight = NOW.replace(hour=0, minute=0)
+    sun = {}
+    for k in PL.hour_keys(midnight, 192):
+        t = datetime.fromtimestamp(k, TZ)
+        sun[k] = max(0.0, 3.0 * (1 - abs(t.hour - 12) / 5)) if 7 <= t.hour <= 17 else 0.0
+    use = lambda now: {k: use_at((datetime.fromtimestamp(k, TZ).date() - NOW.date()).days,   # noqa: E731
+                                 datetime.fromtimestamp(k, TZ).hour) for k in PL.hour_keys(now, 168)}
+    return sun, use
+
+
+def test_base_consumption_is_the_lower_days_lowest_daylight_hour_in_watts():
+    low = {(0, 13): 0.3, (1, 12): 0.2, (1, 3): 0.05, (0, 22): 0.01}      # a dip each day; the night's are not daylight
+    sun, use = _whole_days(lambda d, h: low.get((d, h), 0.5))
+    got = PL.base_consumption(NOW, use(NOW), sun, TZ)
+    assert got["value"] == 200, got                                      # kWh an hour x 1000, tomorrow's is lower
+    assert got["attributes"]["today"]["watts"] == 300 and got["attributes"]["tomorrow"]["watts"] == 200
+    assert got["attributes"]["tomorrow"]["at"].startswith("2026-10-18T12:00") and got["attributes"]["today"]["at"].startswith("2026-10-17T13:00")
+    low[(0, 13)] = 0.1
+    assert PL.base_consumption(NOW, use(NOW), sun, TZ)["value"] == 100   # and today's, when it is the lower
+
+
+def test_base_consumption_counts_only_daylight_hours_the_horizon_still_has():
+    sun, use = _whole_days(lambda d, h: 0.05 if h < 7 or h >= 18 else (0.4 if d == 0 else 0.6))
+    late = NOW.replace(hour=14, minute=5)                               # today's daylight is half gone
+    got = PL.base_consumption(late, use(late), sun, TZ)
+    assert got["attributes"]["today"]["hours"] == 3 and got["value"] == 400    # 14, 15, 16 h; the night's 50 W is not it
+    evening = NOW.replace(hour=20, minute=0)                            # no daylight left today: unknown, tomorrow stands
+    got = PL.base_consumption(evening, use(evening), sun, TZ)
+    assert got["attributes"]["today"] is None and got["value"] == 600
+
+
+def test_base_consumption_is_unknown_without_a_forecast_for_either_day():
+    sun, use = _whole_days(lambda d, h: 0.5)
+    assert PL.base_consumption(NOW, {}, sun, TZ) is None                # no house forecast
+    assert PL.base_consumption(NOW, use(NOW), {}, TZ) is None           # no sun forecast: no daylight
+    dark = {k: 0.0 for k in sun}
+    assert PL.base_consumption(NOW, use(NOW), dark, TZ) is None
+    today_only = {k: v for k, v in sun.items() if datetime.fromtimestamp(k, TZ).date() == NOW.date()}
+    got = PL.base_consumption(NOW, use(NOW), today_only, TZ)            # the sun forecast ends tonight: tomorrow unknown
+    assert got["value"] == 500 and got["attributes"]["tomorrow"] is None
+
+
 if __name__ == "__main__":
     run_main(globals())
