@@ -42,6 +42,9 @@
             },
             "production_ends": {
                 "default": "mdi:weather-sunset-down"
+            },
+            "next_full_charge": {
+                "default": "mdi:battery-charging-100"
             }
         },
         "binary_sensor": {

@@ -128,6 +128,20 @@ def test_a_night_before_the_first_forecast_hour_is_zero_sun_not_unknown():
     assert PL.production_hour(prod, NOW.replace(hour=20, minute=0).timestamp()) is None
 
 
+def test_full_at_is_the_start_of_the_hour_the_running_balance_covers_the_pack():
+    use = {k: 0.5 for k in KEYS}
+    bal = PL.balance(NOW, 30, day_sun(3.0), use, FLAT, under_way=True)
+    at = PL.full_at(bal, 2.0, TZ)
+    k = next(k for k, s in zip(bal.keys, bal.running) if s >= 2.0)
+    assert at == datetime.fromtimestamp(k, TZ).isoformat() and datetime.fromisoformat(at).minute == 0
+    assert datetime.fromisoformat(at) > NOW                      # not yet full this morning
+    assert PL.full_at(bal, 0.0, TZ) == datetime.fromtimestamp(bal.keys[0], TZ).isoformat()   # full now
+    assert PL.full_at(bal, 1e6, TZ) is None                      # never within the window
+    out = PL.plan_all(NOW, use, day_sun(3.0), 50.0, 95.0, 90.0, {"days": 2, "production_scale": 1.0,
+        "consumption_scale": 1.0, "floor": 10, "weights": {n: ((1e9, 0), (1e9, 0)) for n in ("target", "minimum", "excess")}})
+    assert out["excess"]["attributes"]["full_at"] is not None
+
+
 def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
     cfg = {"days": 5, "production_scale": 0.95, "consumption_scale": 1.0, "floor": 10,
            "weights": {"target": ((24, 0.9), (24, 0.9)), "minimum": ((48, 0.5), (48, 0.5)), "excess": ((24, 0), (24, 0))}}

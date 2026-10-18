@@ -63,11 +63,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     if site.solar_forecast_entries and (site.battery_capacity_kwh or entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)):
         entities += [PlanSensor(coordinator, entry, key, which) for key, which in PLAN_ENTITIES
                      if which != "excess" or site.battery_soc]      # the excess needs the SOC
-        entities += [SunWindowSensor(coordinator, entry, key, which) for key, which in SUN_ENTITIES]
-        if not site.battery_soc:
-            _forget(hass, "sensor", f"{entry.entry_id}_daily_excess")      # made before a SOC was linked
+        entities += [SunWindowSensor(coordinator, entry, *e) for e in SUN_ENTITIES]
+        if site.battery_soc:
+            entities.append(SunWindowSensor(coordinator, entry, *FULL_ENTITY))
+        else:
+            for key in ("daily_excess", FULL_ENTITY[0]):
+                _forget(hass, "sensor", f"{entry.entry_id}_{key}")      # made before a SOC was linked
     else:
-        for key, _ in PLAN_ENTITIES + SUN_ENTITIES:
+        for key in [e[0] for e in PLAN_ENTITIES + SUN_ENTITIES] + [FULL_ENTITY[0]]:
             _forget(hass, "sensor", f"{entry.entry_id}_{key}")
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     detection: DetectionRunner = entry.runtime_data.runner
@@ -595,24 +598,26 @@ class BatterySocForecastSensor(_GridBase):
 PLAN_ENTITIES = (("soc_target", "target"), ("soc_minimum", "minimum"), ("daily_excess", "excess"))
 
 
-SUN_ENTITIES = (("production_starts", "starts"), ("production_ends", "ends"))
+SUN_ENTITIES = (("production_starts", "sun", "starts"), ("production_ends", "sun", "ends"))
+FULL_ENTITY = ("next_full_charge", "full", "at")
 
 
 class SunWindowSensor(CoordinatorEntity, SensorEntity):
     """When the sun forecast says production starts / stops on the day
     (insights/planning.py ``sun_window``): today's by day, tomorrow's once the
-    day is over. What a paced load's horizon is read from, and handy on a
-    dashboard."""
+    day is over; and when the forecast has the pack next full (``full_at``),
+    which is what an early-Excess load counts back from. Handy on a dashboard."""
 
-    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, key: str, which: str) -> None:
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, key: str, section: str, which: str) -> None:
         super().__init__(coordinator)
+        self._section = section
         self._which = which
         on_site(self, entry, key)
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def _reading(self) -> Optional[datetime]:
         data: Optional[InsightsData] = self.coordinator.data
-        sun = (data.plan or {}).get("sun") if data is not None else None
+        sun = (data.plan or {}).get(self._section) if data is not None else None
         iso = sun.get(self._which) if sun else None
         return dt_util.parse_datetime(iso) if iso else None
 

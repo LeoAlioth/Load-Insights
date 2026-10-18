@@ -73,6 +73,9 @@
             },
             "production_ends": {
                 "name": "Production ends"
+            },
+            "next_full_charge": {
+                "name": "Next full charge"
             }
         },
         "binary_sensor": {
