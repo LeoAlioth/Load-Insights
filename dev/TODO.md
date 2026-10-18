@@ -6,12 +6,11 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 ### Planning and early start (Load Juggler reads these)
 
-*The room sensor, its two refinements and the Kozolec switch-over all feed or consume the planning sensors; do them as one stretch.*
+*The room sensor and its two refinements all feed Load Juggler's early start; do them as one stretch.*
 
-- [ ] **INS-1 [FEATURE] Room to absorb today: verify live** *(shipped 2026-10-18, unit tests only)* - per-named-load sensor (`NamedLoadRoom`, `planning.room_to_absorb`: P90 of complete past days less today so far, unknown under 3 days), read by Load Juggler's early-start group through the optional per-load *Room to absorb today* entity (plug, tank, power station). Point it at the Kozolec and Home loads, snapshot first, and watch the group start. Spec `docs/specs/2026-10-17-soc-planning-and-pacing.md` section 10.
+- [ ] **INS-1 [FEATURE] Room to absorb today: judge the P90 ceiling** *(built and live on Kozolec 2026-10-18 for detected loads and every Energy-dashboard device; Home has no battery or planning sensors, so it does not apply there)* - the ceiling is the 90th percentile of a load's complete past days, a judgement (the owner, 2026-10-18). After a few days of real values, check it against what the boiler and heaters actually take: is room 0.0 when they are full, and not 0.0 while they could still absorb? Spec `docs/specs/2026-10-17-soc-planning-and-pacing.md` section 10. INS-2 would replace it for thermostat loads.
 - [ ] **INS-2 [FEATURE] Energy per degree for thermostat loads** *(the owner, 2026-10-18)* - learn the kWh a tank or heater needs per degree of change; with the current temperature and the boost setpoint it gives the room directly (kWh = degrees below boost x kWh per degree), better than the P90 ceiling for exactly these loads. Needs a design talk first.
 - [ ] **INS-3 [FEATURE] Rate of absorption beside the room** *(the owner, 2026-10-18)* - how fast a named load can take energy now, so Load Juggler's early-start group power is what the loads can really pull instead of their rated minimums.
-- [ ] **INS-4 [FEATURE] Kozolec switch-over to the planning sensors** *(spec 2026-10-17 section 8)* - the SOC controller reads the three planning sensors; the template helpers are deleted after a day of both running side by side.
 
 ### Edges, stage 1 (one bench session)
 
@@ -40,8 +39,7 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 - [ ] **INS-13 [FEATURE] Plan li-2: slicing invariance** *(`docs/plans/2026-10-12/li-2-slicing-invariance.md`, run order 2; not started)* - re-verify the detector gives the same sessions at every slicing (last 0 differing on 2026-10-04), fix what differs, flush the recorder before each pass, add the `RESTART=` dial. About 30-45 min of `SLICINGS=all` card on the Mac; doubles as INS-14's slicing card.
 - [ ] **INS-14 [FEATURE] Plan li-1: daily repair, re-bench on today's code** *(`li-1-daily-repair.md`, run order 3; the repair itself shipped in c689283)* - re-bench it on current code, add tests and docs; `REPAIR_SLACK_NOISE=1e9` switches it off for the ablation. Shares the `_day_rows` persistence with INS-13.
-- [ ] **INS-15 [FEATURE] Plan li-3: temperature term engages on statistical evidence** *(`li-3-temperature-evidence.md`, run order 4; not started: `covariates.MIN_HOURS = 336` is still the fixed rule)* - lean on the correlation instead of a fixed two weeks; the plan's defaults were approved (ALPHA 0.005 swept 0.05 / 0.0005, 3 % floor dropped unless its variant wins). Forecast work re-opened for this and INS-16 only.
-- [ ] **INS-16 [FEATURE] Plan li-4 Part B: Kozolec minimum-SOC helper** *(`li-4-house-from-parts.md`, run order 5; Part A built 2026-10-17, 2e5ca5f)* - the minimum SOC helper excludes only the Pond EVSE and the Power Strip, counts the Well Pump again and drops the tank spreading (decided 2026-10-12). Kozolec HA work: snapshot first, NOTES. May be superseded by INS-4 (the planning sensors replace the helpers) - decide together.
+- [ ] **INS-15 [FEATURE] Plan li-3: temperature term engages on statistical evidence** *(`li-3-temperature-evidence.md`, run order 4; not started: `covariates.MIN_HOURS = 336` is still the fixed rule)* - lean on the correlation instead of a fixed two weeks; the plan's defaults were approved (ALPHA 0.005 swept 0.05 / 0.0005, 3 % floor dropped unless its variant wins). Forecast work re-opened for this and li-4 (done) only.
 - [ ] **INS-17 [FEATURE] Plan li-5: `running_markdown` attribute** *(`li-5-running-markdown.md`, run order 6; not started)* - running loads (named and unnamed, with links) as one attribute, `#id` on the naming page, named-load on/off sensors move onto per-load runs; English only. Replaces the template the Kozolec Running-now card builds by hand.
 
 ## Other
