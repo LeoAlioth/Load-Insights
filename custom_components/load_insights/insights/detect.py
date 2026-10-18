@@ -7821,7 +7821,8 @@ class Fleet:
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
         f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
         f._lag_from = d.get("lag_from")
-        f._step_votes_from = dict(d.get("step_votes_from") or {})
+        # -inf (nothing voted yet) is written as null by the store's JSON; None is "never"
+        f._step_votes_from = {n: float(t) for n, t in (d.get("step_votes_from") or {}).items() if t is not None}
         f._unvoted = [(t, n, bool(final), Session.from_dict(x)) for t, n, final, x in d.get("unvoted") or []]
         f._recent_main = [(t, Session.from_dict(x)) for t, x in d.get("recent_main") or []]
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
