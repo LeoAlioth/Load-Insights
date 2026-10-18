@@ -37,7 +37,7 @@ Not loaded automatically. Read the file for the folder you are working in:
 
 Reference docs (not loaded automatically):
 
-- `docs/roadmap.md`: priorities, the current stage of the cross-meter edges work, queued and parked items. Read it before starting detection or forecast work.
+- `dev/TODO.md`: the backlog (the same shape as Load Juggler's) and the standing decisions: priorities, the current stage of the cross-meter edges work, parked items. Read it before starting detection or forecast work.
 - `docs/sites.md`: how the sites are wired, which readings can be trusted, Shelly reporting, operating notes for the Home Assistant instances. Read it before naming a cluster or building a house figure.
 - `docs/bench-machine.md`: the Windows/WSL bench machine and how to reach it.
 - `docs/history.md`: the dated design log, first dumps and experiment results. Long; read it to learn why something is the way it is.
@@ -122,7 +122,7 @@ against it, not against memory.
 - **One measure for every meter.** Every meter's steps come from the same detector, over the same span, on both sides of a comparison. Before adding a mechanism that relates two meters or two steps, check it measures both the same way.
 - **Releases.** Home and Kozolec only, by default. The remote user's site takes a build only when the owner says so.
 - **Git.** Commit each benched version locally before benching it, as a checkpoint; `dev` is fine. Never push `dev` unless the owner asks: a push to `dev` deploys to both sites. No new branches, worktrees or detached checkouts without asking. A push that fails with "Authentication failed" from the shell often works on one retry.
-- **Priorities.** Detection is the focus; forecasting is parked. Read `docs/roadmap.md` before starting forecast or edge work.
+- **Priorities.** Detection is the focus; forecasting is parked. Read `dev/TODO.md` before starting forecast or edge work.
 
 ## Before shipping a detector change
 
