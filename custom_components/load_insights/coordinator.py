@@ -68,7 +68,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
-from .insights.planning import absorption_rate, plan_all, room_from_series, spread_evenly, sun_window
+from .insights.planning import absorption_rate, base_consumption, plan_all, room_from_series, spread_evenly, sun_window
 from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
@@ -477,6 +477,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # not of the 120 hours or the pack the three readings above need
         starts, ends = sun_window(now, pv, get(CONF_PLAN_PRODUCTION_SCALE), now.tzinfo)
         out["sun"] = {"starts": starts, "ends": ends} if starts else None
+        # the lowest daylight hour of the house forecast, today and tomorrow: from the same two
+        # inputs, but unknown is a valid answer here, so it is never held (no held_since)
+        out["base"] = base_consumption(now, use, pv, now.tzinfo)
         # when the pack is next full: read off the excess balance (held with it)
         full_at = ((out.get("excess") or {}).get("attributes") or {}).get("full_at")
         out["full"] = {"at": full_at} if full_at else None

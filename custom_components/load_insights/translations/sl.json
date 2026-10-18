@@ -82,6 +82,12 @@
             },
             "device_rate": {
                 "name": "Hitrost sprejema"
+            },
+            "named_load_rate": {
+                "name": "Hitrost sprejema"
+            },
+            "base_consumption": {
+                "name": "Osnovna dnevna poraba"
             }
         },
         "binary_sensor": {

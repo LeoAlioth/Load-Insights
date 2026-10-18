@@ -257,6 +257,53 @@ def absorption_rate(samples) -> Optional[float]:
     return round(active[lo] + (active[min(lo + 1, len(active) - 1)] - active[lo]) * (pos - lo), 3)
 
 
+def rate_from_wh(hourly: Dict[float, float]) -> Optional[float]:
+    """``absorption_rate`` for a named load, from the hourly energy the
+    detector keeps for it (``Fleet.hourly_by_name``: hour start epoch s -> Wh,
+    the series ``room_to_absorb`` reads): an hour's Wh over 1000 is its mean kW."""
+    return absorption_rate([(k, wh / 1000.0) for k, wh in hourly.items()])
+
+
+def daylight(production: Dict[float, float], day, tz) -> Optional[Tuple[float, float]]:
+    """(first, last) lit hour start, epoch s, of local date ``day`` in the sun
+    forecast: lit is above 1 % of that day's peak hour, as ``sun_window``
+    reads it, so a few watts at dawn or dusk do not count. None with no sun
+    forecast that day."""
+    hours = {k: v for k, v in production.items() if v > 0.001 and datetime.fromtimestamp(k, tz).date() == day}
+    if not hours:
+        return None
+    bar = max(hours.values()) * 0.01
+    lit = sorted(k for k, v in hours.items() if v >= bar)
+    return lit[0], lit[-1]
+
+
+def base_consumption(now: datetime, use: Dict[float, float], production: Dict[float, float],
+                     tz=None) -> Optional[dict]:
+    """The lowest hour of the whole-house consumption forecast between the sun
+    forecast's first and last lit hour (``daylight``), for today and for
+    tomorrow, and the LOWER of the two, in W: what the house draws by day with
+    nothing optional on, the figure a daytime load is judged against (the owner,
+    2026-10-18: the minimum whole-house forecast). ``use`` is kWh an hour, so W
+    = kWh x 1000. A day counts only the daytime hours the horizon still holds
+    (today's start is behind it by afternoon); one with none, or with no sun
+    forecast, is unknown and the other day stands alone. None when neither is.
+    -> {"value", "attributes": {"today": {...}|None, "tomorrow": {...}|None}}."""
+    tz = tz or now.tzinfo
+    today = now.astimezone(tz).date()
+    days = {}
+    for name, day in (("today", today), ("tomorrow", today + timedelta(days=1))):
+        window = daylight(production, day, tz)
+        hours = [] if window is None else [(use[k], k) for k in sorted(use) if window[0] <= k <= window[1]]
+        if not hours:
+            days[name] = None
+            continue
+        low, at = min(hours)          # the earliest hour of a tie
+        days[name] = {"watts": round(low * 1000.0), "at": _at(at, tz),
+                      "sunrise": _at(window[0], tz), "sunset": _at(window[1] + HOUR, tz), "hours": len(hours)}
+    known = [d["watts"] for d in days.values() if d]
+    return {"value": min(known), "attributes": days} if known else None
+
+
 def room_from_series(samples, now: datetime) -> Optional[float]:
     """``room_to_absorb`` for a dashboard device, from the hourly (hour start, kWh) series
     the forecast already reads for it; None values are skipped."""

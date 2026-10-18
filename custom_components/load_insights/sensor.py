@@ -21,7 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_BATTERY_CAPACITY_ENTITY, DOMAIN
 from homeassistant.util import dt as dt_util
 
-from .insights.planning import room_to_absorb
+from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
@@ -85,6 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         if n.casefold() in device_names:
             # the dashboard device of that name has its own room sensor, from the meter's statistics
             _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
+            _forget(hass, "sensor", load_uid(entry.entry_id, "rate", n))
         if detection.metered_device(n):
             # named after a meter holding one device, it IS that device:
             # the meter's readings and its forecast stand for it, and
@@ -93,10 +94,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             _forget(hass, "sensor", load_uid(entry.entry_id, "power", n))
             _forget(hass, "sensor", load_uid(entry.entry_id, "energy", n))
             _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
+            _forget(hass, "sensor", load_uid(entry.entry_id, "rate", n))
             continue
         entities += [NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n)]
         if n.casefold() not in device_names:
-            entities.append(NamedLoadRoom(detection, entry, n))
+            entities += [NamedLoadRoom(detection, entry, n), NamedLoadRate(detection, entry, n)]
     add(entities)
     known = set(detection.fleet.names())
 
@@ -118,7 +120,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         known.update(new)
         add([e for n in new if not detection.metered_device(n)
              for e in (NamedLoadPower(detection, entry, n), NamedLoadEnergy(detection, entry, n),
-                       *([] if n.casefold() in device_names else [NamedLoadRoom(detection, entry, n)]))])
+                       *([] if n.casefold() in device_names else
+                         [NamedLoadRoom(detection, entry, n), NamedLoadRate(detection, entry, n)]))])
 
     entry.async_on_unload(detection.async_add_listener(_follow_names))
 
@@ -693,7 +696,8 @@ class BatterySocForecastSensor(_GridBase):
         }
 
 
-PLAN_ENTITIES = (("soc_target", "target"), ("soc_minimum", "minimum"), ("daily_excess", "excess"))
+PLAN_ENTITIES = (("soc_target", "target"), ("soc_minimum", "minimum"), ("daily_excess", "excess"),
+                 ("base_consumption", "base"))
 
 
 SUN_ENTITIES = (("production_starts", "sun", "starts"), ("production_ends", "sun", "ends"))
@@ -733,7 +737,12 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
     minimum in % of the pack, the daily excess in kWh (state: today's, the
     days in the ``days`` attribute). The values are RAW - negative where the
     sun outruns the pack - and the consumer clamps. When an hour of the
-    horizon is missing the last reading stands, and ``held_since`` says so."""
+    horizon is missing the last reading stands, and ``held_since`` says so.
+
+    The base consumption (``base``, W) rides on the same machinery and the
+    same enablement - it needs the sun forecast the planning sensors need - but
+    is the lowest daylight hour of the house forecast, today or tomorrow
+    (``base_consumption``): never held, and unknown while neither day has one."""
 
     _unrecorded_attributes = frozenset({"days", "inputs", "weights", "excess_kwh"})
 
@@ -745,6 +754,10 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
         if which == "excess":
             self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
             self._attr_suggested_display_precision = 1
+        elif which == "base":
+            self._attr_device_class = SensorDeviceClass.POWER
+            self._attr_native_unit_of_measurement = UnitOfPower.WATT
+            self._attr_suggested_display_precision = 0
         else:
             self._attr_native_unit_of_measurement = PERCENTAGE
             self._attr_device_class = SensorDeviceClass.BATTERY
@@ -766,7 +779,10 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         r = self._reading()
-        return {} if r is None else {**r["attributes"], "held_since": r.get("held_since")}
+        if r is None:
+            return {}
+        # the base consumption is never held: unknown is an answer, so it has no held_since
+        return {**r["attributes"], **({"held_since": r["held_since"]} if "held_since" in r else {})}
 
 
 class BaseLoadSensor(_PowerW, _DetectionBase):
@@ -848,6 +864,34 @@ class NamedLoadRoom(_DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         return room_to_absorb(self._runner.fleet.hourly_by_name(self._name), dt_util.now())
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
+
+
+class NamedLoadRate(_DetectionBase):
+    """What a named load really pulls when it runs (planning.rate_from_wh): the
+    95th percentile of its active hours' mean power, from the same hourly energy
+    NamedLoadRoom reads (Fleet.hourly_by_name, the last HOURLY_KEEP_S days of
+    its filed runs). The counterpart of DeviceRateSensor for loads the detector
+    names; what Load Juggler's early start counts as the load's power instead of
+    its rating (INS-3)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, name: str) -> None:
+        super().__init__(runner, entry, "named_load_rate")
+        self._name = name
+        self._attr_unique_id = load_uid(entry.entry_id, "rate", name)
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return rate_from_wh(self._runner.fleet.hourly_by_name(self._name))
 
     @property
     def available(self) -> bool:

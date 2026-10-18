@@ -82,6 +82,12 @@
             },
             "device_rate": {
                 "name": "Absorption rate"
+            },
+            "named_load_rate": {
+                "name": "Absorption rate"
+            },
+            "base_consumption": {
+                "name": "Base consumption"
             }
         },
         "binary_sensor": {
