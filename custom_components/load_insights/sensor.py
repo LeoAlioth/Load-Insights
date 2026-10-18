@@ -393,7 +393,7 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
     reads for a tank or heater on a metered plug, where the detector names no load
     to carry the sensor (NamedLoadRoom is for those it does)."""
 
-    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
@@ -788,7 +788,7 @@ class NamedLoadRoom(_DetectionBase):
     reads to count only the energy a load can still absorb - a tank that has
     already heated, an EVSE that has had its fill."""
 
-    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
