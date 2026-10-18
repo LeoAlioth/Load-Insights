@@ -69,20 +69,26 @@ def _percentile(values: Sequence[float], pct: float) -> float:
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
 
 
-def heating_runs(energy: Sequence[Tuple[float, float]], temps: Dict[float, float]) -> List[Run]:
+def heating_runs(energy: Sequence[Tuple[float, float]], temps: Dict[float, float],
+                 why: Optional[Dict[str, int]] = None) -> List[Run]:
     """The clean heating runs. ``energy``: (hour start epoch, kWh) in time order;
     ``temps``: hour start epoch -> the thermostat's temperature then. A run is
     kept when the hour before it did not heat, the temperature is known at its
     start and just after its end, it never falls inside the run and it rises by
-    ``RISE_QUANTA`` of the thermometer's steps."""
+    ``RISE_QUANTA`` of the thermometer's steps. ``why`` (when given) counts what was seen: the heating
+    hours, the candidate runs and the reason each rejected one was."""
+    why = why if why is not None else {}
     drawn = [kwh for _, kwh in energy if kwh and kwh > 0]
+    why.update(drawn=len(drawn), hot=0, runs=0, no_temp=0, fell=0, small_rise=0)
     if len(drawn) < 2:
         return []
     heavy = _percentile(drawn, 90)
     hot = {t for t, kwh in energy if kwh is not None and kwh >= HEAT_SHARE * heavy}
+    why["hot"] = len(hot)
     seq = [temps[t] for t in sorted(temps)]
     steps = [abs(b - a) for a, b in zip(seq, seq[1:]) if b != a]
     quantum = _percentile(steps, QUANTUM_PERCENTILE) if steps else None
+    why["quantum"] = quantum
     if quantum is None:
         return []
     kwh_of = {t: kwh for t, kwh in energy if kwh is not None}
@@ -90,17 +96,21 @@ def heating_runs(energy: Sequence[Tuple[float, float]], temps: Dict[float, float
     for t, _ in energy:
         if t not in hot or (t - HOUR) in hot:
             continue
+        why["runs"] += 1
         end = t
         while (end + HOUR) in hot:
             end += HOUR
         hours = [t + i * HOUR for i in range(int((end - t) / HOUR) + 2)]   # the run's hours and the one after
         if any(h not in temps for h in hours):
+            why["no_temp"] += 1
             continue
         series = [temps[h] for h in hours]
         if any(b < a for a, b in zip(series, series[1:])):
+            why["fell"] += 1
             continue
         rise = series[-1] - series[0]
         if rise < RISE_QUANTA * quantum:
+            why["small_rise"] += 1
             continue
         total = sum(kwh_of.get(t + i * HOUR, 0.0) for i in range(len(hours) - 1))
         runs.append(Run(t, total, rise))
