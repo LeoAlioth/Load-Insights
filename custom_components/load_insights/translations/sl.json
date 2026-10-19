@@ -78,13 +78,13 @@
                 "name": "Konec proizvodnje"
             },
             "next_full_charge": {
-                "name": "Naslednja polna baterija"
+                "name": "Baterija polna ob:"
             },
             "device_rate": {
-                "name": "Hitrost sprejema"
+                "name": "Moč sprejema"
             },
             "named_load_rate": {
-                "name": "Hitrost sprejema"
+                "name": "Moč sprejema"
             },
             "base_consumption": {
                 "name": "Osnovna dnevna poraba"
