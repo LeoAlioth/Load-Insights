@@ -89,9 +89,9 @@ def test_an_unprojectable_input_is_held_briefly_and_then_absent():
     assert I.project(labels, keys(horizon), TZ) == {}, "nothing to hold, nothing projected"
 
 
-def test_too_little_history_is_refused():
+def test_one_label_is_refused():
     assert not I.usable({float(i) * 3600: "x" for i in range(200)}), "one label explains nothing"
-    assert not I.usable({float(i) * 3600: ["a", "b"][i % 2] for i in range(100)}), "under a week"
+    assert I.usable({float(i) * 3600: ["a", "b"][i % 2] for i in range(100)}), "how much is enough is the evidence rule's"
     assert I.usable({float(i) * 3600: ["a", "b"][i % 2] for i in range(200)})
 
 

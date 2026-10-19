@@ -45,7 +45,6 @@ from .profile import slot_of
 
 MAX_LABELS = 8          # more distinct values than this and it is treated as numeric
 BANDS = 4               # quantile bands for a numeric input
-MIN_HOURS = 168         # an input seen for less than a week cannot be fitted
 CONSISTENCY = 0.8       # a slot must agree with itself this often to be projected
 HOLD_HOURS = 6          # how far an unprojectable input's current label is carried
 
@@ -110,8 +109,8 @@ def project(labels: Dict[float, str], horizon_keys: Sequence[float],
 
 
 def usable(labels: Dict[float, str]) -> bool:
-    """A fit needs a week of hours and more than one label to compare."""
-    return len(labels) >= MIN_HOURS and len({v for v in labels.values()}) > 1
+    """A fit needs more than one label to compare; how many hours is the evidence rule's to say (calendars.fit_factors)."""
+    return len({v for v in labels.values()}) > 1
 
 
 # An input's link to a named load rather than to an Energy dashboard device:

@@ -36,6 +36,33 @@ def away_days(hist, every=9, length=3):
     return events
 
 
+def _factor_rows(days, on_days, ratio, noise, seed=1):
+    rnd = random.Random(seed)
+    rows, on = [], set()
+    for d in range(days):
+        for h in range(24):
+            k = float(d * 86400 + h * 3600)
+            e = 100.0 + 20.0 * (h % 5)
+            a = e * (ratio if d in on_days else 1.0) * (1.0 + noise * rnd.gauss(0, 1))
+            rows.append((k, h, 1.0, a, e))
+            if d in on_days:
+                on.add(k)
+    return rows, on, {r[0] for r in rows} - on
+
+
+def test_a_calendar_engages_on_day_clustered_evidence_not_a_fixed_count_of_hours():
+    """Four days of contrast are enough when it is clear (the evidence rule of
+    every covariate), three days are never enough, and a contrast of noise is
+    not one however many hours it has (INS-15, 2026-10-19)."""
+    rows, on, off = _factor_rows(14, {2, 5, 8, 11}, 0.5, 0.05)
+    got = CAL.fit_factors(rows, on, off)
+    assert got.engaged and got.days >= 4 and abs(got.t) > 10, got
+    rows, on, off = _factor_rows(14, {2, 5, 8}, 0.5, 0.05)
+    assert not CAL.fit_factors(rows, on, off).engaged, "three days of contrast"
+    rows, on, off = _factor_rows(40, {3, 9, 15, 21, 27, 33}, 1.0, 0.3, seed=7)
+    assert not CAL.fit_factors(rows, on, off).engaged, "no contrast"
+
+
 def test_an_away_calendar_is_recognised_as_daytime_reduction():
     hist, horizon, keys = setup()
     events = away_days(hist)

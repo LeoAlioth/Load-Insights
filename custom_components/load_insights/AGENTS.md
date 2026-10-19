@@ -271,9 +271,7 @@ same hour of day's weather and the residual is against what the profile expected
 (leave-one-out, `Profile.loo_kwh`: in-sample, a slot seen once has residual exactly 0). The
 `explained` share is still computed and published; it gates nothing (it drives
 `Nowcast.band_shrink`). **Removed gates (2026-10-19):** `covariates.MIN_HOURS` 336 and
-`MIN_EXPLAINED` 0.03, `nowcast.MIN_HOURS` 336 and `MIN_EXPLAINED` 0.03. **Not changed:**
-`calendars.MIN_ON_HOURS` / `MIN_OFF_HOURS` / `MIN_EXPLAINED` and `inputs.MIN_HOURS`: the same rule
-on calendars and attached sensors was benched and does not hold (below). Benches: `tests/forecast_bench.py cov`,
+`MIN_EXPLAINED` 0.03, `nowcast.MIN_HOURS` 336 and `MIN_EXPLAINED` 0.03. Calendars and attached sensors: shipped the same day, below. Benches: `tests/forecast_bench.py cov`,
 W1 = 28 Sep - 11 Oct (both sites), W2 = Home 12 - 25 Jan, Kozolec 17 - 30 Aug (its whole house
 starts 4 Jul, so no heating-season window with 12 weeks behind it exists); whole-house series,
 signals and nowcast states as production builds them.
@@ -301,10 +299,20 @@ evidence rule replaces 336 h and 3 %): Kozolec `boiler` hour-ahead 169.8 -> 155.
 Home `talno_gretje` 115.5 -> 91.5 W, `attic_ac` loses its nowcast (t under 3.4) and still improves (15.4 -> 11.5 W): none worse by 1 % and 5 W.
 Whole-house p10-p90 coverage 0.759 -> 0.759, 0.676 -> 0.673 (Home W1, W2), 0.486 and 0.664 unchanged (Kozolec).
 
-**With production's signals on (OLD signals vs NEW, the old calendar gates still in place), Home W2 gets worse:** `site` 1465.4 / 1268.0 /
-14.660 -> 1486.3 / 1277.6 / 14.958 (hour-ahead +1.4 %); the other three windows are equal. The old gates engage
-the attached sensors and replace the profile by a baseline that excludes their on-hours; the temperature term then sits on top of that.
-Shipping the calendar rule would fix it (below), and fails 7.4 in three cells: see "Things already ruled out".
+**Calendars and attached sensors take the same rule (shipped 2026-10-19, the owner's decision, though it fails three cells).** A signal's
+on-vs-off contrast (`calendars._contrast_t`: the weighted least squares of `a = e (c1 + c2 on)`, row weights `w / e`, day-clustered `t`) must
+clear `t_crit(G - 1, ALPHA)` with on AND off each on `MIN_DAYS` days; `calendars.MIN_ON_HOURS` / `MIN_OFF_HOURS` / `MIN_EXPLAINED` and
+`inputs.MIN_HOURS` are gone (the residual share is still computed, and a negative one still refuses). Calendars and the attached sensors
+fit the residual leave-one-out, like the temperature term, and when a signal passes detection against the mixture profile but no effect
+fit engages against the baseline, the MIXTURE profile stays (the baseline "was for nothing": the attic sensor from 3 Aug, day-ahead
+10 -> 136 W; with the gate alone it took Home W1 hour-ahead 1312 -> 1243 W). Against the old gates, with production's signals on, `site`
+hour-ahead W / day-ahead W / noon-tomorrow kWh, at `ALPHA` 0.0005, reproduced on the shipped code (2026-10-19): Home W1 1366.3 / 1171.5 / 10.575 ->
+1241.0 / 1166.9 / 10.694; Home W2 1465.4 / 1268.0 / 14.660 -> 1221.5 / 1206.1 / 12.319; Kozolec W1 349.8 / 336.8 / 3.010 -> 331.4 / 331.4 / 2.892;
+Kozolec W2 288.4 / 255.9 / 2.011 -> 268.5 / 262.1 / 2.215. Sums of day-ahead MAE 4129.2 -> 4029.3, 3006.0 -> 2818.9, 2222.6 -> 2189.3, 2091.1 -> 2035.1.
+It fails three cells: Home W1 noon-tomorrow +0.12 kWh (1.1 %), Kozolec W2 day-ahead +6.2 W (2.4 %) and noon-tomorrow +0.20 kWh (the old gates engage
+the boiler temperature at Kozolec W2, which happens to help the day-ahead). The owner shipped it regardless: Home's hour-ahead gain
+(125 and 243 W) outweighs the small Kozolec loss. Without it, the temperature term on top of the old calendar gates left Home W2 with signals on
+1.4 % worse hour-ahead than before INS-15 (1465.4 -> 1486.3 W). `DETECTOR_GENERATION` is not affected (forecast only, nothing stored changes meaning).
 
 **What is running now (INS-17, 2026-10-18).** The `running_markdown` attribute of the Detected loads sensor (`Fleet.running` -> `running_markdown`) lists the GRID's runs, legs started within `MERGE_TOLERANCE_S` being one, each told through `_Open.meter` (the meter whose own step placed it) and that meter's run of it, the `_Open` opened at its `_steps_over` rise. A meter's run never makes a row of its own, so nothing is listed twice; a meter holding one device is a row named after it (or its signature's name); a run the grid placed on no meter, or whose meter run is gone, is the grid's own guess. A meter's load carries the meter's own signature id, the one `Fleet.namable` offers under that meter. Watts are the runs' `open_scale`d watts, as `Detector.active` reports them. The `#id` on a naming row's detail line is what the card links by; HA has no URL into an options-flow step or a single repair (frontend checked 2026-10-12), so the link opens the entry, highlighted. `Fleet.running` is the ONE answer to "is this load on": the named running sensors (`Fleet.active_by_name`), the naming page's "on now" and `signatures[].running` (`Fleet.running_refs`), and the card. The state, `unknown_load_power` and the `active` / `meters.*.active` lists stay phase totals, their `signature`/`name` the total's best match, not "is X running". Do not add a second way to say a load is on (`Detector.active_by_name` / `running_now` were deleted for it). A named load running past its typical length (`elapsed > duration_s x MATCH_DURATION_FACTOR + 60`) is not matched by `_guess` and reads off; a meter's run with no grid run behind it does not turn its sensor on (a placement miss to fix in detection, not a reason for a second source).
 
@@ -562,12 +570,11 @@ two sites' ten-day exports unless stated.
   passes detection against the mixture profile replaces the profile by a baseline
   without its on-hours, and the fit of its effects against that baseline can then say
   no - the baseline stays; the attic sensor, from 3 Aug, is the case (day-ahead 10 -> 136 W).
-  Keeping the mixture profile when no effect engages (`calendars.FALLBACK` in the checkpoint
-  commits), on top of the evidence gate, took Home W1 hour-ahead 1312 -> 1243 W. Backtest: `tests/forecast_bench.py cov`.
+  Keeping the mixture profile when no effect engages (shipped with the evidence gate, 2026-10-19) took Home W1 hour-ahead 1312 -> 1243 W. Backtest: `tests/forecast_bench.py cov`.
 - [ ] **Temperature evidence re-opened 2026-10-12, shipped 2026-10-19 (INS-15):** the
   temperature response and the device-state nowcast engage on a day-clustered t-test,
   `ALPHA` 0.0005, `MIN_DAYS` 4; see "Forecast covariates" under the dials. Calendars and
-  attached sensors under the same rule did NOT hold (below) and keep their old gates.
+  attached sensors under the same rule shipped the same day on the owner's decision, though it fails three cells (see the dials).
 
 ### Confirmed, unfixed
 
@@ -1157,18 +1164,6 @@ Don't re-chase these; each cost real time.
   Home W1 1241.0 -> 1243.4. Centring on the hour of day alone (what shipped) holds on every window. A global
   centre with the leave-one-out residual (`SLOT_CENTRE=3`) equals the gate alone on the whole house but
   never lets a young series engage (bee room heater: no engagement, against 7.6 days with the hour-of-day centre).
-- **The same evidence rule on calendars and attached sensors** (INS-15 column CAL, 2026-10-19;
-  `calendars.EVIDENCE`: the on-vs-off contrast of `a = e (c1 + c2 on)` by weighted least squares, day-clustered
-  t at `ALPHA`, on and off each on `MIN_DAYS` days, + `calendars.FALLBACK`). Against the old gates with
-  signals on, `site` hour-ahead / day-ahead W / noon-tomorrow kWh at `ALPHA` 0.0005: Home W1 1366.3 / 1171.5 / 10.575 ->
-  1241.0 / 1166.9 / 10.694; Home W2 1465.4 / 1268.0 / 14.660 -> 1221.5 / 1206.1 / 12.319; Kozolec W1 349.8 / 336.8 / 3.010 ->
-  331.4 / 331.4 / 2.892; Kozolec W2 288.4 / 255.9 / 2.011 -> 268.5 / 262.1 / 2.215. Sums of day-ahead MAE:
-  4129.2 -> 4029.3, 3006.0 -> 2818.8, 2222.6 -> 2189.3, 2091.1 -> 2035.1. It fails 7.4 in three cells: Home W1 noon-tomorrow (+0.12 kWh,
-  1.1 %) and Kozolec W2 day-ahead (+6.2 W, 2.4 %) and noon-tomorrow (+0.20 kWh): the old gates engage the boiler temperature
-  at Kozolec W2 and that happens to help the day-ahead. Not shipped; the code (and the `FALLBACK` fix, which
-  with the gate took Home W1 hour-ahead 1312 -> 1243 W) is in the INS-15 checkpoint commits behind `calendars.EVIDENCE`. At
-  0.005 it fails the same three cells and at 0.05 four cells and two sums. The `MIN_EXPLAINED` floor
-  put back (0.03) wins nowhere: sums 4029.3 -> 4031.0, 2035.1 -> 2035.7, whole house identical.
 - **`ALPHA` 0.005 and 0.05** (temperature, see the dials table): the whole house's own weak response engages at
   t about 3 and costs 1-2 % hour-ahead at Home. And the test is not sharper than its nominal
   level in young windows: at G = 4 to 14 day blocks with a smooth temperature drift and AR(1) 0.7 day offsets,
