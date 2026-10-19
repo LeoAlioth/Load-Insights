@@ -41,7 +41,7 @@ There is a bench. Use it — replaying costs minutes and a live site costs a
 deploy cycle plus a ten-day rebuild.
 
 ```bash
-python3 tests/run_all.py                                  # 17 files, all must pass
+python3 tests/run_all.py                                  # every pure test file, all must pass
 python3 tests/energy_bench.py card [DIAL=V ...]           # THE score: capture / impurity per measured load
 python3 tests/energy_bench.py invariance SITE FOLDER      # what the pass slicing changes, session by session
 python3 tests/energy_bench.py diff A.json B.json          # two scorecards, load by load
@@ -169,7 +169,15 @@ with its distance to the nearest pass boundary; the list is saved to
 2026-10-02 the slicings agree (*A pass is only a pause*, Known shortfalls):
 one call, SLICE=6, SLICE=1 and LIVE=1 file the same sessions into the same
 signatures - a difference is now a fault to find, and one slicing is enough
-for a score. Before, one call was the most distorted (the sub-meters run over
+for a score. So does a restart: `RESTART=1` (replay.py `--restart-hours`) stores
+the Fleet through JSON and reads it back after every pass, as a site restart
+does; the card's `6R` and `L1R` slicings are SLICE=6 / LIVE=1 with it and
+`TRIM=0` (the store's rounding off, so a difference is lost state, not
+rounding; `TRIM` on, `invariance SITE FOLDER TRIM=1`, is the rounding's own
+cost), compared as the pairs `6~6R` and `L1~L1R` - 0 sessions differ
+(2026-10-19, Home fed 2 of 29,226). `energy_bench.py` runs its own restart
+remap of the bench's `filed` list to the restarted Fleet's day log, runs of one
+span matched in the order they were filed. Before, one call was the most distorted (the sub-meters run over
 everything before the grid, nothing filed until the end, so no phase votes
 and no meter splits). `energy_bench.py SITE FOLDER [DIALS]` is one replay with
 the full per-load detail; `PLANT=watts:on_s:every_s:phase` (or `PLANT=set1`)

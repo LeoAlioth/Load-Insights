@@ -54,8 +54,10 @@ the truth in every mode, read from the history.
 card        every site (default home, kozolec, the circuits home-hisa and
             home-mansarda, and third) in every mode at SLICE=6, PARALLEL replays
             at once, and how runs were closed (the pairing). SLICINGS=all replays
-            each at SLICE=0, 6 and 1 and LIVE=1 too - one figure where the
-            slicings agree, each one's (0|6|1|L1) where they do not, and the
+            each at SLICE=0, 6 and 1 and LIVE=1 too, and with a restart (the
+            Fleet stored and read back) at every pass of an hour or more
+            (6R, L1R: RESTART=1) - one figure where the
+            slicings agree, each one's (0|6|1|L1|6R|L1R) where they do not, and the
             slicing invariance with its worklist for every site and mode beside
             the card; since 2026-10-02 they agree, so once in a while is enough.
             Written to data/scorecard/<commit>-<utc>.json;
@@ -133,8 +135,11 @@ REST = {"home": "Delavnica", "kozolec": "Rest", "third": "Rest"}    # what the m
 PORTABLE = {"third": "Stara Polnilnica"}   # a charger that leaves the site: its truth masked where the house did not draw it (_away)
 CHARGE_MIN_W = 6 * 230.0   # the least an EV charges at, 6 A on one phase (IEC 61851): a charge is a span at or above it
 MODES = {"hidden": "SUBS=none", "circuits": "SUBS=circuits", "fed": "SUBS=prod"}
-SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"]}
-PAIRS = [("6", "1"), ("6", "L1"), ("0", "6")]     # the slicings invariance compares, two by two
+SLICINGS = {"0": ["SLICE=0"], "6": ["SLICE=6"], "1": ["SLICE=1"], "L1": ["LIVE=1"],
+            # R: stored and read back every hour or so, with the store's rounding off (TRIM=0): does a restart lose STATE?
+            # the rounding itself (a restart's deliberate cost) is `invariance ... TRIM=1`'s 6~6R line
+            "6R": ["SLICE=6", "RESTART=1", "TRIM=0"], "L1R": ["LIVE=1", "RESTART=1", "TRIM=0"]}
+PAIRS = [("6", "1"), ("6", "L1"), ("0", "6"), ("6", "6R"), ("L1", "L1R")]     # the slicings invariance compares, two by two
 PARALLEL = int(os.environ.get("BENCH_PARALLEL", "8"))   # replays at once: each is one core and ~0.1 GB
 MOVED_S = 60.0             # a run starting this near one of the other slicing's, same phases, is that run moved
 # what closed a run, by the function that closed it - see _instrument

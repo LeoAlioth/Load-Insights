@@ -33,6 +33,13 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
 from .phases import phase_mapping, support
 
+# A dataclass field that is not stored: a cache, a hook the Fleet or the runner
+# sets each pass, or something fed again by the recorder. Every other field of
+# PhaseState, Detector and Fleet is in its to_dict, so a restart keeps it -
+# tests/test_detect.py's test_every_field_is_persisted_or_derived holds the
+# line, and `RESTART=` in the bench the behaviour.
+DERIVED = {"derived": True}
+
 PHASES = ("a", "b", "c")
 WEEK_SECONDS = 7 * 24 * 3600.0
 # Never call a change smaller than this a transition. A FLOOR under the
@@ -1152,7 +1159,8 @@ class Session:
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()},
                 "pair": list(self.pair) if self.pair else None, "legs": [list(x) for x in self.legs],
-                "wh": dict(self.wh)}
+                "wh": dict(self.wh), "quality": self.quality, "signature_id": self.signature_id,
+                "owner": [self.owner[0], self.owner[1].to_dict()] if self.owner and isinstance(self.owner[1], Session) else None}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -1163,7 +1171,9 @@ class Session:
                    samples=d.get("samples", 0), low=d.get("low"), high=d.get("high"),
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()},
                    pair=tuple(d["pair"]) if d.get("pair") else None,
-                   legs=[tuple(x) for x in d.get("legs") or []], wh=dict(d.get("wh") or {}))
+                   legs=[tuple(x) for x in d.get("legs") or []], wh=dict(d.get("wh") or {}),
+                   quality=d.get("quality", 1.0), signature_id=d.get("signature_id"),
+                   owner=(d["owner"][0], cls.from_dict(d["owner"][1])) if d.get("owner") else None)
 
 
 # ------------------------------------------------------------------ per-phase tracker
@@ -1195,7 +1205,15 @@ def _trim(value, places: int):
     decimal a restart costs the biggest signature here 0.14 Wh out of
     38.7 kWh, which is three ten-thousandths of a per cent.
     """
-    return round(value, places) if isinstance(value, float) else value
+    return round(value, places) if isinstance(value, float) and TRIM else value
+
+
+# What is stored is rounded (_trim, and the histograms below): a restart costs
+# the library that rounding, by design, for a third less store. The bench's
+# RESTART dial switches it off (TRIM = 0) to ask the other question - does a
+# restart lose any STATE - and runs it on again to measure the rounding alone.
+TRIM = True
+HIST_FLOOR = 0.01       # a histogram bin lighter than this is not stored
 
 
 def site_topology(inverters: Sequence[dict], stored: Optional[str] = None) -> Optional[str]:
@@ -1693,14 +1711,13 @@ class _Open:
     # 2026-09-18).
     lo: Optional[float] = None
     hi: Optional[float] = None
-    # what it draws NOW, followed while it runs alone - see SAG_CLOSE. Never
-    # persisted: after a restart the start's size stands in, as before.
+    # what it draws NOW, followed while it runs alone - see SAG_CLOSE
     now: Optional[float] = None
     # the edge cluster it started with - see PAIR_MIN_RUNS
     cluster: Optional[int] = None
-    q: float = 1.0                                # its start's quality - see QUALITY_SNR_FULL; not persisted
+    q: float = 1.0                                # its start's quality - see QUALITY_SNR_FULL
     # how far the runs already open overstated the phase's reading when this
-    # one started - see _unseen_stop. Not persisted, as `now` is not.
+    # one started - see _unseen_stop
     short0: float = 0.0
     # the meter below the grid whose own step was all of this start (its
     # event's cluster `where`, placed, not guessed): the run is that meter's
@@ -1709,14 +1726,16 @@ class _Open:
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
-                self.surge, self.cluster, self.meter]
+                self.surge, self.cluster, self.meter, self.now, self.q, self.short0]
 
     @classmethod
     def of(cls, raw) -> "_Open":
         since, watts, var = raw[0], raw[1], raw[2]
         levels = [tuple(x) for x in raw[3]] or [(since, watts)]
         return cls(since=since, watts=watts, var=var, levels=levels, lo=raw[4], hi=raw[5],
-                   surge=raw[6], cluster=raw[7], meter=raw[8] if len(raw) > 8 else None)
+                   surge=raw[6], cluster=raw[7], meter=raw[8] if len(raw) > 8 else None,
+                   now=raw[9] if len(raw) > 9 else None, q=raw[10] if len(raw) > 10 else 1.0,
+                   short0=raw[11] if len(raw) > 11 else 0.0)
 
 
 @dataclass
@@ -1770,7 +1789,7 @@ class PhaseState:
     quantum: float = 0.0
     step_diffs: List[float] = field(default_factory=list)
     moving_gaps: List[float] = field(default_factory=list)   # the gaps after a move, see CADENCE_GAPS
-    _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
+    _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     _moved: bool = field(default=False, repr=False, compare=False)   # the last reading moved past the noise
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
@@ -1779,23 +1798,23 @@ class PhaseState:
     q_quantum: float = 0.0
     # Set by the Detector for a pass: asks whether another phase's leg of the
     # same load is stopping too. Never persisted - it is rebuilt every pass.
-    corroborate: Optional[object] = field(default=None, repr=False, compare=False)
+    corroborate: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (since, watts, closed_at) of edges closed in the last minute, for the
-    # same question from the other side. Transient, never persisted.
+    # same question from the other side.
     recent_closed: List[Tuple[float, float, float]] = field(default_factory=list, repr=False, compare=False)
     # the open edge another leg vouched is stopping, for _pair to close
-    close_hint: Optional[object] = field(default=None, repr=False, compare=False)
+    close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the detector whose edge library and pair models this phase asks, its
     # name, and the cluster of the fall being paired. Set each pass.
-    lib: Optional[object] = field(default=None, repr=False, compare=False)
-    name: str = field(default="", repr=False, compare=False)
-    stop_cluster: Optional[int] = field(default=None, repr=False, compare=False)
-    stop_q: Optional[float] = field(default=None, repr=False, compare=False)    # the stop being paired's quality
+    lib: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    name: str = field(default="", repr=False, compare=False, metadata=DERIVED)
+    stop_cluster: Optional[int] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    stop_q: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the stop being paired's quality
     last_step_ts: Optional[float] = field(default=None, repr=False, compare=False)
     # every step this phase declared, (since, watts, var), newest last - what a
     # meter's step IS when the grid's is compared with it (METER_CAL_SLACK)
     declared: List[tuple] = field(default_factory=list, repr=False, compare=False)
-    declared_t: List[float] = field(default_factory=list, repr=False, compare=False)   # their times, for bisect
+    declared_t: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)   # their times, for bisect
     steady_ts: Optional[float] = field(default=None, repr=False, compare=False)   # its last reading at the held level
     steady_before: Optional[float] = field(default=None, repr=False, compare=False)   # ...and the update's before that
     pv_last: Optional[float] = field(default=None, repr=False, compare=False)   # the array at its last reading
@@ -1811,7 +1830,7 @@ class PhaseState:
     seed_zeros: int = 0               # the held moves its gaps imply - see IMPLIED_ZEROS_CAP
     idle_diffs: List[float] = field(default_factory=list)
     _rel_tick: Optional[int] = field(default=None, repr=False, compare=False)
-    _idle_sorted: List[float] = field(default_factory=list, repr=False, compare=False)
+    _idle_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     pending: List[Tuple[float, float, Optional[float], Optional[float]]] = field(default_factory=list)
     open_edges: List[_Open] = field(default_factory=list)   # believed to be running
     last_ts: Optional[float] = None
@@ -2765,12 +2784,19 @@ class PhaseState:
                 "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval,
                 "min_noise": self.min_noise, "noise_rel": self.noise_rel,
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
-                "step_diffs": self.step_diffs[-QUANTUM_MIN_SAMPLES:], "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
+                "step_diffs": list(self.step_diffs), "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "seed_zeros": self.seed_zeros,
                 "idle_diffs": list(self.idle_diffs), "rel_diffs": list(self.rel_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
                 "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag, "lead": self.lead,
-                "floor_zero": self.floor_zero, "moving_gaps": [round(x, 2) for x in self.moving_gaps]}
+                "floor_zero": self.floor_zero, "moving_gaps": [_trim(x, 2) for x in self.moving_gaps],
+                # what a pass was in the middle of deciding - see test_a_restart_is_only_a_pause
+                "moved": self._moved, "ended_upto": self.ended_upto, "last_step_ts": self.last_step_ts,
+                "steady_ts": self.steady_ts, "steady_before": self.steady_before, "pv_last": self.pv_last,
+                "stood": self._stood, "rel_tick": self._rel_tick,
+                "absorb_until": None if self.absorb_until == -math.inf else self.absorb_until,
+                "held_drops": [list(x) for x in self.held_drops], "recent_closed": [list(x) for x in self.recent_closed],
+                "declared": [[_trim(x, 3) for x in e] for e in self.declared]}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "PhaseState":
@@ -2787,7 +2813,16 @@ class PhaseState:
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
                    raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),
                    lead=float(d.get("lead") or 0.0),
-                   floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []))
+                   floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []),
+                   _moved=bool(d.get("moved", False)), ended_upto=d.get("ended_upto"),
+                   last_step_ts=d.get("last_step_ts"), steady_ts=d.get("steady_ts"),
+                   steady_before=d.get("steady_before"), pv_last=d.get("pv_last"), _stood=d.get("stood"),
+                   _rel_tick=d.get("rel_tick"),
+                   absorb_until=-math.inf if d.get("absorb_until") is None else float(d["absorb_until"]),
+                   held_drops=[tuple(x) for x in d.get("held_drops") or []],
+                   recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
+                   declared=[tuple(e) for e in d.get("declared") or []],
+                   declared_t=[e[0] for e in d.get("declared") or []])
 
 
 # ------------------------------------------------------------------ signatures
@@ -3398,18 +3433,18 @@ class Signature:
                 "level_count": _trim(self.level_count, 3), "name": self.name,
                 "last_start": self.last_start, "locations": self.locations,
                 "power_mad": _trim(self.power_mad, 1), "pf_mad": _trim(self.pf_mad, 4),
-                "runs": [[round(x, 1), round(y, 1)] for x, y in self.runs[-RUN_MEMORY:]],
+                "runs": [[_trim(x, 1), _trim(y, 1)] for x, y in self.runs[-RUN_MEMORY:]],
                 "inrush_w": _trim(self.inrush_w, 1),
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
                 "interval_mad": _trim(self.interval_mad, 1),
-                "inputs": {n: {k: {v: round(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
+                "inputs": {n: {k: {v: _trim(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
-                "hourly": {str(h): round(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05},
-                "edges": {role: {str(c): round(n, 2) for c, n in used.items()} for role, used in self.edges.items()}}
+                "hourly": {str(h): _trim(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05 * TRIM},
+                "edges": {role: {str(c): _trim(n, 2) for c, n in used.items()} for role, used in self.edges.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Signature":
@@ -3846,7 +3881,7 @@ class Detector:
     held: List[Session] = field(default_factory=list)          # closed, waiting for a partner phase
     signatures: List[Signature] = field(default_factory=list)
     recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
-    filed_n: int = 0                       # sessions filed so far, each recent one's "n" - see live_runs
+    filed_n: int = field(default=0, metadata=DERIVED)   # sessions filed so far, each recent one's "n" - see live_runs
     # ids a merge has retired, so a session filed before it still resolves to
     # the signature that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
@@ -3859,11 +3894,11 @@ class Detector:
     tz_offset_s: float = 0.0
     # number -> sorted [(ts, value)], each held until the next: a step
     # records the value in force (EdgeCluster.values); fed by the fleet, not persisted
-    numbers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
+    numbers: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, metadata=DERIVED)
     # setting -> sorted [(ts, value)], fed by the fleet like numbers; and
     # setting -> value -> seconds in it (recency-weighted), with how far that
     # has been counted - these two persisted
-    inputs: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict)
+    inputs: Dict[str, List[Tuple[float, str]]] = field(default_factory=dict, metadata=DERIVED)
     input_time: Dict[str, Dict[str, float]] = field(default_factory=dict)
     input_until: Dict[str, float] = field(default_factory=dict)
     # setting -> value -> how many times it has come round - see INPUT_MIN_EPISODES
@@ -3875,36 +3910,37 @@ class Detector:
     lag_hist: Dict[str, List[float]] = field(default_factory=dict)
     # the steps this pass took, (phase, since, watts, VAr, surge), for the
     # fleet to file as edges; and phase -> [(since, cluster id, watts)] of the
-    # recent ones, so a run filed later still finds its edges. Never persisted.
+    # recent ones, so a run filed later still finds its edges.
     edge_at: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
     # rises waiting the event window for companions on other phases; never persisted
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # runs ended by a stop found inside a rise when its event formed - see _split_rise
-    _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # the pass's work on the readings' clock - see _advance: what it released,
     # whether it files, the reading or deadline being handled, and when the
     # first waiting group is due (None: work it out again)
-    _released: List[Session] = field(default_factory=list, repr=False, compare=False)
-    _file_now: bool = field(default=True, repr=False, compare=False)
+    _released: List[Session] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
+    _file_now: bool = field(default=True, repr=False, compare=False, metadata=DERIVED)
     _clock: Optional[float] = field(default=None, repr=False, compare=False)
-    _held_due: Optional[float] = field(default=None, repr=False, compare=False)
-    _q: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
+    _held_due: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _q: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # how far the inputs' changes are known on the fleet's clock (Fleet.process):
     # one a pass brought from after it is not known yet. None: all of them
-    horizon: Optional[float] = field(default=None, repr=False, compare=False)
-    _pv: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False)
+    horizon: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _pv: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
     # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
     # pair -> {signature id: runs filed there}
     pairs: Dict[str, List[float]] = field(default_factory=dict)
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
-    signals: Optional[tuple] = field(default=None, repr=False, compare=False)
-    _pidx: Optional[dict] = field(default=None, repr=False, compare=False)   # see _pair_index
-    _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False)
-    _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False)
-    _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False)
-    _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False)
+    signals: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _pidx: Optional[dict] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # see _pair_index
+    _pair_phase: Dict[str, str] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # restored by from_dict, see _pair_index
+    _by_id: Optional[Dict[int, "EdgeCluster"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _kinds: Optional[Dict[tuple, List["EdgeCluster"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # start cluster -> {signature id: runs filed there} - see DEVICE_FILING
     start_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     # what _merge_devices keeps between filings, so a pass judges only the
@@ -3912,11 +3948,11 @@ class Detector:
     # they count for now (devices in start_home order), each signature's
     # device, each device's place in start_home, the devices to judge again
     # and whether all of them are. None: built again from start_home.
-    _votes: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
-    _home: Dict[int, int] = field(default_factory=dict, repr=False, compare=False)
-    _dev_pos: Dict[int, int] = field(default_factory=dict, repr=False, compare=False)
-    _rejudge: Set[int] = field(default_factory=set, repr=False, compare=False)
-    _rejudge_all: bool = field(default=True, repr=False, compare=False)
+    _votes: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _home: Dict[int, int] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
+    _dev_pos: Dict[int, int] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
+    _rejudge: Set[int] = field(default_factory=set, repr=False, compare=False, metadata=DERIVED)
+    _rejudge_all: bool = field(default=True, repr=False, compare=False, metadata=DERIVED)
     # per phase|direction|inputs: bin -> recency-weighted steps, and when it
     # last faded - see EDGE_BATCH; its segments, cut at every step (EDGE_RECUT)
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
@@ -3926,35 +3962,35 @@ class Detector:
     # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN
     edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
-    meter_steps: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_steps: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
-    step_meter: Optional[object] = field(default=None, repr=False, compare=False)
+    step_meter: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase, since, up) -> it held its value through that moment, set by the Fleet - see _likely_meter
-    meter_held: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_held: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, span start, span end, open runs) -> the run a one-device meter's own stop there ends, set by the Fleet
-    meter_stop: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_stop: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase, since, size) -> the meter whose step started that run still shows it on, set by the Fleet - see PhaseState.owned
-    meter_on: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_on: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size) -> the one-device meter whose own rise of that size came with a start the map could not place
-    meter_started: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_started: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase) -> what the meter draws above its floor now, in the grid's terms - the size of a run that is its
-    meter_level: Optional[object] = field(default=None, repr=False, compare=False)
-    meter_ended: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_level: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    meter_ended: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase, run, until) -> Wh a run a meter holding one device owns drew, by its levels, or None
-    meter_wh: Optional[object] = field(default=None, repr=False, compare=False)
+    meter_wh: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
-    meter_read: Optional[object] = field(default=None, repr=False, compare=False)
-    placement_conf: Optional[float] = field(default=None, repr=False, compare=False)   # the last placement's timing confidence
+    meter_read: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    placement_conf: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
-    placement_window: Optional[tuple] = field(default=None, repr=False, compare=False)
+    placement_window: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     # each group's size density between steps: [the histogram, its keys' order, first bin, density] - see _valleys
     _dens: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
-    _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False)
+    _device_home: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the day's runs this detector filed or a meter took, and the readings it
     # stepped, for the day's repair (Fleet._repair), kept from when its fleet
-    # first read (_day_from, None: kept by no one); never persisted
-    _day_from: Optional[float] = field(default=None, repr=False, compare=False)
+    # first read (_day_from, None: kept by no one); stored, as the fleet's _repaired_to is
+    _day_from: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _day_log: List[Session] = field(default_factory=list, repr=False, compare=False)
     _day_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, repr=False, compare=False)
 
@@ -5015,7 +5051,7 @@ class Detector:
             phase_of = {c.id: c.phase for c in self.edges}
             for key, acc in self.pairs.items():
                 a, b = (int(x) for x in key.split(">"))
-                self._count_pair(idx, key, a, b, acc[0], phase_of.get(a, "?"))
+                self._count_pair(idx, key, a, b, acc[0], self._pair_phase.get(key) or phase_of.get(a, "?"))
         return self._pidx
 
     @staticmethod
@@ -5438,11 +5474,11 @@ class Detector:
                 "input_until": dict(self.input_until),
                 "input_episodes": {n: dict(row) for n, row in self.input_episodes.items()},
                 "edges": [e.to_dict() for e in self.edges], "next_edge_id": self.next_edge_id,
-                "edge_hist": {g: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for g, h in self.edge_hist.items()},
+                "edge_hist": {g: {str(b): _trim(w, 3) for b, w in h.items() if w >= HIST_FLOOR * TRIM} for g, h in self.edge_hist.items()},
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
-                "edge_hist_keys": {g: {k: {str(b): round(w, 3) for b, w in h.items() if w >= 0.01} for k, h in rows.items()}
+                "edge_hist_keys": {g: {k: {str(b): _trim(w, 3) for b, w in h.items() if w >= HIST_FLOOR * TRIM} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
-                "edge_hist_angle": {g: {k: round(w, 3) for k, w in h.items() if w >= 0.01} for g, h in self.edge_hist_angle.items()},
+                "edge_hist_angle": {g: {k: _trim(w, 3) for k, w in h.items() if w >= HIST_FLOOR * TRIM} for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -5450,6 +5486,21 @@ class Detector:
                 "pending_rises": [[m["ph"], i, m["since"], m["watts"], m["var"], m["surge"]] for m in self._pending
                                   for i, o in enumerate(self.phases[m["ph"]].open_edges if m["ph"] in self.phases else [])
                                   if o is m["open"]],
+                # the steps a run filed later still finds its edges by, and the readings' clock
+                "edge_at": {ph: [list(e) for e in rows] for ph, rows in self.edge_at.items()},
+                # the day's runs and readings, for the day's repair (Fleet._repair): what a restart mid-day must not lose
+                "rejudge": sorted(self._rejudge), "rejudge_all": self._rejudge_all,
+                # the phase each pair was learned on: its start cluster may be gone by now (see _pair_index)
+                "pair_phase": dict((self._pidx or {}).get("phase") or self._pair_phase),
+                "day_log": [x.to_dict() for x in self._day_log],
+                "day_rows": {ph: [[_trim(t, 3), _trim(w, 1)] for t, w in rows] for ph, rows in self._day_rows.items()},
+                # the size density kept between steps, as it stands: worked out afresh it can differ by a float's last
+                # digit, and a valley cut on a plateau then lands elsewhere (see Detector._valleys)
+                "dens": {g: {"order": [k for k, _ in sorted(st[1].items(), key=lambda kv: kv[1])], "lo": st[2], "dens": list(st[3])}
+                         for g, st in self._dens.items() if st[0] is self.edge_hist.get(g)},
+                # each group's segments as last cut (at its last step): _likely_meter reads those of groups it has not just stepped
+                "segs": {g: [list(x) for x in segs] for g, segs in self._segs.items()},
+                "clock": self._clock, "moved": {str(k): v for k, v in self._moved.items()},
                 }
 
     @classmethod
@@ -5484,6 +5535,22 @@ class Detector:
             if 0 <= i < len(opens) and opens[i].since == since:
                 det._pending.append({"since": since, "ph": ph, "watts": watts, "var": var, "surge": surge,
                                      "open": opens[i]})
+        det.edge_at = {ph: [tuple(e) for e in rows] for ph, rows in (d.get("edge_at") or {}).items()}
+        for g, st in (d.get("dens") or {}).items():
+            if g in det.edge_hist:
+                det._dens[g] = [det.edge_hist[g], {int(k): i for i, k in enumerate(st["order"])}, int(st["lo"]),
+                                [float(x) for x in st["dens"]]]
+        det._segs = {g: [tuple(x) for x in segs] for g, segs in (d.get("segs") or {}).items()}
+        det._day_log = [Session.from_dict(x) for x in d.get("day_log") or []]
+        det._day_rows = {ph: [tuple(r) for r in rows] for ph, rows in (d.get("day_rows") or {}).items()}
+        det._clock = d.get("clock")
+        det._moved = {int(k): int(v) for k, v in (d.get("moved") or {}).items()}
+        det._pair_phase = dict(d.get("pair_phase") or {})
+        if "rejudge_all" in d:
+            # the devices _merge_devices still has to judge again: a full walk after a restart would
+            # merge what the pass-by-pass one had left apart
+            det._rebuild_votes()
+            det._rejudge, det._rejudge_all = {int(x) for x in d.get("rejudge") or []}, bool(d["rejudge_all"])
         return det
 
 
@@ -5547,12 +5614,12 @@ class Fleet:
     # and the totals worked out from them
     _sub_from: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     _sub_seed: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
-    _sub_totals: Dict[tuple, list] = field(default_factory=dict, repr=False, compare=False)
+    _sub_totals: Dict[tuple, list] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # meter -> "p" (power) / "q" (reactive) -> [mean log of grid's step over the
     # meter's, steps] - see METER_GAIN_MIN
     meter_gain: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
-    parents: Dict[str, Optional[str]] = field(default_factory=dict)
+    parents: Dict[str, Optional[str]] = field(default_factory=dict, metadata=DERIVED)
     # the readings' clock all meters are read on: the meters' own, the grid
     # wait_cap_s behind them (see process); how far every meter's readings reach
     _now: float = field(default=0.0, repr=False, compare=False)
@@ -5561,18 +5628,18 @@ class Fleet:
     _unvoted: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # house sessions handed over lately, (when, session): what a meter's session votes against
     _recent_main: List[tuple] = field(default_factory=list, repr=False, compare=False)
-    _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False)   # see _advance
-    _names: List[str] = field(default_factory=list, repr=False, compare=False)
-    _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)   # see phase_map
-    _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False)     # see _through_parent
-    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process, not persisted: the voltage
-    # the cross-meter edges read beside each step (insights/edges.py); nothing here sizes a step by it
+    _dues: Dict[str, Optional[tuple]] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _advance
+    _names: List[str] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
+    _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see phase_map
+    _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _through_parent
+    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process: the voltage
+    # the cross-meter edges read beside each step (insights/edges.py); nothing here sizes a step by it.
     volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     # meter -> (phase, run, closed at) of the runs it owned the last day - see _meter_wh
     _owned_runs: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
-    wait_cap_s: float = 0.0          # set by the runner - see METER_WAIT_CAP_S
+    wait_cap_s: float = field(default=0.0, metadata=DERIVED)   # set by the runner - see METER_WAIT_CAP_S
     # how far behind its meters the grid is read now, and the MODEL_REFRESH_S
     # step of the clock it was worked out at - see _horizon
     _wait: float = 0.0
@@ -5584,17 +5651,17 @@ class Fleet:
     # meter -> the time of its last declared step that has voted - see _vote_steps
     _step_votes_from: Dict[str, float] = field(default_factory=dict)
     # meters the runner says are not to set the horizon (the settings page) - see _horizon
-    horizon_skip: set = field(default_factory=set, repr=False, compare=False)
+    horizon_skip: set = field(default_factory=set, repr=False, compare=False, metadata=DERIVED)
     # the grid's readings, reactive and PV newer than the wait, for the next pass
     _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # switch -> {on moment: off moment, or None while on}, as the runner last
     # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
     # window with a lookback.
-    switch_on: Dict[str, Dict[float, Optional[float]]] = field(default_factory=dict)
+    switch_on: Dict[str, Dict[float, Optional[float]]] = field(default_factory=dict, metadata=DERIVED)
     # meters that hold one device (True) or several (False), as the runner
     # works it out each pass - the user's answer, else a parent holds several,
     # else guess_one_device; a meter missing here is guessed
-    single: Dict[str, bool] = field(default_factory=dict)
+    single: Dict[str, bool] = field(default_factory=dict, metadata=DERIVED)
     # meter -> its own phase label -> house phase -> sessions that matched,
     # for phase_mapping
     phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
@@ -5602,11 +5669,11 @@ class Fleet:
     phase_energy: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     # the grid's fleet, whose votes say what a typical vote carries - see
     # PHASE_MAP_MIN_VOTES; None for the grid's own
-    _root: Optional["Fleet"] = field(default=None, repr=False, compare=False)
-    _vote_wh: Optional[tuple] = field(default=None, repr=False, compare=False)
+    _root: Optional["Fleet"] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _vote_wh: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # every vote cast on this fleet, counted - what phase_map's and
     # _vote_wh_needed's caches are kept by
-    _votes_rev: int = field(default=0, repr=False, compare=False)
+    _votes_rev: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
     # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
     unfiled: List[tuple] = field(default_factory=list)
     # One fleet per meter others hang under - its main that meter's
@@ -5614,13 +5681,13 @@ class Fleet:
     # reads every meter (_sync_views); and whether this is the grid's, the
     # reference every meter's report lag is learned against (_learn_lags)
     views: Dict[str, "Fleet"] = field(default_factory=dict, repr=False, compare=False)
-    reference: bool = field(default=True, repr=False, compare=False)
-    _view_states: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
+    reference: bool = field(default=True, repr=False, compare=False, metadata=DERIVED)
+    _view_states: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # meter -> its signature id -> the house signature its sessions joined
     identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
     # the start of the first day not yet repaired, on the readings' clock -
-    # see _repair; never persisted: after a restart the day it began in is
-    # repaired with what was logged since
+    # see _repair; stored with the day's runs and readings, so a restart mid-day
+    # repairs the whole day
     _repaired_to: Optional[float] = field(default=None, repr=False, compare=False)
 
     def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
@@ -7714,7 +7781,7 @@ class Fleet:
         out: Dict[str, dict] = {}
         for meter, det in self.detectors():
             for sig in det.signatures:
-                hours = {str(h): round(wh, 1) for h, wh in sig.older.items() if wh >= 0.05}
+                hours = {str(h): _trim(wh, 1) for h, wh in sig.older.items() if wh >= 0.05 * TRIM}
                 if hours:
                     out.setdefault(meter, {})[str(sig.id)] = hours
         return out
@@ -7783,7 +7850,10 @@ class Fleet:
         return groups
 
     def to_dict(self) -> dict:
-        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()}, **self._state()}
+        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
+                "volts": {n: {p: [[_trim(t, 3), _trim(v, 2)] for t, v in rows] for p, rows in byp.items()}
+                          for n, byp in self.volts.items()},
+                **self._state()}
 
     def _state(self) -> dict:
         """What a fleet knows beyond its detectors - a meter's own fleet is
@@ -7798,6 +7868,12 @@ class Fleet:
                 "unvoted": [[t, n, final, s.to_dict()] for t, n, final, s in self._unvoted],
                 "recent_main": [[t, s.to_dict()] for t, s in self._recent_main],
                 "meter_gain": self.meter_gain,
+                "sub_rows": {n: {c: [[_trim(t, 3), _trim(w, 1)] for t, w in rows] for c, rows in chans.items()}
+                             for n, chans in self.sub_rows.items()},
+                "sub_from": self._sub_from, "sub_seed": self._sub_seed, "aged_to": self._aged_to, "now": self._now,
+                "stops_used": [[n, t, u] for (n, t), u in self._stops_used.items()],
+                "owned_runs": {n: [[ph, o.as_list(), at] for ph, o, at in runs] for n, runs in self._owned_runs.items()},
+                "repaired_to": self._repaired_to,
                 "carry": {"rows": {p: [list(r) for r in v] for p, v in (self._carry.get("rows") or {}).items()},
                           **{k: {p: [[t, x] for t, x in v.items()] for p, v in (self._carry.get(k) or {}).items()}
                              for k in ("q", "pv")}}}
@@ -7821,6 +7897,7 @@ class Fleet:
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
         f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
         f._lag_from = d.get("lag_from")
+        f.volts = {n: {p: [(t, v) for t, v in rows] for p, rows in byp.items()} for n, byp in (d.get("volts") or {}).items()}
         # -inf (nothing voted yet) is written as null by the store's JSON; None is "never"
         f._step_votes_from = {n: float(t) for n, t in (d.get("step_votes_from") or {}).items() if t is not None}
         f._unvoted = [(t, n, bool(final), Session.from_dict(x)) for t, n, final, x in d.get("unvoted") or []]
@@ -7828,10 +7905,37 @@ class Fleet:
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
         f._view_states = dict(d.get("views") or {})
+        f.sub_rows = {n: {c: [tuple(r) for r in rows] for c, rows in chans.items()}
+                      for n, chans in (d.get("sub_rows") or {}).items()}
+        f._sub_from = {n: float(t) for n, t in (d.get("sub_from") or {}).items()}
+        f._sub_seed = {n: dict(v) for n, v in (d.get("sub_seed") or {}).items()}
+        f._aged_to = float(d.get("aged_to") or 0.0)
+        f._now = float(d.get("now") or 0.0)
+        f._stops_used = {(n, t): u for n, t, u in d.get("stops_used") or []}
+        f._owned_runs = {n: [(ph, _Open.of(o), at) for ph, o, at in runs] for n, runs in (d.get("owned_runs") or {}).items()}
+        f._repaired_to = d.get("repaired_to")
         carry = d.get("carry") or {}
         f._carry = {k: v for k, v in (
             ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
             *((k, {p: {t: x for t, x in v} for p, v in (carry.get(k) or {}).items()}) for k in ("q", "pv"))) if v}
+        # a run's owner is the meter's own session, as its detector keeps it (_day_log, pending_sub, _unvoted):
+        # stored apart it is a copy that the filing (its signature) never reaches
+        mine = {(n, x.phases, x.start, x.end): x for n, det in f.subs.items() for x in det._day_log}
+        mine.update({(n, x.phases, x.start, x.end): x for n, v in f.pending_sub.items() for x in v})
+        mine.update({(n, x.phases, x.start, x.end): x for _, n, _, x in f._unvoted})
+        mine.update({(n, x.phases, x.start, x.end): x for n, det in f.subs.items() for x in det.held})
+        # ...and the house's runs the day keeps are the very ones still waiting for a meter's answer (pending_main,
+        # unfiled, recent_main): what the meter's Wh does to one it does to the other
+        day = {(x.phases, x.start, x.end): x for x in f.main._day_log}
+        same = lambda x: day.get((x.phases, x.start, x.end), x)  # noqa: E731
+        f.pending_main = [(t, same(x)) for t, x in f.pending_main]
+        f.unfiled = [(t, same(x)) for t, x in f.unfiled]
+        f._recent_main = [(t, same(x)) for t, x in f._recent_main]
+        f.main.held = [same(x) for x in f.main.held]
+        for m in f.main._day_log:
+            if m.owner and isinstance(m.owner[1], Session):
+                o = m.owner[1]
+                m.owner = (m.owner[0], mine.get((m.owner[0], o.phases, o.start, o.end), o))
         return f
 
 

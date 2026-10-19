@@ -211,6 +211,12 @@ NAMING_MIN_WH = 50.0
 AMP_STEP_MEMORY = 600
 # How soon the next pass follows one that is not caught up - a backfill slice
 CATCH_UP_PASS_S = 2.0
+# A pass reads the recorder up to `now`; a reading stamped before `now` but
+# committed after the read is never read, because the next pass starts at the
+# end of this one. So a pass waits for the recorder's queue to drain first. A
+# pass that cannot get it in this long reads nothing and tries again at the
+# same start a minute later.
+RECORDER_FLUSH_S = 30.0
 
 
 def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
@@ -353,6 +359,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._mark_ts: Optional[float] = None
         self._saved_at: Optional[float] = None
         self._history_saved_at: Optional[float] = None
+        self._inputs_primed = False       # see _read_inputs
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
         # re-reading history from scratch - after a reset, or with nothing
@@ -620,6 +627,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         numbers: Dict[str, list] = {}
         inputs: Dict[str, list] = {}
         since = start - timedelta(seconds=SWITCH_MEMORY_S)
+        if not self._inputs_primed and self.fleet._now:
+            # the first pass of a run: what a restart cannot get back from the store is read again, as far back as the
+            # oldest run or session still to be placed asks (never past the recorder's ten days)
+            oldest = dt_util.utc_from_timestamp(self.fleet._oldest_asked())
+            since = max(min(since, oldest - timedelta(seconds=SWITCH_MEMORY_S)), start - timedelta(days=DETECTION_BACKFILL_DAYS))
+        self._inputs_primed = True
         # every input the forecast is given, whatever it is linked to (the owner,
         # 2026-09-28: add the thermostat to the inputs first, and move it to
         # the device once the load it helped find is named)
@@ -1132,6 +1145,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             try:
                 self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
                 began = time.monotonic()
+                try:
+                    await asyncio.wait_for(get_instance(self.hass).async_block_till_done(), RECORDER_FLUSH_S)
+                except asyncio.TimeoutError:
+                    _LOGGER.debug("The recorder did not drain in %.0f s; this pass waits a minute", RECORDER_FLUSH_S)
+                    return
+                flushed = time.monotonic() - began
                 now = dt_util.utcnow()
                 start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
                 end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
@@ -1198,7 +1217,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     dict(self.q_quantum), single, switches or None, numbers or None,
                     inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None,
                 )
-                self.last_pass = {"read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
+                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
                                   "hours": round((end - start).total_seconds() / 3600.0, 2)}
                 self.samples_read += sum(len(rows) for rows in samples.values())
                 self._update_live_power(end.timestamp())

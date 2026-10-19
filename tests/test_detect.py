@@ -266,6 +266,88 @@ def test_every_meter_is_read_on_one_clock():
         assert at == where, step
 
 
+def _fleet_restarted(rows, plug, step, end, restart, state=False):
+    """A fleet fed the grid ``rows`` and one plug in passes of ``step`` seconds;
+    with ``restart``, stored through JSON and read back after every pass, as a
+    site restarted between two passes. Every house session it filed."""
+    cuts = [T0 + k * step for k in range(1, int(6 * 3600 / step) + 1)]
+    fleet = D.Fleet()
+    filed = _keep_filed(fleet)
+    for (part, e), (sub, _) in zip(_passes(rows, cuts, end), _passes({"a": plug}, cuts, end)):
+        fleet.process(part, {"Plug": sub}, now_ts=e, single={"Plug": True})
+        if restart:
+            fleet = D.Fleet.from_dict(json.loads(json.dumps(fleet.to_dict())))
+            fleet.main.tz_offset_s = 0.0
+            fleet.load_older(json.loads(json.dumps(fleet.older_to_dict())))
+            filed_so_far = list(filed)
+            filed = _keep_filed(fleet)
+            filed[:0] = filed_so_far
+    return fleet if state else _as_filed(filed)
+
+
+def test_a_restart_is_only_a_pause():
+    """The same history read in passes of an hour, held in memory or stored
+    and read back after every pass, files the same sessions: what a pass was
+    in the middle of deciding - a step still settling, a run a meter was about
+    to end - goes into the store with the library (the owner, 2026-10-12)."""
+    rows, end = _sliced_history()
+    plug, last = [], None
+    for t, w in rows["b"]:
+        v = w - 300.0
+        if v != last or not plug or t - plug[-1][0] >= 60.0:
+            plug.append((t + 2.0, v))
+            last = v
+    for step in (3600.0, 600.0):
+        held = _fleet_restarted(rows, plug, step, end, False)
+        got = _fleet_restarted(rows, plug, step, end, True)
+        assert len(held) > 60, held[:3]
+        assert got == held, (step, [x for x in got if x not in held][:3], [x for x in held if x not in got][:3])
+
+
+def test_a_restart_leaves_the_stored_state_as_it_was():
+    """What a store holds after a run read in hourly passes is the same with
+    or without a restart between them: nothing a later pass reads is left out -
+    the voltage beside the steps, the phase each pair was learned on, the
+    devices still to judge again, the runs the day keeps and those waiting for
+    a meter being the same runs (2026-10-19)."""
+    rows, end = _sliced_history()
+    plug, last = [], None
+    for t, w in rows["b"]:
+        v = w - 300.0
+        if v != last or not plug or t - plug[-1][0] >= 60.0:
+            plug.append((t + 2.0, v))
+            last = v
+    trim, D.TRIM = D.TRIM, 0                    # the store's rounding is its own cost, measured apart
+    try:
+        held = _fleet_restarted(rows, plug, 3600.0, end, False, state=True)
+        got = _fleet_restarted(rows, plug, 3600.0, end, True, state=True)
+        a, b = held.to_dict(), got.to_dict()
+    finally:
+        D.TRIM = trim
+    gone = lambda d: json.dumps(d, sort_keys=True, default=str)  # noqa: E731
+    for k in set(a) | set(b):
+        if isinstance(a.get(k), dict) and k in ("main", "subs"):
+            for j in set(a[k]) | set(b[k]):
+                assert gone(a[k].get(j)) == gone(b[k].get(j)), (k, j)
+        else:
+            assert gone(a.get(k)) == gone(b.get(k)), k
+
+
+def test_every_field_is_persisted_or_derived():
+    """A restart must not lose what a pass was in the middle of deciding, and
+    a new field must not slip past it unnoticed (2026-10-12): every field of
+    PhaseState, Detector and Fleet is in its to_dict, or says it is derived -
+    a cache, a hook set each pass, a reading fed again by the recorder -
+    with metadata=DERIVED. (The one stored under another name is listed.)"""
+    import dataclasses
+    renamed = {"_pending": "pending_rises"}
+    for cls in (D.PhaseState, D.Detector, D.Fleet):
+        keys = set(cls().to_dict())
+        lost = [f.name for f in dataclasses.fields(cls) if not f.metadata.get("derived") and f.name not in renamed
+                and f.name.lstrip("_") not in keys]
+        assert not lost, (cls.__name__, lost)
+
+
 def test_a_step_vote_mark_of_minus_infinity_survives_the_store():
     """_vote_steps' mark is -inf until a meter's first vote; the store writes
     that as null, and the next pass read None where it needs a number: "Load
@@ -5135,6 +5217,87 @@ def test_the_days_repair_runs_once_a_day_on_the_readings_clock():
     assert days == 3, days       # T0 is 1,600 s into a day: three days' ends and their wait passed, not a fourth
     assert all(s.start >= fleet._repaired_to for s in fleet.main._day_log)
     assert fleet.main._day_rows["a"][1][0] >= fleet._repaired_to
+
+
+def _repair_history():
+    """Three days of a pulser, and each day at 10:00 a 1 kW start that nothing
+    steps down: it fades away over two hours, so its run stays open a day
+    (the repair's case: a run booked far past what the phase drew)."""
+    def fn(s):
+        day = s % 86400.0
+        w = 800.0 if (s % 5400.0) < 1200.0 else 0.0
+        if 36000.0 <= day < 36600.0:
+            w += 1000.0
+        elif 36600.0 <= day < 36600.0 + 7200.0:
+            w += 1000.0 * (1.0 - (day - 36600.0) / 7200.0)
+        return w
+    return series(3 * 86400.0, fn, seed=3)
+
+
+def _repair_run(step, restart=False, off=False):
+    old, trim = D.REPAIR_SLACK_NOISE, D.TRIM
+    D.REPAIR_SLACK_NOISE = 1e9 if off else old        # 1e9: nothing is taken, the repair is off
+    D.TRIM = False                                    # the store's rounding is its own cost; this asks for lost state
+    try:
+        rows = _repair_history()
+        fleet = D.Fleet()
+        filed = _keep_filed(fleet)
+        end = rows[-1][0] + 1.0
+        for part, e in _passes({"a": rows}, [T0 + k * step for k in range(1, int(3 * 86400 / step))], end):
+            fleet.process(part, {}, now_ts=e)
+            if restart:
+                fleet = D.Fleet.from_dict(json.loads(json.dumps(fleet.to_dict())))
+                fleet.load_older(json.loads(json.dumps(fleet.older_to_dict())))
+                so_far = list(filed)
+                filed = _keep_filed(fleet)
+                # the day's runs are copies now, and the repair edits the copies
+                # (two runs of one span follow in the order they were filed)
+                key, where, copies = (lambda x: (x.phases, x.start, x.end)), {}, {}
+                for i, x in enumerate(so_far):
+                    where.setdefault(key(x), []).append(i)
+                for x in fleet.main._day_log:
+                    copies.setdefault(key(x), []).append(x)
+                for k, cs in copies.items():
+                    for c, i in zip(reversed(cs), reversed(where.get(k, []))):
+                        so_far[i] = c
+                filed[:0] = so_far
+        return fleet, filed
+    finally:
+        D.REPAIR_SLACK_NOISE, D.TRIM = old, trim
+
+
+def test_the_days_repair_is_the_same_at_every_slicing():
+    """The repair bites here - the fading run is booked far past what the
+    phase drew, and the day's repair takes it back - and it takes the same
+    off at one call, hourly passes and ten-minute passes: the same runs, the
+    same Wh, the same hours in every signature, and never a run above what it
+    was booked at before (the 2026-10-12 re-bench's test: the first one
+    fixed nothing, its kiln scenario booked the same with the repair off)."""
+    off = _repair_run(3 * 86400.0, off=True)[1]
+    whole_fleet, whole = _repair_run(3 * 86400.0)
+    assert sum(s.energy_wh for s in whole) < sum(s.energy_wh for s in off) - 1000.0, \
+        (sum(s.energy_wh for s in whole), sum(s.energy_wh for s in off))
+    assert len(whole) == len(off) and all(a.energy_wh <= b.energy_wh + 1e-9 for a, b in zip(whole, off))
+    hours = lambda f: sorted((x.id, sorted((h, round(v, 6)) for h, v in x.hourly.items())) for x in f.main.signatures)  # noqa: E731
+    for step in (3600.0, 600.0):
+        fleet, got = _repair_run(step)
+        assert _as_filed(got) == _as_filed(whole), (step, [x for x in _as_filed(got) if x not in _as_filed(whole)][:3])
+        assert hours(fleet) == hours(whole_fleet), step
+
+
+def test_the_days_repair_after_a_restart():
+    """A site restarted after every pass repairs each day as one that ran
+    straight through: the day's runs and readings are stored with the library
+    (before, the day in progress was repaired from the restart only, and a
+    restart late in a busy evening could read a running load's level as the
+    floor). The general rule is test_every_field_is_persisted_or_derived."""
+    whole_fleet, whole = _repair_run(3600.0)
+    off = _repair_run(3600.0, off=True)[1]
+    assert sum(s.energy_wh for s in whole) < sum(s.energy_wh for s in off) - 1000.0
+    fleet, got = _repair_run(3600.0, restart=True)
+    assert _as_filed(got) == _as_filed(whole), [x for x in _as_filed(got) if x not in _as_filed(whole)][:3]
+    hours = lambda f: sorted((x.id, sorted((h, round(v, 6)) for h, v in x.hourly.items())) for x in f.main.signatures)  # noqa: E731
+    assert hours(fleet) == hours(whole_fleet)
 
 
 if __name__ == "__main__":
