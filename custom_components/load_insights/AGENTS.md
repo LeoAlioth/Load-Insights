@@ -191,6 +191,42 @@ the 60 s cadence. Site notes: HA_Configs/home/NOTES.md.
 | `SOURCE_IDLE_W` | 25 W | below this a reading carries nothing - a generator's idle AC input (`carries_load`, with `LIVE_SHARE`). `SOURCE_IDLE_SHARE` (0.9) went with `classify_source`, 2026-10-01 | physical | — | not tested |
 | `LIVE_SHARE` | 0.2 | how often a reference circuit must carry something to be one | ratio | — | not tested |
 
+### The day's repair (`Fleet._repair`, shipped c689283 2026-10-04; re-benched 2026-10-19)
+
+Once a day, 25 min past each local midnight on the readings' clock (slicing
+invariant by construction, and stored: `_repaired_to`, the day's runs and
+readings survive a restart), every detector's runs of the finished day are
+booked no higher than its phase drew above the day's floor (the level held a
+tenth of the day, by time) plus its measured noise; the excess comes off the
+runs no meter measured, the one open longest first, and their signatures'
+hours with them; the hourly statistics check then rewrites the named loads'
+hours. `REPAIR_SLACK_NOISE=1e9` switches it off (the bench's ablation).
+
+| dial | value | what it does | kind | valid range | tested |
+|---|---|---|---|---|---|
+| `REPAIR_DAY_S` | 86400 | the repaired span | policy | - | `test_the_days_repair_*` |
+| `REPAIR_FLOOR_SHARE` | 0.1 | the day's floor: the level a phase held this share of the day, by time | ratio | 0.05-0.2 | exp15 only |
+| `REPAIR_SLACK_NOISE` | 2.0 | slack above the drawn level, in measured noise | count | 1-4 | exp15 and the 2026-10-19 off/on cards |
+| `REPAIR_WAIT_S` | `MATCH_PATIENCE_S + METER_WAIT_CAP_S` | wait past the day's end so its last runs are filed | derived | - | - |
+
+Bench (exp15, 2026-10-04): impurity down at every site (the third site hidden 9.7 -> 7.3,
+Kozolec hidden 4.0 -> 2.2, Home fed devices 8.6 -> 6.7) for about a point of capture.
+**Re-benched 2026-10-19** (off -> on, capture / impurity, same code, ten days):
+Home devices hidden 33.2 / 15.4 -> 32.7 / 14.2, circuits 47.6 / 15.9 -> 44.9 / 13.1,
+fed 67.5 / 12.1 -> 65.0 / 10.6; Home partition fed 62.3 / 10.8 -> 62.5 / 9.2; Kozolec
+fed devices 84.8 / 5.5 -> 84.3 / 3.9, hidden 84.7 / 6.7 -> 84.3 / 5.3; the third site fed
+devices 96.5 / 8.3 -> 95.4 / 5.0. Impurity is down everywhere; Home with meters loses
+2.5-2.7 points of capture on the devices table (the plan's limit is two: left to the
+owner, the repair being live), the other tables and sites a point or less. No load
+loses more than 6 points (Vticnice - pisarna -5.9, Susilna -4.5); the pairing block
+and the session counts are identical on and off; the slicings agree (card
+`restart4`, repair on). The two candidates exp15 named (runs filed before their meter's
+location was known, a share given to a plug whose phase was not mapped) moved 5 runs in
+ten days; the kitchen fridge under the incubator (#64) is beyond a re-pairing: its
+steps are never declared (they hit the declared ones at chance). Tests:
+`test_the_days_repair_is_the_same_at_every_slicing`, `test_the_days_repair_after_a_restart`.
+Job note: `data/scorecard/jobs/repair-2026-10-12.md`.
+
 ### Naming page (policy, `const.py` / `detection.py` / `config_flow.py`)
 
 | dial | value | what it does | valid range |
@@ -461,29 +497,6 @@ two sites' ten-day exports unless stated.
 
 ### To explore or discuss (2026-10-03)
 
-- [ ] **Explore: a daily retroactive repair pass.** The statistics can be
-  rewritten, so once a day a more thorough pass could re-file the day's runs
-  with everything known by then, instead of patching each decision in the
-  stream. Candidates it would settle: runs filed into a signature before its
-  meter's location was known there (Sušilna's signature took plain ~270 W
-  workshop starts by size until the dehumidifier's first 20-hour run filed at
-  16:00 - the "filed while a meter held a run of that size" count was the
-  in-stream alternative); a share a rise gave to a plug whose phase was not yet
-  mapped (Blaževa Soba's PC took 107 W of a phase-A rise from another phase).
-  **Explored (exp15, 2026-10-04; overnight log):** built as `Fleet._repair`, a
-  due on the readings' clock 25 min past each local midnight (slicing
-  invariant by construction): every detector's runs of the day are booked no
-  higher than its phase drew above the day's floor (the level held a tenth of
-  the day, by time) - the excess off the runs no meter measured, the one open
-  longest first - and their signatures' hours with them; the hourly
-  statistics check then rewrites the named loads' hours. Impurity down at
-  every site (the third site hidden 9.7 -> 7.3, Kozolec hidden 4.0 -> 2.2, Home fed
-  devices 8.6 -> 6.7) for about a point of capture. The two candidates
-  above, re-checked with the day's meters, moved 5 runs in ten days (the
-  stream's held-meter and phase tests already catch them), and re-filing
-  into where a device files at the day's end moved none. The kitchen fridge
-  under the incubator (#64) is beyond a re-pairing: its steps are never
-  declared (they hit the declared ones at chance).
 - [ ] **Discuss: multi-step pairing** - a start that ramps in steps (Mansarda's
   ~400 W load: 142 -> 404 -> 465 W over 15 s) is booked at its first step and
   cannot pair with its full-size stop. Agreed meanwhile: a run placed at a
@@ -499,6 +512,8 @@ two sites' ten-day exports unless stated.
   1070 W hour-ahead over 1-3 Oct). Backtest scripts: scratchpad fc/ (bt.py).
 
 ### Confirmed, unfixed
+
+- **The day's repair and the clock.** After 25 October (end of summer time) the day boundary sits an hour off local midnight until the next restart (`main.tz_offset_s` is set once); any 24 h window is a valid day for the cap. A restart no longer shortens the day in progress: its runs and readings are stored.
 
 - **The detector reacts to readings that should not matter - partly fixed**
   (2026-10-04, the noise cards on 77c3159; traced and fixed in exp4, the
