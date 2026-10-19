@@ -7460,7 +7460,7 @@ class Fleet:
         totals = self._meter_totals(ph, since, main.event_window(), up)
         if GAIN_UNGATED:
             for n, (_, raw, noise_m, _) in totals.items():
-                if (raw is not None and (raw > 0) == up and size >= 10.0 * math.hypot(noise, noise_m)
+                if (raw and (raw > 0) == up and size >= 10.0 * math.hypot(noise, noise_m)
                         and 1.0 / (1.0 + METER_GAIN_BOUND) <= size / abs(raw) <= 1.0 + METER_GAIN_BOUND):
                     self._learn_gain(n, "p", size, raw)
         for n, (d, raw, noise_m, conf) in totals.items():
