@@ -42,12 +42,12 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *Run when the owner says WHEN, in the run order of `docs/plans/2026-10-12/README.md` (interleaved with Load Juggler's plans: see JUG-2, JUG-10, JUG-11, JUG-22). Plans lj-3 (verification) and lj-7 (tank flapping) are done.*
 
-- [ ] **INS-14 [FEATURE] Plan li-1: daily repair, re-bench on today's code** *(`li-1-daily-repair.md`, run order 3; the repair itself shipped in c689283)* - re-bench it on current code, add tests and docs; `REPAIR_SLACK_NOISE=1e9` switches it off for the ablation. Shares the `_day_rows` persistence with INS-13.
 - [ ] **INS-15 [FEATURE] Plan li-3: temperature term engages on statistical evidence** *(`li-3-temperature-evidence.md`, run order 4; not started: `covariates.MIN_HOURS = 336` is still the fixed rule)* - lean on the correlation instead of a fixed two weeks; the plan's defaults were approved (ALPHA 0.005 swept 0.05 / 0.0005, 3 % floor dropped unless its variant wins). Forecast work re-opened for this and li-4 (done) only.
 - [ ] **INS-17 [FEATURE] Plan li-5: `running_markdown` attribute** *(`li-5-running-markdown.md`, run order 6; not started)* - running loads (named and unnamed, with links) as one attribute, `#id` on the naming page, named-load on/off sensors move onto per-load runs; English only. Replaces the template the Kozolec Running-now card builds by hand.
 
 ## Other
 
+- [ ] **INS-18 The day's repair costs Home 2.5 points of capture on the devices table** *(re-benched 2026-10-19, `data/scorecard/jobs/repair-2026-10-12.md`)* - impurity is down everywhere, but Home fed devices 67.5 -> 65.0 is beyond the plan's two points (and its band). Live since 10-04, so unchanged; the owner decides: keep, or sweep `REPAIR_SLACK_NOISE` 1 / 2 / 4 and `REPAIR_FLOOR_SHARE` 0.05 / 0.1 / 0.2.
 - [ ] **INS-12 Home's detected-loads dashboard: To-name sub-list wording** - the Running now card is removed (2026-10-18); the wording of the sub-list under the To-name tile is not decided.
 
 ## Standing decisions
