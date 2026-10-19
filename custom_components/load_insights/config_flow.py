@@ -16,6 +16,7 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 
 from .const import (
     CONF_FORECAST_EXCLUDE,
+    CONF_HEAT_DEVICES,
     CONF_PLAN_CONSUMPTION_SCALE,
     CONF_PLAN_DAYS,
     CONF_PLAN_FULL_SOC,
@@ -71,6 +72,7 @@ from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import area_id, device_rows, meter_devices, named_load_energy, runner_of
 from .insights.inputs import LOAD_PREFIX, add_inputs, relink, suggest_inputs
+from .insights.heatnudge import KINDS, parse_devices
 from .insights.model import SiteModel
 from .insights.named import chosen_name
 
@@ -447,7 +449,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "plan", "detection", "grid",
+            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "plan", "heat", "detection", "grid",
                           "inverters", "naming"],
         )
 
@@ -907,6 +909,44 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
         return self.async_show_form(
             step_id="plan", data_schema=vol.Schema(_plan_schema(dict(self.config_entry.options), devices)))
+
+    async def async_step_heat(self, user_input: dict[str, Any] | None = None):
+        """Heat devices (insights/heatnudge.py), SHADOW MODE: add one device (a name, its power or
+        energy sensor, its kind, and optionally the target temperature as a number or an
+        entity and an activity entity) or remove some. Nothing is written to any device. Every
+        other page's options are carried over whole."""
+        rows = list(self.config_entry.options.get(CONF_HEAT_DEVICES) or [])
+        if user_input is not None:
+            gone = set(user_input.get("remove") or [])
+            rows = [r for r in rows if r.get("name") not in gone]
+            name = str(user_input.get("name") or "").strip()
+            if name and user_input.get("source"):
+                rows = [r for r in rows if r.get("name") != name]
+                rows.append({k: v for k, v in {
+                    "name": name, "source": user_input["source"],
+                    "kind": user_input.get("kind") if user_input.get("kind") in KINDS else None,
+                    "target": user_input.get("target"), "target_entity": user_input.get("target_entity"),
+                    "activity_entity": user_input.get("activity_entity")}.items() if v not in (None, "")})
+            keep = {k: v for k, v in self.config_entry.options.items() if k != CONF_HEAT_DEVICES}
+            return self.async_create_entry(data={**keep, **({CONF_HEAT_DEVICES: rows} if rows else {})})
+        schema = {
+            vol.Optional("name"): str,
+            vol.Optional("source"): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class=["power", "energy"])),
+            vol.Optional("kind", default="space_heating"): selector.SelectSelector(selector.SelectSelectorConfig(
+                options=list(KINDS), translation_key="heat_kind", mode=selector.SelectSelectorMode.DROPDOWN)),
+            vol.Optional("target"): _num(10, 70, 0.5, "\u00b0C"),
+            vol.Optional("target_entity"): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["number", "input_number", "sensor"])),
+            vol.Optional("activity_entity"): selector.EntitySelector(selector.EntitySelectorConfig()),
+        }
+        if rows:
+            schema[vol.Optional("remove")] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[r["name"] for r in rows if r.get("name")], multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+        have = parse_devices(rows)
+        listing = "; ".join(f"{d['name']} ({d['kind']}, {d['target_entity'] or str(d['target']) + ' C'})" for d in have) or "-"
+        return self.async_show_form(step_id="heat", data_schema=vol.Schema(schema),
+                                    description_placeholders={"devices": listing})
 
     async def _link_targets(self) -> dict:
         """What an input can be linked to: every device of the Energy

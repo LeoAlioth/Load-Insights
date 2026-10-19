@@ -57,6 +57,12 @@
             },
             "base_consumption": {
                 "default": "mdi:home-clock-outline"
+            },
+            "heat_index": {
+                "default": "mdi:heat-pump-outline"
+            },
+            "heat_scorecard": {
+                "default": "mdi:scoreboard-outline"
             }
         },
         "binary_sensor": {
@@ -65,6 +71,9 @@
                 "state": {
                     "on": "mdi:power-plug"
                 }
+            },
+            "heat_nudge_now": {
+                "default": "mdi:thermometer-chevron-up"
             }
         },
         "button": {

@@ -88,11 +88,20 @@
             },
             "base_consumption": {
                 "name": "Base consumption"
+            },
+            "heat_index": {
+                "name": "COP index"
+            },
+            "heat_scorecard": {
+                "name": "Heat nudge scorecard"
             }
         },
         "binary_sensor": {
             "named_load_running": {
                 "name": "Running"
+            },
+            "heat_nudge_now": {
+                "name": "Would nudge now"
             }
         },
         "button": {
@@ -118,7 +127,8 @@
                     "detection": "Load detection",
                     "naming": "Name a detected load",
                     "grid": "Grid connection",
-                    "inverters": "Inverters"
+                    "inverters": "Inverters",
+                    "heat": "Heat devices"
                 }
             },
             "inputs": {
@@ -409,6 +419,28 @@
                     "plan_full_soc_entity": "Optional. A number that holds the full level, for example the SOC limit a load manager uses.",
                     "plan_spread_evenly": "Devices whose energy the three planning sensors spread evenly over the horizon instead of where it is forecast - a hot water tank or heater whose boost moves to midday while a dull spell needs it round the clock. Only the planning sensors; their forecasts are unchanged."
                 }
+            },
+            "heat": {
+                "title": "Heat devices",
+                "description": "Shadow mode: for each heat pump, or air conditioner or heat pump used as heating, Load Insights works out in which hours the heat would cost the least electricity, and later scores that against what the device really did. Nothing is written to any device. Add one device at a time, or remove the ticked ones. Now: {devices}",
+                "data": {
+                    "name": "Name",
+                    "source": "Power or energy sensor",
+                    "kind": "Kind",
+                    "target": "Target temperature (°C)",
+                    "target_entity": "Target temperature entity",
+                    "activity_entity": "Activity entity",
+                    "remove": "Remove"
+                },
+                "data_description": {
+                    "name": "What the device is called. Naming one that exists replaces it.",
+                    "source": "A power sensor (hourly mean) or an energy sensor (hourly change). A counter that only moves once a day, such as MELCloud's, is recognised and its day is spread over the hours - see the plan.",
+                    "kind": "Sets the default target and how far an hour of heat may be moved: a tank a lot, a floor or a house some, a room little.",
+                    "target": "Flow, tank or room temperature the device works to. Empty: the kind's default (about 35 for space heating, 50 for hot water, 21 for a room).",
+                    "target_entity": "Optional. An entity that holds the target and takes over from the number while it reads.",
+                    "activity_entity": "Optional. A climate, switch or binary sensor that says when the device heats. Used only to place the hours of a device that reports once a day.",
+                    "remove": "Devices to take off the list."
+                }
             }
         },
         "abort": {
@@ -471,6 +503,13 @@
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"
+            }
+        },
+        "heat_kind": {
+            "options": {
+                "space_heating": "Space heating (floor or radiators, about 35 °C)",
+                "hot_water": "Hot water tank (about 50 °C)",
+                "room": "Direct room heating or air conditioner (room temperature)"
             }
         }
     },

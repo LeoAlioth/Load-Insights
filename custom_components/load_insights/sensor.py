@@ -18,9 +18,10 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_BATTERY_CAPACITY_ENTITY, DOMAIN
+from .const import CONF_BATTERY_CAPACITY_ENTITY, CONF_HEAT_DEVICES, DOMAIN
 from homeassistant.util import dt as dt_util
 
+from .insights.heatnudge import parse_devices
 from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
@@ -77,6 +78,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     entities += [DeviceForecastSensor(coordinator, entry, d) for d in site.devices]
     entities += [DeviceRoomSensor(coordinator, entry, d) for d in site.devices]
     entities += [DeviceRateSensor(coordinator, entry, d) for d in site.devices]
+    # Heat nudge, shadow mode: per configured heat device the COP index and the scorecard (the
+    # would-nudge-now binary sensor is on the binary_sensor platform). A device taken off the
+    # options page loses its entities here, so none is left unavailable in the registry.
+    heat = parse_devices(entry.options.get(CONF_HEAT_DEVICES))
+    live = {heat_uid(entry.entry_id, d["id"], w) for d in heat for w in ("index", "scorecard", "nudge")}
+    registry = er.async_get(hass)
+    for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (ent.unique_id or "").startswith(f"{entry.entry_id}_heatnudge_") and ent.unique_id not in live:
+            registry.async_remove(ent.entity_id)
+    entities += [e for d in heat for e in (HeatIndexSensor(coordinator, entry, d), HeatScorecardSensor(coordinator, entry, d))]
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
@@ -469,6 +480,10 @@ class DeviceRateSensor(CoordinatorEntity, SensorEntity):
         return super().available and self.native_value is not None
 
 
+def heat_uid(entry_id: str, device_id: str, what: str) -> str:
+    return f"{entry_id}_heatnudge_{device_id}_{what}"
+
+
 def _child_device(entry: ConfigEntry, key: str, name: str, model: str) -> DeviceInfo:
     """A device of its own, pointed at the site device by the registry id.
 
@@ -783,6 +798,113 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
             return {}
         # the base consumption is never held: unknown is an answer, so it has no held_since
         return {**r["attributes"], **({"held_since": r["held_since"]} if "held_since" in r else {})}
+
+
+class _HeatBase(CoordinatorEntity, SensorEntity):
+    """One heat device's shadow-mode reading (insights/heatnudge.py), from the coordinator's
+    hourly refresh. Nothing here is sent to any device."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+    def __init__(self, coordinator: InsightsCoordinator, entry: ConfigEntry, device: dict, what: str, key: str) -> None:
+        super().__init__(coordinator)
+        self._heat_id = device["id"]
+        self._attr_has_entity_name = True
+        self._attr_translation_key = key
+        self._attr_unique_id = heat_uid(entry.entry_id, device["id"], what)
+        self._attr_device_info = _child_device(entry, f"heat_{device['id']}", device["name"], "Heat device")
+
+    def _reading(self) -> Optional[dict]:
+        data: Optional[InsightsData] = self.coordinator.data
+        return ((data.heat or {}).get(self._heat_id)) if data is not None else None
+
+
+class HeatIndexSensor(_HeatBase):
+    """State: the COP index of the hour under way, 1.00 being the day's average hour (above 1: a
+    better hour to make heat). A PROXY from the outdoor temperature and the device's target, not a
+    measured COP. Attributes: the hourly series for today and tomorrow, whether the shadow schedule
+    would nudge now, the expected gain and why it is not computed if it is not."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})        # the series and the day summaries are live detail
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator, entry, device: dict) -> None:
+        super().__init__(coordinator, entry, device, "index", "heat_index")
+
+    @property
+    def available(self) -> bool:
+        r = self._reading()
+        return super().available and r is not None and r["index_now"] is not None
+
+    @property
+    def native_value(self) -> Optional[float]:
+        r = self._reading()
+        return None if r is None else r["index_now"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        r = self._reading()
+        if r is None:
+            return {}
+
+        def brief(day):
+            return None if day is None else {k: v for k, v in day.items() if k not in ("hours", "nudge")} | {
+                "nudge_hours": [datetime.fromtimestamp(k, dt_util.DEFAULT_TIME_ZONE).hour for k in day["nudge"]]}
+        return {
+            "would_nudge_now": r["would_nudge_now"], "cop_proxy_now": r["cop_now"], "frost_risk_now": r["frost_now"],
+            "kind": r["kind"], "target_c": r["target_c"], "reading": r["reading"], "why": r["why"],
+            "today": brief(r["today"]), "tomorrow": brief(r["tomorrow"]),
+            "series": [{**{k: v for k, v in h.items() if k != "start"},
+                        "start": datetime.fromtimestamp(h["start"], dt_util.DEFAULT_TIME_ZONE).isoformat(),
+                        "nudge": h["start"] in d["nudge"]}
+                       for d in (r["today"], r["tomorrow"]) if d for h in d["hours"]],
+            "proxy": r["proxy"], "computed_at": r["computed_at"],
+        }
+
+
+class HeatScorecardSensor(_HeatBase):
+    """State: the gap of the newest scored day, in degrees: the outdoor temperature the shadow
+    schedule would have used, weighted by the electricity, less the one the device really used it
+    at. Positive: a nudge would have used warmer hours. Attributes: the day's two figures, the
+    means over the days measured, the extra peak a nudge would have caused, and the last 30 days."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})        # the 30 recent days are in the stored scorecard
+    _attr_native_unit_of_measurement = "K"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator, entry, device: dict) -> None:
+        super().__init__(coordinator, entry, device, "scorecard", "heat_scorecard")
+
+    def _last(self) -> Optional[dict]:
+        r = self._reading()
+        return ((r or {}).get("scorecard") or {}).get("last")
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._last() is not None
+
+    @property
+    def native_value(self) -> Optional[float]:
+        last = self._last()
+        return None if last is None else last["gap"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        r = self._reading()
+        card = (r or {}).get("scorecard") or {}
+        last = card.get("last")
+        if not last:
+            return {"why": (r or {}).get("why")}
+        return {"date": last["date"], "actual_weighted_temperature": last["actual_t"],
+                "shadow_weighted_temperature": last["shadow_t"], "gap": last["gap"],
+                "shadow_weighted_temperature_forecast": last["shadow_t_forecast"], "gap_forecast": last["gap_forecast"],
+                "energy_kwh": last["energy_kwh"], "saving_pct": last["saving_pct"], "extra_peak_kw": last["extra_peak_kw"],
+                "basis": last["basis"], "days_measured": card["days_measured"], "days_modelled": card["days_modelled"],
+                "mean_gap": card["mean_gap"], "mean_gap_forecast": card["mean_gap_forecast"],
+                "mean_saving_pct": card["mean_saving_pct"], "mean_extra_peak_kw": card["mean_extra_peak_kw"],
+                "recent": card["recent"], "why": r["why"]}
 
 
 class BaseLoadSensor(_PowerW, _DetectionBase):

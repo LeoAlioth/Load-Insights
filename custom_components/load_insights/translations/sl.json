@@ -88,11 +88,20 @@
             },
             "base_consumption": {
                 "name": "Osnovna dnevna poraba"
+            },
+            "heat_index": {
+                "name": "Indeks COP"
+            },
+            "heat_scorecard": {
+                "name": "Ocena dviga ogrevanja"
             }
         },
         "binary_sensor": {
             "named_load_running": {
                 "name": "Deluje"
+            },
+            "heat_nudge_now": {
+                "name": "Bi dvignil ogrevanje zdaj"
             }
         },
         "button": {
@@ -118,7 +127,8 @@
                     "detection": "Zaznavanje porabnikov",
                     "naming": "Poimenuj zaznan porabnik",
                     "grid": "Priključek na omrežje",
-                    "inverters": "Razsmerniki"
+                    "inverters": "Razsmerniki",
+                    "heat": "Naprave za ogrevanje"
                 }
             },
             "inputs": {
@@ -409,6 +419,28 @@
                     "plan_full_soc_entity": "Neobvezno. Število z ravnjo polne baterije, na primer meja SOC upravljalca bremen.",
                     "plan_spread_evenly": "Naprave, katerih energijo trije senzorji načrtovanja enakomerno razporedijo čez obzorje namesto tja, kjer je napovedana - bojler ali grelec, katerega boost se prestavi na poldne, medtem ko oblačno obdobje energijo potrebuje celo dan. Samo za senzorje načrtovanja; njihove napovedi ostanejo enake."
                 }
+            },
+            "heat": {
+                "title": "Naprave za ogrevanje",
+                "description": "Senčni način: za vsako toplotno črpalko ali klimo oziroma toplotno črpalko, ki ogreva, Load Insights izračuna, v katerih urah bi toplota stala najmanj elektrike, in to kasneje primerja s tem, kar je naprava res naredila. Nič se ne zapiše v nobeno napravo. Dodajte eno napravo naenkrat ali odstranite označene. Zdaj: {devices}",
+                "data": {
+                    "name": "Ime",
+                    "source": "Senzor moči ali energije",
+                    "kind": "Vrsta",
+                    "target": "Ciljna temperatura (°C)",
+                    "target_entity": "Entiteta ciljne temperature",
+                    "activity_entity": "Entiteta delovanja",
+                    "remove": "Odstrani"
+                },
+                "data_description": {
+                    "name": "Kako se naprava imenuje. Ime, ki že obstaja, napravo zamenja.",
+                    "source": "Senzor moči (urno povprečje) ali energije (urna sprememba). Števec, ki se premakne le enkrat na dan, kot MELCloudov, se prepozna in njegov dan se razporedi po urah - glej načrt.",
+                    "kind": "Določa privzeto ciljno temperaturo in kako daleč se sme ura toplote premakniti: bojler zelo, tla ali hiša nekoliko, prostor malo.",
+                    "target": "Temperatura vode ali prostora, na katero naprava dela. Prazno: privzeta za vrsto (okoli 35 za talno ogrevanje, 50 za toplo vodo, 21 za prostor).",
+                    "target_entity": "Neobvezno. Entiteta s ciljno temperaturo, ki prevzame od števila, dokler daje vrednost.",
+                    "activity_entity": "Neobvezno. Klimatska naprava, stikalo ali binarni senzor, ki pove, kdaj naprava ogreva. Uporabi se le za postavitev ur naprave, ki poroča enkrat na dan.",
+                    "remove": "Naprave, ki naj se odstranijo s seznama."
+                }
             }
         },
         "abort": {
@@ -471,6 +503,13 @@
                 "utility": "Omrežje",
                 "generator": "Generator",
                 "none": "Nič - otočni sistem"
+            }
+        },
+        "heat_kind": {
+            "options": {
+                "space_heating": "Talno ali radiatorsko ogrevanje (okoli 35 °C)",
+                "hot_water": "Bojler za toplo vodo (okoli 50 °C)",
+                "room": "Neposredno ogrevanje prostora ali klima (temperatura prostora)"
             }
         }
     },
