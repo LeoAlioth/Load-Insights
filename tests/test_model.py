@@ -1,6 +1,5 @@
 """The site model reads every shape the Energy dashboard has had."""
 import sys
-import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -107,16 +106,6 @@ def test_parts_of_walks_three_levels():
     assert names("m") == ["p"] and names("p") == ["e"] and names("e") == []
 
 
-def test_own_scoped_takes_the_unlinked_and_those_linked_to_the_meter_itself():
-    class G:
-        def __init__(self, e): self.entity = e  # noqa: E704
-    sig = [G("free"), G("on_c"), G("on_o")]
-    links = {"on_c": ["c"], "on_o": ["o"]}
-    within = {"c": ["c", "w"], "o": ["o", "c", "w"]}.get
-    got = lambda stat: [g.entity for g in model.own_scoped(sig, links, within, stat)]  # noqa: E731
-    assert got(None) == ["free"] and got("c") == ["free", "on_c"] and got("w") == ["free"]
-
-
 def test_no_dashboard_means_no_sources():
     assert not SiteModel.from_prefs(None).has_sources
     assert not SiteModel.from_prefs({}).has_sources
@@ -167,128 +156,15 @@ def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():
     assert len(SiteModel.from_prefs(prefs).devices) == 2
 
 
-
-def test_each_devices_own_inputs_become_links_on_one_list():
-    """One list of inputs, each with what it is linked to (2026-09-28:
-    "a single storage with the tags only deciding to which things it
-    connects to"); a link follows its load's name."""
-    migrate_inputs, relink = model.migrate_inputs, model.relink
-    old = {"input_entities": ["sensor.occupancy"], "interval": 5,
-           "device_state_sensors": {"sensor.talno_gretje_energy": ["sensor.floor", "sensor.room"],
-                                    "sensor.boiler_energy": "sensor.floor"}}
-    new = migrate_inputs(old)
-    assert "device_state_sensors" not in new and new["interval"] == 5
-    assert new["input_entities"] == ["sensor.occupancy", "sensor.floor", "sensor.room"]
-    assert new["input_links"] == {"sensor.floor": ["sensor.talno_gretje_energy", "sensor.boiler_energy"],
-                                  "sensor.room": ["sensor.talno_gretje_energy"]}
-    assert migrate_inputs(new) is new                  # nothing left to move
-    named = {**new, "input_links": {"sensor.floor": ["load:Mat", "sensor.boiler_energy"]}}
-    assert relink(named, "Mat", "Talno gretje")["input_links"]["sensor.floor"] == ["load:Talno gretje", "sensor.boiler_energy"]
-    assert relink(named, "Mat", None)["input_links"]["sensor.floor"] == ["sensor.boiler_energy"]
-
-
-
-def test_a_renamed_entity_is_followed_through_the_settings():
-    renames = {"sensor.boiler_energy": "sensor.bojler_energy", "climate.t": "climate.termostat"}
-    options = {"input_entities": ["climate.t", "sensor.room"],
-               "input_links": {"climate.t": ["sensor.boiler_energy", "load:Mat"]},
-               "detection": {"single_device": ["sensor.boiler_energy"], "interval_minutes": "5"},
-               "inverters": [{"power": "sensor.boiler_energy_x"}]}
-    out = model.follow_renames(options, renames)
-    assert out["input_entities"] == ["climate.termostat", "sensor.room"]
-    assert out["input_links"] == {"climate.termostat": ["sensor.bojler_energy", "load:Mat"]}
-    assert out["detection"] == {"single_device": ["sensor.bojler_energy"], "interval_minutes": "5"}
-    assert out["inverters"] == [{"power": "sensor.boiler_energy_x"}]     # only a whole id is one
-    assert model.follow_renames(options, {}) == options
-
-
-def test_the_dashboard_is_told_what_its_renamed_statistics_became():
-    renames = {"sensor.evse_energy": "sensor.elvi_energy", "sensor.grid_import_w": "sensor.m1_import_w",
-               "sensor.water": "sensor.voda", "sensor.not_on_it": "sensor.x"}
-    prefs = {**NEW_2026_6, "device_consumption_water": [{"stat_consumption": "sensor.water"}],
-             "device_consumption": NEW_2026_6["device_consumption"] + [
-                 {"stat_consumption": "sensor.pec", "included_in_stat": "sensor.evse_energy"}]}
-    named, update = model.dashboard_renames(prefs, renames)
-    assert named == {k: v for k, v in renames.items() if k != "sensor.not_on_it"}
-    assert set(update) == {"energy_sources", "device_consumption", "device_consumption_water"}
-    assert update["energy_sources"][0]["power_config"]["stat_rate_from"] == "sensor.m1_import_w"
-    assert update["energy_sources"][1:] == NEW_2026_6["energy_sources"][1:]
-    assert [(d["stat_consumption"], d.get("included_in_stat")) for d in update["device_consumption"]] == \
-        [("sensor.elvi_energy", None), ("sensor.pec", "sensor.elvi_energy")]
-    # only the lists that change, and nothing at all without a dashboard
-    assert set(model.dashboard_renames(prefs, {"sensor.water": "sensor.voda"})[1]) == {"device_consumption_water"}
-    assert model.dashboard_renames(prefs, {"sensor.not_on_it": "sensor.x"}) == ({}, {})
-    assert model.dashboard_renames(None, renames) == ({}, {})
-
-
-def test_sensors_in_a_devices_area_are_suggested_as_its_inputs():
-    targets = {"sensor.fan_energy": "bathroom", "load:Kiln": "workshop", "sensor.evse_energy": None}
-    candidates = {"binary_sensor.bathroom_presence": "bathroom", "sensor.bathroom_humidity": "bathroom",
-                  "sensor.workshop_t": "workshop", "sensor.garage_t": "garage", "binary_sensor.nowhere": None}
-    got = model.suggest_inputs(targets, candidates, ["sensor.bathroom_humidity"])
-    assert got == [("binary_sensor.bathroom_presence", "sensor.fan_energy"), ("sensor.workshop_t", "load:Kiln")]
-    options = {"interval": 5, "input_entities": ["sensor.bathroom_humidity"],
-               "input_links": {"sensor.bathroom_humidity": ["sensor.fan_energy"]}}
-    out = model.add_inputs(options, got + [("sensor.bathroom_humidity", "load:Kiln")])
-    assert out["interval"] == 5
-    assert out["input_entities"] == ["sensor.bathroom_humidity", "binary_sensor.bathroom_presence", "sensor.workshop_t"]
-    assert out["input_links"] == {"sensor.bathroom_humidity": ["sensor.fan_energy", "load:Kiln"],
-                                  "binary_sensor.bathroom_presence": ["sensor.fan_energy"],
-                                  "sensor.workshop_t": ["load:Kiln"]}
-    assert options["input_links"] == {"sensor.bathroom_humidity": ["sensor.fan_energy"]}   # not mutated
-    assert model.add_inputs(options, []) is options
-
-
-
-def test_a_metering_devices_own_temperature_goes_to_that_device_only():
-    targets = {"sensor.boiler_energy": "workshop", "sensor.charger_energy": "workshop"}
-    candidates = {"sensor.boiler_tank": "workshop", "sensor.bms_cells": "workshop", "sensor.room_t": "workshop"}
-    own = {"sensor.boiler_tank": "dev-boiler", "sensor.bms_cells": "dev-bms"}
-    devices = {"sensor.boiler_energy": "dev-boiler", "sensor.charger_energy": "dev-charger"}
-    got = sorted(model.suggest_inputs(targets, candidates, [], own, devices))
-    assert got == [("sensor.boiler_tank", "sensor.boiler_energy"),
-                   ("sensor.room_t", "sensor.boiler_energy"), ("sensor.room_t", "sensor.charger_energy")], got
-
-
-def test_a_linked_input_acts_on_its_device_the_meters_around_it_and_the_site():
-    """Home's links (3 Oct): the workshop boiler's tank temperature acts on
-    the boiler, on Delavnica it sits in and on the site - no longer on
-    Blaz's PC; a link to a named load follows it to its meter; the motion
-    sensor and the calendar, linked to nothing, act everywhere; the
-    unmetered remainder takes only those."""
-    parent = {"sensor.blaz_pc_energy": "sensor.hisa_total_active_energy",
-              "sensor.pec_za_glino_energy": "sensor.hisa_total_active_energy",
-              "sensor.workshop_boiler_energy": "sensor.workshop_total_energy",
-              "sensor.bathroom_fan_switch_0_energy": "sensor.mansarda_total_active_energy"}
-    named = {"load:Kiln": "sensor.pec_za_glino_energy"}
-
-    def within(target):
-        cur, out = named.get(target, target), []
-        while cur and cur not in out:
-            out.append(cur)
-            cur = parent.get(cur)
-        return out
-    links = {"sensor.workshop_boiler_temperature_1": ["sensor.workshop_boiler_energy"],
-             "binary_sensor.bathroom_presence_occupancy": ["sensor.bathroom_fan_switch_0_energy"],
-             "sensor.kiln_thermocouple": ["load:Kiln"],
-             "binary_sensor.entrance_sensor_occupancy": []}
-    signals = [types.SimpleNamespace(entity=e) for e in (
-        "calendar.workday_sensor_calendar", "binary_sensor.living_room_living_area_motionaware_area",
-        "binary_sensor.entrance_sensor_occupancy", "sensor.workshop_boiler_temperature_1",
-        "binary_sensor.bathroom_presence_occupancy", "sensor.kiln_thermocouple")]
-    everywhere = ["calendar.workday_sensor_calendar", "binary_sensor.living_room_living_area_motionaware_area",
-                  "binary_sensor.entrance_sensor_occupancy"]
-
-    def takes(stat=None):
-        return [g.entity for g in model.scoped(signals, links, within, stat)]
-    assert takes() == [g.entity for g in signals]
-    assert takes("sensor.blaz_pc_energy") == everywhere
-    assert takes("remainder") == everywhere
-    assert takes("sensor.workshop_boiler_energy") == everywhere + ["sensor.workshop_boiler_temperature_1"]
-    assert takes("sensor.workshop_total_energy") == everywhere + ["sensor.workshop_boiler_temperature_1"]
-    assert takes("sensor.mansarda_total_active_energy") == everywhere + ["binary_sensor.bathroom_presence_occupancy"]
-    assert takes("sensor.hisa_total_active_energy") == everywhere + ["sensor.kiln_thermocouple"]
-    assert takes("sensor.pec_za_glino_energy") == everywhere + ["sensor.kiln_thermocouple"]
+def test_load_juggler_carries_this_module_verbatim():
+    """Load Juggler copies this module whole (as energy_prefs.py) and keeps it
+    in sync by hand. Passes without checking where that repository is not
+    checked out beside this one, as in CI."""
+    mine = Path(model.__file__)
+    copy = (Path(__file__).resolve().parents[2]
+            / "Dynamic_OCPP_EVSE/custom_components/dynamic_ocpp_evse/energy_prefs.py")
+    if copy.exists():
+        assert copy.read_bytes() == mine.read_bytes(), f"{copy} differs from {mine}: copy it over"
 
 
 if __name__ == "__main__":

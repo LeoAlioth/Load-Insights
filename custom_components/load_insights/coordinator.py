@@ -63,13 +63,13 @@ from .const import (
     REFRESH_SECOND,
 )
 from .insights.calendars import CalendarSignals
-from .insights.inputs import label_history, project, usable
+from .insights.inputs import LOAD_PREFIX, label_history, own_scoped, project, scoped, usable
 from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights.grid import GridForecast, build as build_grid
 from .detection import named_load_energy
 from .insights.planning import absorption_rate, base_consumption, plan_all, room_from_series, spread_evenly, sun_window
-from .insights.model import LOAD_PREFIX, SiteModel, own_scoped, scoped
+from .insights.model import SiteModel
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
 from .insights.thermal import KINDS, heating_runs, kwh_per_degree, room_from_thermal

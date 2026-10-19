@@ -21,7 +21,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er, 
 from .const import DOMAIN
 from .detection import device_uid, runner_of
 from .insights.detect import implausible_baseline
-from .insights.model import dashboard_renames
+from .insights.renames import dashboard_renames
 
 HALF_TEMPERATURE = "temperature_pair_incomplete"
 NO_PV_FORECAST = "no_pv_forecast"

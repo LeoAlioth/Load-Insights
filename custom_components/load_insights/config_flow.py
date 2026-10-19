@@ -70,7 +70,8 @@ NAMED = "\x00named"            # the named loads' page, which is not a meter's
 from .insights.classify import _fmt_s, _fmt_w
 from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
 from .detection import area_id, device_rows, meter_devices, named_load_energy, runner_of
-from .insights.model import LOAD_PREFIX, SiteModel, add_inputs, relink, suggest_inputs
+from .insights.inputs import LOAD_PREFIX, add_inputs, relink, suggest_inputs
+from .insights.model import SiteModel
 from .insights.named import chosen_name
 
 # What a room says about the devices in it: whether someone is there, and its

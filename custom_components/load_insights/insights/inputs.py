@@ -112,3 +112,97 @@ def project(labels: Dict[float, str], horizon_keys: Sequence[float],
 def usable(labels: Dict[float, str]) -> bool:
     """A fit needs a week of hours and more than one label to compare."""
     return len(labels) >= MIN_HOURS and len({v for v in labels.values()}) > 1
+
+
+# An input's link to a named load rather than to an Energy dashboard device:
+# a load is named before anyone could put it on the dashboard.
+LOAD_PREFIX = "load:"
+
+
+def migrate_inputs(options: dict) -> dict:
+    """The options as they were before 2026-09-28 - the site's inputs, and
+    each device's own under ``device_state_sensors`` - as ONE list of inputs
+    in ``input_entities``, each with what it is linked to in ``input_links``
+    (2026-09-28: "a single storage with the tags only deciding to which
+    things it connects to"). Every input counts for the whole site; a link
+    adds a device, and that device's parents with it. Unchanged when there
+    is nothing to move."""
+    legacy = options.get("device_state_sensors")
+    if legacy is None:
+        return options
+    return add_inputs({k: v for k, v in options.items() if k != "device_state_sensors"},
+                      [(eid, device) for device, eids in legacy.items()
+                       for eid in ([eids] if isinstance(eids, str) else list(eids or []))])
+
+
+def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
+    """The options with every link to the named load ``old`` following it to
+    ``new`` - or dropped, when the name was cleared."""
+    if not old or old == new:
+        return options
+    links = {}
+    for eid, targets in (options.get("input_links") or {}).items():
+        moved = [(LOAD_PREFIX + new if new else None) if t == LOAD_PREFIX + old else t for t in targets]
+        links[eid] = list(dict.fromkeys(t for t in moved if t))
+    return {**options, "input_links": links}
+
+
+def scoped(signals, links: dict, within, stat: Optional[str]) -> list:
+    """The signals the forecast of ``stat`` takes (2026-10-03). An
+    input linked to nothing acts on every forecast. One linked to devices
+    acts on those, on every meter they sit inside - ``within(target)``, the
+    walk the nowcast's links take - and on the site (``stat`` None), which
+    every meter sits inside; on nothing else, the unmetered remainder
+    included. Unscoped, the workshop boiler's tank temperature was fitted
+    on Blaz's PC and engaged there."""
+    return [g for g in signals
+            if stat is None or not links.get(g.entity) or any(stat in within(t) for t in links[g.entity])]
+
+
+def own_scoped(signals, links: dict, within, stat: Optional[str]) -> list:
+    """The signals the OWN part of ``stat`` takes (its series less its mature
+    parts): the inputs linked to nothing, and those linked to ``stat`` itself.
+    One linked to a part belongs to that part. For the site (None) that is
+    the unlinked ones alone, as the unmetered remainder always took them."""
+    return [g for g in signals
+            if not links.get(g.entity) or (stat is not None and any(within(t)[:1] == [stat] for t in links[g.entity]))]
+
+
+def suggest_inputs(targets: dict, candidates: dict, inputs, own: Optional[dict] = None,
+                   target_devices: Optional[dict] = None) -> list:
+    """(entity, target) for every candidate sharing an area with a target -
+    a dashboard device or a named load - that is not an input yet. Both map
+    an id to its area; without one nothing matches (2026-09-29).
+
+    A candidate in ``own`` (entity -> device) is a metering device's own
+    reading - a boiler's tank, a battery's cells, a car's cabin - and goes
+    only to a target on that same device (``target_devices``, target ->
+    device): the boiler's tank temperature is the boiler's best input and
+    says nothing about the room it stands in."""
+    taken, own, target_devices = set(inputs or ()), own or {}, target_devices or {}
+    out = []
+    for eid, where in candidates.items():
+        if eid in taken:
+            continue
+        for t, there in targets.items():
+            if eid in own:
+                if target_devices.get(t) is not None and target_devices.get(t) == own[eid]:
+                    out.append((eid, t))
+            elif where and there == where:
+                out.append((eid, t))
+    return out
+
+
+def add_inputs(options: dict, picks) -> dict:
+    """The options with each picked (entity, target): the entity an input,
+    linked to the target. Everything else exactly as it was."""
+    if not picks:
+        return options
+    inputs = list(options.get("input_entities") or [])
+    links = {k: list(v) for k, v in (options.get("input_links") or {}).items()}
+    for eid, target in picks:
+        if eid not in inputs:
+            inputs.append(eid)
+        if target not in links.setdefault(eid, []):
+            links[eid].append(target)
+    return {**options, "input_entities": inputs, "input_links": links}

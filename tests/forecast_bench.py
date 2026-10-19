@@ -47,6 +47,7 @@ from _load import load  # noqa: E402
 P = load("insights.profile")
 S = load("insights.series")
 M = load("insights.model")
+INP = load("insights.inputs")
 SC = load("insights.scoring")
 TZ = ZoneInfo("Europe/Ljubljana")
 DATA = Path(__file__).resolve().parents[1] / "data" / "forecast"
@@ -258,7 +259,7 @@ def _origin(args):
             continue
         sub = rows[i:j]
         stat = None if key == "site" else key
-        sigs = M.scoped(signals, CTX["links"], CTX["within"], stat) or None
+        sigs = INP.scoped(signals, CTX["links"], CTX["within"], stat) or None
         nums = []
         for st in CTX["linked"].get(key, []):
             if st in CTX["mean"]:
