@@ -243,6 +243,13 @@ class ForecastPowerSensor(_PowerW, _Base):
                 "heating_w_per_degree": round(fc.temperature.heating_kwh_per_degh * 1000.0, 1),
                 "cooling_w_per_degree": round(fc.temperature.cooling_kwh_per_degh * 1000.0, 1),
                 "residual_explained": round(fc.temperature.explained, 3),
+                # the evidence behind it (INS-15): each coefficient's t over day blocks,
+                # the t it needed at the days the fit had
+                "t_heating": round(fc.temperature.t_heating, 2),
+                "t_cooling": round(fc.temperature.t_cooling, 2),
+                "t_needed": round(fc.temperature.t_needed, 2),
+                "days_fitted": fc.temperature.days,
+                "reason": fc.temperature.reason,
                 "hours_fitted": fc.temperature.hours,
                 "horizon_hours_with_forecast": fc.hours_with_forecast_temperature,
                 "weather_entity": data.weather_entity,
@@ -376,6 +383,8 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     "residual_explained_by_lead": [round(e, 3) for e in fc.nowcast.explained],
                     "state_mean": round(fc.nowcast.state_mean, 2) if fc.nowcast.engaged else None,
                     "hours_fitted": fc.nowcast.hours,
+                    "t": [round(x, 2) for x in fc.nowcast.t],
+                    "days_fitted": fc.nowcast.days,
                     "deltas_kwh": [round(x, 3) for x in fc.nowcast_deltas],
                 }
                 if len(fc.nowcast.used) > 1:

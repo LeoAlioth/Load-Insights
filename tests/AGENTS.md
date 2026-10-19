@@ -2,6 +2,37 @@
 
 ## Never ship a detector change unmeasured
 
+**Forecast changes are measured with `tests/forecast_bench.py cov`** (INS-15,
+2026-10-19) on two windows per site, under one rule, deterministic replay (no
+noise band; a tie is "not worse"): per site, the whole-house series (`site`)
+must not rise in hour-ahead MAE, day-ahead MAE or noon-tomorrow kWh MAE on
+W1 **and** W2, the sum of day-ahead MAE over all series must not rise, and
+every series that rises by more than 1 % and 5 W is listed and explained.
+A change that holds ships as the default; one that does not is not shipped
+and goes under "Things already ruled out" in the component's AGENTS.md.
+Bench dials (module constants) exist only in checkpoint commits. The history
+is production's: 12 weeks of long-term statistics before every origin, the
+measured temperature as the "forecast" for the next 28 h (Home) / 48 h
+(Kozolec), the linked calendars and the statistics-backed attached sensors
+built per origin as the coordinator builds them. Not reproducible here:
+attached sensors without long-term statistics (binary sensors, lights, fans:
+the recorder's ten days of states are gone for the windows) and the weather
+provider's real forecast. Data, once per window (read-only, `data/forecast/<site>/`):
+`ws.mjs <site> cmds.json` with `energy/get_prefs`, then
+`recorder/statistics_during_period` (`period: hour`, `types: [change]`,
+`units: {energy: kWh}` for `SiteModel.from_prefs(prefs).all_statistic_ids()`;
+`types: [mean]` for the outdoor temperature entity and every attached input) from
+well before the window less 12 weeks into `fetch.json` (prefs, change, mean in that
+order); the options from `GET /api/diagnostics/config_entry/<entry>` into
+`options.json` (`data.config.options`); each linked calendar from
+`GET /api/calendars/<id>?start=&end=` into `cal-workday.json` / `cal-guests.json`.
+Entry ids are in `HA_Configs/tools/li_flow.py`; tokens in `data/<host>`; Home and
+Kozolec only. Windows: W1 2026-09-28 .. 10-11 both sites; W2 Home 2026-01-12 .. 01-25,
+W2 Kozolec 2026-08-17 .. 08-30 (its whole-house series starts 2026-07-04, so no
+heating-season window with 12 weeks behind it exists). Home's `workshop_total_energy`
+carries one 11.9-million-kWh hour (2025-11-10), which poisons its own forecast in W2: leave
+it out of the sums.
+
 **The local history is the last ten days** (2026-09-30): the sites'
 recorders keep ten days, production's reset re-reads ten, so a longer replay
 measures a library production can never hold. `data/history/<site>/` holds
@@ -46,7 +77,8 @@ python3 tests/energy_bench.py card [DIAL=V ...]           # THE score: capture /
 python3 tests/energy_bench.py invariance SITE FOLDER      # what the pass slicing changes, session by session
 python3 tests/energy_bench.py diff A.json B.json          # two scorecards, load by load
 python3 tests/energy_bench.py worth SITE [DIAL=V ...]     # what each meter is worth to every other load
-python3.14 tests/forecast_bench.py SITE START END STEP_H [OUT=ids] [MODE=helper|parts] [SINCE=date] [module.CONST=V]  # forecast backtest: hour-/day-ahead MAE, noon-tomorrow kWh; data/forecast/<site>-{prefs,stats}.json from energy/get_prefs + recorder/statistics_during_period (hour, change, kWh) via HA_Configs/tools/ws.mjs
+python3.14 tests/forecast_bench.py SITE START END STEP_H [OUT=ids] [MODE=helper|parts] [SINCE=date] [module.CONST=V]  # forecast backtest, profile and level only: hour-/day-ahead MAE, noon-tomorrow kWh; data/forecast/<site>-{prefs,stats}.json from energy/get_prefs + recorder/statistics_during_period (hour, change, kWh) via HA_Configs/tools/ws.mjs
+python3.14 tests/forecast_bench.py cov SITE START END [STEP_H=1] [module.CONST=V] [TEMPS=0] [FROM=iso] [SERIES=site,id] [TAG=t]  # the covariate backtest: temperature, calendars, attached sensors, nowcast; every series; JSON in data/forecast/results/ (INS-15)
 python3 tests/bench.py score kozolec FOLDER [DIAL=V ...]  # purity and concentration (diagnostics)
 python3 tests/bench.py score home FOLDER HOUSE=prod [DIAL=V ...]
 python3 tests/bench.py kiln FOLDER HOUSE=prod [DIAL=V ...]  # the unmetered kiln

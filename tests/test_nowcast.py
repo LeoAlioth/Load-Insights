@@ -88,8 +88,17 @@ def test_noise_does_not_engage():
 
 def test_too_little_state_history_means_no_fit():
     hist, temps, samples = setup()
-    few = dict(list(temps.items())[-200:])
+    few = dict(list(temps.items())[-48:])        # two days: under the four the test needs
     assert not P.forecast(samples, NOW, state_history=[few], state_now=[40.0]).nowcast.engaged
+
+
+def test_a_true_state_relation_engages_within_four_days():
+    hist, temps, samples = setup(weeks=1, seed=3)
+    keep = {t.timestamp() for t in hist[-5 * 24:]}
+    nc = P.forecast([(t, v) for t, v in samples if t.timestamp() in keep], NOW,
+                    state_history=[{k: v for k, v in temps.items() if k in keep}], state_now=[30.0]).nowcast
+    assert nc.engaged and nc.days >= 4 and nc.t[0] > 0, nc
+    assert math.isclose(nc.coefficients[1], -0.01, rel_tol=0.3), nc.coefficients
 
 
 

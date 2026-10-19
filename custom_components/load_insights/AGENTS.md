@@ -262,6 +262,50 @@ same placeholders. A menu is also the only way to give a page a Back row: a
 form's one control is Submit, which is why a load's own page is a menu and
 its name box is one step further in.
 
+### Forecast covariates (covariates.py, nowcast.py, calendars.py, inputs.py)
+
+A term engages when its coefficient's t-value, with the variance clustered by DAY
+(`covariates.day_block_t`: CR1 plus a Newey-West lag of one day, the larger of the two), clears
+Student's t at `ALPHA` - for the nowcast's best lead `ALPHA / LEADS`. Features are centred on the
+same hour of day's weather and the residual is against what the profile expected WITHOUT that hour
+(leave-one-out, `Profile.loo_kwh`: in-sample, a slot seen once has residual exactly 0). The
+`explained` share is still computed and published; it gates nothing (it drives
+`Nowcast.band_shrink`). **Removed gates (2026-10-19):** `covariates.MIN_HOURS` 336 and
+`MIN_EXPLAINED` 0.03, `nowcast.MIN_HOURS` 336 and `MIN_EXPLAINED` 0.03. **Not changed:**
+`calendars.MIN_ON_HOURS` / `MIN_OFF_HOURS` / `MIN_EXPLAINED` and `inputs.MIN_HOURS`: the same rule
+on calendars and attached sensors was benched and does not hold (below). Benches: `tests/forecast_bench.py cov`,
+W1 = 28 Sep - 11 Oct (both sites), W2 = Home 12 - 25 Jan, Kozolec 17 - 30 Aug (its whole house
+starts 4 Jul, so no heating-season window with 12 weeks behind it exists); whole-house series,
+signals and nowcast states as production builds them.
+
+| constant | value | kind | tested |
+|---|---|---|---|
+| `ALPHA` | 0.0005 | policy (false-engagement rate per term per fit) | swept 0.05 / 0.005 / 0.0005, temperature + hour-of-day centring, whole house hour-ahead / day-ahead W, noon-tomorrow kWh, OLD -> NEW. Home W1 (1241.0 / 1166.9 / 10.694): 0.05 -> 1249.1 / 1176.3 / 10.798, 0.005 -> 1242.6 / 1169.5 / 10.692, **0.0005 -> equal**. Home W2 (1226.0 / 1207.4 / 12.889): 0.05 -> 1245.9 / 1224.5 / 12.456, 0.005 -> 1239.4 / 1206.9 / 12.361, **0.0005 -> 1217.5 / 1202.8 / 12.319**. Kozolec: equal at all three. Only 0.0005 passes at Home; at 0.005 the whole house's own weak response (66 W/degC, t 3.1 on 84 days) engages and costs 1-2 % hour-ahead. The bar it sets at G day blocks: t 11.4 at 4, 5.4 at 8, 4.1 at 15, 3.4 at 31 |
+| `MIN_DAYS`, `MIN_DAY_ROWS` | 4, 12 | count | 4 day blocks of 12+ rows (the owner's ~72 h, plus one day for the test's degrees of freedom); not swept. At 4 days even t = 11.4 is the bar, so nothing real engages before ~6 days: the bee room heater (kozolec, from 4 Oct) engaged at 7.6 days of history (12 Oct 06:00, 40 W/degC, t 6.9 against 5.9 needed at 7 days) and stood down again at 13 days (t 3.1 against 4.3); hour-ahead 178.4 -> 176.4 W, day-ahead 195.1 -> 195.8 W against no temperature at all |
+| `MIN_SPREAD_C` | 1.0 degC | physical | a feature is fitted only if its centred weighted SD reaches it; far below an ordinary week, above a fog week. Whole-house cuts to 4 / 7 / 14 days of both sites never engage in October (t 0-2.1, 4-14 days; reason shown) |
+| `HEATING_BASE_C` / `COOLING_BASE_C` | 15 / 24 | physical | not tested |
+| `JOINT_RIDGE` | 1e-3 | ratio | not tested (numerical guard; the nowcast's variance uses the ridged fit) |
+| `MIN_PER_HOUR_OF_DAY` | 5 | count | not tested (calendar table fallback) |
+| `FACTOR_CLAMP` | (0.1, 5.0) | physical | not tested |
+| `HALF_LIFE_WEEKS` | 3 | policy | not tested here |
+| `LEVEL_CLAMP`, `LEVEL_DAMPING`, `LEVEL_MIN_HOURS` | (0.5, 2.0), 0.5, 12 | policy | not tested here; the level still judges the last 24 h with the in-sample residual (it is not a fit) |
+
+**Result, signals off (the plan's columns), OLD -> NEW, `site` series, hour-ahead W / day-ahead W / noon-tomorrow kWh, then the sum of
+day-ahead MAE over all series.** Home W1: 1241.0 / 1166.9 / 10.694 -> equal; sum 3981.8 -> 3972.6.
+Home W2: 1226.0 / 1207.4 / 12.889 -> 1217.5 / 1202.8 / 12.319; sum 2821.5 -> 2815.4 (without `workshop_total`, whose
+history holds one 11.9-million-kWh hour). Kozolec W1: 331.4 / 331.4 / 2.892 -> equal; sum 2185.6 -> 2185.7 (+0.06 W, `pond_filter`,
+which now engages). Kozolec W2: 269.8 / 261.7 / 2.220 -> equal; sum equal. No series rises by more than 1 % and 5 W. Newly engaged
+(temperature, Home W1): `central_heating` 6.8 -> 10.5 W/degC (t 5.6, 84 days), `attic_ac` cooling 79 -> 88 W/degC (day-ahead 16.1 -> 10.7 W),
+`blaz_pc` 6.3, `mansarda` 24 W/degC (t 3.8), `west_blinds` and the bathroom fan at 0.02-0.05 W/degC (t 3.5-6.5): all within 1 W. Nowcast (the
+evidence rule replaces 336 h and 3 %): Kozolec `boiler` hour-ahead 169.8 -> 155.9 W, `well_pump` 13.9 -> 13.2 W (now engaged, t 7.1 at 66 days),
+Home `talno_gretje` 115.5 -> 91.5 W, `attic_ac` loses its nowcast (t under 3.4) and still improves (15.4 -> 11.5 W): none worse by 1 % and 5 W.
+Whole-house p10-p90 coverage 0.759 -> 0.759, 0.676 -> 0.673 (Home W1, W2), 0.486 and 0.664 unchanged (Kozolec).
+
+**With production's signals on (OLD signals vs NEW, the old calendar gates still in place), Home W2 gets worse:** `site` 1465.4 / 1268.0 /
+14.660 -> 1486.3 / 1277.6 / 14.958 (hour-ahead +1.4 %); the other three windows are equal. The old gates engage
+the attached sensors and replace the profile by a baseline that excludes their on-hours; the temperature term then sits on top of that.
+Shipping the calendar rule would fix it (below), and fails 7.4 in three cells: see "Things already ruled out".
+
 ### The house forecast and the SOC planning sensors (2026-10-17)
 
 - **House forecast = its parts.** `profile.assemble` (pure; the coordinator and `tests/forecast_bench.py MODE=parts` call the same walk): a meter's own part is its series less its mature parts (`PART_MIN_WEEKS` = 6, swept 0-12), built = own + mature parts' forecasts, the whole's independent fit supplies the band only. The own part is SIGNED (`forecast(signed=True)`, `subtract_all(floor=None)`): Home's grid-derived consumption sits 99 W below its top-level meters, and a remainder clamped at zero put +216 W into the sum. Only the sum is clamped; the remainder sensor stays clamped. `forecast_exclude` ("Not in the house forecast") is never added back and always comes out of its holder's own part.
@@ -509,7 +553,17 @@ two sites' ten-day exports unless stated.
   day-ahead error rose 54 -> 145 W. Proposed: a sensor input fits only its
   states, never its existence; calendars and binary inputs keep both. Also
   parked: the site still forecasts worse with signals than without (1237 vs
-  1070 W hour-ahead over 1-3 Oct). Backtest scripts: scratchpad fc/ (bt.py).
+  1070 W hour-ahead over 1-3 Oct; on the INS-15 windows, Home W1 1366 vs 1241 W,
+  Home W2 1465 vs 1226 W hour-ahead). The first cause is found (2026-10-19): a signal that
+  passes detection against the mixture profile replaces the profile by a baseline
+  without its on-hours, and the fit of its effects against that baseline can then say
+  no - the baseline stays; the attic sensor, from 3 Aug, is the case (day-ahead 10 -> 136 W).
+  Keeping the mixture profile when no effect engages (`calendars.FALLBACK` in the checkpoint
+  commits), on top of the evidence gate, took Home W1 hour-ahead 1312 -> 1243 W. Backtest: `tests/forecast_bench.py cov`.
+- [ ] **Temperature evidence re-opened 2026-10-12, shipped 2026-10-19 (INS-15):** the
+  temperature response and the device-state nowcast engage on a day-clustered t-test,
+  `ALPHA` 0.0005, `MIN_DAYS` 4; see "Forecast covariates" under the dials. Calendars and
+  attached sensors under the same rule did NOT hold (below) and keep their old gates.
 
 ### Confirmed, unfixed
 
@@ -1091,6 +1145,32 @@ before until a `reset_detection` re-runs the backfill.
 
 Don't re-chase these; each cost real time.
 
+- **Per weekday-and-hour slot centring of the temperature features** (INS-15, 2026-10-19; the
+  plan's choice, with the leave-one-out residual; bench dial `SLOT_CENTRE=1`). Centring each
+  slot on its own twelve weeks of weather adds a dozen-sample mean of noise to every slot. At
+  `ALPHA` 0.0005, signals off, Home W2 `site` hour-ahead 1226.0 -> 1228.7 W (worse, 0.2 %;
+  day-ahead 1207.4 -> 1197.2 and noon-tomorrow 12.889 -> 12.715 better); at 0.005, 1226.0 -> 1255.1 and
+  Home W1 1241.0 -> 1243.4. Centring on the hour of day alone (what shipped) holds on every window. A global
+  centre with the leave-one-out residual (`SLOT_CENTRE=3`) equals the gate alone on the whole house but
+  never lets a young series engage (bee room heater: no engagement, against 7.6 days with the hour-of-day centre).
+- **The same evidence rule on calendars and attached sensors** (INS-15 column CAL, 2026-10-19;
+  `calendars.EVIDENCE`: the on-vs-off contrast of `a = e (c1 + c2 on)` by weighted least squares, day-clustered
+  t at `ALPHA`, on and off each on `MIN_DAYS` days, + `calendars.FALLBACK`). Against the old gates with
+  signals on, `site` hour-ahead / day-ahead W / noon-tomorrow kWh at `ALPHA` 0.0005: Home W1 1366.3 / 1171.5 / 10.575 ->
+  1241.0 / 1166.9 / 10.694; Home W2 1465.4 / 1268.0 / 14.660 -> 1221.5 / 1206.1 / 12.319; Kozolec W1 349.8 / 336.8 / 3.010 ->
+  331.4 / 331.4 / 2.892; Kozolec W2 288.4 / 255.9 / 2.011 -> 268.5 / 262.1 / 2.215. Sums of day-ahead MAE:
+  4129.2 -> 4029.3, 3006.0 -> 2818.8, 2222.6 -> 2189.3, 2091.1 -> 2035.1. It fails 7.4 in three cells: Home W1 noon-tomorrow (+0.12 kWh,
+  1.1 %) and Kozolec W2 day-ahead (+6.2 W, 2.4 %) and noon-tomorrow (+0.20 kWh): the old gates engage the boiler temperature
+  at Kozolec W2 and that happens to help the day-ahead. Not shipped; the code (and the `FALLBACK` fix, which
+  with the gate took Home W1 hour-ahead 1312 -> 1243 W) is in the INS-15 checkpoint commits behind `calendars.EVIDENCE`. At
+  0.005 it fails the same three cells and at 0.05 four cells and two sums. The `MIN_EXPLAINED` floor
+  put back (0.03) wins nowhere: sums 4029.3 -> 4031.0, 2035.1 -> 2035.7, whole house identical.
+- **`ALPHA` 0.005 and 0.05** (temperature, see the dials table): the whole house's own weak response engages at
+  t about 3 and costs 1-2 % hour-ahead at Home. And the test is not sharper than its nominal
+  level in young windows: at G = 4 to 14 day blocks with a smooth temperature drift and AR(1) 0.7 day offsets,
+  150 simulated series falsely engaged 0.7 % (4 and 5 days), 2.0 % (7), 2.7 % (14), 0 % (28, 56) at 0.0005 - above
+  the nominal 0.05 %, because few clusters make CR1 sloppy (at 0.005 and iid days: 4-9 %). A delete-one-day
+  jackknife variance joining the maximum (`covariates.JACKKNIFE`, simulated only) took 5.6 -> 4.2 % at G = 5: not enough to carry.
 - **All-phase events read off the raw house readings** (2026-09-30, the owner's window
   rule: each phase's level from the K readings nearest the step on each side,
   the window reaching at most 30 s and cut at the previous / next trigger on any
