@@ -422,7 +422,7 @@
             },
             "heat": {
                 "title": "Naprave za ogrevanje",
-                "description": "Senčni način: za vsako toplotno črpalko ali klimo oziroma toplotno črpalko, ki ogreva, Load Insights izračuna, v katerih urah bi toplota stala najmanj elektrike, in to kasneje primerja s tem, kar je naprava res naredila. Nič se ne zapiše v nobeno napravo. Dodajte eno napravo naenkrat ali odstranite označene. Zdaj: {devices}",
+                "description": "Način opazovanja: za vsako toplotno črpalko ali klimo oziroma toplotno črpalko, ki ogreva, Load Insights izračuna, v katerih urah bi toplota stala najmanj elektrike, in to kasneje primerja s tem, kar je naprava res naredila. Nič se ne zapiše v nobeno napravo. Dodajte eno napravo naenkrat ali odstranite označene. Zdaj: {devices}",
                 "data": {
                     "name": "Ime",
                     "source": "Senzor moči ali energije",
