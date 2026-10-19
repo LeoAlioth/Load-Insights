@@ -129,7 +129,7 @@ against it, not against memory.
 
 Measure it on the bench first. The bench process and the scorecard are in `tests/AGENTS.md`.
 
-A change that wins its bench ships as the default, with no user option and no leftover dial: a dial exists only while measuring. A failed attempt means the tested implementation was not good, not that the idea is useless; record it under "Things already ruled out" in the detector's AGENTS.md.
+A change that wins its bench ships as the default, with no user option and no leftover dial: a dial exists only while measuring. "Wins" is judged across the sites, not cell by cell: a big improvement at one site with only a small degradation at another is a win and ships (the owner, 2026-10-19); record both sides' numbers in the commit and the AGENTS.md entry. A large loss, or no clear gain anywhere, does not. Nor is a change dropped for a small or insignificant loss when it was discussed to work together with another change: keep it, bench the pair, and judge them together (the owner, 2026-10-19). A failed attempt means the tested implementation was not good, not that the idea is useless; record it under "Things already ruled out" in the detector's AGENTS.md.
 
 ## Commit messages carry the evidence
 
