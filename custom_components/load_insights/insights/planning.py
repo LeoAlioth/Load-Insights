@@ -277,17 +277,31 @@ def daylight(production: Dict[float, float], day, tz) -> Optional[Tuple[float, f
     return lit[0], lit[-1]
 
 
+BASE_PERCENTILE = 0.10      # a judgement (the owner, 2026-10-19): one odd hour must not be the base
+
+
+def _percentile(values: Sequence[float], q: float) -> float:
+    """The ``q`` quantile of ``values``, interpolating between the two nearest."""
+    v = sorted(values)
+    pos = q * (len(v) - 1)
+    lo = int(pos)
+    return v[lo] + (v[min(lo + 1, len(v) - 1)] - v[lo]) * (pos - lo)
+
+
 def base_consumption(now: datetime, use: Dict[float, float], production: Dict[float, float],
                      tz=None) -> Optional[dict]:
-    """The lowest hour of the whole-house consumption forecast between the sun
-    forecast's first and last lit hour (``daylight``), for today and for
-    tomorrow, and the LOWER of the two, in W: what the house draws by day with
-    nothing optional on, the figure a daytime load is judged against (the owner,
-    2026-10-18: the minimum whole-house forecast). ``use`` is kWh an hour, so W
-    = kWh x 1000. A day counts only the daytime hours the horizon still holds
-    (today's start is behind it by afternoon); one with none, or with no sun
-    forecast, is unknown and the other day stands alone. None when neither is.
-    -> {"value", "attributes": {"today": {...}|None, "tomorrow": {...}|None}}."""
+    """The 10th percentile (``BASE_PERCENTILE``) of the whole-house consumption
+    forecast's hours between the sun forecast's first and last lit hour
+    (``daylight``), for today and for tomorrow, and the LOWER of the two, in W:
+    what the house draws by day with nothing optional on, the figure a daytime
+    load is judged against. The minimum itself was one odd hour (Kozolec,
+    2026-10-19: 8 W for tomorrow 11:00 against a day's 173 W). ``use`` is kWh an
+    hour, so W = kWh x 1000. A day counts only the daytime hours the horizon
+    still holds (today's start is behind it by afternoon); one with none, or
+    with no sun forecast, is unknown and the other day stands alone. None when
+    neither is. -> {"value", "attributes": {"today": {...}|None,
+    "tomorrow": {...}|None}} - per day the percentile in ``watts``, the lowest
+    hour's ``minimum_watts`` and its time ``at``, sunrise, sunset and the hours counted."""
     tz = tz or now.tzinfo
     today = now.astimezone(tz).date()
     days = {}
@@ -298,7 +312,8 @@ def base_consumption(now: datetime, use: Dict[float, float], production: Dict[fl
             days[name] = None
             continue
         low, at = min(hours)          # the earliest hour of a tie
-        days[name] = {"watts": round(low * 1000.0), "at": _at(at, tz),
+        days[name] = {"watts": round(_percentile([w for w, _ in hours], BASE_PERCENTILE) * 1000.0),
+                      "minimum_watts": round(low * 1000.0), "at": _at(at, tz),
                       "sunrise": _at(window[0], tz), "sunset": _at(window[1] + HOUR, tz), "hours": len(hours)}
     known = [d["watts"] for d in days.values() if d]
     return {"value": min(known), "attributes": days} if known else None

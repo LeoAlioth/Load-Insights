@@ -741,7 +741,7 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
 
     The base consumption (``base``, W) rides on the same machinery and the
     same enablement - it needs the sun forecast the planning sensors need - but
-    is the lowest daylight hour of the house forecast, today or tomorrow
+    is the 10th percentile of the daylight hours of the house forecast, today or tomorrow
     (``base_consumption``): never held, and unknown while neither day has one."""
 
     _unrecorded_attributes = frozenset({"days", "inputs", "weights", "excess_kwh"})

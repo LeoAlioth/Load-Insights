@@ -222,15 +222,26 @@ def _whole_days(use_at):
     return sun, use
 
 
-def test_base_consumption_is_the_lower_days_lowest_daylight_hour_in_watts():
-    low = {(0, 13): 0.3, (1, 12): 0.2, (1, 3): 0.05, (0, 22): 0.01}      # a dip each day; the night's are not daylight
+def test_base_consumption_is_the_lower_days_tenth_percentile_of_daylight_hours_in_watts():
+    low = {(0, 13): 0.3, (0, 14): 0.3, (1, 12): 0.2, (1, 13): 0.2, (1, 3): 0.05, (0, 22): 0.01}   # a dip each day; the night's are not daylight
     sun, use = _whole_days(lambda d, h: low.get((d, h), 0.5))
     got = PL.base_consumption(NOW, use(NOW), sun, TZ)
     assert got["value"] == 200, got                                      # kWh an hour x 1000, tomorrow's is lower
     assert got["attributes"]["today"]["watts"] == 300 and got["attributes"]["tomorrow"]["watts"] == 200
     assert got["attributes"]["tomorrow"]["at"].startswith("2026-10-18T12:00") and got["attributes"]["today"]["at"].startswith("2026-10-17T13:00")
-    low[(0, 13)] = 0.1
+    low[(0, 13)] = low[(0, 14)] = 0.1
     assert PL.base_consumption(NOW, use(NOW), sun, TZ)["value"] == 100   # and today's, when it is the lower
+
+
+def test_one_odd_hour_is_not_the_base():
+    """Kozolec 2026-10-19: 8 W at tomorrow 11:00 against a day of 170-500 W. The lowest hour is still
+    published (``minimum_watts``), the figure is the 10th percentile."""
+    sun, use = _whole_days(lambda d, h: 0.008 if (d, h) == (1, 11) else 0.5)
+    got = PL.base_consumption(NOW, use(NOW), sun, TZ)
+    tomorrow = got["attributes"]["tomorrow"]
+    assert tomorrow["minimum_watts"] == 8 and 380 < tomorrow["watts"] < 420, tomorrow
+    assert got["value"] == 402 and got["attributes"]["today"]["watts"] == 500 and tomorrow["hours"] == 9
+    assert PL._percentile([5.0], 0.1) == 5.0 and PL._percentile([1.0, 2.0], 0.5) == 1.5
 
 
 def test_base_consumption_counts_only_daylight_hours_the_horizon_still_has():
