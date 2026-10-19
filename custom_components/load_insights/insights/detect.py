@@ -545,6 +545,29 @@ LEFTOVER_PREFER_STARTED = False
 # (b2) LEFTOVER_NEEDS_RISE: a split leftover joins a meter's start group by
 # likelihood only when that meter's own step rose over the leftover's span.
 LEFTOVER_NEEDS_RISE = False
+# INS-9 bench dials (2026-10-19), all OFF: nothing ships from them until the owner decides.
+# (1) the Fleet's cross-meter gain: GAIN_FALLS learns it from falls too (a fall
+# is run through _step_meter for the learning alone, nothing is placed by it);
+# GAIN_MEDIAN reads it as the median of the last GAIN_RING log ratios, not a
+# running mean; GAIN_UNGATED teaches every meter whose one clean step faced the
+# grid's one step within METER_GAIN_BOUND, not only the meter that step was
+# placed on under the gain as it stood.
+GAIN_FALLS = False
+GAIN_MEDIAN = False
+GAIN_UNGATED = False
+GAIN_RING = 200
+# (2) FOLD_SLOW (edges.py): a run's slow changes are part of its steps - the
+# window after a rise skips the opposite steps that follow it, and the window
+# before a fall the same-way steps that lead up to it, while each is at most
+# FOLD_SHARE of the step and within FOLD_S of it (a pump's start decay, its
+# pre-stop drift).
+FOLD_SLOW = False
+FOLD_SHARE = 0.35
+FOLD_S = 60.0
+# (3) SAME_SPAN (edges.py): a step's windows end at the steps of EVERY meter
+# of its comparison (its cluster's), latency-shifted onto its own clock, not
+# only at its own channel's: one span for both sides of a comparison.
+SAME_SPAN = False
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
 # +600 W start). A washer's 2 kW -> 400 W -> off is then one run at both levels:
@@ -4707,6 +4730,11 @@ class Detector:
                 where = got.pop() if len(got) == 1 else ""
                 self.placement_conf = min(confs) if where and None not in confs else None
                 self.placement_window = None
+        elif watts < 0 and GAIN_FALLS and self.step_meter is not None and len(ph) == 1:
+            # a fall teaches the gains as a rise does, and places nothing
+            conf, win = self.placement_conf, self.placement_window
+            self.step_meter(ph, since, size, False)
+            self.placement_conf, self.placement_window = conf, win
         if where and window_ok and self.placement_window is not None:
             size = abs(self.placement_window[0])     # placed by the ramp's whole window: its size
         if self._kinds is None:
@@ -7429,8 +7457,14 @@ class Fleet:
         took, windows = {}, {}
         slack = lambda x: math.hypot(noise, noise_m) + METER_CAL_SLACK * x               # noqa: E731 - this meter's, x the size
         ramp = lambda win: abs(abs(win[3]) - abs(win[0])) <= slack(abs(win[0]))         # noqa: E731 - see _window_size
-        for n, (d, raw, noise_m, conf) in self._meter_totals(ph, since, main.event_window(), up).items():
-            if d is None:                   # all of the grid's step over the union of both spans
+        totals = self._meter_totals(ph, since, main.event_window(), up)
+        if GAIN_UNGATED:
+            for n, (_, raw, noise_m, _) in totals.items():
+                if (raw is not None and (raw > 0) == up and size >= 10.0 * math.hypot(noise, noise_m)
+                        and 1.0 / (1.0 + METER_GAIN_BOUND) <= size / abs(raw) <= 1.0 + METER_GAIN_BOUND):
+                    self._learn_gain(n, "p", size, raw)
+        for n, (d, raw, noise_m, conf) in totals.items():
+            if d is None:                 # all of the grid's step over the union of both spans
                 if not self._meter_stepped(n, ph, since, 0.5 * size, up):
                     continue                # ...but its own steps are not half of it: not its
                 took[n] = (size if up else -size, None, noise_m, conf)
@@ -7459,7 +7493,7 @@ class Fleet:
         _, raw, noise_m, conf = took[meter]
         main.placement_conf = conf
         main.placement_window = windows.get(meter)
-        if raw is not None and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
+        if raw is not None and not GAIN_UNGATED and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(meter, "p", size, raw)
         return meter
 
@@ -7488,13 +7522,21 @@ class Fleet:
             return
         acc = self.meter_gain.setdefault(name, {}).setdefault(kind, [0.0, 0.0])
         acc[1] += 1.0
-        acc[0] += (math.log(abs(grid) / abs(meter)) - acc[0]) / min(acc[1], 200.0)
+        r = math.log(abs(grid) / abs(meter))
+        acc[0] += (r - acc[0]) / min(acc[1], 200.0)
+        if GAIN_MEDIAN:
+            acc.append(r)
+            del acc[2:len(acc) - GAIN_RING]
 
     def gain(self, name: str, kind: str = "p") -> float:
         """What a meter's step is worth in the grid's terms - 1 until learned."""
-        mean, n = (self.meter_gain.get(name) or {}).get(kind, [0.0, 0.0])
+        acc = (self.meter_gain.get(name) or {}).get(kind, [0.0, 0.0])
+        mean, n = acc[0], acc[1]
         if n < METER_GAIN_MIN:
             return 1.0
+        if GAIN_MEDIAN and len(acc) > 2:
+            ring = sorted(acc[2:])
+            mean = ring[len(ring) // 2] if len(ring) % 2 else (ring[len(ring) // 2 - 1] + ring[len(ring) // 2]) / 2.0
         return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
 
     def _lead(self, st: "PhaseState") -> float:
