@@ -28,6 +28,10 @@ bench's own:
                  production's backfill does (the default); 0 for one call
     LIVE=5       ...but the last this many days in one-minute passes, as a
                  site runs once it has caught up (0, the default: none)
+    RESTART=1    store the Fleet and read it back (JSON, as `_persist` does) at
+                 the end of the first pass at or after every this many hours of
+                 the readings' clock, as a restarted site does (0, the default:
+                 never) - energy_bench's 6R and L1R slicings
     FEED=name    with SUBS=prod, feed only these meters (one dial each) of
                  PROD_SUBS and EXTRA_SUBS - energy_bench's worth
     EXTRA=folder another folder of CSVs read beside FOLDER (Home's fans and
@@ -183,9 +187,10 @@ HOUSE = ""                             # HOUSE=prod - see the docstring
 START_STATE = True                     # the recorder's start-of-window row, as production gets it
 SLICE = 6.0                            # production's backfill slice, hours; SLICE=0 for one call
 LIVE = 0.0                             # the last days in one-minute passes
+RESTART = 0.0                          # hours between restarts of the replayed Fleet (0: none)
 NOQ = False                            # NOQ=1: the replay ignores reactive power (--no-q)
 _flag = lambda v: bool(float(v))  # noqa: E731
-OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "NOQ": _flag}
+OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag}
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 STAGES: list = []                      # INPUT=entity dials, fed as --input
@@ -291,6 +296,8 @@ def _replay(folder: str, site: str | None, before=None):
     argv = [folder, *EXTRAS, "--slice-hours", str(SLICE)] + ([] if START_STATE else ["--no-start-state"])
     if LIVE:
         argv += ["--live-days", str(LIVE)]
+    if RESTART:
+        argv += ["--restart-hours", str(RESTART)]
     # the house roles pinned to what production reads, never guessed: with the
     # 3EMs' power factors in the history the guess took Hiša's power for the
     # house's (2026-09-30)

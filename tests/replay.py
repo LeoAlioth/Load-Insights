@@ -392,6 +392,9 @@ def parse(argv):
                              "once it has caught up; the days before in --slice-hours slices, as its backfill")
     parser.add_argument("--live-pass-s", type=float, default=60.0,
                         help="how long each live pass is (production's default: one minute)")
+    parser.add_argument("--restart-hours", type=float, default=0.0,
+                        help="at the end of the first pass at or after every this many hours of the readings' "
+                             "clock, store the Fleet and read it back as a restarted site does; 0 never")
     parser.add_argument("--keep-coarse", action="store_true",
                         help="do not drop hourly statistics rows")
     parser.add_argument("--no-q", action="store_true",
@@ -535,26 +538,61 @@ def run(args, transform=None, say=print):
     for eid, rows in drivers.items():
         say(f"driver {eid}: {len(rows)} readings")
 
+    def look(a):
+        """Where the inputs are read back from: SWITCH_MEMORY_S before the pass or, on a Fleet that
+        has read before (a restarted one), before the oldest run or session it still has to place -
+        what it kept in memory and a restart cannot get back from anywhere else."""
+        return min(a, fleet._oldest_asked()) if fleet._now else a
+
     def held(rows, a, b):
-        """[a - SWITCH_MEMORY_S, b) as production reads it: with the value in
+        """[look(a) - SWITCH_MEMORY_S, b) as production reads it: with the value in
         force at the start of that window."""
         ts = [r[0] for r in rows]              # by time alone: a setting's values are words
-        i = bisect.bisect_left(ts, a - D.SWITCH_MEMORY_S)
+        i = bisect.bisect_left(ts, look(a) - D.SWITCH_MEMORY_S)
         return rows[max(i - 1, 0):bisect.bisect_left(ts, b)]
-    fleet = D.Fleet()
-    fleet.wait_cap_s = D.METER_WAIT_CAP_S          # as production's default; METER_WAIT_CAP_S=0 to judge at once
-    filed, fed, file = [], {}, fleet.main._file
+    filed, fed = [], {}
 
-    def keep(s, *a, **kw):                          # every session the house files, for the bench
-        file(s, *a, **kw)
-        filed.append(s)
-    fleet.main._file = keep
-    owns = fleet._meter_owns
+    def wire(fleet):
+        """What the runner sets on a Fleet it has just made or loaded, and the
+        bench's two hooks: every session the house files, and every one a
+        meter's signature takes (Session.owner). Called again after a restart."""
+        fleet.wait_cap_s = D.METER_WAIT_CAP_S      # as production's default; METER_WAIT_CAP_S=0 to judge at once
+        fleet.parents = dict(p.split("=", 1) for p in args.parent)
+        fleet.horizon_skip = set()
+        file, owns = fleet.main._file, fleet._meter_owns
 
-    def owned(s, *a):                               # ...and every one a meter's signature takes (Session.owner)
-        owns(s, *a)
-        filed.append(s)
-    fleet._meter_owns = owned
+        def keep(s, *a, **kw):
+            file(s, *a, **kw)
+            filed.append(s)
+
+        def owned(s, *a):
+            owns(s, *a)
+            filed.append(s)
+        fleet.main._file = keep
+        fleet._meter_owns = owned
+        return fleet
+
+    def restarted(fleet):
+        """The Fleet as a restart gives it back: what `_persist` stores, through
+        JSON, and the older hours beside it."""
+        tz = fleet.main.tz_offset_s
+        new = D.Fleet.from_dict(json.loads(json.dumps(fleet.to_dict())))
+        new.main.tz_offset_s = tz
+        new.load_older(json.loads(json.dumps(fleet.older_to_dict())))
+        # the day's runs are copies now, and the day's repair edits the copies: the bench's list follows them
+        # (a run split in two shares its span: the runs of one span follow in the order they were filed)
+        key = lambda x: (x.phases, x.start, x.end)  # noqa: E731
+        where = {}
+        for i, x in enumerate(filed):
+            where.setdefault(key(x), []).append(i)
+        copies = {}
+        for x in new.main._day_log:
+            copies.setdefault(key(x), []).append(x)
+        for k, cs in copies.items():
+            for c, i in zip(reversed(cs), reversed(where.get(k, []))):
+                filed[i] = c
+        return wire(new)
+    fleet = wire(D.Fleet())
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
@@ -578,7 +616,8 @@ def run(args, transform=None, say=print):
         return part
     t = first
     fed_last: dict = {}
-    fleet.parents = dict(p.split("=", 1) for p in args.parent)
+    restart_s = args.restart_hours * 3600.0
+    restart_at = first + restart_s if restart_s else math.inf
     # the live passes END past the last reading: begun AT it, the last pass
     # took that reading for the recorder's window-start copy and dropped it
     # (without_window_start) - one reading at the end of LIVE replays alone
@@ -605,11 +644,14 @@ def run(args, transform=None, say=print):
                       sub_slice, q, sub_q or None, e, pv or None, q_quantum,
                       single={n: n in args.single for n in subs},     # every meter declared, as the runner does
                       switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
-                                    if a < e and (b is None or b > t - D.SWITCH_MEMORY_S)]
+                                    if a < e and (b is None or b > look(t) - D.SWITCH_MEMORY_S)]
                                 for n, spans in switch_spans.items()} or None,
                       numbers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
                       inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None,
                       volts={n: {p: cut(rows, t, e) for p, rows in byp.items()} for n, byp in grid_v.items()} or None)
+        if e >= restart_at:
+            fleet = restarted(fleet)
+            restart_at = e + restart_s
         t = e
     return fleet, filed, {k: sorted(v) for k, v in fed.items() if v}
 

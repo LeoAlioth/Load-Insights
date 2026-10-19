@@ -949,12 +949,48 @@ run does not end it. Against the scorer-fixed card `0928354-20261002T175951Z`
 Susilna's 09-24 run - its 313 W start stepped down 30 W within a minute, then
 multi-closed with the fan.
 Replays cost more (Home ~160 s against 85-95 s:
-the one-clock loop), and some state is still restart-only (`declared`,
-`steady_ts`, `held_drops`, `recent_closed`, `_moved`, `_stops_used`,
-`sub_rows`): invariance holds across passes in memory, a restart mid-stream can
-still differ. The repeat-interval estimator stays: a meter's own transient
+the one-clock loop). A restart is only a pause too - see *A restart is only a
+pause* below. The repeat-interval estimator stays: a meter's own transient
 rejection needs a multiple of it, and the event, corroboration and crowding
 windows and the sample counts read it.
+
+**A restart is only a pause (2026-10-19, INS-13).** The same history read in
+passes and stored through JSON and read back after every pass (the bench's
+`RESTART=1`, with the store's rounding off, `TRIM=0`, so what is asked is
+whether a restart LOSES state; the rounding is its own cost, `TRIM` on) files
+the same sessions into the same signatures, at every site and mode, on the
+card (`SLICINGS=all`, pairs `6~6R` and `L1~L1R`): 0 sessions differ, Home fed
+2 of 29,226 (0.0 kWh). Before: Home circuits 6,345 sessions / 146 kWh, fed
+2,853 / 84 kWh, hidden 37 / 0.7; Kozolec fed 5 / 3.0 kWh. What the store had
+lost, found by running a held Fleet and one stored and read back after every
+pass side by side and diffing their stored dicts and their memory (`LOCKSTEP`,
+a throw-away patch of the replay, not kept): the declared steps and edges
+beyond the last two hours (the votes of a meter first read after a restart
+reach back to its first reading, so nothing is trimmed: `declared` is capped
+at 4,000 a phase, `edge_at` trims itself), `step_diffs`, the open run's
+`now` / `q` / `short0`, the day's runs, readings and repair mark, the size
+densities and their segments, the phase each pair was learned on (its start
+cluster may be gone: `_pair_index` rebuilt `?`, which moved a pair's chance of
+being accepted), the devices `_merge_devices` still had to judge again (a full
+walk after a restart merged what the pass-by-pass one had left apart:
+`rejudge`, `rejudge_all`), the grid's voltage beside the steps, and the house's
+runs the day keeps being the very ones waiting for a meter's answer (one object
+in memory, two copies in the store: `Fleet.from_dict` joins them). The first
+pass after a restart also reads its inputs and switches back as far as the
+oldest run or session it still has to place (`detection.py`
+`_read_inputs`, `_inputs_primed`), and each pass waits for the recorder to
+write what it has been given before it reads (`RECORDER_FLUSH_S`, 30 s: a pass
+reading rows the recorder had not yet committed was the one fault the card
+could not show). `DERIVED` metadata on a field says it is a cache or a hook set
+each pass; `test_every_field_is_persisted_or_derived` fails on any other
+field the store leaves out, `test_a_restart_leaves_the_stored_state_as_it_was`
+compares the whole stored state of a held and a restarted run. Cost: Home's
+snapshot is now about 21 MB at the end of the ten days (JSON, default
+separators) against about 5 MB before: the day's readings for the repair
+(`day_rows` 3.7 MB at the grid, more per meter), the meters' own detectors (6.6 MB), the
+meters' readings (`sub_rows`, 3.0 MB), the voltage (1.6 MB) and the day's runs
+(1.3 MB). Written at most hourly (`SAVE_MAX_INTERVAL_S`). Open for the owner:
+whether that is acceptable, or the day's readings are kept coarser.
 
 **The rolling session list is too short to reason with.** `MAX_RECENT_SESSIONS
 = 200` spans about **2.1 hours** at Home and holds 11 of 199 signatures.
