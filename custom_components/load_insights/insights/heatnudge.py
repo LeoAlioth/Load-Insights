@@ -42,7 +42,7 @@ HEAT_GENERATION = 1          # what the stored scorecard means; migrate() below
 # COP = ETA x T_hot / (T_hot - T_cold), temperatures in kelvin, where
 # T_hot = target + the kind's SINK_OFFSET and T_cold = outdoor - SOURCE_OFFSET.
 # ETA 0.45 is a JUDGEMENT (a typical air-source unit reaches 40-50 % of Carnot),
-# not a measurement; at a 35 C target it gives about 2.2 % per degree of outdoor
+# not a measurement; at a 35 C target it gives about 2.5 % per degree of outdoor
 # temperature, in the 2-3 % the owner quoted. It scales every COP alike, so it
 # changes no ranking and no gap in degrees - only the size of the percentages.
 ETA = 0.45
