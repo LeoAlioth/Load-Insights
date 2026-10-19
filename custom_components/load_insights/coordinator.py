@@ -569,7 +569,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         key, title = (entry.entry_id, entry.title) if entry is not None else ("", "all loads")
         if self._thermal_said.get(key) != text:
             self._thermal_said[key] = text
-            _LOGGER.warning("Thermal room for %s: %s", title, text)  # warning only so the system log shows it; info once settled
+            _LOGGER.info("Thermal room for %s: %s", title, text)
 
     async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
                              start: datetime, opts) -> Dict[str, dict]:
