@@ -851,6 +851,10 @@ class Assembler:
               for x in places if x.props.get("r") and x.dp]
         props["r"] = sum(r for r, _ in rs) / len(rs) if rs else None
         props["re"] = math.hypot(*[e for _, e in rs]) / len(rs) if rs else None
+        vs = [x.props["v1" if x.dp > 0 else "v0"] for x in places if x.props.get("v1" if x.dp > 0 else "v0")]
+        props["v"] = sum(vs) / len(vs) if vs else None     # the voltage the load drew at, for ``volt_slope``
+        ves = [x.props["ve"] for x in places if x.props.get("ve") is not None]
+        props["ve"] = math.hypot(*ves) / len(ves) if ves else None
         edge = {"id": self._ids, "t": t, "place": meter, "dir": 1 if dp > 0 else -1,
                 "pattern": "".join(sorted(x.ch for x in places)), "size": size,
                 "angle": ang, "q_from": q_from, "sign_from": sign_from,
@@ -1117,6 +1121,33 @@ def group(edges: Sequence[dict]) -> List[dict]:
     return out
 
 
+def volt_slope(items: Sequence[dict]) -> Optional[Tuple[float, float, int, float]]:
+    """A group's voltage response k (P ~ V^k; ~2 for a resistive load, ~0 for
+    constant power): the least-squares slope of ln size on ln V across its
+    edges, its standard error, the edges used and the reliability of V.
+    A load-type property of the group, not of an edge (INS-7). The voltages
+    carry their own measurement error (``ve``, the on side's level), which
+    flattens a slope read against them by the share of the voltages' spread
+    that is only that error (regression dilution): k is divided by the
+    reliability (the share that is real), and None where it is under a half -
+    Kozolec's inverter holds 230 V to the error of the reading, and its
+    resistive boiler reads k ~ 0 - or under GROUP_MIN edges."""
+    xs = [(math.log(e["v"]), math.log(e["size"]), (e.get("ve") or 0.0) / e["v"]) for e in items if e.get("v") and e.get("size")]
+    n = len(xs)
+    if n < GROUP_MIN:
+        return None
+    mx, my = sum(x for x, _, _ in xs) / n, sum(y for _, y, _ in xs) / n
+    sxx = sum((x - mx) ** 2 for x, _, _ in xs)
+    if sxx <= 0:
+        return None
+    lam = 1.0 - sum(r * r for _, _, r in xs) / sxx
+    if lam < 0.5:
+        return None
+    k = sum((x - mx) * (y - my) for x, y, _ in xs) / sxx
+    res = sum((y - my - k * (x - mx)) ** 2 for x, y, _ in xs) / max(n - 2, 1)
+    return k / lam, math.sqrt(res / sxx) / lam, n, lam
+
+
 def summary(g: dict) -> dict:
     """What a group's edges hold, median and spread: the place entry's size
     (and in measurement errors), its angle and properties, and every other
@@ -1132,6 +1163,8 @@ def summary(g: dict) -> dict:
             if isinstance(v, dict) and k not in e["legs"]:
                 ent.setdefault(k, []).append(v["dp"])
     out["entries"] = {k: [_median(v), _spread(v), len(v)] for k, v in sorted(ent.items())}
+    k = volt_slope(items)
+    out["volt_k"] = list(k) if k else None
     return out
 
 

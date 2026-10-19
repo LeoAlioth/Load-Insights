@@ -127,7 +127,7 @@ def replay(site: str, mode: str, dials: list) -> dict:
         edges.append({"id": e["id"], "place": e["place"], "dir": e["dir"], "pattern": e["pattern"], "t": e["t"],
                       "A": min((x.a for x in legs), default=e["t"]), "B": max((x.b for x in legs), default=e["t"]),
                       "size": e["size"], "g": abs(sum(x.dp * x.gain for x in legs)) if legs else e["size"],
-                      "angle": e["angle"], "noise": e["noise"], "err": e["err"], "r": _r(list(ent.values())),
+                      "angle": e["angle"], "noise": e["noise"], "err": e["err"], "r": _r(list(ent.values())), "v": e.get("v"), "ve": e.get("ve"),
                       **{p: e.get(p) for p in ("surge", "settle", "wobble", "ramp_n", "ramp_s")},
                       "phases": None if ph is None else sorted(ph), "legs": e["legs"], "entries": ent,
                       "m0": gid.get(e["id"], -1)})
@@ -381,6 +381,12 @@ def score_set(edges: list, lab: dict, truth: dict, found: dict, groupings: dict,
         out["classes"][cls] = {"truth": len(mine), "found": sum(1 for si in mine if found.get(si)),
                                "edges": sum(1 for c in lab.values() if c == cls)}
     out["groups"] = {m: len({g[i] for i in in_keys}) for m, g in groupings.items()}
+    # the voltage slope of the group holding most of each class's edges (INS-7)
+    g0 = groupings["m0"]
+    for cls, c in out["classes"].items():
+        top = collections.Counter(g0[i] for i, l in lab.items() if l == cls).most_common(1)
+        k = E.volt_slope([e for e, g in zip(edges, g0) if top and g == top[0][0]]) if top else None
+        c["k"] = list(k) if k else None
     unknown = frozenset(i for i, e in enumerate(edges) if e["t"] < since)
     out["dominated"] = {m: dominated(g, lab, unknown) for m, g in groupings.items()}
     if with_nn:
@@ -448,6 +454,8 @@ def lines(res: dict) -> list:
             for cls, c in s["classes"].items():
                 out.append(f"  {cls:22s} {c['truth']:6d} {_pct(c['found'] / c['truth'] if c['truth'] else None):>7s} {c['edges']:6d}   "
                            + " " * 13 + " ".join(f"{_pct(s['dominated'][m].get(cls)):>6s}" for m in ms))
+            out.append("  voltage slope k (se, edges, reliability) of the class's main group: " + ", ".join(
+                f"{cls} " + (f"{c['k'][0]:.2f} ({c['k'][1]:.2f}, {c['k'][2]}, rel {c['k'][3]:.2f})" if c.get("k") else "-") for cls, c in s["classes"].items()))
             if "ok" in s:
                 out.append("  dominated % with unlabelled edges not counted: " + ", ".join(
                     f"{m} " + " ".join(f"{c} {_pct(v).strip()}" for c, v in s["ok"][m].items()) for m in ms))
