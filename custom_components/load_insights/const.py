@@ -29,7 +29,7 @@ CONF_BATTERY_CAPACITY_ENTITY = "battery_capacity_entity"
 # named load. Every input counts for the site; a link adds a device (and every
 # device it sits inside), whose next hours a number then nudges. Before
 # 2026-09-28 each device kept its own under "device_state_sensors" - see
-# insights.model.migrate_inputs.
+# insights.inputs.migrate_inputs.
 CONF_INPUT_LINKS = "input_links"
 # Energy dashboard devices (statistic ids) "Not in the house forecast": never
 # added to it, their energy always comes out of the own part of the meter that

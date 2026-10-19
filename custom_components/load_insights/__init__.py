@@ -22,7 +22,9 @@ from .const import (
 )
 from .coordinator import InsightsCoordinator
 from .detection import DetectionRunner, RuntimeData, area_id, loaded, runner_of
-from .insights.model import SiteModel, follow_renames, migrate_inputs, relink
+from .insights.inputs import migrate_inputs, relink
+from .insights.model import SiteModel
+from .insights.renames import follow_renames
 from .repairs import async_dashboard_renamed
 
 _LOGGER = logging.getLogger(__name__)
