@@ -529,6 +529,22 @@ LAG_PERCENTILE = 0.95
 # its start.
 # ^ PAIR_PAIRING: always on, as the 2026-09-30 ablation found (AGENTS.md)
 SETTLE_SHARE = 0.3
+# INS-8 bench dials (2026-10-19), all OFF: nothing ships from them until the owner decides.
+# (a) SETTLED_START: while a run is the only one on its phase and younger than
+# SHAPE_SETTLED_S, the phase's level follows the readings at SETTLED_FOLLOW per
+# reading instead of SLOW_FOLLOW, so what the run is followed to (``now``) and
+# the size it is booked at on closing (_close) are the level it settled at, not
+# its first ~3 s (Home's Hidrofor: 909 W declared, ~820 W held).
+SETTLED_START = False
+SETTLED_FOLLOW = 0.25
+# (b1) LEFTOVER_PREFER_STARTED: a split leftover (the rest of a rise a meter
+# took a share of) never joins the start group of a meter whose own run, owned
+# by that meter, started in the same event: the meter's rise decides which run
+# is its.
+LEFTOVER_PREFER_STARTED = False
+# (b2) LEFTOVER_NEEDS_RISE: a split leftover joins a meter's start group by
+# likelihood only when that meter's own step rose over the leftover's span.
+LEFTOVER_NEEDS_RISE = False
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
 # +600 W start). A washer's 2 kW -> 400 W -> off is then one run at both levels:
@@ -2069,7 +2085,9 @@ class PhaseState:
                 o.lo = above if o.lo is None else min(o.lo, above)
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
-            self.level += SLOW_FOLLOW * (w - self.level)
+            young = SETTLED_START and len(self.open_edges) == 1 and ts - self.open_edges[0].since <= SHAPE_SETTLED_S \
+                and not self.owned(self.open_edges[0])
+            self.level += (SETTLED_FOLLOW if young else SLOW_FOLLOW) * (w - self.level)
             if len(self.open_edges) == 1 and self.baseline is not None:
                 o = self.open_edges[0]
                 if self.owned(o):
@@ -2756,6 +2774,9 @@ class PhaseState:
             # hours (Kozolec 09-22, 2026-10-02); under-report over over-report
             # (the owner)
             start = levels[0][1]
+            if SETTLED_START and o.now is not None and o.now > 0 and not self.owned(o) \
+                    and abs(o.now - start) <= self._tol(start, o.now) and at - o.since <= SHAPE_SETTLED_S + 2 * MERGE_TOLERANCE_S:
+                start = o.now             # what the young run settled at, see SETTLED_START
             agree = (abs(start - watts) <= self._tol(start, watts)
                      or (o.now is not None and o.now > 0 and abs(o.now - watts) <= self._tol(o.now, watts)
                          and (o.now <= start + self._tol(start, o.now) or self.owned(o))))
@@ -3945,6 +3966,8 @@ class Detector:
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # runs ended by a stop found inside a rise when its event formed - see _split_rise
     _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
+    # the pending rise being formed when it is a split leftover - see LEFTOVER_PREFER_STARTED
+    _leftover: Optional[dict] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the pass's work on the readings' clock - see _advance: what it released,
     # whether it files, the reading or deadline being handled, and when the
     # first waiting group is due (None: work it out again)
@@ -3996,6 +4019,8 @@ class Detector:
     step_meter: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase, since, up) -> it held its value through that moment, set by the Fleet - see _likely_meter
     meter_held: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # (meter, phase, since, up) -> it stepped that way over that moment, set by the Fleet - see LEFTOVER_NEEDS_RISE
+    meter_rose: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, span start, span end, open runs) -> the run a one-device meter's own stop there ends, set by the Fleet
     meter_stop: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter, phase, since, size) -> the meter whose step started that run still shows it on, set by the Fleet - see PhaseState.owned
@@ -4510,10 +4535,12 @@ class Detector:
         since = min(m["since"] for m in members)
         vars_ = [m["var"] for m in members]
         self.placement_window = None
+        self._leftover = members[0] if len(members) == 1 and members[0].get("left") else None
         cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
                                       sum(vars_) if all(v is not None for v in vars_) else None,
                                       max(m["surge"] for m in members), window_ok=len(members) == 1,
                                       legs=[(m["ph"], m["since"], m["watts"]) for m in members])
+        self._leftover = None
         conf, self.placement_conf = self.placement_conf, None
         win, self.placement_window = self.placement_window, None
         if win is not None and cluster.where and len(members) == 1:
@@ -4604,6 +4631,8 @@ class Detector:
             self.edge_at.setdefault(m["ph"], []).append((m["since"], extra.cluster, part))
             st.open_edges.append(extra)
         name, rest = shares[-1]
+        if name is None:
+            m["left"] = True                   # the rest nobody took: see LEFTOVER_PREFER_STARTED
         o.watts, o.levels, o.meter = rest, [(o.since, rest)], name
         # what the whole was followed to while it waited for its event is not
         # the rest's: kept, a 48 W rest carried the 313 W whole's level and a
@@ -4687,6 +4716,12 @@ class Detector:
         kind = self._kinds.setdefault((ph, watts > 0), [])
         if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
+            if where and self._leftover is not None and LEFTOVER_NEEDS_RISE and not (
+                    self.meter_rose is not None and self.meter_rose(where, ph, since, True)):
+                where = ""
+        if where and self._leftover is not None and LEFTOVER_PREFER_STARTED and ph in self.phases and any(
+                x.meter == where and abs(x.since - since) <= self.event_window() for x in self.phases[ph].open_edges):
+            where = ""
         angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if cluster is None:
@@ -5571,7 +5606,7 @@ class Detector:
 
 
 # what a fleet's main detector asks it - each Fleet._<hook> - see Fleet._bind
-_HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_stop", "meter_on", "meter_started",
+_HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_rose", "meter_stop", "meter_on", "meter_started",
           "meter_level", "meter_ended", "meter_wh", "meter_read")
 
 
@@ -7375,6 +7410,12 @@ class Fleet:
             if self._steps_over(name, c, ph, since, up):
                 return False                          # it stepped: a placement missed, not a silence
         return True
+
+    def _meter_rose(self, name: str, ph: str, since: float, up: bool) -> bool:
+        """Did meter ``name`` declare a step that way over grid phase ``ph``'s
+        step at ``since``, on any channel that may carry the phase?"""
+        det = self.subs.get(name)
+        return det is not None and any(self._steps_over(name, c, ph, since, up) for c in self._chans(name, ph))
 
     def _step_meter(self, ph: str, since: float, size: float, up: bool) -> Optional[str]:
         """The innermost meter whose own declared step was all of a grid step

@@ -5456,5 +5456,74 @@ def test_the_days_repair_after_a_restart():
     assert hours(fleet) == hours(whole_fleet)
 
 
+def _settling_run(on):
+    """A 910 W start whose level then drifts to ~860 W inside the noise (a
+    pump's first seconds read high), stopping at the level it held."""
+    old, D.SETTLED_START = D.SETTLED_START, on
+    try:
+        st = D.PhaseState(min_noise=5.0)
+        st.baseline, st.level, st.noise, st.interval = 100.0, 100.0, 70.0, 3.0
+        out, t = [], T0
+        for w, n in ((100.0, 20), (1010.0, 4), (960.0, 12), (100.0, 20)):
+            for _ in range(n):
+                out.extend(st.process(t, w))
+                t += 3.0
+        return out
+    finally:
+        D.SETTLED_START = old
+
+
+def test_settled_start_books_a_young_run_at_the_level_it_settled_at():
+    """INS-8 (a), a bench dial, off: Home's Hidrofor is sized from its first
+    ~3 s (909 W) though it holds ~820 W. Off, the slowly followed level books
+    the run at the start's size; on, the young run's level follows its readings
+    and the run is booked at what it settled at."""
+    (off,), (on,) = _settling_run(False), _settling_run(True)
+    assert off.levels[""][0][1] > 895.0, off.levels
+    assert 840.0 < on.levels[""][0][1] < 880.0, on.levels
+
+
+def _leftover_where(leftover, b1=False, b2=False, rose=False, sibling=False):
+    """The meter a 858 W split leftover is placed under, where a pump meter's
+    start cluster of that size is the busiest and nothing placed this step."""
+    old = D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE
+    D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE = b1, b2
+    try:
+        det = D.Detector()
+        det.phases["a"] = D.PhaseState()
+        det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 300.0, 3.0
+        det.step_meter = lambda ph, since, size, up: "Pump"
+        for k in range(30):
+            det._classify_step("a", T0 + 100.0 * k, 865.0 + (k % 3) * 5.0, None, 0.0)
+        det.step_meter = lambda ph, since, size, up: None
+        det.meter_held = lambda *a: False
+        det.meter_rose = lambda *a: rose
+        if sibling:
+            det.phases["a"].open_edges.append(D._Open(T0 + 5000.0, 1286.0, None, [(T0 + 5000.0, 1286.0)], meter="Pump"))
+        det._leftover = {"left": True} if leftover else None
+        return det._classify_step("a", T0 + 5000.0, 858.0, None, 0.0).where
+    finally:
+        D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE = old
+
+
+def test_a_split_leftover_stays_out_of_a_meters_start_group_it_did_not_rise_in():
+    """INS-8 (b), two bench dials, off (Home 27 Sep 13:01: 858 W landed in the
+    pump's start cluster and stayed open 31 min). Off, the leftover is placed
+    by likelihood under the pump meter; b2 keeps it out unless that meter
+    stepped (and a rise that is not a leftover is untouched); b1 keeps it out
+    where the meter's own run started in the same event."""
+    assert _leftover_where(True) == "Pump"
+    assert _leftover_where(True, b2=True) == ""
+    assert _leftover_where(True, b2=True, rose=True) == "Pump"
+    assert _leftover_where(False, b2=True) == "Pump"
+    assert _leftover_where(True, b1=True) == "Pump"                    # no run of the meter's there
+    assert _leftover_where(True, b1=True, sibling=True) == ""
+    assert _leftover_where(False, b1=True, sibling=True) == "Pump"
+
+
+def test_the_ins8_dials_are_off():
+    assert not (D.SETTLED_START or D.LEFTOVER_PREFER_STARTED or D.LEFTOVER_NEEDS_RISE)
+
+
 if __name__ == "__main__":
     run_main(globals())
