@@ -11,7 +11,8 @@ Fitted per LEAD: for h = 0..LEADS-1, the device's residual h hours later
 (actual minus the forecast's expectation) is regressed, recency-weighted, on
 the state's hourly mean now, centred on its historical mean. Sign learned -
 temperature comes out negative for a boiler, level negative for a pump. The
-same guard as every covariate, judged on the best lead - the effect is
+same evidence rule as every covariate (covariates.day_block_t), judged on the
+best lead with the critical value split over the LEADS leads - the effect is
 delayed by nature, so the current hour often explains nothing. Applied, the live
 state shifts each of the next LEADS hours by its coefficient, and the band's
 half-width shrinks by the share of residual variance that lead explains.
@@ -21,9 +22,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from . import covariates as _cov
+
 LEADS = 6                  # the current hour and the five after it
-MIN_HOURS = 336
-MIN_EXPLAINED = 0.03
 MIN_RESIDUAL_MS = 1e-12    # below this the residual is floating point, not a device
 
 
@@ -40,6 +41,8 @@ class Nowcast:
     used: tuple = ()
     means: tuple = ()
     matrix: tuple = ()
+    t: tuple = ()                   # per kept state, its t at the lead where it is strongest
+    days: int = 0                   # day blocks at that lead
 
     def deltas(self, current_state) -> List[float]:
         """``current_state`` is the live value of every state the fit was
@@ -62,91 +65,96 @@ class Nowcast:
 NONE = Nowcast()
 
 
-def _solve(a: List[List[float]], b: List[float]) -> Optional[List[float]]:
-    """Gaussian elimination with partial pivoting, for the few states a
-    device has; None when the system is singular."""
-    n = len(b)
-    m = [row[:] + [b[i]] for i, row in enumerate(a)]
-    for c in range(n):
-        piv = max(range(c, n), key=lambda r: abs(m[r][c]))
-        if abs(m[piv][c]) <= 1e-12:
-            return None
-        m[c], m[piv] = m[piv], m[c]
-        for r in range(n):
-            if r != c:
-                f = m[r][c] / m[c][c]
-                m[r] = [x - f * y for x, y in zip(m[r], m[c])]
-    return [m[i][n] / m[i][i] for i in range(n)]
-
-
 # How much of the diagonal is added before solving, so two states that say
 # almost the same thing - a room's air and its floor - cannot trade huge
 # opposite coefficients. A share of each state's own variance: dimensionless.
 JOINT_RIDGE = 1e-3
 
 
-def _fit_lead_joint(rows, idx: Sequence[int], means: Sequence[float], h: int):
-    """Weighted least squares of the lead-h residual on the states ``idx``:
-    (coefficients, explained), or None when too few rows or singular."""
-    sub = [(w, [x[i] - means[k] for k, i in enumerate(idx)], r[h]) for w, x, r in rows
+def _fit_lead(rows, idx: Sequence[int], means: Sequence[float], h: int):
+    """As ``_fit_lead_joint``, with every coefficient's day-clustered t:
+    (coefficients, explained, t list, G), or None when singular or under
+    MIN_DAYS day blocks. The variance is the ridged fit's own."""
+    sub = [(int(k // 86400), w, [x[i] - means[j] for j, i in enumerate(idx)], r[h]) for w, x, r, k in rows
            if h < len(r) and r[h] is not None and all(x[i] is not None for i in idx)]
-    if len(sub) < MIN_HOURS:
+    n = len(idx)
+    if not sub:
         return None
-    k = len(idx)
-    a = [[sum(w * xs[p] * xs[q] for w, xs, _ in sub) for q in range(k)] for p in range(k)]
-    b = [sum(w * xs[p] * r for w, xs, r in sub) for p in range(k)]
-    srr = sum(w * r * r for w, _, r in sub)
-    w_total = sum(w for w, _, _ in sub)
+    a = [[sum(w * xs[p] * xs[q] for _, w, xs, _ in sub) for q in range(n)] for p in range(n)]
+    b = [sum(w * xs[p] * r for _, w, xs, r in sub) for p in range(n)]
+    srr = sum(w * r * r for _, w, _, r in sub)
+    w_total = sum(w for _, w, _, _ in sub)
     if srr <= 0 or srr < MIN_RESIDUAL_MS * w_total:
         return None
-    for p in range(k):
+    for p in range(n):
         a[p][p] *= 1.0 + JOINT_RIDGE
-    c = _solve(a, b)
-    if c is None:
+    inv = _cov.inverse(a)
+    if inv is None:
         return None
-    ssr = sum(w * (r - sum(ci * x for ci, x in zip(c, xs))) ** 2 for w, xs, r in sub)
-    return c, max(0.0, 1.0 - ssr / srr)
+    c = [sum(inv[p][q] * b[q] for q in range(n)) for p in range(n)]
+    u_rows = [(d, w, xs, r - sum(ci * x for ci, x in zip(c, xs))) for d, w, xs, r in sub]
+    ts, G = _cov.day_block_t(u_rows, c, inv)
+    if G < _cov.MIN_DAYS:
+        return None
+    ssr = sum(w * u * u for _, w, _, u in u_rows)
+    return c, max(0.0, 1.0 - ssr / srr), ts, G
 
 
-def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Optional[float]]]]) -> Nowcast:
-    """A device's states, one or several: ``rows`` are (weight, states at t,
-    residuals h hours after t, None where unknown), states in a fixed order.
-
-    Forward, one at a time (2026-09-28: a floor mat's thermostat reads
-    the room AND the floor): the state that explains the most on its own goes
-    in first, and each further one only if, fitted jointly with those already
-    in, it adds MIN_EXPLAINED at the best lead. Two readings of one room tell
-    much the same story, and taking both blindly is how a fit learns +5 on one
-    and -5 on the other."""
-    rows = [(w, list(x), r) for w, x, r in rows if w > 0]
-    if not rows:
-        return NONE
+def _fit_joint(rows) -> Nowcast:
+    """Forward selection on evidence: the states are ordered by their
+    strongest single-state |t| over the leads, and one joins if, fitted with
+    those already in, its own coefficient's |t| at its best lead clears the
+    critical t at ALPHA / LEADS (the best of LEADS leads: Bonferroni). A
+    near-copy of a kept state has a huge joint SE and is not added."""
     n = len(rows[0][1])
     means = []
     for i in range(n):
-        have = [(w, x[i]) for w, x, _ in rows if x[i] is not None]
+        have = [(w, x[i]) for w, x, _, _ in rows if x[i] is not None]
         W = sum(w for w, _ in have)
         means.append(sum(w * v for w, v in have) / W if W else 0.0)
 
-    def score(idx):
-        fits = [_fit_lead_joint(rows, idx, [means[i] for i in idx], h) for h in range(LEADS)]
-        expl = [f[1] if f else 0.0 for f in fits]
-        return max(expl), fits           # LEADS of them
+    def fits_for(idx):
+        return [_fit_lead(rows, idx, [means[i] for i in idx], h) for h in range(LEADS)]
 
+    def strongest(fits, pos):
+        """(margin over critical, |t|, G) of state ``pos`` at the lead where it is strongest."""
+        best = None
+        for f in fits:
+            if f is None:
+                continue
+            crit = _cov.t_crit(f[3] - 1, _cov.ALPHA / LEADS)
+            cand = (abs(f[2][pos]) - crit, abs(f[2][pos]), f[3])
+            if best is None or cand[0] > best[0]:
+                best = cand
+        return best
+
+    singles = {}
+    for i in range(n):
+        b = strongest(fits_for([i]), 0)
+        singles[i] = b[1] if b else 0.0
     kept: List[int] = []
-    best_gain, best_fits = 0.0, None
-    order = sorted(range(n), key=lambda i: -score([i])[0])
-    for i in order:
-        gain, fits = score(kept + [i])
-        if gain >= best_gain + MIN_EXPLAINED:
-            kept, best_gain, best_fits = kept + [i], gain, fits
-    if not kept or best_gain < MIN_EXPLAINED:
+    best_fits = None
+    for i in sorted(range(n), key=lambda i: -singles[i]):
+        fits = fits_for(kept + [i])
+        b = strongest(fits, len(kept))
+        if b is not None and b[0] >= 0:
+            kept, best_fits = kept + [i], fits
+    if not kept:
         return NONE
-    matrix = tuple(tuple(f[0]) if f else tuple(0.0 for _ in kept) for f in best_fits)
     expl = tuple(f[1] if f else 0.0 for f in best_fits)
+    matrix = tuple(tuple(f[0]) if f else tuple(0.0 for _ in kept) for f in best_fits)
+    stats = [strongest(best_fits, p) for p in range(len(kept))]
     return Nowcast(coefficients=tuple(row[0] for row in matrix), explained=expl,
                    state_mean=means[kept[0]], hours=len(rows), engaged=True,
-                   used=tuple(kept), means=tuple(means[i] for i in kept), matrix=matrix)
+                   used=tuple(kept), means=tuple(means[i] for i in kept), matrix=matrix,
+                   t=tuple(s[1] for s in stats), days=max(s[2] for s in stats))
+
+
+def fit_joint(rows: Sequence[Tuple[float, Sequence[Optional[float]], Sequence[Optional[float]], float]]) -> Nowcast:
+    """A device's states, one or several: ``rows`` are (weight, states at t,
+    residuals h hours after t, None where unknown, hour key), states in a fixed order."""
+    rows = [(w, list(x), r, k) for w, x, r, k in rows if w > 0]
+    return _fit_joint(rows) if rows else NONE
 
 
 def build_rows_joint(state_hists: Sequence[Dict[float, float]], residual_by_key: Dict[float, float],
@@ -161,5 +169,5 @@ def build_rows_joint(state_hists: Sequence[Dict[float, float]], residual_by_key:
         res = [residual_by_key.get(k + h * 3600.0) for h in range(LEADS)]
         if res[0] is None:
             continue
-        rows.append((weight_by_key[k], [h.get(k) for h in state_hists], res))
+        rows.append((weight_by_key[k], [h.get(k) for h in state_hists], res, k))
     return rows

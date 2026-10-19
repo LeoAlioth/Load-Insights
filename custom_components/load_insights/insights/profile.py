@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .calendars import CalendarModel, CalendarSignals, fit_calendar
-from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
+from .covariates import NONE as NO_RESPONSE, Centre, TemperatureResponse, cdh, fit_temperature_response, hdh
 from .nowcast import LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows_joint, fit_joint
 from .series import subtract_all
 
@@ -96,6 +96,33 @@ class Profile:
     overall_band: Optional[tuple] = None
 
     holidays: Optional[frozenset] = None   # the dates filed under Sunday, fit and predict alike
+    # the weighted sums behind the means, so one hour can be taken out (LOO)
+    sw: tuple = ()
+    swx: tuple = ()
+    hw: tuple = ()
+    hwx: tuple = ()
+    tw: float = 0.0
+    twx: float = 0.0
+    excluded: Optional[frozenset] = None   # hour keys left out of the sums
+
+    def loo_kwh(self, dt: datetime, w: float, v: float) -> Optional[float]:
+        """The expectation for this hour WITHOUT this hour in it: the slot's
+        mean less (w, v), falling to hour of day and then overall when the
+        slot has nothing left. An hour left out of the fit is not in the sums
+        and its expectation stands."""
+        if self.excluded and dt.timestamp() in self.excluded:
+            return self.slot_kwh(dt)
+        s = slot_of(dt, self.holidays)
+        d = self.sw[s] - w
+        if d > 1e-9:
+            return (self.swx[s] - w * v) / d
+        d = self.hw[dt.hour] - w
+        if d > 1e-9:
+            return (self.hwx[dt.hour] - w * v) / d
+        d = self.tw - w
+        if d > 1e-9:
+            return (self.twx - w * v) / d
+        return None
 
     def slot_kwh(self, dt: datetime) -> Optional[float]:
         v = self.slots[slot_of(dt, self.holidays)]
@@ -128,8 +155,11 @@ def _weight(now: datetime, k: float) -> float:
 
 
 def _settled(samples: Sequence[Sample], now: datetime, profile: "Profile"):
-    """(start, key, kWh, what ``profile`` expected, recency weight) for every
-    completed hour before ``now`` the profile has an expectation for."""
+    """(start, key, kWh, what ``profile`` expected, recency weight, and what it
+    expected WITHOUT this hour in it) for every completed hour before ``now``
+    the profile has an expectation for. The last is None when nothing else
+    is left. A covariate is fitted on the leave-one-out residual: in-sample,
+    a slot seen once has residual exactly zero."""
     cutoff_k = floor_hour(now).timestamp()
     for t, v in samples:
         k = t.timestamp()
@@ -137,7 +167,8 @@ def _settled(samples: Sequence[Sample], now: datetime, profile: "Profile"):
             continue
         e = profile.slot_kwh(t)
         if e is not None:
-            yield t, k, v, e, _weight(now, k)
+            w = _weight(now, k)
+            yield t, k, v, e, w, profile.loo_kwh(t, w, v)
 
 
 def fit_profile(samples: Sequence[Sample], now: datetime,
@@ -194,7 +225,34 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
         hod_bands=tuple(band(p) for p in hod_pairs),
         overall_band=band(all_pairs),
         holidays=hol,
+        sw=tuple(sw), swx=tuple(swx), hw=tuple(hw), hwx=tuple(hwx), tw=tw, twx=twx,
+        excluded=frozenset(exclude) if exclude else None,
     )
+
+
+def _fit_temperature(samples, now, profile, temps) -> TemperatureResponse:
+    """The temperature response: features centred on the same hour of day's
+    weather (``Centre``, over the hours that have a temperature), the residual
+    against what the profile expected WITHOUT that hour - in-sample, a slot
+    seen once has residual exactly zero - both with that hour taken out."""
+    cutoff_k = floor_hour(now).timestamp()
+    items = []
+    for t, v in samples:
+        k = t.timestamp()
+        T = temps.get(k)
+        if v is None or k >= cutoff_k or T is None:
+            continue
+        items.append((t.hour, _weight(now, k), hdh(T), cdh(T)))
+    centre = Centre.build(items)
+    rows = []
+    for t, k, v, e, w, e_loo in _settled(samples, now, profile):
+        T = temps.get(k)
+        if T is None or e_loo is None:
+            continue
+        xh, xc = hdh(T), cdh(T)
+        ch, cc = centre.loo(t.hour, w, xh, xc)
+        rows.append((k, w, v - e_loo, xh - ch, xc - cc))
+    return fit_temperature_response(rows, centre)
 
 
 def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
@@ -211,10 +269,10 @@ def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
     actual = 0.0
     expected = 0.0
     hours = 0
-    for t, k, v, e, _ in _settled(samples, now, profile):
+    for t, k, v, e, _, _ in _settled(samples, now, profile):
         if k < start:
             continue
-        e = e + response.delta((temps or {}).get(t.timestamp()))
+        e = e + response.delta((temps or {}).get(t.timestamp()), t.hour)
         e = (e if signed else max(0.0, e)) * (multipliers or {}).get(t.timestamp(), 1.0)
         actual += v
         expected += e
@@ -319,9 +377,7 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
 
     response = NO_RESPONSE
     if temps_history:
-        response = fit_temperature_response([(w, v - e, temps_history[k]) for _, k, v, e, w
-                                             in _settled(samples, now, profile)
-                                             if temps_history.get(k) is not None])
+        response = _fit_temperature(samples, now, profile, temps_history)
 
     # calendars, in two passes. DETECT against the mixture profile: which
     # calendars mean anything for this series. Then, if any does, refit the
@@ -332,8 +388,8 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     hist_mult: Dict[float, float] = {}
     if calendars:
         def residual_rows(prof):
-            return [(k, t.hour, w, v, max(0.0, e + response.delta((temps_history or {}).get(k))))
-                    for t, k, v, e, w in _settled(samples, now, prof)]
+            return [(k, t.hour, w, v, max(0.0, e + response.delta((temps_history or {}).get(k), t.hour)))
+                    for t, k, v, e, w, _ in _settled(samples, now, prof)]
 
         detected = [fit_calendar(residual_rows(profile), sig, scale_off=True) for sig in calendars]
         engaged = [sig for sig, m in zip(calendars, detected) if m.engaged]
@@ -375,8 +431,10 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     if state_history:
         resid: Dict[float, float] = {}
         weights: Dict[float, float] = {}
-        for _, k, v, e, w in _settled(samples, now, profile):
-            e = max(0.0, e + response.delta((temps_history or {}).get(k))) * hist_mult.get(k, 1.0) * level
+        for t, k, v, e, w, e_loo in _settled(samples, now, profile):
+            if e_loo is None:
+                continue                   # the residual is against what the profile expected without this hour
+            e = max(0.0, e_loo + response.delta((temps_history or {}).get(k), t.hour)) * hist_mult.get(k, 1.0) * level
             resid[k] = v - e
             weights[k] = w
         nowcast = fit_joint(build_rows_joint(state_history, resid, weights))
@@ -401,7 +459,7 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     for i, ((t, v), (lo, hi)) in enumerate(zip(base, base_bands)):
         k = t.timestamp()
         temp = (temps_forecast or {}).get(k)
-        d = response.delta(temp)
+        d = response.delta(temp, t.hour)
         if temp is not None and response.engaged:
             with_temp += 1
         mult = 1.0
