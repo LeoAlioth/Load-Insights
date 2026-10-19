@@ -388,9 +388,10 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     hist_mult: Dict[float, float] = {}
     if calendars:
         def residual_rows(prof):
-            return [(k, t.hour, w, v, max(0.0, e + response.delta((temps_history or {}).get(k), t.hour)))
-                    for t, k, v, e, w, _ in _settled(samples, now, prof)]
+            return [(k, t.hour, w, v, max(0.0, e_loo + response.delta((temps_history or {}).get(k), t.hour)))
+                    for t, k, v, e, w, e_loo in _settled(samples, now, prof) if e_loo is not None]
 
+        mixture = profile
         detected = [fit_calendar(residual_rows(profile), sig, scale_off=True) for sig in calendars]
         engaged = [sig for sig, m in zip(calendars, detected) if m.engaged]
         if engaged:
@@ -422,6 +423,8 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             if m.engaged:
                 for k, h, _, _, _ in rows:
                     hist_mult[k] = hist_mult.get(k, 1.0) * m.multiplier(k, h, sig)
+        if not any(m.engaged for m in cal_models):
+            profile = mixture      # detection said yes, every effect fit said no: the baseline was for nothing
 
     level = level_correction(profile, samples, now, response, temps_history, hist_mult, signed)
 
