@@ -421,5 +421,24 @@ def test_groups_agreeing_within_their_edges_errors_are_one():
     assert sorted(len(g) for g in got) == [4, 4, 8]
 
 
+def test_a_groups_voltage_slope_is_its_load_type():
+    """P ~ V^k across a group's edges: a resistive load reads k = 2, constant
+    power 0; too few edges, one voltage, or voltages no wider than their own
+    error (a regulated supply) read nothing."""
+    volts = [228.0, 232.0, 236.0, 240.0, 244.0, 246.0]
+    res = [{"v": v, "ve": 0.3, "size": 1000.0 * (v / 230.0) ** 2} for v in volts]
+    cp = [{"v": v, "ve": 0.3, "size": 1000.0} for v in volts]
+    k, se, n, rel = E.volt_slope(res)
+    assert abs(k - 2.0) < 0.05 and n == 6 and se < 0.05 and rel > 0.99
+    assert abs(E.volt_slope(cp)[0]) < 0.05
+    assert E.volt_slope(res[:4]) is None
+    assert E.volt_slope([{"v": 230.0, "size": 1000.0 + i} for i in range(8)]) is None
+    flat = [{"v": 230.0 + 0.1 * (i % 3), "ve": 0.3, "size": 1800.0 + i} for i in range(9)]
+    assert E.volt_slope(flat) is None
+    wide = [{**e, "ve": 3.0} for e in res]       # noisy voltages: the slope is read back up by the reliability
+    k2, _, _, rel2 = E.volt_slope(wide)
+    assert 0.5 < rel2 < 0.8 and abs(k2 * rel2 - 2.0) < 0.05
+
+
 if __name__ == "__main__":
     run_main(globals())

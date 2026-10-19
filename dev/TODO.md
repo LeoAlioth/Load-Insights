@@ -21,7 +21,6 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *Judge on the edge card only (see Standing decisions).*
 
-- [ ] **INS-7 [FEATURE] Voltage slope per group** *(found 2026-10-14 on Home's 3D edge page)* - the same loads draw at ~237 V and ~244-245 V on sunny afternoons (SE17K export); across a group's edges the slope of log P on log V is ~2 for resistive and ~0 for constant power, a load-type property. Don't group on R alone (it splits constant-power loads into sunny/cloudy groups). Group level, not per edge.
 
 ### Detector checks (report first, the owner decides)
 
