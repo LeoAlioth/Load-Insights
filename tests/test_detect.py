@@ -5525,5 +5525,41 @@ def test_the_ins8_dials_are_off():
     assert not (D.SETTLED_START or D.LEFTOVER_PREFER_STARTED or D.LEFTOVER_NEEDS_RISE)
 
 
+
+
+def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
+    """INS-9 (1), bench dials, off. A fall is run through the placement hook for
+    the gain's sake only, and what it leaves on the detector is put back;
+    GAIN_MEDIAN reads the gain as the median of the last GAIN_RING log ratios,
+    so five clean steps of 1.2 among twenty of 1.0 do not move it as they move
+    the running mean."""
+    old = D.GAIN_FALLS, D.GAIN_MEDIAN
+    try:
+        for on in (False, True):
+            D.GAIN_FALLS = on
+            calls = []
+            det = D.Detector()
+            det.phases["a"] = D.PhaseState()
+            det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 900.0, 3.0
+            det.placement_conf = 0.5
+            det.step_meter = lambda ph, since, size, up: calls.append((ph, size, up)) or (setattr(det, "placement_conf", 0.9) or "Pump")
+            det._classify_step("a", T0, -800.0, None, 0.0)
+            assert calls == ([("a", 800.0, False)] if on else [])
+            assert det.placement_conf == 0.5
+        for on in (False, True):
+            D.GAIN_MEDIAN = on
+            f = D.Fleet()
+            for k in range(25):
+                f._learn_gain("Plug", "p", 1.2 if k % 5 == 4 else 1.0, 1.0)
+            g = f.gain("Plug")
+            assert (abs(g - 1.0) < 1e-9) if on else (g > 1.03), (on, g)
+    finally:
+        D.GAIN_FALLS, D.GAIN_MEDIAN = old
+
+
+def test_the_ins9_dials_are_off():
+    assert not (D.GAIN_FALLS or D.GAIN_MEDIAN or D.GAIN_UNGATED or D.FOLD_SLOW or D.SAME_SPAN)
+
+
 if __name__ == "__main__":
     run_main(globals())
