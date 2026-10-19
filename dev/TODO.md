@@ -33,7 +33,6 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *Only when the owner brings it up.*
 
-- [ ] **INS-10 [FEATURE] Manual "ignore these dates" forecast option** - open for the owner; an automatic abnormal-day rule did not win (neutral to worse on both sites, see git log 2026-10-16), nor did other level dampings.
 
 ### Plans
 
