@@ -1477,6 +1477,14 @@ Don't re-chase these; each cost real time.
 - **Merge pass with the groups' spreads in the error** (2026-10-15 and 17): kettle 24 -> 83 % dominated
   (all of it unlabelled Mansarda B steps: 0 % with unlabelled edges not counted, as for every variant),
   Workshop boiler 39 -> 57 %; the edges' errors alone (kept) 39 / 45.5 %.
+  **The kettle merge is allowed and kept** (INS-6; the owner, 2026-10-17: "that merging is probably ok"),
+  re-benched 2026-10-19 on the ten days in `data/history` with the merge off (a temporary dial) and on: the
+  kettle reads 16.1 % dominated in both and 0 % with unlabelled Mansarda B edges not counted, so on today's
+  days it merges nothing the truth minds; the merge's measured effect is elsewhere. Edge card, off -> on: Home
+  groups 3,353 -> 3,074, duplicates 10.8 -> 7.5 %, unsure 7.3 -> 4.6, mixed 8.6 -> 8.2, mirror 96.4 -> 96.0,
+  tightness 4.51 -> 4.60, >= 1 kW singles 1,323 -> 1,209; Kozolec groups 444 -> 413, duplicates 24.4 -> 21.1,
+  unsure 10.5 -> 7.3, mixed 20.2 -> 20.1, mirror 89.9 -> 89.1. Truth card: Workshop boiler 51.4 -> 58.1 (the
+  price), Pond EVSE 16.2 -> 18.8, IR panel 4.6 -> 5.7, E100 3.5 -> 1.8, the rest within a point.
 - **A wider merge tolerance** (INS-5, 2026-10-19; `_merge` at 1.5 and 2 combined errors instead of 1, a
   temporary `EDGE_MERGE_D`; the ten days in `data/history` as of today; the sized-on-each-
   edge's-own-error merge itself is 4d46d50, already kept). Edge card at 2 (1 -> 2): Home groups 3,074 ->
