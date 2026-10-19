@@ -1477,6 +1477,18 @@ Don't re-chase these; each cost real time.
 - **Merge pass with the groups' spreads in the error** (2026-10-15 and 17): kettle 24 -> 83 % dominated
   (all of it unlabelled Mansarda B steps: 0 % with unlabelled edges not counted, as for every variant),
   Workshop boiler 39 -> 57 %; the edges' errors alone (kept) 39 / 45.5 %.
+- **A wider merge tolerance** (INS-5, 2026-10-19; `_merge` at 1.5 and 2 combined errors instead of 1, a
+  temporary `EDGE_MERGE_D`; the ten days in `data/history` as of today; the sized-on-each-
+  edge's-own-error merge itself is 4d46d50, already kept). Edge card at 2 (1 -> 2): Home groups 3,074 ->
+  2,448, duplicates 7.5 -> 3.0 %, >= 1 kW singles 1,209 -> 907, mixed 8.2 -> 8.1, mirror 96.0 -> 95.2,
+  unsure 4.6 -> 3.0, tightness 4.60 -> 4.80; Kozolec groups 413 -> 304, duplicates 21.1 -> 11.0, unsure
+  7.3 -> 3.0 but mixed 20.1 -> 25.4, mirror 89.1 -> 78.7, tightness 1.12 -> 1.31. Truth card (dominated %,
+  1 -> 1.5 / 2): oven E165 2.8 -> 5.6 / 4.2, E265 2.1 -> 2.1 / 0.0, E100 and MW unchanged; Workshop boiler
+  58.1 -> 62.2 / 67.6, Polnilnica 76 -> 76 / 78, Susilna 27.8 -> 26.6 / 28.2; Kozolec Car charger 35 -> 45 / 45,
+  Pond EVSE 18.8 -> 20.0 / 21.2; kettle 16.1 -> 33.9 / 33.9 (0 % with unlabelled edges not counted at all
+  three). The truths gain nowhere and lose on five classes; the card's gain is fragmentation cured (Home's
+  >= 1 kW singles fall by a quarter, the groups by a fifth), against Kozolec mixed +5 and mirror -10. Not
+  shipped: no truth gain, and Kozolec's own proxies get worse. 1 combined error stays.
 
 ## Working rules behind the dials
 
