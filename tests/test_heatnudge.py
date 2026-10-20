@@ -2,6 +2,7 @@
 derived hourly energy, the stored state, the options, the published answer, and
 that the HA layer is wired (no Home Assistant in the pure tier, so by reading source)."""
 import json
+import math
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -94,8 +95,8 @@ def test_scorecard_skips_a_day_without_heat():
 
 
 def test_summary_weights_by_energy_and_keeps_modelled_days_apart():
-    days = {"a": {"energy_kwh": 10, "gap": 2.0, "gap_forecast": 1.0, "saving_pct": 4, "extra_peak_kw": 0.5, "basis": "measured"},
-            "b": {"energy_kwh": 30, "gap": 1.0, "gap_forecast": None, "saving_pct": 2, "extra_peak_kw": 0.1, "basis": "measured"},
+    days = {"a": {"energy_kwh": 10, "gap": 2.0, "gap_forecast": 1.0, "saving_pct": 4, "extra_peak_kw": 0.5, "basis": "measured", "t_basis": "corrected"},
+            "b": {"energy_kwh": 30, "gap": 1.0, "gap_forecast": None, "saving_pct": 2, "extra_peak_kw": 0.1, "basis": "measured", "t_basis": "corrected"},
             "c": {"energy_kwh": 5, "gap": 9.0, "gap_forecast": None, "saving_pct": 9, "extra_peak_kw": 1, "basis": "modelled"}}
     s = H.summarize(days)
     assert s["days_measured"] == 2 and s["days_modelled"] == 1
@@ -225,6 +226,101 @@ def test_the_heat_sensors_exist_in_code_and_translations_and_keep_series_out_of_
     for lang in ("en", "sl"):
         e = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))["entity"]
         assert {"heat_index", "heat_scorecard"} <= set(e["sensor"]) and "heat_nudge_now" in e["binary_sensor"], lang
+
+
+# --- the corrected outdoor temperature ------------------------------------------
+NOW = 28 * 86400.0 + 5 * 3600           # 28 days of hourly pairs, then "now" is 05:00 UTC
+
+
+def pairs_for(sensor_of, ref_of, days=28):
+    keys = [d * 86400.0 + h * 3600.0 for d in range(days) for h in range(24)]
+    return {k: sensor_of(k) for k in keys}, {k: ref_of(k) for k in keys}
+
+
+def ref_wave(k):                       # a reference that wanders by day and by hour, 4 to 12 C
+    return 8 + 3 * math.sin(k / 86400.0 * 2.3) + 2 * math.sin((k % 86400.0 / 3600.0 - 9) / 24 * 2 * math.pi)
+
+
+def sun(k):                            # sun heating on the unit, UTC 07-17, up to +9 K at noon
+    h = k % 86400.0 / 3600.0
+    return max(0.0, 9 * math.sin((h - 7) / 10 * math.pi)) if 7 <= h <= 17 else 0.0
+
+
+def test_a_good_sensor_is_read_through_unchanged_and_the_forecast_is_not_moved_by_noise():
+    sensor, ref = pairs_for(lambda k: ref_wave(k) + 1.3 + 0.2 * math.sin(k), ref_wave)    # 1.3 K off, no sun
+    bias = H.learn_bias(sensor, ref, NOW)
+    assert bias["learned"] and len(bias["trusted"]) == 24 and abs(bias["offset"] - 1.3) < 0.3
+    fc = {NOW - NOW % 3600 + 3600 * i: 9.0 for i in range(6)}
+    temps, basis = H.correct_temperatures(sensor, ref, fc, NOW, bias)
+    past = [k for k in sensor if k < NOW - NOW % 3600]
+    assert all(temps[k] == sensor[k] and basis[k] == "sensor" for k in past)        # correction is zero, hour for hour
+    assert all(abs(temps[k] - (v + bias["offset"])) < 1e-9 for k, v in fc.items())
+    assert H.day_basis([basis.get(k, "unknown") for k in past[:24]]) == "corrected"
+
+
+def test_a_sun_heated_sensor_is_replaced_by_the_reference_in_the_sun_hours_only():
+    sensor, ref = pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave)
+    bias = H.learn_bias(sensor, ref, NOW)
+    assert bias["learned"] and abs(bias["offset"] + 2.0) < 0.3
+    assert all(h not in bias["trusted"] for h in range(8, 17)) and all(h in bias["trusted"] for h in (22, 23, 0, 1, 2, 3, 4))
+    temps, basis = H.correct_temperatures(sensor, ref, {}, NOW, bias)
+    noon = 20 * 86400.0 + 12 * 3600
+    assert basis[noon] == "reference" and abs(temps[noon] - (ref[noon] + bias["offset"])) < 1e-9
+    assert basis[20 * 86400.0 + 2 * 3600] == "sensor"
+    errs = [abs(temps[k] - (ref_wave(k) - 2.0)) for k in temps if basis[k] == "reference"]
+    assert max(errs) < 0.5, max(errs)                                         # what the sensor would read without sun
+    raw = max(abs(sensor[k] - (ref_wave(k) - 2.0)) for k in temps)
+    assert raw > 8                                                           # and the raw sensor was 9 K out
+
+
+def test_no_learnable_bias_means_the_reference_alone_and_without_one_the_sensor_as_it_is():
+    sensor, ref = pairs_for(lambda k: ref_wave(k) + sun(k), ref_wave, days=3)         # three days: not enough pairs
+    bias = H.learn_bias(sensor, ref, 3 * 86400.0 + 5 * 3600)
+    assert not bias["learned"] and bias["offset"] == 0.0 and bias["trusted"] == []
+    temps, basis = H.correct_temperatures(sensor, ref, {}, 3 * 86400.0 + 5 * 3600, bias)
+    assert all(temps[k] == ref[k] and basis[k] == "reference" for k in sensor)
+    temps, basis = H.correct_temperatures(sensor, {}, {}, 3 * 86400.0 + 5 * 3600, bias)
+    assert all(temps[k] == sensor[k] and basis[k] == "raw" for k in sensor)
+    assert H.day_basis(["raw"] * 24) == "uncorrected"
+
+
+def test_days_without_a_reference_know_only_the_trusted_hours_and_are_marked_so():
+    sensor, ref = pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave)
+    old_days = {k for k in sensor if k < 10 * 86400.0}
+    bias = H.learn_bias(sensor, {k: v for k, v in ref.items() if k >= 10 * 86400.0}, NOW)      # the reference starts on day 10
+    temps, basis = H.correct_temperatures(sensor, {k: v for k, v in ref.items() if k >= 10 * 86400.0}, {}, NOW, bias)
+    day = [basis.get(k, "unknown") for k in sorted(old_days)[48:72]]
+    assert H.day_basis(day) == "sensor_night" and day.count("sensor") == len(bias["trusted"]) and "sensor" in day
+    assert all(k not in temps for k in old_days if basis[k] == "unknown")             # nothing invented for the sun hours
+
+
+def test_the_headline_counts_only_corrected_days_and_says_how_many_are_left_out():
+    base = {"energy_kwh": 5.0, "gap": 2.0, "saving_pct": 6.0, "extra_peak_kw": 0.1, "basis": "activity", "gap_forecast": None}
+    days = {"a": {**base, "t_basis": "corrected"}, "b": {**base, "gap": 9.0, "t_basis": "sensor_night"},
+            "c": {**base, "gap": 9.0},                                                       # stored before the correction
+            "d": {**base, "gap": 9.0, "basis": "modelled", "t_basis": "corrected"}}
+    sm = H.summarize(days)
+    assert sm["days_measured"] == 1 and sm["mean_gap"] == 2.0 and sm["days_modelled"] == 1
+    assert sm["days_uncorrected_temperature"] == 2
+
+
+def test_hourly_points_are_the_value_in_force_at_half_past_and_stale_ones_are_dropped():
+    keys = [0.0, 3600.0, 7200.0, 7200.0 + 5 * 3600]
+    out = H.hourly_from_points([(100.0, 5.0), (5500.0, 7.0)], keys)
+    assert out[0.0] == 5.0 and out[3600.0] == 5.0 and out[7200.0] == 7.0 and keys[3] not in out
+    assert H.hourly_from_points([(4000.0, 1.0)], [0.0]) == {}                               # nothing yet at half past
+    assert H.migrate({"generation": H.HEAT_GENERATION, "obs": {"3600": 4.5}})["obs"] == {3600.0: 4.5}
+
+
+def test_the_published_answer_carries_the_temperature_basis_and_the_sensors_show_it():
+    bias = H.learn_bias(*pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave), NOW)
+    tb = H.temperature_basis(bias, {"corrected": 10, "sensor_night": 13})
+    assert tb["learned"] and tb["days"]["sensor_night"] == 13 and tb["trusted_hours_utc"] and "offset_k" in tb
+    out = H.publish(datetime(2026, 10, 20, 3, 30, tzinfo=TZ), None, None, {}, "daily", 35, "room", temperature=tb)
+    assert out["temperature_basis"] is tb
+    src = (BASE / "sensor.py").read_text(encoding="utf-8")
+    assert src.count('"temperature_basis"') >= 3 and "days_uncorrected_temperature" in src
+    assert "_weather_reference" in (BASE / "coordinator.py").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
