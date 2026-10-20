@@ -38,7 +38,102 @@ The weather entity's hourly forecast supplies humidity when it carries it.
 
 Outdoor temperature is the input LI already uses for its temperature evidence (INS-15): the outdoor sensor's
 hourly statistics for the past, the weather entity's forecast for the coming hours. Both must be configured
-(the Explanatory inputs page) or the heat sensors say why they are unavailable.
+(the Explanatory inputs page) or the heat sensors say why they are unavailable. **The sensor is no longer read
+as it comes: section 2a.**
+
+## 2a. The outdoor temperature, corrected (2026-10-20)
+
+**Why.** A sensor on the unit is sun-heated. Measured on Andrej's site (`sensor.tc_outside_temperature`, the
+heat pump's own), 20 Sep - 20 Oct: night means 9-10 C (plausible), but the mean at 13:00 UTC 28.2 C, daily
+ranges of 15-24 K in mid-October, daily maxima of 29-31 C, 111 hours above 24 C on 22 of 30 days (the
+official Maribor station, `sensor.arso_weather_maribor_temperatura`, on the same site: 9 hours on 3 days).
+A hot-water run at 07:07 or 16:16 therefore read cool, the shadow's best hours read 22-27 C, and the
+gap was inflated.
+
+**What the weather entity offers (checked on the site's recorder, read only).** `weather.forecast_home` (Met.no)
+carries `temperature` as a state attribute, and the recorder holds its states (about ten days: 249 changes
+8-20 Oct, nothing before 9 Oct). The weather entity has NO long-term statistics. So the reference for past
+days is the attribute's history, hourly, **plus what LI stores itself**: every refresh (every quarter hour) it
+reads the state history and keeps each hour's value in the heat store (`obs`, `OBS_KEEP_DAYS` = 120), so the
+reference outlives the recorder and every day from now on is corrected. The coordinator already read the
+entity's hourly forecast; that is unchanged.
+
+**The method (`heatnudge.learn_bias`, `correct_temperatures`; all measured, nothing site-specific).**
+1. Pair the sensor's hourly mean with the reference by **hour of the UTC day** (the sun, not the clock: no
+   daylight-saving smear), over the last `BIAS_WINDOW_DAYS` = 28 days.
+2. `offset` = the level the sensor sits at against the reference: the lower quartile of the 24 hours' mean
+   differences (sun can only add to the sensor, so the low end is its true level). Andrej: -2.1 K (the
+   sensor reads 2 K under the weather entity at night: the entity is a model of the point, the sensor is the
+   unit's own).
+3. An hour of the day is **trusted** when its mean excess over the offset is within `TRUST_BIAS_K` = 1 K (a
+   judgement: about 2-3 % of COP). Andrej: 19-06 UTC (21:00-08:00 local) trusted; the afternoon peak sits
+   +8 K over it (mean), +14 K at the 75th percentile.
+4. The corrected series: the **sensor in a trusted hour**, else the **reference + offset** (the weather
+   entity brought to the sensor's night level, so the two join without a step). From the hour under way on
+   the forecast + offset. A site whose sensor is good has every hour trusted: the series is the sensor, hour
+   for hour (test `test_a_good_sensor_is_read_through_unchanged...`); only the forecast takes the offset (a level shift
+   that moves no ranking).
+5. A bin needs `BIAS_MIN_DAYS` = 5 days of pairs and `BIAS_MIN_HOURS` = 18 hours of the day believed before
+   anything is learned. **Until then: the reference alone** (offset 0, nothing trusted) - "with no usable history
+   yet, the forecast alone". With no reference at all and nothing learned, the sensor as it is, marked
+   `uncorrected`.
+
+**Days, and what counts.** Each scored day carries `t_basis`:
+
+| t_basis | meaning | in the headline |
+|---|---|---|
+| `corrected` | every hour from the sensor in a trusted hour or from the reference | yes |
+| `sensor_night` | the sun hours had no reference (older than the recorder's states and LI's own store): only the trusted hours of the sensor are known, the rest are filled from the nearest known hour | **no** (counted in `days_uncorrected_temperature`) |
+| `uncorrected` | the sensor as it came (nothing could be learned), or a card stored before this change (no `t_basis`) | **no** |
+
+A `sensor_night` day is kept on the scorecard (in `recent`, marked) because its energy is real, but its gap says
+nothing about the day's warmth (the daytime is the evening's value), so it never enters `mean_gap`,
+`mean_saving_pct` or the plan's section 8 count. The days of `need` / `hour shape` come from `corrected` days
+while any exist (the mean of a night-only day is cold). `modelled` is separate and unchanged (below).
+
+**Found on the way, fixed:** a daily device with an activity entity labelled EVERY day `activity`, including the
+days the activity entity has no history for (the recorder keeps ~10 days of states) that were then spread by
+heating demand. The basis is now per day (`_spread_days` returns it), so such days are `modelled` and out of
+the headline. Andrej: of the 24 hot-water days 15 were modelled, of the 23 heating days 21.
+
+**Published** (attribute `temperature_basis` on the COP index and the scorecard sensors): `learned`, `offset_k`,
+`trusted_hours_utc`, `pair_hours`, `sun_excess_k_by_hour_utc`, `days` (a count per `t_basis`, `modelled` apart)
+and a `rule` sentence; the scorecard sensor also gives `temperature_day_basis` of the newest day and
+`days_uncorrected_temperature`. English keys, no Slovenian strings.
+
+**Result on Andrej's 22 days (replayed offline from the site's statistics and the activity entities' history,
+the shipped functions; weather reference from 9 Oct; `activity` = the days the entity has history for).**
+
+| | old (raw sensor, all days as shipped) | old, activity days only | corrected, activity days | corrected, ARSO as reference (cross-check, whole 22 days) |
+|---|---|---|---|---|
+| hot water: days / gap / proxy saving | 24 / 12.2 K / 26.5 % | 9 / 8.6 K / 18.2 % | **9 / 3.6 K / 7.3 %** | 9 / 4.6 K / 9.3 % |
+| heating: days / gap / proxy saving | 23 / 5.2 K / 17.5 % | 2 / 7.9 K / 23.9 % | **2 / 3.0 K / 9.2 %** | 2 / 2.4 K / 7.9 % |
+
+(The owner's 11.5 K / 25 % and 5.2 K / 17.6 % are the first column.) Both corrected gaps still clear the plan's +1.0 K
+bar, but on 9 and 2 days (heating barely ran: `climate.tc_ogrevanje` was heating on 2 days) against the 20 days
+section 8 asks for. The honest reading: the hot-water gap is real but about a third of what was shown, and the
+heating verdict is open. The corrected series against ARSO over the days
+both exist: sd of the difference 1.3 K (raw sensor 3.4 K), daily range 8.6 K (ARSO 10.5, raw 17.9), mean daily
+maximum 16.1 C (ARSO 16.8, raw 25.5).
+
+## 2b. INS-15 on the same series: measured, NOT changed
+
+`tests/forecast_bench.py cov` copy on Andrej's statistics (consumption terms of his Energy prefs, 12 weeks, no
+calendars or inputs: the temperature term alone), origins hourly 12-18 Oct, four temperature pairs: the raw sensor
+as history and forecast (as the bench does); the raw sensor as history and the weather entity as the forecast
+(what production does: a frame mismatch); the corrected series both ways; ARSO-referenced correction. **The
+temperature term engages on no series in any of the four** (needs t above 3.5-4.2 at 14-63 days), and every MAE
+is identical to the digit (site hour-ahead 2279.8 W, day-ahead 2110.4 W, noon-tomorrow 18.47 kWh). So today the
+bias costs the forecast nothing. It is a latent harm, visible in the fit: the whole-house series' cooling term
+reads t = 1.0 on the raw sensor (63 days, because the cooling hinge is 24 C and the raw sensor passes it on 22
+of 30 days, 111 hours against 9 on 3 days for the official station), and 0.0 corrected; heating degree-hours
+per hour are 2.39 raw against 3.24 official (26 % short). The term that WOULD engage on this site is the
+cooling one on a solar-following load (his two EV chargers follow the sun), a coefficient fitted on sun-heated
+afternoons and applied to a weather forecast that carries no such heating. **Recommendation:** feed INS-15 the
+same corrected series (a small change in `_hourly_means`' consumer, not made here), once the corrected pair is
+benched on Home and Kozolec under the INS-15 rule (their sensors should come out trusted everywhere, so the
+series would be unchanged: the bench is then a confirmation). Not urgent for Andrej: nothing engaged; urgent if
+his chargers' cooling t climbs.
 
 ## 3. Deriving hourly electrical energy (the research, and its limits)
 
@@ -115,7 +210,9 @@ one, hourly, so only a floor of any 15-minute block's peak), `days_measured` / `
 weighted means, and the last 30 days. State = the newest day's gap. No heat-output meter is needed.
 
 **Storage.** `load_insights.<entry>.heatnudge`: `{generation, days: {device: {date: card}}, forecasts:
-{device: {date: [24 temps]}}}`, bounded (400 days, 14 forecast days, a few hundred bytes a day). The days of
+{device: {date: [24 temps]}}, obs: {hour: weather C}}`, bounded (400 days, 14 forecast days, 120 days of weather
+observations, a few hundred bytes a day). `obs` has a default, so `HEAT_GENERATION` stays 1; a card stored before
+2026-10-20 has no `t_basis` and counts as `uncorrected`. The days of
 an hourly device are recomputed from the recorder for the whole 12-week window every refresh, so only the
 older days and the forecast temperatures are irreplaceable. `heatnudge.HEAT_GENERATION` (1) and `migrate`
 follow the storage rule in `custom_components/load_insights/AGENTS.md`: bump it and add a step whenever a
@@ -221,6 +318,11 @@ marginal that meter (or a power sensor on a daily-only unit) is the next step.
   the heat devices appear, that the options page saves, that the sensors read, and what
   `classify_energy` says about the real sources.
 - The 15-minute figure behind `extra_peak_kw` is not derivable in LI (hourly statistics only).
+- The correction's judgements: `TRUST_BIAS_K` 1 K, the lower quartile as the offset, 28 days, 5 days a bin (none
+  swept; on Andrej's data 0.5 K would drop 06 and 19 UTC from the trusted hours, 1.5 K would add 18 UTC). A cloud-free day's excess is larger than the
+  mean the trust is judged on; a sun hour trusted by the mean can still read high on a clear day.
+- The reference is the weather entity's observation at the point Home Assistant is set to (Andrej: 2-3 K warmer than
+  the Maribor station at night): the offset absorbs that, and the forecast takes it too.
 - No humidity in the COP, by decision; no defrost model.
 - No per-hour comfort model: the shift limit is a flat judgement per kind, not a thermal model of the tank,
   floor or room (`insights/thermal.py` holds kWh per degree for LJ thermostat loads and could replace the

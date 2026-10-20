@@ -460,7 +460,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
         device. Stored: the scorecard days and yesterday evening's forecast temperatures."""
         tz = now.tzinfo
         state = heatnudge.migrate(await self._heat_store.async_load())
-        temps = {**temps_hist, **temps_fc}
+        # The outdoor sensor may be sun-heated (the unit's own): the weather entity's temperature,
+        # from its state history and the hours stored since, is the reference it is learned against.
+        reference = await self._weather_reference(weather_entity, start, now, state["obs"]) if weather_entity else {}
+        bias = heatnudge.learn_bias(temps_hist, reference, now.timestamp())
+        temps, t_basis = heatnudge.correct_temperatures(temps_hist, reference, temps_fc, now.timestamp(), bias)
+        state["obs"] = {k: v for k, v in reference.items() if k >= now.timestamp() - heatnudge.OBS_KEEP_DAYS * 86400}
         humidity = await self._forecast_humidity(weather_entity, now) if weather_entity else {}
         today = now.date()
         out: Dict[str, dict] = {}
@@ -470,9 +475,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
             card_days = state["days"].setdefault(dev["id"], {})
             fcs = state["forecasts"].setdefault(dev["id"], {})
 
+            def tbasis(dev=dev):
+                counts: Dict[str, int] = {}
+                for c in state["days"].get(dev["id"], {}).values():
+                    b = c.get("t_basis", "uncorrected") if c.get("basis") != "modelled" else "modelled"
+                    counts[b] = counts.get(b, 0) + 1
+                return heatnudge.temperature_basis(bias, counts)
+
             def said(why, dev=dev, target=target):
                 return heatnudge.publish(now, None, None, {**heatnudge.summarize(card_days), "last": None}, "none",
-                                         target, dev["kind"], why=why)
+                                         target, dev["kind"], why=why, temperature=tbasis())
             if not temps_hist or not temps_fc:
                 out[dev["id"]] = said("needs a weather entity and an outdoor temperature sensor (Explanatory inputs)")
                 continue
@@ -481,6 +493,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             if dclass not in ("energy", "power"):
                 out[dev["id"]] = said("the source is not an energy or power sensor with a reading")
                 continue
+            by_day: Dict[date, str] = {}       # a daily device: each day's own basis (activity, or modelled where none was seen)
             if dclass == "power":
                 rows = await get_instance(self.hass).async_add_executor_job(
                     rec_stats.statistics_during_period, self.hass, start, None, {dev["source"]}, "hour",
@@ -494,11 +507,11 @@ class InsightsCoordinator(DataUpdateCoordinator):
                     {"energy": "kWh"}, {"change"})
                 changes = [(float(r["start"]), float(r["change"])) for r in rows.get(dev["source"], []) if r.get("change") is not None]
                 reading = heatnudge.classify_energy(changes, tz)
-                basis = "measured"
+                basis, by_day = "measured", {}
                 if reading == "hourly":
                     hourly = {k: v for k, v in changes if v > 0}
                 else:
-                    hourly, basis = await self._spread_days(dev, changes, temps, start, now, tz)
+                    hourly, basis, by_day = await self._spread_days(dev, changes, temps, start, now, tz)
             if not hourly:
                 out[dev["id"]] = said("no hourly energy history yet")
                 continue
@@ -512,16 +525,19 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 keys = heatnudge.day_keys(d, tz)
                 ts = [temps.get(k) for k in keys]
                 known = [t for t in ts if t is not None]
-                if len(keys) != 24 or len(known) < 18 or not any(k in hourly for k in keys):
+                tb = heatnudge.day_basis([t_basis.get(k, "unknown") for k in keys])
+                if len(keys) != 24 or len(known) < (8 if tb == "sensor_night" else 18) or not any(k in hourly for k in keys):
                     continue
                 e = [hourly.get(k, 0.0) for k in keys]
                 tf = fcs.get(d.isoformat())
-                card = heatnudge.scorecard_day(e, ts, target, dev["kind"], shift, rate, basis, tf)
-                past.append((e, sum(e), sum(known) / len(known)))
+                card = heatnudge.scorecard_day(e, ts, target, dev["kind"], shift, rate, by_day.get(d, basis), tf, tb)
+                past.append((e, sum(e), sum(known) / len(known), tb))
                 if card is not None:
                     card_days[d.isoformat()] = card
             state["days"][dev["id"]] = card_days = heatnudge.prune(card_days)
-            history = [(kwh, tm) for _, kwh, tm in past]
+            # days whose sun hours had no reference say little about a day's mean: used only while there is nothing better
+            past = [p for p in past if p[3] == "corrected"] or past
+            history = [(kwh, tm) for _, kwh, tm, _ in past]
             forecasts = []
             for n in (0, 1):
                 day = today + timedelta(days=n)
@@ -533,7 +549,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
                     continue
                 tm = sum(known) / len(known)
                 need, _ = heatnudge.day_need(history, tm)
-                shape, _ = heatnudge.hour_shape([(e, t) for (e, _, t) in past], tm, [datetime.fromtimestamp(k, tz).hour for k in keys])
+                shape, _ = heatnudge.hour_shape([(e, t) for (e, _, t, _) in past], tm, [datetime.fromtimestamp(k, tz).hour for k in keys])
                 forecasts.append(heatnudge.forecast_day(keys, ts, target, dev["kind"], need, shape, shift, rate,
                                                         [humidity.get(k) for k in keys] if humidity else None))
                 # yesterday evening's forecast for tomorrow, kept to judge a real schedule against (hindsight is the other)
@@ -545,28 +561,59 @@ class InsightsCoordinator(DataUpdateCoordinator):
             card = {**heatnudge.summarize(card_days), "last": ({"date": last, **card_days[last]} if last else None),
                     "recent": [{"date": k, **card_days[k]} for k in sorted(card_days)[-30:]]}
             out[dev["id"]] = heatnudge.publish(now, forecasts[0], forecasts[1], card, reading, target, dev["kind"],
-                                               why=None if basis == "measured" else f"hours are {basis}: see the plan")
+                                               why=None if basis == "measured" else f"hours are {basis}: see the plan",
+                                               temperature=tbasis())
         await self._heat_store.async_save({"generation": heatnudge.HEAT_GENERATION, "days": state["days"],
-                                           "forecasts": state["forecasts"]})
+                                           "forecasts": state["forecasts"],
+                                           "obs": {str(int(k)): round(v, 2) for k, v in state["obs"].items()}})
         return out
 
+    async def _weather_reference(self, weather_entity: str, start: datetime, now: datetime,
+                                 stored: Dict[float, float]) -> Dict[float, float]:
+        """Hour key -> the weather entity's own temperature (what it observes now: the attribute of its
+        state), from the recorder's state history (about ten days) over what was stored on earlier
+        refreshes, so the reference outlives the recorder. {} when it cannot be read."""
+        try:
+            states = await get_instance(self.hass).async_add_executor_job(
+                functools.partial(history.get_significant_states, self.hass, start, now, [weather_entity],
+                                  include_start_time_state=True, significant_changes_only=False,
+                                  minimal_response=False, no_attributes=False))
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("weather history of %s unavailable: %s", weather_entity, exc)
+            return dict(stored)
+        points = []
+        for st in states.get(weather_entity, []):
+            t = st.attributes.get("temperature")
+            if t is None:
+                continue
+            try:
+                points.append((st.last_updated.timestamp(), _to_c(t, st.attributes.get("temperature_unit") or UnitOfTemperature.CELSIUS)))
+            except (TypeError, ValueError, HomeAssistantError):
+                continue
+        n = int((floor_hour(now) - floor_hour(start)).total_seconds() // 3600) + 1
+        keys = [b.timestamp() for b in hour_buckets(floor_hour(start), n)]
+        return {**stored, **heatnudge.hourly_from_points(sorted(points), keys)}
+
     async def _spread_days(self, dev: dict, changes: List[Tuple[float, float]], temps: Dict[float, float],
-                           start: datetime, now: datetime, tz) -> Tuple[Dict[float, float], str]:
+                           start: datetime, now: datetime, tz) -> Tuple[Dict[float, float], str, Dict[date, str]]:
         """A device that reports once a day (heatnudge.classify_energy): each day's total over its
         hours - by the activity entity's time on when there is one, else by heating demand. The
-        hours are then NOT measured, and the scorecard says so (basis)."""
+        hours are then NOT measured, and the scorecard says so (basis) - per day: a day the activity
+        entity has no history for (its states are kept about ten days) is modelled, whatever the others are."""
         daily = heatnudge.daily_from_lumps(changes, tz)
         active = await self._activity_changes(dev["activity_entity"], start, now) if dev["activity_entity"] else []
         basis = "activity" if active else "modelled"
         hourly: Dict[float, float] = {}
+        by_day: Dict[date, str] = {}
         for d, kwh in daily.items():
             keys = heatnudge.day_keys(d, tz)
             w = heatnudge.active_fractions(active, keys, now.timestamp()) if active else []
+            by_day[d] = "activity"
             if sum(w) <= 0:
                 w = heatnudge.demand_weights([temps.get(k) for k in keys])
-                basis = "modelled" if not active else basis
+                by_day[d] = "modelled"
             hourly.update(zip(keys, heatnudge.spread_daily(kwh, w)))
-        return hourly, basis
+        return hourly, basis, by_day
 
     async def _activity_changes(self, entity_id: str, start: datetime, end: datetime) -> List[Tuple[float, bool]]:
         """(epoch s, on) for an activity entity: a climate's hvac_action is heating, else a state of on / heating."""

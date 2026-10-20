@@ -854,6 +854,7 @@ class HeatIndexSensor(_HeatBase):
         return {
             "would_nudge_now": r["would_nudge_now"], "cop_proxy_now": r["cop_now"], "frost_risk_now": r["frost_now"],
             "kind": r["kind"], "target_c": r["target_c"], "reading": r["reading"], "why": r["why"],
+            "temperature_basis": r["temperature_basis"],
             "today": brief(r["today"]), "tomorrow": brief(r["tomorrow"]),
             "series": [{**{k: v for k, v in h.items() if k != "start"},
                         "start": datetime.fromtimestamp(h["start"], dt_util.DEFAULT_TIME_ZONE).isoformat(),
@@ -896,12 +897,15 @@ class HeatScorecardSensor(_HeatBase):
         card = (r or {}).get("scorecard") or {}
         last = card.get("last")
         if not last:
-            return {"why": (r or {}).get("why")}
+            return {"why": (r or {}).get("why"), "temperature_basis": (r or {}).get("temperature_basis")}
         return {"date": last["date"], "actual_weighted_temperature": last["actual_t"],
                 "shadow_weighted_temperature": last["shadow_t"], "gap": last["gap"],
                 "shadow_weighted_temperature_forecast": last["shadow_t_forecast"], "gap_forecast": last["gap_forecast"],
                 "energy_kwh": last["energy_kwh"], "saving_pct": last["saving_pct"], "extra_peak_kw": last["extra_peak_kw"],
-                "basis": last["basis"], "days_measured": card["days_measured"], "days_modelled": card["days_modelled"],
+                "basis": last["basis"], "temperature_day_basis": last.get("t_basis", "uncorrected"),
+                "days_measured": card["days_measured"], "days_modelled": card["days_modelled"],
+                "days_uncorrected_temperature": card["days_uncorrected_temperature"],
+                "temperature_basis": r["temperature_basis"],
                 "mean_gap": card["mean_gap"], "mean_gap_forecast": card["mean_gap_forecast"],
                 "mean_saving_pct": card["mean_saving_pct"], "mean_extra_peak_kw": card["mean_extra_peak_kw"],
                 "recent": card["recent"], "why": r["why"]}
