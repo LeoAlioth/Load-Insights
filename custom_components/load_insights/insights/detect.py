@@ -529,19 +529,18 @@ LAG_PERCENTILE = 0.95
 # its start.
 # ^ PAIR_PAIRING: always on, as the 2026-09-30 ablation found (AGENTS.md)
 SETTLE_SHARE = 0.3
-# INS-8 bench dials (2026-10-19), all OFF: nothing ships from them until the owner decides.
-# (a) SETTLED_START: while a run is the only one on its phase and younger than
-# SHAPE_SETTLED_S, the phase's level follows the readings at SETTLED_FOLLOW per
-# reading instead of SLOW_FOLLOW, so what the run is followed to (``now``) and
-# the size it is booked at on closing (_close) are the level it settled at, not
-# its first ~3 s (Home's Hidrofor: 909 W declared, ~820 W held).
-SETTLED_START = False
+# A pump's start reads high and decays over its first seconds (Home's Hidrofor:
+# 960-1056 W declared, ~845 W held). Two parts, benched together (INS-8 a, INS-9 2;
+# shipped 2026-10-20, AGENTS.md):
+# - while a run is the only one on its phase and younger than SHAPE_SETTLED_S, the
+#   phase's level follows the readings at SETTLED_FOLLOW per reading instead of
+#   SLOW_FOLLOW, so what the run is followed to (``now``) and the size it is booked
+#   at on closing (_close) are the level it settled at, not its first ~3 s;
+# - a run's leading levels that only fall (its start decay, which the grid declares
+#   as small falls that join the run as levels) are folded into the start, booked at
+#   the level it settled at; each within SETTLED_SHARE of the start, all within
+#   SHAPE_SETTLED_S of it.
 SETTLED_FOLLOW = 0.25
-# INS-9 (2), bench dial, OFF: SETTLED_FOLD - a run's leading levels that only
-# fall (its start decay, which the grid declares as small falls that join the
-# run as levels) are folded into the start, booked at the level it settled at;
-# each within SETTLED_SHARE of the start, all within SHAPE_SETTLED_S of it.
-SETTLED_FOLD = False
 SETTLED_SHARE = 0.35
 # INS-9 bench dials (2026-10-19), all OFF: nothing ships from them until the owner decides.
 # (1) the Fleet's cross-meter gain: GAIN_FALLS learns it from falls too (a fall
@@ -2106,7 +2105,7 @@ class PhaseState:
                 o.lo = above if o.lo is None else min(o.lo, above)
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
-            young = SETTLED_START and len(self.open_edges) == 1 and ts - self.open_edges[0].since <= SHAPE_SETTLED_S \
+            young = len(self.open_edges) == 1 and ts - self.open_edges[0].since <= SHAPE_SETTLED_S \
                 and not self.owned(self.open_edges[0])
             self.level += (SETTLED_FOLLOW if young else SLOW_FOLLOW) * (w - self.level)
             if len(self.open_edges) == 1 and self.baseline is not None:
@@ -2795,9 +2794,9 @@ class PhaseState:
             # hours (Kozolec 09-22, 2026-10-02); under-report over over-report
             # (the owner)
             start = levels[0][1]
-            if SETTLED_START and o.now is not None and o.now > 0 and not self.owned(o) \
+            if o.now is not None and o.now > 0 and not self.owned(o) \
                     and abs(o.now - start) <= self._tol(start, o.now) and at - o.since <= SHAPE_SETTLED_S + 2 * MERGE_TOLERANCE_S:
-                start = o.now             # what the young run settled at, see SETTLED_START
+                start = o.now             # what the young run settled at, see SETTLED_FOLLOW
             agree = (abs(start - watts) <= self._tol(start, watts)
                      or (o.now is not None and o.now > 0 and abs(o.now - watts) <= self._tol(o.now, watts)
                          and (o.now <= start + self._tol(start, o.now) or self.owned(o))))
@@ -2806,19 +2805,18 @@ class PhaseState:
             q = sum(known) / len(known) if known else None
         else:
             q = o.var                         # the factor of the level it started at
-            if SETTLED_FOLD:
-                # a pump's start reads high and decays over its first seconds
-                # (Home's Hidrofor 960 -> 850 W in ~30 s, the grid declaring
-                # each slice as a small fall that joins the run as a level):
-                # the decay is part of the run's start, which is booked at the
-                # level it settled at - the leading levels that only fall, each
-                # inside SETTLED_SHARE of the start, within SHAPE_SETTLED_S
-                i = 1
-                while (i < len(levels) and levels[i][0] - o.since <= SHAPE_SETTLED_S
-                       and levels[i][1] < levels[i - 1][1] and levels[0][1] - levels[i][1] <= SETTLED_SHARE * levels[0][1]):
-                    i += 1
-                if i > 1:
-                    levels = [(levels[0][0], levels[i - 1][1])] + levels[i:]
+            # a pump's start reads high and decays over its first seconds
+            # (Home's Hidrofor 960 -> 850 W in ~30 s, the grid declaring
+            # each slice as a small fall that joins the run as a level):
+            # the decay is part of the run's start, which is booked at the
+            # level it settled at - the leading levels that only fall, each
+            # inside SETTLED_SHARE of the start, within SHAPE_SETTLED_S
+            i = 1
+            while (i < len(levels) and levels[i][0] - o.since <= SHAPE_SETTLED_S
+                   and levels[i][1] < levels[i - 1][1] and levels[0][1] - levels[i][1] <= SETTLED_SHARE * levels[0][1]):
+                i += 1
+            if i > 1:
+                levels = [(levels[0][0], levels[i - 1][1])] + levels[i:]
         # A factor derived from amps too coarse to resolve this load is not a
         # measurement of it. Kozolec's Victron publishes current to 0.1 A -
         # 23 VA at 230 V - so a 62 W load's whole apparent power is under

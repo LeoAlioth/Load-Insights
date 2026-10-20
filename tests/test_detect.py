@@ -4930,7 +4930,11 @@ def test_a_run_that_settles_to_its_meters_size_is_that_meters():
         assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
         run = max(run, key=lambda s: s.duration_s)
         sig = fleet.main.signature_of(run)
-        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and sig is not None and sig.locations.get("Plug"), (
+        # the plug's: filed under a signature located at it, or (the fold books the
+        # blip's step down as the start's decay, so the run sits at the plug's own
+        # size) owned by the plug's session
+        plugs = bool(sig is not None and sig.locations.get("Plug")) or (run.owner is not None and run.owner[0] == "Plug")
+        assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and plugs, (
             "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
 
 
@@ -5253,9 +5257,13 @@ def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_we
         det = D.Detector()
         closed = det.process({"a": rows}, now_ts=rows[-1][0] + 60.0)
         st = det.phases["a"]
-        runs.append((st.noise, st.noise_rel, [(s.start, s.end, round(s.energy_wh, 3)) for s in closed
+        runs.append((st.noise, st.noise_rel, [(s.start, s.end, s.energy_wh) for s in closed
                                               if s.start > T0 + 3600.0]))
-    assert runs[0] == runs[1], (runs[0][:2], runs[1][:2], len(runs[0][2]), len(runs[1][2]))
+    assert runs[0][:2] == runs[1][:2], (runs[0][:2], runs[1][:2])
+    # a young run's level follows its readings (SETTLED_FOLLOW), so a dropped
+    # reading moves its booked energy by a few thousandths of a Wh, not its edges
+    assert len(runs[0][2]) == len(runs[1][2]) and all(
+        (a[0], a[1]) == (b[0], b[1]) and abs(a[2] - b[2]) < 0.02 for a, b in zip(runs[0][2], runs[1][2])), (len(runs[0][2]), len(runs[1][2]))
 
 
 def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
@@ -5456,56 +5464,30 @@ def test_the_days_repair_after_a_restart():
     assert hours(fleet) == hours(whole_fleet)
 
 
-def _settling_run(on):
-    """A 910 W start whose level then drifts to ~860 W inside the noise (a
-    pump's first seconds read high), stopping at the level it held."""
-    old, D.SETTLED_START = D.SETTLED_START, on
-    try:
-        st = D.PhaseState(min_noise=5.0)
-        st.baseline, st.level, st.noise, st.interval = 100.0, 100.0, 70.0, 3.0
-        out, t = [], T0
-        for w, n in ((100.0, 20), (1010.0, 4), (960.0, 12), (100.0, 20)):
-            for _ in range(n):
-                out.extend(st.process(t, w))
-                t += 3.0
-        return out
-    finally:
-        D.SETTLED_START = old
-
-
 def test_settled_start_books_a_young_run_at_the_level_it_settled_at():
-    """INS-8 (a), a bench dial, off: Home's Hidrofor is sized from its first
-    ~3 s (909 W) though it holds ~820 W. Off, the slowly followed level books
-    the run at the start's size; on, the young run's level follows its readings
-    and the run is booked at what it settled at."""
-    (off,), (on,) = _settling_run(False), _settling_run(True)
-    assert off.levels[""][0][1] > 895.0, off.levels
-    assert 840.0 < on.levels[""][0][1] < 880.0, on.levels
+    """INS-8 (a): Home's Hidrofor is sized from its first ~3 s (909 W) though
+    it holds ~820 W. A 910 W start whose level drifts to ~860 W inside the
+    noise is booked at what it settled at, not at the start's size."""
+    st = D.PhaseState(min_noise=5.0)
+    st.baseline, st.level, st.noise, st.interval = 100.0, 100.0, 70.0, 3.0
+    out, t = [], T0
+    for w, n in ((100.0, 20), (1010.0, 4), (960.0, 12), (100.0, 20)):
+        for _ in range(n):
+            out.extend(st.process(t, w))
+            t += 3.0
+    (run,) = out
+    assert 840.0 < run.levels[""][0][1] < 880.0, run.levels
 
 
 def test_settled_fold_books_a_pumps_start_at_the_level_its_decay_settled_at():
-    """INS-9 (2), a bench dial, off: the grid declares a pump's start decay
-    (971 -> 934 -> 857 W) as small falls that join the run as levels, and the
-    run was booked at its first, surge-high level. Folded, the leading falls
-    inside the share are the start, booked at the level they settled at; a fall
-    later than SHAPE_SETTLED_S, or too big, stays a level of its own."""
-    old = D.SETTLED_FOLD
-    try:
-        res = {}
-        for on in (False, True):
-            D.SETTLED_FOLD = on
-            st = D.PhaseState()
-            o = D._Open(since=T0, watts=971.0, var=None,
-                        levels=[(T0, 971.0), (T0 + 8.0, 934.0), (T0 + 14.0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)])
-            res[on] = st._close(o, T0 + 320.0, 300.0, None).levels[""]
-        assert res[False][0] == (T0, 971.0) and len(res[False]) == 5
-        assert res[True] == [(T0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)], res[True]
-    finally:
-        D.SETTLED_FOLD = old
-
-
-def test_the_ins8_dials_are_off():
-    assert not (D.SETTLED_START or D.SETTLED_FOLD)
+    """INS-9 (2): the grid declares a pump's start decay (971 -> 934 -> 857 W)
+    as small falls that join the run as levels. The leading falls inside the
+    share are the start, booked at the level they settled at; a fall later than
+    SHAPE_SETTLED_S, or too big, stays a level of its own."""
+    st = D.PhaseState()
+    o = D._Open(since=T0, watts=971.0, var=None,
+                levels=[(T0, 971.0), (T0 + 8.0, 934.0), (T0 + 14.0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)])
+    assert st._close(o, T0 + 320.0, 300.0, None).levels[""] == [(T0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)]
 
 
 
