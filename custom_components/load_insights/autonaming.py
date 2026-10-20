@@ -1,0 +1,202 @@
+"""Auto-naming of confidently detected loads - the Home Assistant half (INS-21).
+
+The recogniser, the bar's hysteresis, the numbering and the dashboard's list as
+it should read are pure and live in `insights/autoname.py`; this module owns
+what needs `hass`: the store, the rename, the words, and the write to the
+Energy dashboard (`EnergyManager.async_update`, verified against Home
+Assistant's `homeassistant/components/energy/data.py`: it takes
+`device_consumption` as a whole list, entries `{stat_consumption, name?,
+stat_rate?, included_in_stat?}`, and does not validate - so the whole list is
+read back, changed in the pure planner and written once).
+
+Run once an hour from `DetectionRunner._check_named`, never while history is
+being re-read. Two options, both on when absent (`CONF_AUTONAME`,
+`CONF_AUTONAME_DASHBOARD`).
+"""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+from homeassistant.components.energy.data import async_get_manager
+from homeassistant.helpers import translation
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+
+from .const import CONF_AUTONAME, CONF_AUTONAME_DASHBOARD, DOMAIN
+from .insights import autoname as A
+from .insights.classify import FRIDGE, appliance_from_name
+from .insights.model import SiteModel
+
+if TYPE_CHECKING:
+    from .detection import DetectionRunner
+
+_LOGGER = logging.getLogger(__name__)
+STORAGE_VERSION = 1
+# English fallbacks; the words are in translations/*.json under "exceptions" (autoname_fridge, autoname_heater)
+DEFAULT_PATTERNS = {A.FRIDGE_KIND: "Fridge {n}", A.HEATER_KIND: "Heater {n}"}
+
+
+def _is_fridge_name(name: str) -> bool:
+    return appliance_from_name(name) == FRIDGE
+
+
+class AutoNamer:
+    """What detection has named by itself, and what it put on the Energy dashboard."""
+
+    def __init__(self, runner: "DetectionRunner") -> None:
+        self._runner = runner
+        self._store: Store = Store(runner.hass, STORAGE_VERSION, f"{DOMAIN}.{runner.entry.entry_id}.autoname")
+        self.cands: Dict[str, A.Candidate] = {}
+        self.marks: Dict[str, dict] = {}              # OUR names: name -> {kind, descriptor, since}
+        self.tombs: List[A.Tombstone] = []
+        self.added: List[str] = []                    # statistics we put on the dashboard
+        self.declined: List[str] = []                 # ...that the owner took out again
+
+    # ------------------------------------------------------------ options
+    @property
+    def enabled(self) -> bool:
+        return bool(self._runner.config.get(CONF_AUTONAME, True))
+
+    @property
+    def dashboard(self) -> bool:
+        return self.enabled and bool(self._runner.config.get(CONF_AUTONAME_DASHBOARD, True))
+
+    # ------------------------------------------------------------ store
+    async def async_load(self) -> None:
+        raw = await self._store.async_load() or {}
+        self.cands = {k: A.Candidate.from_dict(v) for k, v in (raw.get("cands") or {}).items()}
+        self.marks = {n: dict(m) for n, m in (raw.get("marks") or {}).items()}
+        self.tombs = [A.Tombstone.from_dict(t) for t in raw.get("tombs") or []]
+        self.added = list(raw.get("added") or [])
+        self.declined = list(raw.get("declined") or [])
+
+    async def _save(self) -> None:
+        await self._store.async_save({
+            "cands": {k: c.to_dict() for k, c in self.cands.items()}, "marks": self.marks,
+            "tombs": [t.to_dict() for t in self.tombs], "added": self.added, "declined": self.declined})
+
+    def reset(self, forget_names: bool) -> None:
+        """A detection reset: signature ids mean nothing any more, so the
+        candidates go. Our names are carried like any other (orphan names) unless
+        ``forget_names``, which drops them and their marks too; tombstones stay
+        (they describe loads, not ids)."""
+        self.cands = {}
+        if forget_names:
+            self.marks = {}
+
+    # ------------------------------------------------------------ words
+    async def _patterns(self) -> Dict[str, str]:
+        out = dict(DEFAULT_PATTERNS)
+        try:
+            words = await translation.async_get_translations(
+                self._runner.hass, self._runner.hass.config.language, "exceptions", [DOMAIN])
+        except Exception:  # noqa: BLE001 - a missing language is the English words
+            return out
+        for kind in out:
+            text = words.get(f"component.{DOMAIN}.exceptions.autoname_{kind}.message")
+            if text and "{n}" in text:
+                out[kind] = text
+        return out
+
+    # ------------------------------------------------------------ the hourly check
+    async def async_check(self) -> None:
+        r = self._runner
+        if not r.enabled or r.refiling or not r.caught_up:
+            return
+        changed = False
+        if self.enabled:
+            changed = await self._name()
+        elif self.marks or self.cands:
+            self.cands = {}
+        changed |= await self._dashboard()
+        if changed:
+            await self._save()
+
+    def _owner_names(self) -> List[Tuple[str, Tuple[str, int], object]]:
+        """(name, ref, signature) of every named signature."""
+        r = self._runner
+        return [(sig.name, (meter, sig.id), sig) for meter, det in r.fleet.detectors() for sig in det.signatures if sig.name]
+
+    async def _name(self) -> bool:
+        r = self._runner
+        changed = False
+        # 1. what the owner did to our names since the last check
+        present = set(r.fleet.names())
+        for _, det in r.fleet.detectors():
+            present |= {o.get("name") for o in det.orphan_names}
+        marks, buried = A.reconcile(self.marks, present)
+        if buried:
+            _LOGGER.info("Auto-names taken away by the owner (not made again for a load like them): %s",
+                         ", ".join(t.name for t in buried))
+            self.tombs += buried
+            self.marks, changed = marks, True
+        # 2. today's facts: what is offered for naming, and what wears one of our names
+        facts: Dict[str, A.Facts] = {}
+        from .detection import MIN_COUNT_TO_NAME, NAMING_MIN_WH   # detection imports this module
+        rows = r.fleet.namable(r.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH)
+        for group in rows.values():
+            for ref, sig in group:
+                facts[A.key_of(ref)] = A.facts_of(ref, sig)
+        mine: Dict[str, Tuple[Tuple[str, int], object]] = {}
+        for name, ref, sig in self._owner_names():
+            if name in self.marks:
+                facts[A.key_of(ref)] = A.facts_of(ref, sig)
+                mine[A.key_of(ref)] = (ref, sig)
+        today = dt_util.now().date().isoformat()
+        self.cands = A.tick(self.cands, facts, today)
+        # 3. a name whose load has not cleared for a week is taken back (never on one bad day)
+        for key, (ref, sig) in list(mine.items()):
+            c = self.cands.get(key)
+            if c is not None and A.lapsed(c):
+                _LOGGER.info("Auto-name %s taken back from %s: the load has not cleared the bar for %d days",
+                             sig.name, key, A.DAYS_TO_REVOKE)
+                gone = sig.name
+                await r.async_rename(ref, None)
+                self.cands.pop(key, None)
+                if gone not in r.fleet.names():
+                    self.marks.pop(gone, None)
+                changed = True
+        # 4. new names
+        owned = [(n, A.descriptor(A.facts_of(ref, sig))) for n, ref, sig in self._owner_names() if n not in self.marks]
+        taken = set(r.fleet.names()) | set(self.marks) | {o.get("name") for _, det in r.fleet.detectors() for o in det.orphan_names}
+        taken |= set(r.all_submeters) | {t.name for t in self.tombs if t.name}
+        taken |= {d.label for d in await self._devices()}
+        patterns = await self._patterns()
+        todo = A.decide({k: f for k, f in facts.items() if k not in mine}, self.cands, self.marks, self.tombs, patterns,
+                        taken, owned, _is_fridge_name)
+        for key, name, kind in todo:
+            ref = facts[key].ref
+            if not await r.async_rename(ref, name):
+                continue
+            self.marks.setdefault(name, {"kind": kind, "descriptor": self.cands[key].descriptor,
+                                         "since": dt_util.utcnow().isoformat()})
+            _LOGGER.info("Auto-named %s (%s) as %s", key, kind, name)
+            changed = True
+        if todo:
+            r.async_update_listeners()          # the sensors of the new name appear
+        return changed
+
+    async def _devices(self) -> list:
+        manager = await async_get_manager(self._runner.hass)
+        return SiteModel.from_prefs(manager.data or {}).devices
+
+    async def _dashboard(self) -> bool:
+        """Put our names' energy on the Energy dashboard - or take ours off. Only entries in ``added`` are ever removed."""
+        r = self._runner
+        manager = await async_get_manager(r.hass)
+        wanted: Dict[str, str] = {}
+        if self.dashboard:
+            for name in sorted(self.marks):
+                if name in r.fleet.names() and not r.metered_device(name):
+                    entity = r.energy_entity(name)
+                    if not entity:
+                        return False          # its sensor is not made yet (a reload): decide next hour, remove nothing
+                    wanted[entity] = name
+        written, added, declined = await A.write_dashboard(manager, wanted, self.added, self.declined)
+        moved = (added, declined) != (self.added, self.declined)
+        self.added, self.declined = added, declined
+        if written:
+            _LOGGER.info("Energy dashboard device list written (auto-named loads: %s)",
+                         ", ".join(sorted(wanted.values())) or "none")
+        return written or moved

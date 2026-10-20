@@ -42,6 +42,8 @@ from .const import (
     LAYOUT_SERIES,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
+    CONF_AUTONAME,
+    CONF_AUTONAME_DASHBOARD,
     CONF_SINGLE_DEVICE,
     CONF_IGNORE_METERS,
     CONF_HORIZON_SKIP,
@@ -264,6 +266,12 @@ def _since(when: float) -> str:
     if days < 2:
         return f"for {days * 24:.0f} hours"
     return f"for {days:.0f} days" if days < 60 else f"since {datetime.fromtimestamp(when, dt_util.DEFAULT_TIME_ZONE):%-d %b %Y}"
+
+
+def _autoname_fields(current: dict) -> dict:
+    """The two auto-naming switches (INS-21), both on when never saved."""
+    return {vol.Optional(key, default=bool(current.get(key, True))): selector.BooleanSelector()
+            for key in (CONF_AUTONAME, CONF_AUTONAME_DASHBOARD)}
 
 
 def _meter_wait_field(defaults: dict) -> dict:
@@ -742,7 +750,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         if helped:
             detail += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
         if sig.name:
-            detail = f"Named **{sig.name}**.\n\n{detail}"
+            auto = " It was named automatically; naming it yourself or forgetting it ends that." \
+                if sig.name in runner.autonamer.marks else ""
+            detail = f"Named **{sig.name}**.{auto}\n\n{detail}"
         options = ["naming_name"]
         # A named load whose behaviour changed leaves its name on a
         # fingerprint nothing matches, while what replaced it sits here
@@ -851,8 +861,12 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 # holds several, is read, sets the horizon
                 for key in lists:
                     cfg[key] = list(user_input.get(key) or [])
+            # switches are answers whichever way they sit: False must be stored, not dropped as empty
+            for key in (CONF_AUTONAME, CONF_AUTONAME_DASHBOARD):
+                cfg[key] = bool(user_input.get(key, True))
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         fields = _meter_wait_field(current)
+        fields.update(_autoname_fields(current))
         if meters:
             # which meters hold ONE device: until the page is saved, what the
             # library's shape suggests (the Hidrofor plug: 99 % of its
