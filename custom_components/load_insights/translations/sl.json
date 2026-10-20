@@ -158,13 +158,17 @@
                     "meter_wait_s": "Počakaj na počasnejše števce, največ",
                     "single_device": "Števci z eno samo napravo",
                     "horizon_skip": "Števci, na katere ne čakaj",
-                    "ignore_meters": "Števci, izpuščeni iz zaznavanja"
+                    "ignore_meters": "Števci, izpuščeni iz zaznavanja",
+                    "autoname": "Samodejno poimenuj zanesljivo zaznana bremena",
+                    "autoname_dashboard": "Samodejno poimenovana bremena dodaj na nadzorno ploščo Energija"
                 },
                 "data_description": {
                     "meter_wait_s": "Zaznavanje presodi vsako stopnico na priključku šele, ko so števci pod njim imeli čas, da jo sporočijo - toliko, kolikor najpočasnejši med njimi potrebuje, da pokaže stopnico, ki jo deli s priključkom, kot se nauči iz teh stopnic - tako da stopnico pripiše števcu, ki jo je zaznal, nikoli takemu, ki se ni spremenil, in enako, ne glede na to, ali je zgodovina prebrana naenkrat ali minuto za minuto. Nikoli dlje od tega: števec, počasnejši od tega, je presojen s tem, kar je sporočil do takrat. Sprotne meritve poimenovanih bremen zamujajo za ta čas, njihova energija ne; 0 presodi vsako stopnico takoj.",
                     "single_device": "Označi števec, katerega meritve so ena naprava - vtičnica, na kateri je samo črpalka, števec bojlerja. Njegove meritve so ta naprava, zato v njem ni ničesar za poimenovanje, in sprejme le bremena na fazah, ki jih ta naprava uporablja. Števcev tokokrogov ne označi - 3EM na podrazdelilniku, hišni tokokrog: v njih se bremena zaznavajo. Dokler tega ne shraniš, so označeni števci, katerih bremena so skoraj vsa eno.",
                     "horizon_skip": "Zaznavanje presodi vsako stopnico na priključku šele, ko je vsak števec pod njim imel čas, da jo pokaže. Označi števec, ki stopnice hiše kaže počasi - na primer vtičnico, brano vsake pol minute: še vedno je prebran in še vedno umešča bremena s tem, kar je sporočil do takrat, a njegov čas ne zadržuje več vseh drugih stopnic. Števec, ki nikoli ne pokaže stopnice, ki jo kaže števec hiše, sam po sebi ne določa čakanja.",
-                    "ignore_meters": "Označi števec, ki ga zaznavanje naj sploh ne bere, kot da ga ne bi bilo na nadzorni plošči Energija: njegove meritve ne umeščajo bremen in ne delijo stopnic, in nanj nič ne čaka."
+                    "ignore_meters": "Označi števec, ki ga zaznavanje naj sploh ne bere, kot da ga ne bi bilo na nadzorni plošči Energija: njegove meritve ne umeščajo bremen in ne delijo stopnic, in nanj nič ne čaka.",
+                    "autoname": "Hladilnik ali zamrzovalnik (kompresor, ki se vklaplja in izklaplja) in grelnik, ki ju zaznavanje zelo zanesljivo prepozna in je videlo na več dni, dobita ime sama - Hladilnik 1, Grelnik 1 - in se kažeta kot zaznana bremena kot vsako, ki ga poimenuješ. Ime, ki ga daš, spremeniš ali pozabiš, vedno prevlada in se za podobno breme nikoli več ne da samo. Izklopljeno: nič se ne poimenuje samodejno.",
+                    "autoname_dashboard": "Doda energijo vsakega samodejno poimenovanega bremena na seznam naprav nadzorne plošče Energija. Odstranjeni so lahko samo vnosi, dodani tu (ko ime izgine ali ko to izklopiš); vnosov, ki si jih naredil sam, se nikoli ne dotakne, in vnos, ki ga odstraniš, se ne vrne. Pomembno samo, dokler je samodejno poimenovanje vklopljeno."
                 }
             },
             "naming": {
@@ -551,6 +555,14 @@
                     "description": "Poimenovano breme, ki naj se prepiše. Prazno prepiše vsa poimenovana bremena."
                 }
             }
+        }
+    },
+    "exceptions": {
+        "autoname_fridge": {
+            "message": "Hladilnik {n}"
+        },
+        "autoname_heater": {
+            "message": "Grelnik {n}"
         }
     }
 }

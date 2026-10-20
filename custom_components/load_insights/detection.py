@@ -71,6 +71,7 @@ from .insights.detect import (
 )
 from .insights.phases import beside, match_meter_entities
 from .insights.model import SiteModel
+from .autonaming import AutoNamer
 from .insights.named import (first_change, metered_device, plan_carry, plan_rewrite,
                              vanished_into)
 
@@ -382,6 +383,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
+        # what detection named by itself and put on the Energy dashboard (INS-21)
+        self.autonamer = AutoNamer(self)
+
+    def energy_entity(self, name: str) -> Optional[str]:
+        """The entity id of a named load's own energy sensor (None until it exists)."""
+        return er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
 
     @property
     def config(self) -> dict:
@@ -884,6 +891,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         twice what was counted since the hour began but filed before it,
         until this check the hour after."""
         await get_instance(self.hass).async_block_till_done()
+        try:
+            await self.autonamer.async_check()
+        except Exception:  # noqa: BLE001 - a fault in auto-naming must not stop the statistics check
+            _LOGGER.exception("Auto-naming failed")
         for name in sorted(self.fleet.names()):
             if not self.metered_device(name):
                 await self.async_backfill_statistics(name, force=False)
@@ -1068,6 +1079,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 "library again, keeping %d name(s) to re-attach", len(orphans)
             )
             raw = {}
+        await self.autonamer.async_load()
         self.fleet = Fleet.from_dict(raw.get("fleet"))
         if orphans:
             self.fleet.carry_names(orphans)
@@ -1110,6 +1122,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             orphans = self.fleet.name_descriptors() if self.fleet and not forget_names else []
             if forget_names:
                 self.carries = {}               # owed to names that are gone
+            self.autonamer.reset(forget_names)
             self.fleet = Fleet()
             self.fleet.carry_names(orphans)
             self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()

@@ -158,13 +158,17 @@
                     "meter_wait_s": "Wait for slower meters, at most",
                     "single_device": "Meters that hold one device",
                     "horizon_skip": "Meters not to wait for",
-                    "ignore_meters": "Meters to leave out of detection"
+                    "ignore_meters": "Meters to leave out of detection",
+                    "autoname": "Auto-name confident loads",
+                    "autoname_dashboard": "Add auto-named loads to the Energy dashboard"
                 },
                 "data_description": {
                     "meter_wait_s": "Detection judges each step at the grid connection once the meters below it have had time to report it - as long as the slowest of them takes to show a step it shares with the grid, learned from those steps - so a step is placed under the meter that took it, never under one that did not change, and the same whether the history is read at once or a minute at a time. Never longer than this: a meter slower than it is judged with what it has said by then. The named loads' live readings lag by the wait, their energy does not; 0 judges every step at once.",
                     "single_device": "Tick a meter whose readings are one appliance - a plug with only the pump on it, a boiler's own meter. Its readings are that device, so nothing inside it is offered for naming, and it only takes loads on the phases that device uses. Leave circuit meters unticked - a 3EM on a sub-panel, a house circuit: loads are detected inside those. Until this is saved, the meters whose loads are nearly all one are ticked.",
                     "horizon_skip": "Detection judges each step at the grid connection once every meter below it has had time to show it. Tick a meter that shows the house's steps slowly - a plug read every half minute, say: it is still read and still places loads, with what it has said by then, but how long it takes no longer holds every other step back. A meter that never shows a step the house's meter shows sets no wait by itself.",
-                    "ignore_meters": "Tick a meter detection should not read at all, as if it were not on the Energy dashboard: its readings neither place loads nor split steps, and nothing waits for it."
+                    "ignore_meters": "Tick a meter detection should not read at all, as if it were not on the Energy dashboard: its readings neither place loads nor split steps, and nothing waits for it.",
+                    "autoname": "A fridge or freezer (a compressor cycling) and a heating element that detection is very sure of and has seen on several days are named by themselves - Fridge 1, Heater 1 - and show as detected loads like any you name. A name you give, change or forget always wins and is never made again for a load like it. Off: nothing is named automatically.",
+                    "autoname_dashboard": "Puts the energy of each auto-named load on the Energy dashboard's device list. Only the entries added here are ever removed again (when the name goes, or this is turned off); entries you made are never touched, and one you take out is not put back. Only matters while auto-naming is on."
                 }
             },
             "naming": {
@@ -551,6 +555,14 @@
                     "description": "The named load to rewrite. Empty rewrites every named load."
                 }
             }
+        }
+    },
+    "exceptions": {
+        "autoname_fridge": {
+            "message": "Fridge {n}"
+        },
+        "autoname_heater": {
+            "message": "Heater {n}"
         }
     }
 }

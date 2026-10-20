@@ -597,6 +597,8 @@ class DetectedLoadsSensor(_DetectionBase):
             # names whose signature a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
+            # names detection gave by itself (insights/autoname.py), told from the owner's
+            "auto_named": {n: m.get("kind") for n, m in sorted(self._runner.autonamer.marks.items())},
             "looks_like_one_device": suggest_levels(det.signatures, det.recent),
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
