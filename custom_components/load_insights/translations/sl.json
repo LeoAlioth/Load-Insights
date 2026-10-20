@@ -90,10 +90,10 @@
                 "name": "Osnovna dnevna poraba"
             },
             "heat_index": {
-                "name": "Indeks COP"
+                "name": "Indeks učinkovitosti ogrevanja"
             },
             "heat_scorecard": {
-                "name": "Ocena dviga ogrevanja"
+                "name": "Premik ogrevanja: dnevna primerjava"
             }
         },
         "binary_sensor": {
@@ -101,7 +101,7 @@
                 "name": "Deluje"
             },
             "heat_nudge_now": {
-                "name": "Bi dvignil ogrevanje zdaj"
+                "name": "Zdaj je ugoden čas za ogrevanje"
             }
         },
         "button": {
@@ -128,7 +128,7 @@
                     "naming": "Poimenuj zaznan porabnik",
                     "grid": "Priključek na omrežje",
                     "inverters": "Razsmerniki",
-                    "heat": "Naprave za ogrevanje"
+                    "heat": "Ogrevalne naprave"
                 }
             },
             "inputs": {
@@ -421,8 +421,8 @@
                 }
             },
             "heat": {
-                "title": "Naprave za ogrevanje",
-                "description": "Način opazovanja: za vsako toplotno črpalko ali klimo oziroma toplotno črpalko, ki ogreva, Load Insights izračuna, v katerih urah bi toplota stala najmanj elektrike, in to kasneje primerja s tem, kar je naprava res naredila. Nič se ne zapiše v nobeno napravo. Dodajte eno napravo naenkrat ali odstranite označene. Zdaj: {devices}",
+                "title": "Ogrevalne naprave",
+                "description": "Način opazovanja: za vsako toplotno črpalko ali klimo, ki ogreva, Load Insights izračuna, v katerih urah bi toplota stala najmanj elektrike, in to kasneje primerja s tem, kar je naprava res naredila. Nič se ne zapiše v nobeno napravo. Dodajte eno napravo naenkrat ali odstranite označene. Zdaj: {devices}",
                 "data": {
                     "name": "Ime",
                     "source": "Senzor moči ali energije",
