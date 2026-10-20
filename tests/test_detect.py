@@ -5483,46 +5483,29 @@ def test_settled_start_books_a_young_run_at_the_level_it_settled_at():
     assert 840.0 < on.levels[""][0][1] < 880.0, on.levels
 
 
-def _leftover_where(leftover, b1=False, b2=False, rose=False, sibling=False):
-    """The meter a 858 W split leftover is placed under, where a pump meter's
-    start cluster of that size is the busiest and nothing placed this step."""
-    old = D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE
-    D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE = b1, b2
+def test_settled_fold_books_a_pumps_start_at_the_level_its_decay_settled_at():
+    """INS-9 (2), a bench dial, off: the grid declares a pump's start decay
+    (971 -> 934 -> 857 W) as small falls that join the run as levels, and the
+    run was booked at its first, surge-high level. Folded, the leading falls
+    inside the share are the start, booked at the level they settled at; a fall
+    later than SHAPE_SETTLED_S, or too big, stays a level of its own."""
+    old = D.SETTLED_FOLD
     try:
-        det = D.Detector()
-        det.phases["a"] = D.PhaseState()
-        det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 300.0, 3.0
-        det.step_meter = lambda ph, since, size, up: "Pump"
-        for k in range(30):
-            det._classify_step("a", T0 + 100.0 * k, 865.0 + (k % 3) * 5.0, None, 0.0)
-        det.step_meter = lambda ph, since, size, up: None
-        det.meter_held = lambda *a: False
-        det.meter_rose = lambda *a: rose
-        if sibling:
-            det.phases["a"].open_edges.append(D._Open(T0 + 5000.0, 1286.0, None, [(T0 + 5000.0, 1286.0)], meter="Pump"))
-        det._leftover = {"left": True} if leftover else None
-        return det._classify_step("a", T0 + 5000.0, 858.0, None, 0.0).where
+        res = {}
+        for on in (False, True):
+            D.SETTLED_FOLD = on
+            st = D.PhaseState()
+            o = D._Open(since=T0, watts=971.0, var=None,
+                        levels=[(T0, 971.0), (T0 + 8.0, 934.0), (T0 + 14.0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)])
+            res[on] = st._close(o, T0 + 320.0, 300.0, None).levels[""]
+        assert res[False][0] == (T0, 971.0) and len(res[False]) == 5
+        assert res[True] == [(T0, 857.0), (T0 + 200.0, 700.0), (T0 + 300.0, 300.0)], res[True]
     finally:
-        D.LEFTOVER_PREFER_STARTED, D.LEFTOVER_NEEDS_RISE = old
-
-
-def test_a_split_leftover_stays_out_of_a_meters_start_group_it_did_not_rise_in():
-    """INS-8 (b), two bench dials, off (Home 27 Sep 13:01: 858 W landed in the
-    pump's start cluster and stayed open 31 min). Off, the leftover is placed
-    by likelihood under the pump meter; b2 keeps it out unless that meter
-    stepped (and a rise that is not a leftover is untouched); b1 keeps it out
-    where the meter's own run started in the same event."""
-    assert _leftover_where(True) == "Pump"
-    assert _leftover_where(True, b2=True) == ""
-    assert _leftover_where(True, b2=True, rose=True) == "Pump"
-    assert _leftover_where(False, b2=True) == "Pump"
-    assert _leftover_where(True, b1=True) == "Pump"                    # no run of the meter's there
-    assert _leftover_where(True, b1=True, sibling=True) == ""
-    assert _leftover_where(False, b1=True, sibling=True) == "Pump"
+        D.SETTLED_FOLD = old
 
 
 def test_the_ins8_dials_are_off():
-    assert not (D.SETTLED_START or D.LEFTOVER_PREFER_STARTED or D.LEFTOVER_NEEDS_RISE)
+    assert not (D.SETTLED_START or D.SETTLED_FOLD)
 
 
 
