@@ -43,7 +43,7 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 ## Other
 
 - [ ] **INS-18 The day's repair costs Home 2.5 points of capture on the devices table** *(re-benched 2026-10-19, `data/scorecard/jobs/repair-2026-10-12.md`)* - impurity is down everywhere, but Home fed devices 67.5 -> 65.0 is beyond the plan's two points (and its band). Live since 10-04, so unchanged; the owner decides: keep, or sweep `REPAIR_SLACK_NOISE` 1 / 2 / 4 and `REPAIR_FLOOR_SHARE` 0.05 / 0.1 / 0.2.
-- [ ] **INS-12 Home's detected-loads dashboard: To-name sub-list wording** - the Running now card is removed (2026-10-18); the wording of the sub-list under the To-name tile is not decided.
+- [ ] **INS-20 [FEATURE] Feed the INS-15 temperature evidence the corrected outdoor series** *(queued by the owner 2026-10-20)* - the heat-nudge shadow now corrects a sun-heated outdoor sensor with the weather entity (INS-19, `docs/heat-nudge-plan.md` 2a/2b). Andrej's heat-pump sensor passes the 24 C cooling hinge in 111 hours on 22 of 30 days (the official station: 9 hours on 3 days); heating degree-hours are 26 % short; his forecast is unharmed today (the temperature term engages on no series) but the two sun-following EV chargers are where a false cooling term would engage. Do: give the INS-15 evidence the same corrected series (and its basis), confirm on Home and Kozolec under the INS-15 bench rule (`forecast_bench cov`; their sensors should come out trusted in every hour, so the bench is a confirmation), then ship.
 
 ## Standing decisions
 
