@@ -568,6 +568,7 @@ two sites' ten-day exports unless stated.
 
 ### To explore or discuss (2026-10-03)
 
+- [ ] **Named-load absorption rate understates short loads** (seen 2026-10-21 on Home) - `NamedLoadRate` is the 95th percentile of a named load's active hours' mean power from hourly energy, so a load that runs minutes per hour reads low: the Kettle 0.095 kW (a ~2 kW element), Le Hottie 0.367 kW. Andrej's named loads read right (Hladilnik A 70 W 0.074 kW, Neznano C 78 W 0.084, Neznano B 43 W 0.047: they run long). Fine for the long-running loads early start pairs with (Kozolec's boiler 1.58 kW, heater 0.56 kW read right from device statistics); a short load should not be pointed at it as an early-start rate. A shorter-window rate (the load's own sessions' power) would fix it; not needed while nothing short is an early-start load.
 - [ ] **Discuss: multi-step pairing** - a start that ramps in steps (Mansarda's
   ~400 W load: 142 -> 404 -> 465 W over 15 s) is booked at its first step and
   cannot pair with its full-size stop. Agreed meanwhile: a run placed at a
