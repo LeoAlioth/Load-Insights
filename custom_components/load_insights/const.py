@@ -212,6 +212,10 @@ JUGGLER_TANK_POWER = "tank_power_entity_id"
 JUGGLER_CLIMATE = "climate_entity_id"
 JUGGLER_BOOST_OPTION = "tank_boost_temperature"
 JUGGLER_BOOST_SUFFIX = "_tank_boost_temperature"
+JUGGLER_NORMAL_OPTION = "tank_normal_temperature"
+JUGGLER_NORMAL_SUFFIX = "_tank_normal_temperature"
+JUGGLER_AWAY_OPTION = "tank_away_temperature"
+JUGGLER_AWAY_SUFFIX = "_tank_away_temperature"
 
 # Heat nudge, shadow mode (insights/heatnudge.py; the "Heat devices" options page): a list of
 # {name, source, kind, target, target_entity, activity_entity}, read with heatnudge.parse_devices.

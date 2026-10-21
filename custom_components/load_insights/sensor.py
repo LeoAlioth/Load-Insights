@@ -406,6 +406,11 @@ class DeviceForecastSensor(ForecastPowerSensor):
                     attrs["nowcast"]["kwh_per_unit_by_lead_by_state"] = [
                         [round(row[j], 4) for row in fc.nowcast.matrix] for j in range(len(fc.nowcast.used))]
                     attrs["nowcast"]["state_means"] = [round(m, 2) for m in fc.nowcast.means]
+            # a thermostat load with a room model: today's and tomorrow's energy at each mode's setpoint
+            # (away / normal / boost) and the expected figure between normal and boost (INS-24)
+            modes = ((data.device_thermal or {}).get(self._energy) or {}).get("modes") if data else None
+            if modes:
+                attrs["modes"] = modes
         return attrs
 
 
@@ -439,11 +444,12 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        """Where the figure came from: the thermostat's kWh per degree (a tank or heater that
-        Load Juggler runs) or the history ceiling."""
+        """Where the figure came from: a room's heat-loss model (INS-24; its C, UA and G), the
+        thermostat's kWh per degree (a tank or heater that Load Juggler runs) or the history ceiling."""
         data: Optional[InsightsData] = self.coordinator.data
         thermal = (data.device_thermal or {}).get(self._energy) if data else None
-        return {"source": "thermal" if thermal else "history", **(thermal or {})}
+        return {"source": "thermal" if thermal else "history",
+                **{k: v for k, v in (thermal or {}).items() if k != "modes"}}      # the modes sit on the forecast sensor
 
     @property
     def available(self) -> bool:
