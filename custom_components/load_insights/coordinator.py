@@ -31,7 +31,11 @@ from .const import (
     CONF_FORECAST_EXCLUDE,
     CONF_HEAT_DEVICES,
     JUGGLER_BOOST_OPTION,
+    JUGGLER_AWAY_OPTION,
+    JUGGLER_AWAY_SUFFIX,
     JUGGLER_BOOST_SUFFIX,
+    JUGGLER_NORMAL_OPTION,
+    JUGGLER_NORMAL_SUFFIX,
     JUGGLER_CLIMATE,
     JUGGLER_DEVICE_TYPE,
     JUGGLER_DOMAIN,
@@ -74,6 +78,7 @@ from .insights.planning import absorption_rate, base_consumption, plan_all, room
 from .insights.model import SiteModel
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
 from .insights.scoring import Ledger
+from .insights import roommodel
 from .insights.thermal import KINDS, heating_runs, kwh_per_degree, room_from_thermal
 from .insights.series import combine, coverage, subtract_all
 from .repairs import async_check
@@ -168,6 +173,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         self._ledgers: Optional[Dict[str, Ledger]] = None
         self._capacity_kwh: Optional[float] = None  # the capacity sensor's last good reading
         self._plan_last: Dict[str, dict] = {}       # each planning sensor's last complete reading
+        # a room's hourly rows (insights/roommodel.py merge_hours): the recorder keeps a thermostat's
+        # attributes for about ten days, the room model wants a season
+        self._room_store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.roomrows")
         self._heat_store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.heatnudge")
         self._thermal_said: Dict[str, str] = {}      # each Load Juggler load's last thermal-room reason, to log changes only
 
@@ -405,7 +413,12 @@ class InsightsCoordinator(DataUpdateCoordinator):
             plan = dict(self._plan_last)
         device_room = {d.energy: room_from_series(series.get(d.energy, ()), now) for d in site.devices}
         try:
-            device_thermal = await self._thermal_rooms(site, series, now, start, opts)
+            sun: Dict[float, float] = {}       # the site's measured solar, kW per hour (the energy of an hour is its mean kW)
+            for sid in site.solar:
+                for t, v in series.get(sid, ()):
+                    if v is not None:
+                        sun[t.timestamp()] = sun.get(t.timestamp(), 0.0) + v
+            device_thermal = await self._thermal_rooms(site, series, now, start, opts, temps_hist, temps_fc, sun, pv)
         except Exception:  # noqa: BLE001 - the history ceilings stand, the forecasts go on
             _LOGGER.exception("Thermal room reading failed; keeping the history ceilings")
             device_thermal = {}
@@ -781,7 +794,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Thermal room for %s: %s", title, text)
 
     async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
-                             start: datetime, opts) -> Dict[str, dict]:
+                             start: datetime, opts, outdoor: Dict[float, float],
+                             outdoor_fc: Dict[float, float], sun: Dict[float, float],
+                             sun_fc: Dict[float, float]) -> Dict[str, dict]:
         """The room of each dashboard device that a Load Juggler tank or heater thermostat
         runs, from kWh per degree (insights/thermal.py) and the thermostat's temperature
         now against its boost setpoint. A device gets an entry only when the figure is
@@ -839,6 +854,36 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temps = await self._hourly_attribute(climate, "current_temperature", start, now)
             energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
             kind = KINDS[kind_name]       # from the load's device type in Load Juggler
+            if kind.name == "room":
+                # a room's heat-loss model first (INS-24); its energy per degree below stays the fallback
+                why: Dict[str, object] = {}
+                targets = await self._hourly_attribute(climate, "temperature", start, now)
+                saved = await self._room_store.async_load() or {}
+                merged, m_temps, m_energy, m_outdoor, m_sun, m_targets = roommodel.merge_hours(
+                    saved.get(sid, {}), temps, energy, outdoor, sun, targets, floor_hour(now).timestamp())
+                await self._room_store.async_save({**saved, sid: merged})
+                model = roommodel.fit(roommodel.hourly_rows(m_temps, m_energy, m_outdoor, m_sun or None),
+                                      roommodel.quantum(m_temps), why)
+                rate = absorption_rate(series.get(sid, ()))
+                known = [k for k in outdoor if k <= now.timestamp()]
+                if model is not None and rate and known:
+                    t_out = outdoor[max(known)]
+                    room = roommodel.room_to_absorb(model, current, boost, t_out, rate * 1000.0,
+                                                    sun.get(floor_hour(now).timestamp()) if model.sun_gain is not None else None)
+                    if room is not None:
+                        modes = self._room_modes(entry, model, boost, rate, outdoor, outdoor_fc, sun, sun_fc,
+                                                 registry, m_targets, now)
+                        self._thermal_note(entry, f"room model: C {model.c_kwh_per_k:.2f} kWh/K, UA {model.ua_w_per_k:.0f} W/K, "
+                                                  f"G {model.g_w:.0f} W from {model.hours} hours")
+                        out[sid] = {"room": room, "source": "room_model", "kind": kind.name,
+                                    "c_kwh_per_k": round(model.c_kwh_per_k, 3), "ua_w_per_k": round(model.ua_w_per_k, 1),
+                                    "g_w": round(model.g_w), "sun_w_per_kw": None if model.sun_gain is None else round(model.sun_gain),
+                                    "coast_hours": round(model.coast_hours, 1), "hours": model.hours,
+                                    "heated_hours": model.heated, "residual_k": round(model.resid_k, 3),
+                                    "temperature": current, "boost": boost, "modes": modes}
+                        continue
+                self._thermal_note(entry, f"no room model ({why.get('reason') or 'no absorption rate or outdoor temperature'}); "
+                                          "energy per degree instead")
             seen: Dict[str, int] = {}
             runs = heating_runs(energy, temps, seen, kind.allow_dips)
             learned = kwh_per_degree(runs, kind)
@@ -851,6 +896,42 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 out[sid] = {"room": room, "kwh_per_degree": round(learned[0], 3),
                             "spread": round(learned[1], 2), "runs": learned[2], "kind": kind.name,
                             "temperature": current, "boost": boost}
+        return out
+
+    def _room_modes(self, entry, model, boost, rate, outdoor, outdoor_fc, sun, sun_fc, registry, targets, now) -> Optional[dict]:
+        """The room's energy today and tomorrow at each mode's setpoint (Load Juggler's away, normal
+        and boost temperatures), and the expected figure between normal and boost, weighted by the share
+        of recorded hours the thermostat's target sat at boost (0.5 until there are hours to say).
+        A mode is only a setpoint, so the model needs nothing more (INS-24, spec section 9)."""
+        def number(suffix, option):
+            value = None
+            for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+                if ent.domain == "number" and (ent.unique_id or "").endswith(suffix):
+                    value = _read_number(self.hass, [ent.entity_id])
+            value = value if value is not None else entry.options.get(option, entry.data.get(option))
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        setpoints = {"away": number(JUGGLER_AWAY_SUFFIX, JUGGLER_AWAY_OPTION),
+                     "normal": number(JUGGLER_NORMAL_SUFFIX, JUGGLER_NORMAL_OPTION), "boost": boost}
+        if any(v is None for v in setpoints.values()):
+            return None
+        tz = now.tzinfo
+        today = datetime.combine(now.date(), datetime.min.time(), tzinfo=tz)
+        days = [(today.timestamp(), (today + timedelta(days=1)).timestamp()),
+                ((today + timedelta(days=1)).timestamp(), (today + timedelta(days=2)).timestamp())]
+        # the hours that passed come from the sensor, the rest from the forecast
+        temps_all = {**outdoor_fc, **outdoor}
+        sun_all = {**{k: v / 1000.0 for k, v in sun_fc.items()}, **sun}     # the sun forecast is in Wh
+        per = roommodel.daily_by_mode(model, setpoints, temps_all, rate * 1000.0, days, sun_all)
+        share = roommodel.boost_share(targets, setpoints["normal"], boost)
+        out = {"setpoints": setpoints, "boost_share": round(share, 2), "today_kwh": {}, "tomorrow_kwh": {}}
+        for i, key in enumerate(("today_kwh", "tomorrow_kwh")):
+            for name in setpoints:
+                out[key][name] = per[name][i]
+            lo, hi = per["normal"][i], per["boost"][i]
+            out[key]["expected"] = None if lo is None or hi is None else round(lo + share * (hi - lo), 2)
         return out
 
     async def _hourly_attribute(self, entity_id: str, attribute: str, start: datetime,
