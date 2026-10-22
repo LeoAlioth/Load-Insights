@@ -61,18 +61,20 @@ entity's hourly forecast; that is unchanged.
 **The method (`heatnudge.learn_bias`, `correct_temperatures`; all measured, nothing site-specific).**
 1. Pair the sensor's hourly mean with the reference by **hour of the UTC day** (the sun, not the clock: no
    daylight-saving smear), over the last `BIAS_WINDOW_DAYS` = 28 days.
-2. `offset` = the level the sensor sits at against the reference: the lower quartile of the 24 hours' mean
-   differences (sun can only add to the sensor, so the low end is its true level). Andrej: -2.1 K (the
+2. `offset` = the level the sensor sits at against the reference: the median of the NIGHT hours' mean
+   differences (`night_hours`: sun below the horizon at the site's latitude and longitude; sun cannot heat the
+   sensor then). INS-20 (2026-10-21) replaced the lower quartile of all 24 hours: at Kozolec the weather model
+   reads 3 K under the sensor at night and level with it by day, which the quartile took for sun and distrusted 14 hours. Andrej: -2.1 K (the
    sensor reads 2 K under the weather entity at night: the entity is a model of the point, the sensor is the
    unit's own).
-3. An hour of the day is **trusted** when its mean excess over the offset is within `TRUST_BIAS_K` = 1 K (a
+3. An hour of the day is **trusted** when it is a night hour, or its mean excess over the offset is within `TRUST_BIAS_K` = 1 K (a
    judgement: about 2-3 % of COP). Andrej: 19-06 UTC (21:00-08:00 local) trusted; the afternoon peak sits
    +8 K over it (mean), +14 K at the 75th percentile.
 4. The corrected series: the **sensor in a trusted hour**, else the **reference + offset** (the weather
    entity brought to the sensor's night level, so the two join without a step). From the hour under way on
    the forecast + offset. A site whose sensor is good has every hour trusted: the series is the sensor, hour
-   for hour (test `test_a_good_sensor_is_read_through_unchanged...`); only the forecast takes the offset (a level shift
-   that moves no ranking).
+   for hour (test `test_a_good_sensor_is_read_through_unchanged...`); a site trusted in every hour is not shifted at all, the forecast
+   included (benched, INS-20: shifting it by Home's +1.2 K cost the drying-room series 7 % day-ahead).
 5. A bin needs `BIAS_MIN_DAYS` = 5 days of pairs and `BIAS_MIN_HOURS` = 18 hours of the day believed before
    anything is learned. **Until then: the reference alone** (offset 0, nothing trusted) - "with no usable history
    yet, the forecast alone". With no reference at all and nothing learned, the sensor as it is, marked

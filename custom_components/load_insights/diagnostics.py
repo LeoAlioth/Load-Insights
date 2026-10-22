@@ -193,6 +193,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
         "temperature_entity": data.temperature_entity,
         "temperature_history_hours": data.temperature_history_hours,
         "temperature_forecast_hours": data.temperature_forecast_hours,
+        "temperature_basis": data.temperature_basis,
         "calendars": list(data.calendar_entities),
         "attached_entities": list(data.input_entities),
         "how_each_was_read": _jsonable(data.input_kinds),
