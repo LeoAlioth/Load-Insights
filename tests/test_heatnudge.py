@@ -212,8 +212,9 @@ def test_the_options_flow_has_the_heat_page_and_its_texts():
         t = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
         assert "heat" in t["options"]["step"]["init"]["menu_options"]
         step = t["options"]["step"]["heat"]
+        labels = {k: v for sec in step["sections"].values() for k, v in sec["data"].items()}
         for k in ("name", "source", "kind", "target", "target_entity", "activity_entity", "remove"):
-            assert step["data"][k], (lang, k)
+            assert labels[k], (lang, k)
         assert set(t["selector"]["heat_kind"]["options"]) == set(H.KINDS), lang
 
 

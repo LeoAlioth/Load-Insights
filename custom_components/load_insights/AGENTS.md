@@ -243,6 +243,10 @@ steps are never declared (they hit the declared ones at chance). Tests:
 `test_the_days_repair_is_the_same_at_every_slicing`, `test_the_days_repair_after_a_restart`.
 Job note: `data/scorecard/jobs/repair-2026-10-12.md`.
 
+### Setup pages and their headings (`flowgroups.py`, `sections.py`)
+
+A page with many fields is shown under headed sections (plan, grid, inverters, heat, inputs, detection): `flowgroups.py` says which field sits under which heading (plain data), `sections.py` nests the form on the way out and flattens the input on the way back, so handlers and stored options stay flat. A section key must differ from every field key of its step. The headings and labels live under `sections.<key>` in the translations; `tests/test_flowgroups.py` checks both languages. `sections.py` is a hand-kept copy of Load Juggler's (`config_flow/sections.py`) - change both. Errors on a field inside a section are shown as base errors, because the frontend shows none under a sectioned field.
+
 ### Naming page (policy, `const.py` / `detection.py` / `config_flow.py`)
 
 | dial | value | what it does | valid range |

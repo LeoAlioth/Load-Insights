@@ -62,6 +62,9 @@ from .const import (
 )
 from homeassistant.util import dt as dt_util
 
+from .flowgroups import CONFIG as CONFIG_GROUPS, OPTIONS as OPTIONS_GROUPS
+from .sections import SectionedFlowMixin
+
 from .insights.detect import (EDGE_HELPED_SHARE, METER_WAIT_CAP_S, SWITCH_PREFIX, edge_story, most_specific, same_device_phrase,
                               input_groups, suggest_levels)
 from .overview import overview_text
@@ -409,8 +412,9 @@ def _plan_schema(current: dict, devices: dict) -> dict:
     return out
 
 
-class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class LoadInsightsConfigFlow(SectionedFlowMixin, config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    GROUPS = CONFIG_GROUPS
 
     @staticmethod
     @callback
@@ -442,8 +446,10 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
+class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
     """The site-level inputs, a device's own state sensor, and the meters."""
+
+    GROUPS = OPTIONS_GROUPS
 
     def __init__(self) -> None:
         self._naming_selected: tuple | None = None

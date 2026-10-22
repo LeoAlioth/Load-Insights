@@ -264,8 +264,9 @@ def test_both_switches_are_options_on_by_default_and_translated():
     for lang in ("en", "sl"):
         t = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
         step = t["options"]["step"]["detection"]
+        words = step["sections"]["naming"]
         for key in ("autoname", "autoname_dashboard"):
-            assert step["data"][key] and step["data_description"][key]
+            assert words["data"][key] and words["data_description"][key]
         for kind in ("fridge", "heater"):
             assert "{n}" in t["exceptions"][f"autoname_{kind}"]["message"]
     sl = json.loads((BASE / "translations" / "sl.json").read_text(encoding="utf-8"))

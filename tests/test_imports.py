@@ -22,7 +22,7 @@ from _load import run_main  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
 # what a Home Assistant base class provides that a subclass may read
 INHERITED = {
-    "hass", "config_entry", "data", "async_write_ha_state", "coordinator", "entity_id",
+    "hass", "config_entry", "data", "schema", "async_write_ha_state", "coordinator", "entity_id",
     "async_on_remove", "platform", "logger", "name", "available", "async_request_refresh",
     "last_update_success", "update_interval", "async_set_updated_data", "async_added_to_hass",
     "async_refresh", "async_shutdown", "async_update_listeners",
