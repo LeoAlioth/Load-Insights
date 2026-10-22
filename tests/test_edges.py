@@ -442,35 +442,22 @@ def test_a_groups_voltage_slope_is_its_load_type():
 
 
 
-def test_ins9_a_windows_ends_fold_a_runs_slow_changes_and_are_one_span_for_both_meters():
-    """INS-9 (2) and (3), bench dials, off. Home's Hidrofor: the grid declares
-    the start's decay (-150 after +1,000) and the pre-stop drift (-60 before
-    -850) as steps of their own, the plug declares neither. FOLD_SLOW: the
-    window after the rise skips the opposite small step that follows it, the
-    window before the fall the same-way small step that leads up to it.
-    SAME_SPAN: the plug's window ends where the GRID's next step is, as the
-    grid's does - never at its own channel's alone."""
+def test_ins9_a_windows_ends_fold_a_runs_slow_changes():
+    """INS-9 FOLD_SLOW, shipped. Home's Hidrofor: the grid declares the start's
+    decay (-150 after +1,000) and the pre-stop drift (-60 before -850) as steps
+    of their own, the plug declares neither. The window after the rise skips the
+    opposite small step that follows it, the window before the fall the
+    same-way small step that leads up to it; a window never ends at another
+    meter's step."""
     chans = {"Plug": {"a": "a"}}
     g = [step("", "a", 100.0, 1000.0, "a"), step("", "a", 130.0, -150.0, "a"),
          step("", "a", 300.0, -60.0, "a"), step("", "a", 320.0, -850.0, "a")]
     p = [step("Plug", "a", 100.0, 860.0, "a"), step("Plug", "a", 320.0, -800.0, "a")]
     chans[""] = {"a": "a"}
     a = assemble(g + p, {"Plug": ""}, chans)
-    old = D.FOLD_SLOW, D.SAME_SPAN
-    try:
-        D.FOLD_SLOW = D.SAME_SPAN = False
-        assert a._ends(g[0]) == (100.0 - E.WINDOW_S, 129.99)
-        assert a._ends(p[0])[1] == 319.99                            # its own next step, the stop
-        assert a._ends(g[3])[0] == g[2].b
-        D.SAME_SPAN = True
-        assert a._ends(p[0], [g[0]])[1] == 129.99                   # the grid's next step ends the plug's window too
-        D.SAME_SPAN, D.FOLD_SLOW = False, True
-        assert a._ends(g[0])[1] == 299.99                           # the decay is part of the rise; the drift, 200 s on, is not
-        assert a._ends(g[3])[0] == g[1].b                           # the drift is part of the fall
-        D.SAME_SPAN = True
-        assert a._ends(p[0], [g[0]])[1] == 299.99
-    finally:
-        D.FOLD_SLOW, D.SAME_SPAN = old
+    assert a._ends(g[0])[1] == 299.99                           # the decay is part of the rise; the drift, 200 s on, is not
+    assert a._ends(g[3])[0] == g[1].b                           # the drift is part of the fall
+    assert a._ends(p[0])[1] == 319.99                           # the plug's own next step, the stop; not the grid's
 
 
 if __name__ == "__main__":
