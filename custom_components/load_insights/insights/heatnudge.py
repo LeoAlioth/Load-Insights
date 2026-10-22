@@ -85,12 +85,12 @@ KEEP_FORECASTS = 14
 # October, daily ranges of 15-24 K). It is compared, hour of the UTC day by hour of the UTC
 # day (the sun, not the clock), with a REFERENCE: the weather entity's temperature. The
 # bias is measured, not assumed: OFFSET is the level the sensor sits at against the
-# reference (a lower quartile of the hours' mean differences, which sun heating can only
-# raise); an hour of the day is TRUSTED when its mean difference is within TRUST_BIAS_K of it.
+# reference (the median of the NIGHT hours' mean differences: sun heating cannot reach it
+# then); an hour of the day is TRUSTED when it is a night hour or its mean difference is within
+# TRUST_BIAS_K of the offset - only a sensor ABOVE the reference is ever distrusted (INS-20).
 BIAS_WINDOW_DAYS = 28        # the pairs the bias is learned from: the last four weeks
 BIAS_MIN_DAYS = 5            # days of pairs in an hour of the day before it is believed (count)
 BIAS_MIN_HOURS = 18          # hours of the day believed before the bias is learned at all (count)
-OFFSET_QUANTILE = 0.25
 TRUST_BIAS_K = 1.0           # a JUDGEMENT: 1 K is about 2-3 % of COP (plan section 2)
 REF_STALE_H = 3              # a weather reading older than this is not in force
 OBS_KEEP_DAYS = 120          # the stored weather observations (the recorder keeps ~10 days of states)
@@ -343,11 +343,23 @@ def hourly_from_points(points: Sequence[Tuple[float, float]], keys: Sequence[flo
     return out
 
 
-def learn_bias(sensor: Dict[float, float], reference: Dict[float, float], now: float) -> dict:
+def night_hours(lat: float, lon: float, now: float) -> set:
+    """The hours of the UTC day with the sun below the horizon (at half past, on the day of ``now``;
+    declination only, the equation of time is minutes). Sun heating cannot reach the sensor then."""
+    doy = date.fromtimestamp(now).timetuple().tm_yday
+    decl = math.radians(23.44) * math.sin(2 * math.pi * (doy - 81) / 365)
+    la = math.radians(lat)
+    return {h for h in range(24)
+            if math.sin(la) * math.sin(decl) + math.cos(la) * math.cos(decl) * math.cos(math.radians(15 * (h + 0.5 + lon / 15 - 12))) < 0}
+
+
+def learn_bias(sensor: Dict[float, float], reference: Dict[float, float], now: float, night: set) -> dict:
     """What the sensor reads against the reference, by hour of the UTC day, over the last
-    BIAS_WINDOW_DAYS: ``offset`` (K, sensor less reference, the level it sits at), ``excess``
-    (hour -> mean difference above the offset, K), ``trusted`` (the hours whose excess is within
-    TRUST_BIAS_K), ``learned`` (False until BIAS_MIN_HOURS of the day have BIAS_MIN_DAYS days of pairs: then
+    BIAS_WINDOW_DAYS: ``offset`` (K, sensor less reference, the level it sits at: the median of the
+    ``night`` hours' mean differences - the sun cannot have heated it then), ``excess`` (hour -> mean
+    difference above the offset, K), ``trusted`` (the night hours and every hour whose excess is within
+    TRUST_BIAS_K: a sensor BELOW the reference is never distrusted), ``learned`` (False until
+    BIAS_MIN_HOURS of the day have BIAS_MIN_DAYS days of pairs and a night hour is among them: then
     offset 0 and nothing trusted - the reference alone), ``pairs``."""
     lo = now - BIAS_WINDOW_DAYS * 24 * HOUR
     by: Dict[int, List[float]] = {}
@@ -357,15 +369,13 @@ def learn_bias(sensor: Dict[float, float], reference: Dict[float, float], now: f
             by.setdefault(utc_hour(k), []).append(s - r)
     means = {h: sum(v) / len(v) for h, v in by.items() if len(v) >= BIAS_MIN_DAYS}
     pairs = sum(len(v) for v in by.values())
-    if len(means) < BIAS_MIN_HOURS:
+    ranked = sorted(m for h, m in means.items() if h in night)
+    if len(means) < BIAS_MIN_HOURS or not ranked:
         return {"learned": False, "offset": 0.0, "excess": {}, "trusted": [], "pairs": pairs}
-    ranked = sorted(means.values())
-    pos = (len(ranked) - 1) * OFFSET_QUANTILE
-    i = int(pos)
-    offset = ranked[i] + (ranked[min(i + 1, len(ranked) - 1)] - ranked[i]) * (pos - i)
+    offset = (ranked[(len(ranked) - 1) // 2] + ranked[len(ranked) // 2]) / 2
     excess = {h: m - offset for h, m in means.items()}
     return {"learned": True, "offset": offset, "excess": excess,
-            "trusted": sorted(h for h, x in excess.items() if x <= TRUST_BIAS_K), "pairs": pairs}
+            "trusted": sorted(h for h, x in excess.items() if h in night or x <= TRUST_BIAS_K), "pairs": pairs}
 
 
 def correct_temperatures(sensor: Dict[float, float], reference: Dict[float, float], forecast: Dict[float, float],
@@ -374,9 +384,10 @@ def correct_temperatures(sensor: Dict[float, float], reference: Dict[float, floa
     of the day is trusted ("sensor"); else the reference shifted by the offset ("reference"); else,
     with no bias learned at all, the sensor as it is ("raw"); else nothing - a sun hour of a day
     with no reference ("unknown"). From the hour under way on, the forecast shifted the same way
-    ("forecast"). A sensor with no bias reads through unchanged, hour for hour."""
-    off = bias["offset"] if bias["learned"] else 0.0
+    ("forecast"). A sensor trusted in every hour reads through unchanged, forecast included."""
     trusted = set(bias["trusted"])
+    # a sensor trusted in every hour has nothing to correct: the forecast is not shifted either (INS-20, benched)
+    off = bias["offset"] if bias["learned"] and len(trusted) < 24 else 0.0
     cur = now - now % HOUR
     temps: Dict[float, float] = {}
     basis: Dict[float, str] = {}
@@ -394,6 +405,27 @@ def correct_temperatures(sensor: Dict[float, float], reference: Dict[float, floa
         if k >= cur:
             temps[k], basis[k] = v + off, "forecast"
     return temps, basis
+
+
+def corrected_series(sensor: Dict[float, float], reference: Dict[float, float], forecast: Dict[float, float],
+                     now: float, night: set) -> Tuple[Dict[float, float], Dict[float, float], Dict[float, str], dict]:
+    """The one outdoor temperature every consumer reads (the heat nudge, INS-15's temperature
+    evidence, INS-20): ``learn_bias`` then ``correct_temperatures``, split at the hour under way into
+    (history, forecast, basis per hour, bias). A site whose sensor is trusted in every hour gets
+    its own history back (shifted forecast only)."""
+    bias = learn_bias(sensor, reference, now, night)
+    temps, basis = correct_temperatures(sensor, reference, forecast, now, bias)
+    cur = now - now % HOUR
+    return ({k: v for k, v in temps.items() if k < cur}, {k: v for k, v in temps.items() if k >= cur}, basis, bias)
+
+
+def series_basis(bias: dict, basis: Dict[float, str]) -> dict:
+    """What the forecast's temperature came from: the learned bias and the hours per source."""
+    hours: Dict[str, int] = {}
+    for b in basis.values():
+        hours[b] = hours.get(b, 0) + 1
+    return {"learned": bias["learned"], "offset_k": round(bias["offset"], 2),
+            "trusted_hours_utc": bias["trusted"], "hours": hours}
 
 
 def day_basis(hours: Sequence[str]) -> str:

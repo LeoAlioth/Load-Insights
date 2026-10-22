@@ -4,7 +4,7 @@ from __future__ import annotations
 import functools
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -130,6 +130,7 @@ class InsightsData:
     temperature_entity: Optional[str] = None
     temperature_history_hours: int = 0
     temperature_forecast_hours: int = 0
+    temperature_basis: Dict[str, object] = field(default_factory=dict)   # where the temperature came from (INS-20)
     calendar_entities: tuple = ()
     input_entities: tuple = ()
     input_kinds: Dict[str, str] = None  # type: ignore[assignment]
@@ -254,6 +255,18 @@ class InsightsCoordinator(DataUpdateCoordinator):
         if temp_entity and weather_entity:
             temps_hist = await self._hourly_means(temp_entity, start, {"temperature": UnitOfTemperature.CELSIUS})
             temps_fc = await self._forecast_temperatures(weather_entity, now)
+        # A sun-heated sensor is corrected with the weather entity (heatnudge.corrected_series, INS-20):
+        # the same series feeds the temperature evidence and the heat nudge. Hours older than the
+        # recorder's states and the heat store's own are read from the sensor only where it is trusted.
+        reference: Dict[float, float] = {}
+        t_basis: Dict[float, str] = {}
+        t_bias = None
+        if temps_hist and weather_entity:
+            stored = heatnudge.migrate(await self._heat_store.async_load())["obs"]
+            reference = await self._weather_reference(weather_entity, start, now, stored)
+            temps_hist, temps_fc, t_basis, t_bias = heatnudge.corrected_series(
+                temps_hist, reference, temps_fc, now.timestamp(),
+                heatnudge.night_hours(self.hass.config.latitude, self.hass.config.longitude, now.timestamp()))
 
         # --- calendars: every linked one, over history and horizon ---
         cal_entities = tuple(opts.get(CONF_CALENDAR_ENTITIES) or ())
@@ -425,7 +438,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         device_room.update({sid: t["room"] for sid, t in device_thermal.items()})
         heat_devices = heatnudge.parse_devices(opts.get(CONF_HEAT_DEVICES))
         try:
-            heat = await self._heat_nudge(heat_devices, now, start, temps_hist, temps_fc, weather_entity) if heat_devices else {}
+            heat = await self._heat_nudge(heat_devices, now, start, temps_hist, temps_fc, weather_entity, t_basis, t_bias, reference) if heat_devices else {}
         except Exception:  # noqa: BLE001 - shadow mode must never take the forecasts with it
             _LOGGER.exception("Heat nudge failed; its sensors keep their last readings")
             heat = (self.data.heat if self.data is not None else None) or {}
@@ -448,6 +461,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
             temperature_entity=temp_entity,
             temperature_history_hours=len(temps_hist),
             temperature_forecast_hours=len(temps_fc),
+            temperature_basis=heatnudge.series_basis(t_bias, t_basis) if t_bias else {},
             ledgers=dict(ledgers),
             grid=grid,
             plan=plan,
@@ -465,7 +479,8 @@ class InsightsCoordinator(DataUpdateCoordinator):
         return data
 
     async def _heat_nudge(self, devices: List[dict], now: datetime, start: datetime, temps_hist: Dict[float, float],
-                          temps_fc: Dict[float, float], weather_entity: Optional[str]) -> Dict[str, dict]:
+                          temps_fc: Dict[float, float], weather_entity: Optional[str], t_basis: Dict[float, str],
+                          bias: Optional[dict], reference: Dict[float, float]) -> Dict[str, dict]:
         """Heat nudge, SHADOW MODE (insights/heatnudge.py): per configured heat device, the COP
         index of the coming days, the best hours and the daily scorecard. Reads the device's
         energy or power statistics, the outdoor temperature the forecast already uses (sensor
@@ -473,11 +488,10 @@ class InsightsCoordinator(DataUpdateCoordinator):
         device. Stored: the scorecard days and yesterday evening's forecast temperatures."""
         tz = now.tzinfo
         state = heatnudge.migrate(await self._heat_store.async_load())
-        # The outdoor sensor may be sun-heated (the unit's own): the weather entity's temperature,
-        # from its state history and the hours stored since, is the reference it is learned against.
-        reference = await self._weather_reference(weather_entity, start, now, state["obs"]) if weather_entity else {}
-        bias = heatnudge.learn_bias(temps_hist, reference, now.timestamp())
-        temps, t_basis = heatnudge.correct_temperatures(temps_hist, reference, temps_fc, now.timestamp(), bias)
+        # the outdoor temperature arrives corrected (_refresh: heatnudge.corrected_series); without a
+        # weather entity there is no reference and nothing was learned
+        bias = bias or heatnudge.learn_bias({}, {}, now.timestamp(), set())
+        temps = {**temps_hist, **temps_fc}
         state["obs"] = {k: v for k, v in reference.items() if k >= now.timestamp() - heatnudge.OBS_KEEP_DAYS * 86400}
         humidity = await self._forecast_humidity(weather_entity, now) if weather_entity else {}
         today = now.date()

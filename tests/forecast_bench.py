@@ -17,14 +17,15 @@ site series - the series scored is consumption less these)
 The covariate backtest (INS-15): temperature, calendars and attached sensors
 included, every series of the site, production's own windows and signals:
 
-    python3.14 tests/forecast_bench.py cov SITE START END [STEP_H=1] [module.CONST=V ...] [TEMPS=0|1] \
+    python3.14 tests/forecast_bench.py cov SITE START END [STEP_H=1] [module.CONST=V ...] [TEMPS=0|1|2|3] \
         [FROM=iso] [SERIES=site,id,...] [TAG=name] [WORKERS=2]
 
 Windows used for INS-15: W1 2026-09-28 .. 2026-10-11T23:00 (both sites), W2 Home 2026-01-12 ..
 2026-01-25T23:00, W2 Kozolec 2026-08-17 .. 2026-08-30T23:00 (its whole-house series starts 2026-07-04, so no
 heating-season window with 12 weeks behind it exists). A change is compared with the previous commit:
 check it out, run the same windows, diff the JSONs. Sweep a constant with ``covariates.ALPHA=0.05``.
-TEMPS=0 forecasts without the temperature pair (the "young series" baseline).
+TEMPS=0 forecasts without the temperature pair (the "young series" baseline); TEMPS=3 is production before INS-20 (raw sensor, weather entity forecast); TEMPS=2 corrects it as production does (INS-20,
+heatnudge.corrected_series against data/forecast/<site>/weather.json: the weather entity's state history, history/history_during_period).
 
 Data (read-only, data/forecast/<site>/, from HA_Configs/tools/ws.mjs and curl):
   fetch.json    energy/get_prefs; recorder/statistics_during_period "change" (kWh, hour)
@@ -178,6 +179,9 @@ def _init(site, dials, temps):
     INP = load("insights.inputs")
     CAL = load("insights.calendars")
     model, opts, series, mean, events = read_cov(site)
+    if temps in (2, 3):
+        w = json.loads((DATA / site / "weather.json").read_text())[0]["result"]
+        CTX["wref"] = sorted((x["lu"], float(x["a"]["temperature"])) for v in w.values() for x in v if x.get("a", {}).get("temperature") is not None)
     cons = S.combine(series, model.consumption_terms())
     left_out = [e for e in (opts.get("forecast_exclude") or []) if e in series]
     scored = S.subtract_all(cons, series, left_out) if left_out else cons
@@ -237,6 +241,14 @@ def _origin(args):
         temps_hist = _window(CTX["temp_entity"], lo, cut_k) or None
         allm = {k: v for k, v in CTX["mean"][CTX["temp_entity"]]}
         temps_fc = {k: allm[k] for k in horizon_keys[:CTX["fc_hours"]] if k in allm} or None
+    if CTX["use_temps"] == 3 and temps_hist:      # production before INS-20: the raw sensor as history, the weather entity as the forecast
+        temps_fc = load("insights.heatnudge").hourly_from_points(CTX["wref"], horizon_keys[:CTX["fc_hours"]]) or None
+    if CTX["use_temps"] == 2 and temps_hist:      # INS-20: the production correction against the weather entity's own history
+        hn = load("insights.heatnudge")
+        ref = hn.hourly_from_points(CTX["wref"], [lo - lo % 3600 + 3600 * i for i in range(int((now_ts - lo) // 3600) + 1)])
+        wfc = hn.hourly_from_points(CTX["wref"], horizon_keys[:CTX["fc_hours"]])      # the weather entity as the forecast: its own frame
+        temps_hist, temps_fc, _, _ = hn.corrected_series(temps_hist, ref, wfc, now_ts, hn.night_hours(46.1, 14.3, now_ts))      # both sites: Ljubljana basin, 0.1 degree
+        temps_hist, temps_fc = temps_hist or None, temps_fc or None
     signals = list(CTX["cal_signals"])
     for eid in CTX["inputs"]:
         if eid not in CTX["mean"]:

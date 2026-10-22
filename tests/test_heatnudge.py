@@ -232,6 +232,9 @@ def test_the_heat_sensors_exist_in_code_and_translations_and_keep_series_out_of_
 NOW = 28 * 86400.0 + 5 * 3600           # 28 days of hourly pairs, then "now" is 05:00 UTC
 
 
+NIGHT = set(range(0, 7)) | set(range(18, 24))      # the sun of `sun()` below: UTC 07-17
+
+
 def pairs_for(sensor_of, ref_of, days=28):
     keys = [d * 86400.0 + h * 3600.0 for d in range(days) for h in range(24)]
     return {k: sensor_of(k) for k in keys}, {k: ref_of(k) for k in keys}
@@ -248,19 +251,19 @@ def sun(k):                            # sun heating on the unit, UTC 07-17, up 
 
 def test_a_good_sensor_is_read_through_unchanged_and_the_forecast_is_not_moved_by_noise():
     sensor, ref = pairs_for(lambda k: ref_wave(k) + 1.3 + 0.2 * math.sin(k), ref_wave)    # 1.3 K off, no sun
-    bias = H.learn_bias(sensor, ref, NOW)
+    bias = H.learn_bias(sensor, ref, NOW, NIGHT)
     assert bias["learned"] and len(bias["trusted"]) == 24 and abs(bias["offset"] - 1.3) < 0.3
     fc = {NOW - NOW % 3600 + 3600 * i: 9.0 for i in range(6)}
     temps, basis = H.correct_temperatures(sensor, ref, fc, NOW, bias)
     past = [k for k in sensor if k < NOW - NOW % 3600]
     assert all(temps[k] == sensor[k] and basis[k] == "sensor" for k in past)        # correction is zero, hour for hour
-    assert all(abs(temps[k] - (v + bias["offset"])) < 1e-9 for k, v in fc.items())
+    assert all(temps[k] == v for k, v in fc.items())                                 # nothing to correct: the forecast is not shifted
     assert H.day_basis([basis.get(k, "unknown") for k in past[:24]]) == "corrected"
 
 
 def test_a_sun_heated_sensor_is_replaced_by_the_reference_in_the_sun_hours_only():
     sensor, ref = pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave)
-    bias = H.learn_bias(sensor, ref, NOW)
+    bias = H.learn_bias(sensor, ref, NOW, NIGHT)
     assert bias["learned"] and abs(bias["offset"] + 2.0) < 0.3
     assert all(h not in bias["trusted"] for h in range(8, 17)) and all(h in bias["trusted"] for h in (22, 23, 0, 1, 2, 3, 4))
     temps, basis = H.correct_temperatures(sensor, ref, {}, NOW, bias)
@@ -275,7 +278,7 @@ def test_a_sun_heated_sensor_is_replaced_by_the_reference_in_the_sun_hours_only(
 
 def test_no_learnable_bias_means_the_reference_alone_and_without_one_the_sensor_as_it_is():
     sensor, ref = pairs_for(lambda k: ref_wave(k) + sun(k), ref_wave, days=3)         # three days: not enough pairs
-    bias = H.learn_bias(sensor, ref, 3 * 86400.0 + 5 * 3600)
+    bias = H.learn_bias(sensor, ref, 3 * 86400.0 + 5 * 3600, NIGHT)
     assert not bias["learned"] and bias["offset"] == 0.0 and bias["trusted"] == []
     temps, basis = H.correct_temperatures(sensor, ref, {}, 3 * 86400.0 + 5 * 3600, bias)
     assert all(temps[k] == ref[k] and basis[k] == "reference" for k in sensor)
@@ -287,7 +290,7 @@ def test_no_learnable_bias_means_the_reference_alone_and_without_one_the_sensor_
 def test_days_without_a_reference_know_only_the_trusted_hours_and_are_marked_so():
     sensor, ref = pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave)
     old_days = {k for k in sensor if k < 10 * 86400.0}
-    bias = H.learn_bias(sensor, {k: v for k, v in ref.items() if k >= 10 * 86400.0}, NOW)      # the reference starts on day 10
+    bias = H.learn_bias(sensor, {k: v for k, v in ref.items() if k >= 10 * 86400.0}, NOW, NIGHT)      # the reference starts on day 10
     temps, basis = H.correct_temperatures(sensor, {k: v for k, v in ref.items() if k >= 10 * 86400.0}, {}, NOW, bias)
     day = [basis.get(k, "unknown") for k in sorted(old_days)[48:72]]
     assert H.day_basis(day) == "sensor_night" and day.count("sensor") == len(bias["trusted"]) and "sensor" in day
@@ -313,7 +316,7 @@ def test_hourly_points_are_the_value_in_force_at_half_past_and_stale_ones_are_dr
 
 
 def test_the_published_answer_carries_the_temperature_basis_and_the_sensors_show_it():
-    bias = H.learn_bias(*pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave), NOW)
+    bias = H.learn_bias(*pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave), NOW, NIGHT)
     tb = H.temperature_basis(bias, {"corrected": 10, "sensor_night": 13})
     assert tb["learned"] and tb["days"]["sensor_night"] == 13 and tb["trusted_hours_utc"] and "offset_k" in tb
     out = H.publish(datetime(2026, 10, 20, 3, 30, tzinfo=TZ), None, None, {}, "daily", 35, "room", temperature=tb)
@@ -321,6 +324,41 @@ def test_the_published_answer_carries_the_temperature_basis_and_the_sensors_show
     src = (BASE / "sensor.py").read_text(encoding="utf-8")
     assert src.count('"temperature_basis"') >= 3 and "days_uncorrected_temperature" in src
     assert "_weather_reference" in (BASE / "coordinator.py").read_text(encoding="utf-8")
+
+
+def test_corrected_series_is_what_the_temperature_evidence_reads_INS20():
+    """The split series INS-15 is fed: a good sensor's history comes back untouched, a sun-heated one loses
+    its sun hours to the reference, nothing but the forecast sits at or after the hour under way."""
+    cur = NOW - NOW % 3600
+    fc = {cur + 3600 * i: 9.0 for i in range(6)}
+    sensor, ref = pairs_for(lambda k: ref_wave(k) + 1.3, ref_wave)
+    hist, fcc, basis, bias = H.corrected_series(sensor, ref, fc, NOW, NIGHT)
+    assert hist == {k: v for k, v in sensor.items() if k < cur} and min(fcc) >= cur and max(hist) < cur
+    assert H.series_basis(bias, basis)["hours"].get("sensor", 0) == len(hist) and bias["trusted"] == list(range(24))
+    sensor, ref = pairs_for(lambda k: ref_wave(k) - 2.0 + sun(k), ref_wave)
+    hist, _, basis, bias = H.corrected_series(sensor, ref, fc, NOW, NIGHT)
+    noon = 20 * 86400.0 + 12 * 3600
+    assert abs(hist[noon] - (ref[noon] + bias["offset"])) < 1e-9 and max(hist.values()) < max(sensor.values()) - 4      # the sun peak is gone
+    assert H.series_basis(bias, basis)["hours"]["reference"] > 0
+    assert H.corrected_series(sensor, {}, {}, NOW, NIGHT)[2] and all(b == "raw" for b in H.corrected_series(sensor, {}, {}, NOW, NIGHT)[2].values())
+
+
+def test_only_a_sensor_above_the_reference_is_distrusted_and_night_is_the_level_INS20():
+    """Kozolec's shape: the model reads 3 K under the sensor at night and level with it by day (the sensor is
+    never above the model in the sun): every hour trusted. Andrej's: sun heating on top of the night level."""
+    night_warm = lambda k: ref_wave(k) + (3.0 if k % 86400 // 3600 in NIGHT else 0.0)
+    bias = H.learn_bias(*pairs_for(night_warm, ref_wave), NOW, NIGHT)
+    assert bias["learned"] and abs(bias["offset"] - 3.0) < 0.3 and bias["trusted"] == list(range(24))
+    bias = H.learn_bias(*pairs_for(lambda k: ref_wave(k) - 2.4 + sun(k), ref_wave), NOW, NIGHT)
+    assert abs(bias["offset"] + 2.4) < 0.3 and all(h in bias["trusted"] for h in NIGHT) and not {9, 10, 11, 12, 13, 14, 15} & set(bias["trusted"])
+    assert not H.learn_bias(*pairs_for(night_warm, ref_wave), NOW, set())["learned"]          # no night, no level
+    n = H.night_hours(46.1, 14.3, 290 * 86400.0)      # Ljubljana basin, a day in October
+    assert {0, 1, 2, 3, 20, 21, 22, 23} <= n and not {8, 9, 10, 11, 12, 13, 14} & n
+
+
+def test_the_forecast_reads_the_corrected_pair_INS20():
+    src = (BASE / "coordinator.py").read_text(encoding="utf-8")
+    assert src.index("heatnudge.corrected_series") < src.index("fit = lambda rows, signals")
 
 
 if __name__ == "__main__":

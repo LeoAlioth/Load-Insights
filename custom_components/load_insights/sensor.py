@@ -268,6 +268,7 @@ class ForecastPowerSensor(_PowerW, _Base):
                 "horizon_hours_with_forecast": fc.hours_with_forecast_temperature,
                 "weather_entity": data.weather_entity,
                 "temperature_entity": data.temperature_entity,
+                "temperature_basis": data.temperature_basis,
             },
             # Every explanatory signal's fitted role for THIS series - linked
             # calendars and attached sensors alike. A sensor's "titles" are
