@@ -120,10 +120,11 @@ class SectionedFlowMixin:
         groups = self.GROUPS.get(step_id)
         if groups and data_schema is not None and not isinstance(data_schema, SectionedSchema):
             data_schema = sectioned(data_schema, groups)
-            # the frontend shows no error under a field inside a section
+            # the frontend shows no error under a field inside a section, only one
+            # keyed by the section itself (above it)
             if errors:
                 fields = _by_field(groups)
-                errors = {("base" if key in fields else key): code for key, code in errors.items()}
+                errors = {fields.get(key, key): code for key, code in errors.items()}
         return super().async_show_form(step_id=step_id, data_schema=data_schema, errors=errors, **kwargs)
 
 
