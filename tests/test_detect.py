@@ -5523,7 +5523,7 @@ def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
 
 
 def test_the_ins9_dials_are_off():
-    assert not (D.GAIN_FALLS or D.GAIN_MEDIAN or D.GAIN_UNGATED or D.FOLD_SLOW or D.SAME_SPAN)
+    assert not (D.GAIN_FALLS or D.GAIN_MEDIAN or D.GAIN_UNGATED)
 
 
 if __name__ == "__main__":

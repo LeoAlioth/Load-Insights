@@ -553,18 +553,15 @@ GAIN_FALLS = False
 GAIN_MEDIAN = False
 GAIN_UNGATED = False
 GAIN_RING = 200
-# (2) FOLD_SLOW (edges.py): a run's slow changes are part of its steps - the
-# window after a rise skips the opposite steps that follow it, and the window
-# before a fall the same-way steps that lead up to it, while each is at most
-# FOLD_SHARE of the step and within FOLD_S of it (a pump's start decay, its
+# (2) shipped 2026-10-22, no dial: a run's slow changes are part of its steps (edges.py
+# Assembler._ends) - the window after a rise skips the opposite steps that follow it,
+# and the window before a fall the same-way steps that lead up to it, while each is at
+# most FOLD_SHARE of the step and within FOLD_S of it (a pump's start decay, its
 # pre-stop drift).
-FOLD_SLOW = False
 FOLD_SHARE = 0.35
 FOLD_S = 60.0
-# (3) SAME_SPAN (edges.py): a step's windows end at the steps of EVERY meter
-# of its comparison (its cluster's), latency-shifted onto its own clock, not
-# only at its own channel's: one span for both sides of a comparison.
-SAME_SPAN = False
+# (3) SAME_SPAN (one span for both sides of a comparison) lost on the bench and was
+# removed 2026-10-22; see "Things already ruled out" in this folder's AGENTS.md.
 # ...and a drop that fits nothing is HELD; held drops completing a run with a
 # later drop close it together, with both steps (-200 W then -400 W against a
 # +600 W start). A washer's 2 kW -> 400 W -> off is then one run at both levels:

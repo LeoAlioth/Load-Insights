@@ -644,18 +644,12 @@ class Assembler:
         for q in pieces:
             for x in ups[id(q)]:
                 root[find(("c", id(q)))] = find(("s", id(x)))
-        mates: Dict[tuple, List[Step]] = {}          # each comparison's steps, parents and children
-        if _d.SAME_SPAN:
-            for q in pieces:
-                for x in ups[id(q)]:
-                    mates.setdefault(find(("c", id(q))), []).extend(list(q.legs) + [x])
         for e in comp:
             for x in e.legs:
                 rows, v = self.rows.get((x.meter, x.ch)) or [], self._volts(x)
                 x.props = properties(rows, x.t, x.dp, v)
                 if "t_off" in x.props:
-                    peers = (mates.get(find(("s", id(x))), []) + mates.get(find(("c", id(piece_of[id(x)]))), [])) if mates else None
-                    x.dp, x.dq, w = windows(rows, x.t, x.dp, x.dq, x.props, *self._ends(x, peers),
+                    x.dp, x.dq, w = windows(rows, x.t, x.dp, x.dq, x.props, *self._ends(x),
                                             self.qrows.get((x.meter, x.ch)), v, x.noise, x.quantum, x.q_quantum)
                     del x.props["t_off"], x.props["t_set"]
                     x.props.update(w)
@@ -760,7 +754,7 @@ class Assembler:
                     return self.volts[(anc, c)]
         return None
 
-    def _ends(self, x: Step, peers=None) -> Tuple[float, float]:
+    def _ends(self, x: Step) -> Tuple[float, float]:
         """Where ``x``'s windows end: its channel's previous step (where that
         one was read at its new level) or WINDOW_S back; just before its next
         step's first reading (its ``t``, on the channel's own clock) or
@@ -769,26 +763,18 @@ class Assembler:
         rise whose next step, a -40 W decay, came 40 s on (10-03 13:34:42
         UTC, readings 1105, 902, 873, 855), and the window held the surge
         reading alone - +1104 W against the grid's +847. A settle another
-        step took (``_settle_once``) is no step."""
-        if not (_d.SAME_SPAN and peers) and not _d.FOLD_SLOW:
-            ms = self.marks.get(x.key) or []
-            i = bisect.bisect_left(ms, (x.t, -1))
-            prev = next((m[2] for m in reversed(ms[:i]) if not m[2].absorbed), None)
-            nxt = next((m[2] for m in ms[i:] if m[2].t > x.t and not m[2].absorbed), None)
-            start = max(x.t - WINDOW_S, prev.b if prev is not None else -math.inf)
-            end = min(x.t + WINDOW_S, nxt.t - 0.01 if nxt is not None else math.inf)
-            return start, end
-        # the steps that bound the windows, each on x's clock: its channel's
-        # own, and with SAME_SPAN every step of its comparison's meters but the
-        # compared steps themselves (the other meter's step at the moment is
-        # the moment); (time, span end, step)
-        mine = {id(x)} | {id(y) for y in (peers or ()) if _d.SAME_SPAN}
-        keys = {x.key} | {y.key for y in (peers or ()) if _d.SAME_SPAN}
-        lat = lambda m: self.latency.get(m, 0.0)        # noqa: E731
-        cand = sorted(((s.t + sh, s.b + sh, s) for k in keys for _, _, s in self.marks.get(k, [])
-                       if id(s) not in mine and not s.absorbed for sh in [lat(x.meter) - lat(s.meter)]),
-                      key=lambda c: c[0])
-        slow = lambda c: (_d.FOLD_SLOW and abs(c[2].grid) <= _d.FOLD_SHARE * abs(x.grid)   # noqa: E731
+        step took (``_settle_once``) is no step.
+
+        A run's slow changes are part of its steps (INS-9 FOLD_SLOW, shipped
+        2026-10-22): the window after a rise skips the opposite steps that
+        follow it, and the window before a fall the same-way steps that lead
+        up to it, while each is at most FOLD_SHARE of the step and within
+        FOLD_S of it (a pump's start decay, its pre-stop drift). The steps
+        that bound a window are x's own channel's, each on its own clock, so
+        a moment reads the same at every slicing."""
+        cand = sorted(((s.t, s.b, s) for _, _, s in self.marks.get(x.key, [])
+                       if s is not x and not s.absorbed), key=lambda c: c[0])
+        slow = lambda c: (abs(c[2].grid) <= _d.FOLD_SHARE * abs(x.grid)   # noqa: E731
                           and abs(c[0] - x.t) <= _d.FOLD_S)
         # a rise's slow change after it is an opposite step, a fall's before it a step the same way
         after = [c for c in cand if c[0] > x.t]
