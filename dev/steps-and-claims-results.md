@@ -345,7 +345,16 @@ that fall): the half is the same half `_meter_stop` demands, so it stays as a fi
 The EVBox loses at every step (80.3 -> 70.7): its OCPP reading is 337 rows in ten days, one every ~40
 min, so a "clean step" of its plug is forty minutes stale and, served by fit, it comes last - its own
 item. One call (SLICE=0) against 6-hour slices on the scorer: 365 s against ~10 min, the same figures,
-3 of 275 sessions filed differently with the five inputs fed (invariance is not exact with inputs).
+the "3 of 275 sessions differ" first noted was two runs on different code (the floor removed between
+them), not slicing: `energy_bench.py invariance home data/history/home-1022` with the five inputs fed,
+0 sessions differ of 23,386 across SLICE=0 / 6 / 1 / LIVE=1; the restart variants 3-4 (0.12 kWh), as
+before. Scorer and single replays run at SLICE=0 from here (the owner); the card keeps SLICE=6 and the
+invariance run is the occasional guard after larger changes.
+Card after the fit ordering (`fdf4bd7-dirty-sc-fit-20261023T161342Z.json`): Home devices hidden 32.9 /
+13.3, circuits 43.5 / 11.9, fed 61.1 / 13.3; partition fed 61.6 / 10.3; Kozolec devices fed 86.1 / 3.2,
+partition 83.6 / 4.9.
+Kozolec fed after the fit ordering: 86.8 / 2.2 -> 86.1 / 3.2 (pond EVSE 94.1 / 2.4 -> 92.7 / 3.4, boiler
+91.2 / 2.2 -> 91.4 / 4.0, water pump 82.6 / 3.7 -> 84.0 / 1.2) - small, and real against Kozolec's band.
 
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
