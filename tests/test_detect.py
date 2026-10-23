@@ -2967,6 +2967,38 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
         [(x.id, x.count, x.born_in, x.takes_in) for x in fridge]
 
 
+def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():
+    """A fridge that runs through every episode of a short daily value passes
+    the coverage judgement in every value (it ran in all of them), so a
+    signature of it born in the value stayed its own for good - Hiša's 60 W
+    incubator in 20 pieces with the washer's states fed (2026-10-23). An
+    alike ordinary twin that runs through the value at chance takes it
+    back at judgement."""
+    fleet = D.Fleet()
+    rnd = random.Random(5)
+    phase = []
+    for day in range(14):
+        day0 = T0 + day * 86400.0
+        phase += [(day0, "Off"), (day0 + 36000.0, "Spin"), (day0 + 36900.0, "Off")]   # 15 min a day
+    rows, t = [], T0
+    while t < T0 + 14 * 86400.0:
+        w = 300.0 + rnd.uniform(-3, 3)
+        if (t - T0) % 1500.0 < 400.0:
+            w += 80.0                                     # the fridge, every 25 min, all day
+        rows.append((t, w))
+        t += DT
+    a = T0
+    while a < t:
+        b = a + 6 * 3600.0
+        fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      inputs={"sensor.phase": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                              or [max((p for p in phase if p[0] < a), default=phase[0])]})
+        a = b
+    fridge = [x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120 and x.count >= 3]
+    assert len(fridge) == 1 and fridge[0].count >= 700 and not fridge[0].born_in, \
+        [(x.id, x.count, x.born_in, x.born_judged, x.takes_in) for x in fridge]
+
+
 
 def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     """Naming a load writes its past into the statistics, so each signature

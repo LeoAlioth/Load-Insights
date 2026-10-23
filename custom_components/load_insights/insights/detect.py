@@ -3274,8 +3274,8 @@ class Signature:
             e += (row.get("e") or {}).get(value, 0.0)
             if sig.born_in == born:
                 runs += sum((row.get("n") or {}).values())
-        if runs < INPUT_MIN_RUNS or e <= 0:
-            return None
+        if e <= 0 or (runs < INPUT_MIN_RUNS and n + e < INPUT_MIN_RUNS):
+            return None                   # too few runs seen AND too few expected to say
         return n / e
 
     def files_in(self, context: Optional[str]) -> bool:
@@ -4550,12 +4550,36 @@ class Detector:
         and is ordinary again - running in that value now and then - if not.
         Returns the ones judged."""
         judged = []
+        moved: Dict[int, int] = {}
         for sig in self.signatures:
-            if not sig.born_in or sig.born_judged:
+            if not sig.born_in or sig.born_judged or sig.id in moved:
                 continue
             setting, _, value = sig.born_in.partition("=")
             since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - sig.born_ep
             if since < INPUT_MIN_EPISODES:
+                continue
+            # an alike ordinary twin that runs through the value at chance
+            # (pair lift < INPUT_SPLIT_LIFT) takes the fragment back: a load
+            # stepping all day runs in EVERY episode of every value, so
+            # coverage alone judged Hiša's 60 W incubator born of Spin, Paused,
+            # Dry and End Of Cycle (lifts 1.1-2.3; 20 signatures of one load
+            # with the washer's states fed, 7 without, 2026-10-23). Twins are
+            # found with the born-in gate of alike aside, since the lift is
+            # decided here; while a twin's lift cannot be measured yet the
+            # judgement waits
+            noise = max((self.phases[p].noise for p in sig.phases if p in self.phases), default=MIN_NOISE_W)
+            born, sig.born_in = sig.born_in, None
+            twins = [o for o in self.signatures if not o.born_in and o.id not in moved and o.alike(sig, noise)]
+            sig.born_in = born
+            lifts = [(sig.input_lift(o, born), o) for o in twins]
+            taken = [o for lift, o in lifts if lift is not None and lift < INPUT_SPLIT_LIFT]
+            if taken:
+                twin = max(taken, key=lambda o: o.count)
+                twin.swallow(sig)
+                moved[sig.id] = twin.id
+                judged.append(twin)
+                continue
+            if any(lift is None for lift, _ in lifts):
                 continue
             if sig.ep_seen / since >= INPUT_MIN_COVERAGE:
                 sig.born_judged = True
@@ -4563,7 +4587,25 @@ class Detector:
                 sig.takes_in = sorted(set(sig.takes_in) | {sig.born_in})
                 sig.born_in = None
             judged.append(sig)
+        self._absorb(moved)
         return judged
+
+    def _absorb(self, moved: Dict[int, int]) -> None:
+        """Drop the signatures swallowed into others (other id -> keeper id)
+        and repoint what referred to them."""
+        if not moved:
+            return
+        self.signatures = [x for x in self.signatures if x.id not in moved]
+        for r in self.recent:
+            if r.get("signature") in moved:
+                r["signature"] = moved[r["signature"]]
+        for s in self.held:
+            if s.signature_id in moved:
+                s.signature_id = moved[s.signature_id]
+        self._moved.update(moved)
+        for other_id, keep_id in moved.items():
+            self._fold(other_id, keep_id)
+        self._by_sig, self._device_home = None, None
 
     def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> Optional[int]:
         """Which cluster a fall belongs to, at once. A rise gets its cluster
@@ -5126,7 +5168,8 @@ class Detector:
             if window is None or not near:
                 return False
             p *= min(1.0, near / seen) * min(1.0, (window[1] - window[0]) / (2 * EDGE_LAG_REACH_S))
-        return above_chance(n, p * sum(w for b, w in h.items() if lo <= b <= hi))
+        expected = p * sum(w for b, w in h.items() if lo <= b <= hi)
+        return above_chance(n, expected)
 
     def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Signature"]:
@@ -5208,19 +5251,7 @@ class Detector:
                         continue
                 keep.swallow(other)
                 moved[other.id] = keep.id
-        if not moved:
-            return 0
-        self.signatures = [x for x in self.signatures if x.id not in moved]
-        for r in self.recent:
-            if r.get("signature") in moved:
-                r["signature"] = moved[r["signature"]]
-        for s in self.held:
-            if s.signature_id in moved:
-                s.signature_id = moved[s.signature_id]
-        self._moved.update(moved)
-        for other_id, keep_id in moved.items():
-            self._fold(other_id, keep_id)
-        self._by_sig, self._device_home = None, None
+        self._absorb(moved)
         return len(moved)
 
     def _rebuild_votes(self) -> None:

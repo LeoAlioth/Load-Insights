@@ -356,6 +356,46 @@ partition 83.6 / 4.9.
 Kozolec fed after the fit ordering: 86.8 / 2.2 -> 86.1 / 3.2 (pond EVSE 94.1 / 2.4 -> 92.7 / 3.4, boiler
 91.2 / 2.2 -> 91.4 / 4.0, water pump 82.6 / 3.7 -> 84.0 / 1.2) - small, and real against Kozolec's band.
 
+## The incubator's fragments with the washer's states fed (2026-10-23, `tests/dishwasher/hisa_sigs_inputs.py`, `hisa_twins.py`)
+
+Hiša's 50-70 W signatures on c with 5+ runs, October folder, SLICE=0: 7 with no inputs (#2 the 60 W
+incubator, 6,241 runs of 23 s every 109 s; #233 a 154 s load every ~70 min, 820 runs), 20 with the five
+washer / oven inputs fed (24 with the bench dial `INPUT_RARE_SHARE=1.1`; the default 0.25 scores the same
+or better on the dishwasher scorer - 7 @ 0.44 against 5 @ 0.36 - so the dial is dropped). Two mechanisms:
+`_by_state` keys the incubator's step groups by "Sock Eater Running" / "Wash" (5,558 + 567 + 205 runs),
+and `INPUT_SPLIT` births signatures of it in Spin, Dry, Paused, End Of Cycle, Conventional Cooking.
+
+- A LIFT floor on the state keying (`n >= INPUT_MIN_LIFT x expected` in `_keyed_above_chance`): the keys go
+  (16-19 signatures, all unkeyed) but the Sock Eater's one clean signature goes with them (10 runs at purity
+  1.0, born in Steam -> Mansarda#21 mixed, 9 runs at 0.47-0.53). Reverted; ruled out.
+- The born-in fragments were all `judged True` by episode coverage (ran in >= 50 % of the value's episodes):
+  a load stepping every 109 s runs in EVERY episode of every value. Their pair lifts against #2 were
+  1.1-2.3, and `Signature.alike` said alike - the "chance-born fragment goes back into its twin" rule of
+  2026-09-29 lived only inside `alike`, and nothing but orphan naming calls `alike` any more. Built the
+  takeback into `_judge_born`: at judgement, an alike ordinary twin (pair lift < `INPUT_SPLIT_LIFT`) swallows
+  the fragment; the moved-signature bookkeeping is shared with `_merge_devices` (`_absorb`).
+  Two more things were needed, found by the synthetic test (`test_an_all_day_load_born_in_a_rare_value_
+  goes_back_to_its_twin`: a fridge every 25 min, a 15-minute "Spin" a day, 14 days): (1) `input_lift`
+  answered None while the born-in signature had under `INPUT_MIN_RUNS` runs, and its input rows decay
+  (8 runs count 5.5), so a small fragment could never be judged by lift - now it answers when the runs
+  seen OR the runs expected reach `INPUT_MIN_RUNS` (the twin's expected runs in the value are the
+  evidence); (2) the judgement waits while an alike twin's lift cannot be measured yet, instead of
+  sealing the fragment by coverage. Twins are found with alike's born-in gate aside, since the lift is
+  decided in `_judge_born` itself.
+
+| inputs fed, SLICE=0 | Hiša 50-70 W sigs | #2 runs | 154 s load | Sock Eater best | dishwasher best |
+|---|---|---|---|---|---|
+| before | 20 | 5,558 | 216 + 114 + 43 | #706 10 runs @ 1.0 | 7 @ 0.44 |
+| first takeback (alike as it was) | 17 | 6,370 | 412 | #707 10 runs @ 1.0 | 7 @ 0.44 |
+| shipped (lift evidence, judgement waits) | **11** | 6,410 | 464 | #700 10 runs @ 1.0 | 7 @ **0.78** |
+
+What stays: the `_by_state` keyed groups (#2 itself keyed Spin, #361 Wash), #846 born Steam with lift 17
+(real by its own measure), Conventional Cooking (lift 11.4, 59 runs of 33 s every 9 min while the oven
+cooks - may be real), End Of Cycle (lift 1.6 but 66 s against #2's 41 s length split, so not alike).
+Suite: 0 failures. Home fed (`data/history/home`, production slicing, no inputs fed): identical to the
+baseline to the last decimal - devices 61.1 / 13.3, partition 61.6 / 10.3 - as it must be, since nothing
+is born in a value without an input fed. Kozolec has no inputs either; not rerun.
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split

@@ -255,6 +255,7 @@ the Fleet's stream. In the Fleet:
 | dial | kind | value | what |
 |---|---|---|---|
 | `STATE_SUFFIX` | - | `@` | every fed input's state at the step keys the group, judged one input at a time against the state's share of the time (`Detector._by_state`); the five states joined into one key never piled up above chance |
+| the born-in twin takeback | - | always (`_judge_born`) | a signature born in a rare input value, once the value has come round `INPUT_MIN_EPISODES` times, is swallowed by an alike ordinary twin that runs through the value at chance (pair lift < `INPUT_SPLIT_LIFT`, the test `Signature.alike` always had) before the coverage judgement, which an all-day load passes in every value; `input_lift` answers once the runs seen OR expected reach `INPUT_MIN_RUNS` (the rows decay, a small fragment never reached it), and the judgement waits while a twin's lift cannot be measured yet. Hiša's 60 W incubator with the washer's five inputs fed: 20 -> 11 signatures, 5,558 -> 6,410 runs in the main one, the 154 s load's three pieces one again; dishwasher scorer best signature purity 0.44 -> 0.78 at the same 7 runs, Sock Eater's 10 runs at purity 1.0 kept; Home fed without inputs identical - `dev/steps-and-claims-results.md` |
 | falls placed | - | always, every meter | a grid fall a meter also fell by is grouped under it, as a rise is. Against several-device meters only: Home fed devices 64.7 / 11.2 -> 63.1 / 12.7 - the EVBox 79.5 -> 74.0 (one of ten charges changing shape; band 4.3) and the Hidrofor's impurity +2.3 from a few runs; Kozolec identical. Read as neutral, not a loss (the owner, 2026-10-23: single-run swings are noise) |
 | the placed claim | - | always (dial `CLAIM_PLACED` removed 2026-10-23, both its levels kept) | a grid run whose start a meter's step placed (`Run.placed`) waits for that meter's own session and pairs on time alone; the session is not consumed, and later grid pieces inside it pair through the covered rule (`Fleet._owned`) and `_file_as` |
 
@@ -1241,7 +1242,12 @@ Don't re-chase these; each cost real time.
   meter's session: a short grid piece took the EVBox's whole charge (83.9 -> 74.6) - keep the session for
   the later pieces instead. (e) The bench scorer itself was wrong three times (other meters' sessions on
   the same grid phase, merged signature ids counted apart, grid phase C counted as Mansarda C = grid A):
-  check a scorer's phase, owner and merge resolution before trusting its numbers.
+  check a scorer's phase, owner and merge resolution before trusting its numbers. (f) A LIFT floor on the
+  state keying (`n >= INPUT_MIN_LIFT x expected` in `_keyed_above_chance`), to stop Hiša's all-day 60 W
+  incubator being keyed "Sock Eater Running": the keys go, but so does the Sock Eater's one clean signature
+  (10 runs at purity 1.0 -> a mixed one at 0.5), and the incubator stays in 16-19 pieces because the other
+  half of its fragmentation is `INPUT_SPLIT`'s born-in signatures - fixed instead by the twin takeback in
+  `_judge_born` (`dev/steps-and-claims-results.md`).
 
 - **INS-9 (3) `SAME_SPAN`, a step's windows ending at its comparison's other meters' steps** (benched 2026-10-20, fixed and re-benched 2026-10-21; dial, `Step.lat` and the peers plumbing removed 2026-10-22 on the owner's yes). Once slicing-invariant (each step's own latency, `Step.lat`) it still costs conservation alone (grid>Hidrofor 44.2 -> 39.2 %, Hiša>Blaževa Soba 17.4 -> 13.3, Mansarda>office 41.2 -> 38.9, Kozolec IR panel 73.1 -> 69.2) and adds nothing to `FOLD_SLOW` (Hidrofor 48.0 -> 50.8, but Blaževa Soba 18.0 -> 14.1, office 41.2 -> 38.7, IR panel 73.1 -> 69.2, third site's charger 73.3 -> 70.9). Why: the grid declares the pump's start decay as its own small step a few seconds on, so the grid's window is a few seconds long; a 10 s plug cut to the same span reads its surge reading. The same span is only the same measure where both meters can read a level inside it. Shifted by the median report lag instead of the latency, grid>Hidrofor 23.0 %. Not tried: a same-span bound that waits for the slower meter's next reading.
 
