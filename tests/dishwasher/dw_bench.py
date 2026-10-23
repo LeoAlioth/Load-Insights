@@ -23,6 +23,9 @@ HERE = Path(__file__).resolve().parent
 FOLDER = "/Users/anzek/Projects/Load_Insights/data/history/home-1022"
 SLACK = 60.0
 truth = json.load(open(HERE / "truth.json"))
+# a burst shorter than the meters' cadence is the truth builder's artefact (nine
+# zero-length Sock Eater "bursts" counted as misses, 2026-10-23), not a run to find
+truth = {k: [x for x in v if x["end"] - x["start"] >= 20.0] for k, v in truth.items()}
 CLASSES = {k: [(x["start"] - SLACK, x["end"] + SLACK) for x in truth[k]]
            for k in ("dishwasher", "sock_eater", "oven")}
 

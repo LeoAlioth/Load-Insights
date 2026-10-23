@@ -690,6 +690,9 @@ MATCH_POWER_REL = 0.10
 # spread, and admitting some of it lets its fragments meet (2026-09-23).
 ALIKE_MAD_SHARE = 0.10
 MATCH_DURATION_FACTOR = 3.0
+# The daily rewrite's length split (Signature.learn_split): runs on each side of
+# the largest gap in a signature's run memory, at least. A count (RUN_MEMORY is 12).
+SPLIT_MIN_RUNS = 4
 # Two METERS may disagree about a run's length far more than two sightings of
 # one load may: a 66-second boiler cycle is 66 seconds on its own meter and
 # often minutes on a busy main one, where the down-step pairs with a
@@ -3018,6 +3021,13 @@ class Signature:
     pf_mad: float = 0.0
     # the last RUN_MEMORY windows this ran in, for "never two at once"
     runs: List[Tuple[float, float]] = field(default_factory=list)
+    # The daily rewrite's length split (the owner, 2026-10-23: length decides in
+    # the once-a-day rewrite, which sees the runs' lengths and spacing, never in
+    # the live filing): seconds, with the side this signature keeps (+1 the longer
+    # runs, -1 the shorter); a run on the other side is filed apart - see
+    # takes_run and Fleet._split_by_length. None: no split found.
+    split_s: Optional[float] = None
+    split_side: int = 0
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
     # motor does this and nothing else in a house does, so it is evidence
     # rather than noise once it is kept out of the power (2026-09-22:
@@ -3036,6 +3046,8 @@ class Signature:
             return False
         if self.name and other.name and self.name != other.name:
             return False                       # named apart on purpose
+        if not self.takes_len(other.duration_s) or not other.takes_len(self.duration_s):
+            return False                       # the daily rewrite split them by length
         if self.born_in != other.born_in:
             # apart until judged; a born-in one that is chance goes back
             born = self.born_in or other.born_in
@@ -3253,6 +3265,41 @@ class Signature:
     def files_in(self, context: Optional[str]) -> bool:
         """May a run made in ``context`` (None: in no rare value) join it?"""
         return self.born_in == context or (context is not None and context in self.takes_in)
+
+    def takes_run(self, s: "Run") -> bool:
+        """Is ``s`` on this signature's side of its length split (split_s)? Always, with none."""
+        return self.takes_len(s.duration_s)
+
+    def takes_len(self, duration_s: float) -> bool:
+        if not self.split_s or not self.split_side:
+            return True
+        return (duration_s >= self.split_s) == (self.split_side > 0)
+
+    def learn_split(self) -> bool:
+        """The daily rewrite: the largest gap in the run memory's log-lengths,
+        both sides at least SPLIT_MIN_RUNS runs and their medians at least
+        MATCH_DURATION_FACTOR apart, becomes the split; the side with more
+        runs is this signature's. True when a split was set or changed."""
+        lens = sorted(max(b - a, 1.0) for a, b in self.runs)
+        if len(lens) < 2 * SPLIT_MIN_RUNS:
+            return False
+        logs = [math.log(x) for x in lens]
+        best = None
+        for i in range(SPLIT_MIN_RUNS, len(logs) - SPLIT_MIN_RUNS + 1):
+            gap = logs[i] - logs[i - 1]
+            if best is None or gap > best[0]:
+                best = (gap, i)
+        if best is None or best[0] < math.log(MATCH_DURATION_FACTOR):
+            return False                      # the two runs either side of the cut must differ by the factor
+        i = best[1]
+        lo, hi = lens[:i], lens[i:]
+        if hi[len(hi) // 2] / lo[len(lo) // 2] < MATCH_DURATION_FACTOR:
+            return False
+        split = math.sqrt(lens[i - 1] * lens[i])
+        side = 1 if len(hi) >= len(lo) else -1
+        changed = (self.split_s, self.split_side) != (split, side)
+        self.split_s, self.split_side = split, side
+        return changed
 
     def strongest_input(self):
         """(setting, value, share, times chance) of the one it is most tied to, or None."""
@@ -3548,6 +3595,7 @@ class Signature:
                 "successor_id": self.successor_id, "carried_wh": _trim(self.carried_wh, 1),
                 "low": _trim(self.low, 1), "high": _trim(self.high, 1),
                 "duration_mad": _trim(self.duration_mad, 1),
+                "split_s": None if self.split_s is None else _trim(self.split_s, 1), "split_side": self.split_side,
                 "interval_mad": _trim(self.interval_mad, 1),
                 "inputs": {n: {k: {v: _trim(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
@@ -3567,6 +3615,7 @@ class Signature:
                    power_mad=d.get("power_mad", 0.0), pf_mad=d.get("pf_mad", 0.0),
                    runs=[tuple(x) for x in (d.get("runs") or [])], inrush_w=d.get("inrush_w", 0.0),
                    duration_mad=d.get("duration_mad", 0.0),
+                   split_s=d.get("split_s"), split_side=int(d.get("split_side") or 0),
                    successor_id=d.get("successor_id"), carried_wh=d.get("carried_wh", 0.0),
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
@@ -4427,10 +4476,10 @@ class Detector:
             # elsewhere - Home 79.8 / 76.0 % that way, 86.0 / 85.4 trusted,
             # Kozolec 98.3 / 94.1 and 99.8 / 98.9 (2026-09-30)
             want = self._sig(prefer)
-            if want is not None and want.id not in avoid and want.files_in(context) and want.phases == s.phases:
+            if want is not None and want.id not in avoid and want.files_in(context) and want.phases == s.phases and want.takes_run(s):
                 best = want
         if best is None and device is not None:
-            best = self._device_signature(device, context, avoid, s.phases)
+            best = self._device_signature(device, context, avoid, s.phases, s)
         if best is None:
             best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
                              pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count),
@@ -5064,7 +5113,7 @@ class Detector:
         return above_chance(n, p * sum(w for b, w in h.items() if lo <= b <= hi))
 
     def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
-                          phases: str) -> Optional["Signature"]:
+                          phases: str, run: Optional["Run"] = None) -> Optional["Signature"]:
         """The signature most of this device's runs went to, of those on the
         run's own ``phases`` that take runs in ``context`` and are not
         ``avoid``ed, whatever its runs' powers - None for a device not seen
@@ -5080,7 +5129,7 @@ class Detector:
         cands = []
         for sid, n in (self._device_home.get(device) or {}).items():
             sig = self._sig(self._current(sid))
-            if sig is not None and sig.id not in avoid and sig.files_in(context) and sig.phases == phases:
+            if sig is not None and sig.id not in avoid and sig.files_in(context) and sig.phases == phases and (run is None or sig.takes_run(run)):
                 cands.append((n, sig.id, sig))
         return max(cands)[2] if cands else None
 
@@ -5128,6 +5177,8 @@ class Detector:
                 if (keep.id in {self._current(x) for x in other.apart}
                         or other.id in {self._current(x) for x in keep.apart}):
                     continue                  # one's run was kept out of the other - see Signature.apart
+                if not keep.takes_len(other.duration_s) or not other.takes_len(keep.duration_s):
+                    continue                  # the daily rewrite split them by length
                 if other.born_in != keep.born_in:
                     # apart while they run in the value more than chance puts
                     # them there together - a fridge running through every
@@ -6134,6 +6185,11 @@ class Fleet:
                 det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b, -math.inf)) - 1, 0):]
             if log:
                 _cap_day(det, log, rows, a, b)
+            # ...and the length split each signature's run memory shows (the owner,
+            # 2026-10-23: length decides here, with the runs' lengths in view, not live)
+            for sig in det.signatures:
+                if sig.learn_split() and det._home.get(sig.id) is not None:
+                    det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own

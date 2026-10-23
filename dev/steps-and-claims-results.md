@@ -240,6 +240,28 @@ pump was off, runs closing late (long 34 -> 46) although the stops' sizes agree 
 the Sock Eater 30 -> 33 bursts. Ships by the owner's rules (physically right, the site not significantly
 worse); the Hidrofor's late closes are the thing to look at next. Suite 0 failures.
 
+## The daily rewrite by length (the owner's order, item 2)
+Built: `Signature.learn_split` at the day's repair - the largest gap in the run memory's log-lengths
+(RUN_MEMORY 12), at least SPLIT_MIN_RUNS=4 runs each side, the two runs either side of the cut and the
+sides' medians at least MATCH_DURATION_FACTOR apart; the side with more runs stays, a run on the other
+side files apart (`takes_run` at both `files_in` gates), and split siblings are neither `alike` nor
+device-merged. Stored (`split_s`, `split_side`). Live filing keeps its loose duration rule.
+Bench: Home fed 63.4 / 12.7 -> 63.5 / 12.6, Kozolec 86.0 / 3.1 -> 86.0 / 3.2, dishwasher unchanged
+(Mansarda#21 6 dw / 2 se / 1 oven / 2 other): neutral. Why it does not touch #21: its contaminants are
+one or two runs among the twelve the memory holds, under the four a side needs; a longer run memory, or
+the day log's runs added to the memory's, is what the split needs to see the dishwasher's case. Kept
+(the owner's rule: the mechanism in the right place, no loss); suite 0 failures.
+
+## The misses (the owner's order, item 3; `tests/dishwasher/misses.py`)
+- Dishwasher: 1 of 9 (13 Oct 12:02, 112 s): Mansarda's own detector filed a 9,527 s run at 1,348 W over
+  it - its own library merged the burst into something else; the grid filed 59-196 s pieces under 1 kW.
+- Sock Eater: 15 of 50 - NINE are zero-length truth entries (the truth builder's artefact; the scorer now
+  drops bursts under 20 s), the six real ones are 26-152 s bursts where Mansarda filed its own session
+  (1.3-2.0 kW) but the grid's piece was netted under 1.2 kW (1,070 / 1,148 W) or absent, so the start was
+  never placed and the claim never applied. The thing to build: a grid piece SMALLER than the owner's
+  step over the same span (netted against another load) is still the owner's - today `_step_meter` wants
+  the meter's step to be all of the grid's.
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split
