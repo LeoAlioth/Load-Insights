@@ -1247,7 +1247,9 @@ Don't re-chase these; each cost real time.
   incubator being keyed "Sock Eater Running": the keys go, but so does the Sock Eater's one clean signature
   (10 runs at purity 1.0 -> a mixed one at 0.5), and the incubator stays in 16-19 pieces because the other
   half of its fragmentation is `INPUT_SPLIT`'s born-in signatures - fixed instead by the twin takeback in
-  `_judge_born` (`dev/steps-and-claims-results.md`).
+  `_judge_born` (`dev/steps-and-claims-results.md`). Swept after the takeback (same evening): lift 1.5 and
+  2 keep the Sock Eater's signature but make Hiša WORSE, 11 -> 15 / 14 signatures (the "Spin" key becomes
+  a "Running" key, and more born-in pieces survive) - the state key's significance test stays as it is.
 
 - **INS-9 (3) `SAME_SPAN`, a step's windows ending at its comparison's other meters' steps** (benched 2026-10-20, fixed and re-benched 2026-10-21; dial, `Step.lat` and the peers plumbing removed 2026-10-22 on the owner's yes). Once slicing-invariant (each step's own latency, `Step.lat`) it still costs conservation alone (grid>Hidrofor 44.2 -> 39.2 %, Hiša>Blaževa Soba 17.4 -> 13.3, Mansarda>office 41.2 -> 38.9, Kozolec IR panel 73.1 -> 69.2) and adds nothing to `FOLD_SLOW` (Hidrofor 48.0 -> 50.8, but Blaževa Soba 18.0 -> 14.1, office 41.2 -> 38.7, IR panel 73.1 -> 69.2, third site's charger 73.3 -> 70.9). Why: the grid declares the pump's start decay as its own small step a few seconds on, so the grid's window is a few seconds long; a 10 s plug cut to the same span reads its surge reading. The same span is only the same measure where both meters can read a level inside it. Shifted by the median report lag instead of the latency, grid>Hidrofor 23.0 %. Not tried: a same-span bound that waits for the slower meter's next reading.
 
