@@ -256,7 +256,7 @@ the Fleet's stream. In the Fleet:
 |---|---|---|---|
 | `STATE_SUFFIX` | - | `@` | every fed input's state at the step keys the group, judged one input at a time against the state's share of the time (`Detector._by_state`); the five states joined into one key never piled up above chance |
 | falls placed | - | always, every meter | a grid fall a meter also fell by is grouped under it, as a rise is. Against several-device meters only: Home fed devices 64.7 / 11.2 -> 63.1 / 12.7 - the EVBox 79.5 -> 74.0 (one of ten charges changing shape; band 4.3) and the Hidrofor's impurity +2.3 from a few runs; Kozolec identical. Read as neutral, not a loss (the owner, 2026-10-23: single-run swings are noise) |
-| `CLAIM_PLACED` | policy | 2 | a grid run whose start a meter's step placed (`Run.placed`) waits for that meter's own session and pairs on time alone; the session is not consumed, and later grid pieces inside it pair through the covered rule (`Fleet._owned`) and `_file_as` |
+| the placed claim | - | always (dial `CLAIM_PLACED` removed 2026-10-23, both its levels kept) | a grid run whose start a meter's step placed (`Run.placed`) waits for that meter's own session and pairs on time alone; the session is not consumed, and later grid pieces inside it pair through the covered rule (`Fleet._owned`) and `_file_as` |
 
 Measured, Home 13-22 Oct (`tests/dishwasher/dw_bench.py`, grid phase A, the AEG states fed): the
 dishwasher's 12 runs in 8 signatures, best 3 at purity 0.23 -> 6 signatures, best 6 at 0.60; the Sock
