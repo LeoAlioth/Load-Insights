@@ -220,6 +220,26 @@ meter's falls placed: 86.8 / 2.2, partition 84.2 / 4.6 - identical. Read as neut
 - Left as they are: `INPUT_EVIDENCE` (the bench flips it off as a comparison baseline, `bench.py:699`),
   `TRIM` (the card's restart instrument), `FRIDGE_PHASES` (a count).
 
+## Inside-out claiming in the Fleet (the owner, 2026-10-23: "it has to be built and benched")
+Built: a placement builds a `Step` (`Fleet._placed_step`: the grid's edge, the owner's own edges and
+those of every meter it hangs under, the owner's reading in the grid's terms as the change on the phase,
+the grid's net on the other phases that moved); the step group and the open run are booked at the
+OWNER's size and the group at the owner's moment (`Detector.placement_step`, `_classify_step`,
+`_form_event`); a placed stop books its group at the owner's fall and the stop PAIRS at the owner's
+fall too (`Detector.placed_fall`, `PhaseState._declare`). The ramp-window rule keeps precedence.
+
+| | Home fed devices | Hidrofor | Polnilnica | Susilna | Mansarda (part.) | Kozolec fed | dishwasher | pump clean / long / wrong size / missing |
+|---|---|---|---|---|---|---|---|---|
+| before (gain shipped) | 64.0 / 10.4 | 71.8 / 13.1 | 77.1 / 3.3 | 66.0 / 12.9 | 56.5 / 11.2 | 86.8 / 2.2 | 12 / 6 at 0.60 | 640 / 34 / 78 / 19 |
+| owner-sized starts only | 62.7 / 13.5 | 72.3 / 28.5 | 85.3 / 4.1 | 61.2 / 14.9 | 53.9 / 10.6 | 86.0 / 3.1 | 12 / 6 at 0.60, SE 32/50 | 634 / 47 / 69 / 21 |
+| + owner-sized stops | 63.4 / 12.7 | 72.4 / 26.3 | 83.8 / 4.0 | 62.6 / 13.4 | 54.0 / 11.6 | 86.0 / 3.1 | 12 / 6 at 0.55, SE 33/50 | 637 / 46 / 70 / 21 |
+
+The Hidrofor: the same 766 runs in its signature, booked 20.1 kWh instead of 16.4 - 5.4 kWh of time the
+pump was off, runs closing late (long 34 -> 46) although the stops' sizes agree better (within 10 %:
+44 -> 54 %): an owner-sized fall sometimes closes another open run of the same size. Polnilnica +6.7,
+the Sock Eater 30 -> 33 bursts. Ships by the owner's rules (physically right, the site not significantly
+worse); the Hidrofor's late closes are the thing to look at next. Suite 0 failures.
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split
