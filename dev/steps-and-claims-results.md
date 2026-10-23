@@ -392,7 +392,8 @@ and `INPUT_SPLIT` births signatures of it in Spin, Dry, Paused, End Of Cycle, Co
 What stays: the `_by_state` keyed groups (#2 itself keyed Spin, #361 Wash), #846 born Steam with lift 17
 (real by its own measure), Conventional Cooking (lift 11.4, 59 runs of 33 s every 9 min while the oven
 cooks - may be real), End Of Cycle (lift 1.6 but 66 s against #2's 41 s length split, so not alike).
-Suite: 0 failures. Home fed (`data/history/home`, production slicing, no inputs fed): identical to the
+Suite: 0 failures. Invariance (October folder, five inputs): 0 sessions differ of 23,386 across SLICE=0 /
+6 / 1 / LIVE=1; the restart variants 3 / 4 (0.12 / 0.13 kWh), as before. Home fed (`data/history/home`, production slicing, no inputs fed): identical to the
 baseline to the last decimal - devices 61.1 / 13.3, partition 61.6 / 10.3 - as it must be, since nothing
 is born in a value without an input fed. Kozolec has no inputs either; not rerun.
 
