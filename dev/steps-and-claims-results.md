@@ -202,6 +202,14 @@ Card on defaults (`47d0e99-dirty-sc-defaults-20261023T110645Z.json`), capture / 
 `tests/run_all.py` on the defaults: 0 failures. `DETECTOR_GENERATION` 20 -> 21 (a ten-day rebuild at
 both sites on deploy).
 
+## Falls at every meter (the owner, 2026-10-23: remove the asymmetry; single-run swings are noise)
+The guard in `_step_meter` is gone. Home fed (replay `eb_def_fallsall`): devices 63.1 / 12.7, Mansarda
+57.7 / 12.1, Polnilnica 74.0 / 3.1, Hidrofor 73.3 / 12.6, Susilna imp. 17.8. Looked closer: the EVBox's
+pairing is unchanged (observed closes 44.6 % both ways) and its attributed energy is ~10 charges of
+2-6 kWh, so 5 points is one charge changing shape; the Hidrofor's capture is unchanged (73.2 -> 73.3),
+its signature #22 went 91 -> 88 % pure (775 runs, ~0.5 kWh of other runs). Kozolec fed with every
+meter's falls placed: 86.8 / 2.2, partition 84.2 / 4.6 - identical. Read as neutral.
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split
