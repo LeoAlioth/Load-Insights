@@ -5493,39 +5493,28 @@ def test_settled_fold_books_a_pumps_start_at_the_level_its_decay_settled_at():
 
 
 def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
-    """INS-9 (1), bench dials, off. A fall goes through the placement hook as a
-    rise does (steps-and-claims, 2026-10-23: a stop is grouped under its owner),
-    whatever GAIN_FALLS says, and what the hook leaves on the detector is put
-    back; GAIN_MEDIAN reads the gain as the median of the last GAIN_RING log
-    ratios, so five clean steps of 1.2 among twenty of 1.0 do not move it as
-    they move the running mean."""
-    old = D.GAIN_FALLS, D.GAIN_MEDIAN
-    try:
-        for on in (False, True):
-            D.GAIN_FALLS = on
-            calls = []
-            det = D.Detector()
-            det.phases["a"] = D.PhaseState()
-            det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 900.0, 3.0
-            det.placement_conf = 0.5
-            det.step_meter = lambda ph, since, size, up: calls.append((ph, size, up)) or (setattr(det, "placement_conf", 0.9) or "Pump")
-            cluster = det._classify_step("a", T0, -800.0, None, 0.0)
-            assert calls == [("a", 800.0, False)]
-            assert cluster.owner == "Pump"
-            assert det.placement_conf == 0.5
-        for on in (False, True):
-            D.GAIN_MEDIAN = on
-            f = D.Fleet()
-            for k in range(25):
-                f._learn_gain("Plug", "p", 1.2 if k % 5 == 4 else 1.0, 1.0)
-            g = f.gain("Plug")
-            assert (abs(g - 1.0) < 1e-9) if on else (g > 1.03), (on, g)
-    finally:
-        D.GAIN_FALLS, D.GAIN_MEDIAN = old
-
-
-def test_the_ins9_dials_are_off():
-    assert not (D.GAIN_FALLS or D.GAIN_MEDIAN or D.GAIN_UNGATED)
+    """INS-9 (1), plain behaviour since 2026-10-23. A fall goes through the
+    placement hook as a rise does (a stop is grouped under its owner), and what
+    the hook leaves on the detector is put back; the gain reads as the median
+    of the last GAIN_RING log ratios, so five clean steps of 1.2 among twenty
+    of 1.0 do not move it as they would move a running mean - which a library
+    stored before the ring still reads."""
+    calls = []
+    det = D.Detector()
+    det.phases["a"] = D.PhaseState()
+    det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 900.0, 3.0
+    det.placement_conf = 0.5
+    det.step_meter = lambda ph, since, size, up: calls.append((ph, size, up)) or (setattr(det, "placement_conf", 0.9) or "Pump")
+    cluster = det._classify_step("a", T0, -800.0, None, 0.0)
+    assert calls == [("a", 800.0, False)]
+    assert cluster.owner == "Pump"
+    assert det.placement_conf == 0.5
+    f = D.Fleet()
+    for k in range(25):
+        f._learn_gain("Plug", "p", 1.2 if k % 5 == 4 else 1.0, 1.0)
+    assert abs(f.gain("Plug") - 1.0) < 1e-9, f.gain("Plug")
+    f.meter_gain["Plug"]["p"] = f.meter_gain["Plug"]["p"][:2]          # as stored before the ring
+    assert f.gain("Plug") > 1.03, f.gain("Plug")
 
 
 def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():

@@ -210,6 +210,16 @@ pairing is unchanged (observed closes 44.6 % both ways) and its attributed energ
 its signature #22 went 91 -> 88 % pure (775 runs, ~0.5 kWh of other runs). Kozolec fed with every
 meter's falls placed: 86.8 / 2.2, partition 84.2 / 4.6 - identical. Read as neutral.
 
+## The last dials (the owner, 2026-10-23: values alike -> the most unified code, option removed)
+- `CLAIM_PLACED` removed, level 2 kept: identical (Home fed 63.1 / 12.7; dishwasher 12 / 6 at 0.60).
+- INS-9 gain dials `GAIN_FALLS` / `GAIN_MEDIAN` / `GAIN_UNGATED` removed, all three behaviours kept
+  (falls learn - they already went through `_step_meter`; every clean step teaches its meter; the median
+  of the ring; a pre-ring library reads its mean). Home fed devices 63.1 / 12.7 -> 64.0 / 10.4
+  (Polnilnica 77.1 / 3.3, Hidrofor 71.8 / 13.1, Mansarda 56.5); Kozolec 86.8 / 2.2 unchanged; dishwasher
+  12 / 6 at 0.60 unchanged, Sock Eater 30/50 hit (29). Suite 0 failures.
+- Left as they are: `INPUT_EVIDENCE` (the bench flips it off as a comparison baseline, `bench.py:699`),
+  `TRIM` (the card's restart instrument), `FRIDGE_PHASES` (a count).
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split
