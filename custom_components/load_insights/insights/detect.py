@@ -32,6 +32,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
 from .phases import phase_mapping, support
+from .steps import Edge as StepEdge, Step
 
 # A dataclass field that is not stored: a cache, a hook the Fleet or the runner
 # sets each pass, or something fed again by the recorder. Every other field of
@@ -2367,6 +2368,13 @@ class PhaseState:
                     ended.append(self._end(old, since, old.now or old.watts))
             return ended
         self.stop_cluster, self.stop_q = cid, quality
+        if self.lib is not None and self.lib.placed_fall is not None:
+            # a fall a meter's own fall was all of: the stop is the owner's size,
+            # as the start of the run it closes was booked (Detector._form_event)
+            _, w = self.lib.placed_fall
+            self.lib.placed_fall = None
+            if w > 0:
+                step = -w
         closed = self._pair(since, -step, None if step_q is None else -step_q, new_level)
         self.stop_cluster, self.stop_q = None, None
         closed += self._unseen_stop(since, new_level)
@@ -4085,6 +4093,15 @@ class Detector:
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # the step a placement built (steps.Step): the grid's edge, the owner's and
+    # every meter's between, the change on every system phase - set by the Fleet
+    # beside placement_window; what the group and the run are booked at is the
+    # OWNER's reading in the grid's terms (steps-and-claims, stage 2)
+    placement_step: Optional[Step] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # (owner, its fall's size in the grid's terms) of the fall just classified,
+    # where a meter's own fall was all of it: the stop pairs at the owner's size,
+    # as the run was booked at the owner's rise (_declare) - read once
+    placed_fall: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     # each group's size density between steps: [the histogram, its keys' order, first bin, density] - see _valleys
     _dens: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
@@ -4489,6 +4506,7 @@ class Detector:
         phases rose with it - see EVENT_WINDOW_INTERVALS."""
         if watts > 0:
             return None
+        self.placed_fall = None               # only THIS fall's placement reaches _declare (a share _split_rise classified does not)
         cluster = self._classify_step(ph, since, watts, var, surge)
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
         return cluster.id
@@ -4589,6 +4607,16 @@ class Detector:
                                       legs=[(m["ph"], m["since"], m["watts"]) for m in members])
         conf, self.placement_conf = self.placement_conf, None
         win, self.placement_window = self.placement_window, None
+        step, self.placement_step = self.placement_step, None
+        if win is None and step is not None and cluster.owner and len(members) == 1 and members[0]["ph"] in step.changes:
+            # placed, no ramp window: the run is booked at the OWNER's size in the
+            # grid's terms, not the grid's noisy reading of the same change
+            m, o = members[0], members[0]["open"]
+            w = abs(step.changes[m["ph"]])
+            if w > 0:
+                o.var = None if o.var is None else o.var * w / max(o.watts, 1e-9)
+                o.watts, o.levels, o.now = w, [(o.since, w)], None
+                m["watts"] = w
         if win is not None and cluster.owner and len(members) == 1:
             # placed by the grid's change over the meter's step and its own
             # (Fleet._window_size): the run is the ramp's whole size, and the
@@ -4760,12 +4788,22 @@ class Detector:
         elif watts < 0 and self.step_meter is not None and len(ph) == 1:
             # a fall is placed at the meter that saw it, as a rise is (steps-and-claims,
             # stage 2) - and teaches the gains as one does; a fall's window never
-            # resizes it (the ramp rule is a rise's, _window_size)
-            conf, win = self.placement_conf, self.placement_window
+            # resizes it (the ramp rule is a rise's, _window_size). Its stop group is
+            # booked at the owner's size; the pairing still reads the grid's fall
+            # (_close): the run's close is the grid's business - a judgement
+            conf, win, prev = self.placement_conf, self.placement_window, self.placement_step
             where = self.step_meter(ph, since, size, False) or ""
-            self.placement_conf, self.placement_window = conf, win
+            step = self.placement_step if where else None
+            self.placement_conf, self.placement_window, self.placement_step = conf, win, prev
+            if step is not None and ph in step.changes:
+                size, since = abs(step.changes[ph]), step.since
+                self.placed_fall = (where, size)
         if where and window_ok and self.placement_window is not None:
             size = abs(self.placement_window[0])     # placed by the ramp's whole window: its size
+        elif where and watts > 0 and self.placement_step is not None and ph in self.placement_step.changes:
+            # the owner's reading, in the grid's terms, and its moment: the
+            # cleanest meter's figures are the step's (steps-and-claims, stage 2)
+            size, since = abs(self.placement_step.changes[ph]), self.placement_step.since
         if self._kinds is None:
             self._kinds = {}
             for c in self.edges:
@@ -7575,6 +7613,7 @@ class Fleet:
             return None
         noise = main.phases[ph].noise_at()
         main.placement_window = None
+        main.placement_step = None
         took, windows = {}, {}
         slack = lambda x: math.hypot(noise, noise_m) + METER_CAL_SLACK * x               # noqa: E731 - this meter's, x the size
         ramp = lambda win: abs(abs(win[3]) - abs(win[0])) <= slack(abs(win[0]))         # noqa: E731 - see _window_size
@@ -7614,7 +7653,35 @@ class Fleet:
         _, raw, noise_m, conf = took[meter]
         main.placement_conf = conf
         main.placement_window = windows.get(meter)
+        main.placement_step = self._placed_step(ph, since, size, up, meter, took)
         return meter
+
+    def _placed_step(self, ph: str, since: float, size: float, up: bool, meter: str, took: dict) -> Step:
+        """The step a placement is: the grid's edge, the owner's own edges and
+        those of every meter it hangs under (each saw the change), the owner's
+        reading in the grid's terms as the change on ``ph`` - its one clean
+        step where it faced one, else its edges' sum, else the grid's - and the
+        grid's net on the other phases that moved with it (_moved)."""
+        grid = self.main.phases[ph]
+        edges = [StepEdge("", ph, since, size if up else -size, grid.noise_at())]
+        own_since, own = since, None
+        for name in took:
+            if name != meter and not self._under(meter, name):
+                continue
+            det, gain = self.subs[name], self.gain(name, "p")
+            es = [(c, e) for c in self._mapped(name, ph) for e in self._steps_over(name, c, ph, since, up)]
+            for c, e in es:
+                edges.append(StepEdge(name, ph, e[0], e[1] * gain, det.phases[c].noise_at()))
+            if name == meter and es:
+                own_since = min(e[0] for _, e in es)
+                raw = took[meter][1]
+                own = abs(raw) * gain if raw else abs(sum(e[1] for _, e in es)) * gain
+        w = own if own else size
+        changes = {ph: w if up else -w}
+        others = [p for p in self.main.phases if p != ph]
+        for p, (net, _) in self._moved(since, self._pair_tol(meter), others, up).items():
+            changes[p] = net if up else -net
+        return Step(edges, meter, own_since, changes)
 
     def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
         """Do the meter's own declared steps the way of a grid step at
