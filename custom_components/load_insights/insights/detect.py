@@ -439,6 +439,15 @@ EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
 # and split wrongly: a reading interval is a meter's heartbeat when steady,
 # not how soon it reports a change (kiln ladder 31 -> 108; mat 13.1 h).
 METER_CAL_SLACK = 0.05
+# Benched both ways 2026-10-23 (the owner: keep what wins, drop what does not matter): a
+# grid piece a meter's bigger clean step explains is the meter's while it is at least
+# half of the step (_step_meter) - no floor made no difference on the dishwasher scorer
+# and read better for the Hidrofor on the card (impurity 12.8 against 27.4), but it is
+# the floor that keeps a 263 W blip from being the EVSE's 3.6 kW fall (Kozolec 09-28
+# 13:53, test_a_meters_stop_ends_its_run_only_through_a_fall_that_accounts_for_it), so
+# half it is, as _meter_stop's; and a meter's step must point the grid step's way to be
+# its share (_meter_totals' own): without that check the Sock Eater lost a burst, 33
+# more sessions were filed and concentration fell.
 METER_GAIN_MIN = 10
 METER_GAIN_BOUND = 0.25       # a learned gain stays within this of one either way
 # The two meters' spans of one change overlap - that it is one change, and how
@@ -7212,9 +7221,16 @@ class Fleet:
         terms (its gain), less what its own sub-meters stepped: Blaž PC's step
         counts once, and Hiša adds only what else inside it changed. The
         pieces do not overlap."""
-        steps = {n: (m[0] if m[0] is not None else (size or 0.0)) for n, m in self._meter_totals(ph, since, window, up).items()}
-        return [(name, d - sum(x for k, x in steps.items() if self._under(k, name)))
-                for name, d in steps.items()]
+        totals = self._meter_totals(ph, since, window, up)
+        steps = {n: (m[0] if m[0] is not None else (size or 0.0)) for n, m in totals.items()}
+        # served by FIT - timing confidence, then size - not by the meters' names:
+        # alphabetical, the Hidrofor's 816 W (its plug reporting 9 s after the grid,
+        # conf 0.10) was carved out of Mansarda's 1,879 W step first and Mansarda's
+        # 1,854 (conf 0.30, the whole step) no longer fitted the rest (21 Oct
+        # 13:37:01, 2026-10-23)
+        return sorted(((name, d - sum(x for k, x in steps.items() if self._under(k, name)))
+                       for name, d in steps.items()),
+                      key=lambda nd: (-totals[nd[0]][3], -abs(nd[1])))
 
     def _hold_back(self, rows, q, pv, cut: float):
         """The grid's readings up to ``cut`` - wait_cap_s before how far the
@@ -7724,6 +7740,15 @@ class Fleet:
                 if win is not None and (win[0] > 0) == up and abs(win[0]) - size > slack(size) and ramp(win):
                     windows[n] = win
             elif d and (d > 0) == up and abs(abs(d) - size) <= slack(size):
+                took[n] = (d, raw, noise_m, conf)
+            elif d and (d > 0) == up and abs(d) > size and size >= 0.5 * abs(d) and raw:
+                # the meter's one clean step is BIGGER than this grid piece: the grid
+                # admitted only part of it (netted by another load's change, or the
+                # inverter's swing between two polls - 22 Oct 13:35:32, +1,070 W on
+                # Mansarda read ~720 on the grid); the piece is the meter's, booked at
+                # the meter's own size (_placed_step) - as long as it is half of it, the
+                # half _meter_stop demands of a fall: a 263 W blip a second before the
+                # EVSE's 3.6 kW fall is not that fall (Kozolec 09-28 13:53)
                 took[n] = (d, raw, noise_m, conf)
             elif d and (d > 0) == up:
                 # unlike in size, but the two may have declared one ramp over

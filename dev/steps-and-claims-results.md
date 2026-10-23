@@ -307,6 +307,46 @@ the day log's runs added to the memory's, is what the split needs to see the dis
   its loads never holding still, fourteen times B and C - worth its own look). Ships by the owner's rule
   (physically accurate, no big loss), with the loss written down.
 
+## The under-sized piece, traced in the detector (2026-10-23, `tests/dishwasher/trace.py`)
+In the detector the grid declared ONE edge of +1,879 W at 13:37:01 (its sustain merged the chart's
+1,525 + 359) and +913 at 13:37:11. `_meter_totals` found both owners - Mansarda share 1,854 (timing
+confidence 0.30), the Hidrofor 816 (0.10: its plug reported 9 s later, its 10 s cadence overlapping the
+span) - but `metered_shares` walks the meters in dictionary order, Hidrofor before Mansarda, so the
+pump's 816 was carved out of the 1,879 first and placed at the pump, and Mansarda's 1,854 no longer
+fitted the 1,063 left: unplaced. Fix: `_meter_steps` serves the shares by fit (timing confidence, then
+size); Mansarda takes the whole edge, the pump's edge claims the +913 ten seconds later. Two dials to
+bench both ways (the owner): `CLAIM_POOL_FLOOR` (a grid piece a meter's bigger clean step explains is the
+meter's down to this share of the step, 0.5 / 0) and `SHARE_SAME_DIRECTION` (1 / 0).
+
+| dishwasher scorer (Oct) | dw hit | dw runs / sigs, best, purity | SE hit | SE sessions / sigs, conc. |
+|---|---|---|---|---|
+| before (fad2a96) | 9/9 | 13 / 8, best 5 at 0.42 | 31/38 | 38 / 20, 0.26 |
+| fit ordering, floor 0.5, direction on (A) | 9/9 | 13 / 8, best 5 at 0.36 | 34/38 | 43 / 21, 0.23 |
+| floor 0 (B) | 9/9 | identical to A | 34/38 | 44 / 22, 0.23 |
+| direction off (C) | 9/9 | 13 / 8, 0.38 | 33/38 | 44 / 24, 0.18 (308 sessions for 275) |
+| floor 0 + direction off (D) | 9/9 | 13 / 8, 0.38 | 32/38 | 45 / 24, 0.18 |
+
+The floor makes no difference: the dial goes, the simpler branch (no floor) stays. The direction check
+off is slightly worse everywhere (more sessions, lower concentration, a burst lost): it stays. Fit
+ordering: three more Sock Eater bursts, but Mansarda#21 back to 5 dw / 6 se. Home fed card with A:
+devices 62.1 / 14.4 -> 61.1 / 13.3, Mansarda +1.2, Susilna imp. -0.5, Hidrofor imp. -0.5, Polnilnica
+80.3 -> 70.7 - isolated below (branch off vs on).
+
+| Home fed | devices | Polnilnica | Hidrofor | Susilna |
+|---|---|---|---|---|
+| before fit (fad2a96) | 62.1 / 14.4 | 80.3 / 3.0 | 72.0 / 27.9 | 60.5 / 17.5 |
+| fit ordering only (branch off) | 61.4 / 15.4 | 74.8 / 4.5 | 72.5 / 27.2 | 60.6 / 18.9 |
+| + the bigger-step branch, floor half | 61.1 / 13.3 | 70.7 / 2.4 | 71.7 / 27.4 | 61.9 / 13.9 |
+| + the branch, no floor | 60.9 / 13.3 | 68.5 / 3.8 | 70.9 / 12.8 | 64.6 / 17.2 |
+
+Shipped: fit ordering, the branch WITH the half floor, the direction check. No floor read best for the
+Hidrofor but fails the Kozolec blip test (a 263 W blip a second before the EVSE's 3.6 kW fall taken as
+that fall): the half is the same half `_meter_stop` demands, so it stays as a fixed rule, not a dial.
+The EVBox loses at every step (80.3 -> 70.7): its OCPP reading is 337 rows in ten days, one every ~40
+min, so a "clean step" of its plug is forty minutes stale and, served by fit, it comes last - its own
+item. One call (SLICE=0) against 6-hour slices on the scorer: 365 s against ~10 min, the same figures,
+3 of 275 sessions filed differently with the five inputs fed (invariance is not exact with inputs).
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split
