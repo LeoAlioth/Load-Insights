@@ -5549,6 +5549,26 @@ def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():
         pass
 
 
+def test_the_daily_rewrite_splits_a_signature_by_length():
+    """The owner, 2026-10-23: length decides in the once-a-day rewrite, not live.
+    A signature whose run memory holds four 60 s runs and six 600 s ones splits
+    at their geometric middle; it keeps the side with more runs (the long ones),
+    a 60 s run no longer files into it, and a twin of 60 s runs is not alike.
+    Three short runs are too few (SPLIT_MIN_RUNS)."""
+    sig = D.Signature(id=1, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=10, first_seen=0.0, last_seen=0.0)
+    sig.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 4 else 600.0)) for k in range(10)]
+    assert sig.learn_split() and sig.split_side == 1 and 150.0 < sig.split_s < 250.0, (sig.split_s, sig.split_side)
+    short = D.Run(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 1900.0)]})
+    long = D.Run(phases="a", start=0.0, end=600.0, levels={"a": [(0.0, 1900.0)]})
+    assert not sig.takes_run(short) and sig.takes_run(long)
+    twin = D.Signature(id=2, phases="a", power={"a": 1900.0}, duration_s=60.0, pf=None, count=4, first_seen=0.0, last_seen=0.0)
+    assert not sig.alike(twin, 25.0) and not twin.alike(sig, 25.0)
+    assert not sig.learn_split()                       # the same split again: unchanged
+    few = D.Signature(id=3, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=9, first_seen=0.0, last_seen=0.0)
+    few.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 3 else 600.0)) for k in range(9)]
+    assert not few.learn_split() and few.split_s is None
+
+
 def test_grid_phases_read_as_system_phases_with_the_meters_label():
     """Stage 1 of steps-and-claims: the grid's phases are X, Y, Z for a person."""
     assert [D.display_phase(p) for p in D.PHASES] == ["X (L1)", "Y (L2)", "Z (L3)"]

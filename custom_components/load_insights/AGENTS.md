@@ -265,6 +265,18 @@ Eater's best signature pure (Steam 9, Dry 4). Card, fed capture / impurity: Home
 their bands), Kozolec 86.8 / 2.1 -> 86.8 / 2.2. The owner's rule: a big win at one load with a small loss
 at another ships. Generation 20 -> 21.
 
+### The daily rewrite by length (shipped 2026-10-23, neutral)
+
+The owner, 2026-10-23: length decides in the once-a-day rewrite, which sees the runs' lengths and
+spacing, never in the live filing. At the day's repair every signature reads its run memory
+(`Signature.learn_split`): the largest gap in the log-lengths with at least `SPLIT_MIN_RUNS` (4) runs a
+side, the two runs either side of the cut and the sides' medians at least `MATCH_DURATION_FACTOR` apart,
+becomes its split (`split_s`, stored); the side with more runs is the signature's, a run on the other
+side files apart (`takes_run` at the `files_in` gates), and split siblings are neither `alike` nor
+device-merged. Bench: Home fed devices 63.4 / 12.7 -> 63.5 / 12.6, Kozolec 86.0 / 3.1 -> 86.0 / 3.2,
+the dishwasher scorer unchanged - its mixed signature holds one or two foreign runs among the twelve
+the memory keeps, under the four a side needs. Spacing is not read yet.
+
 ### Setup pages and their headings (`flowgroups.py`, `sections.py`)
 
 A page with many fields is shown under headed sections (plan, grid, inverters, heat, inputs, detection): `flowgroups.py` says which field sits under which heading (plain data), `sections.py` nests the form on the way out and flattens the input on the way back, so handlers and stored options stay flat. A section key must differ from every field key of its step. The headings and labels live under `sections.<key>` in the translations; `tests/test_flowgroups.py` checks both languages. `sections.py` is a hand-kept copy of Load Juggler's (`config_flow/sections.py`) - change both. Errors on a field inside a section are shown as base errors, because the frontend shows none under a sectioned field.
