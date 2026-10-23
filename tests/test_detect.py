@@ -1654,6 +1654,8 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
     (kept,) = det.signatures
     assert kept.name == "Oven" and kept.hourly == {1000: 150.0, 4600: 20.0}, (kept.name, kept.hourly)
     assert det._moved == {10: 11}
+    # naming the id that was merged away names what it became (2026-10-23)
+    assert det.rename(10, "Stove") and kept.name == "Stove" and det.rename(999, "Nope") is False
     det, a, b = lib()
     a.name, b.name = "Oven", "Kettle"
     assert det._merge_devices() == 0 and len(det.signatures) == 2

@@ -5705,6 +5705,7 @@ class Detector:
                 return
 
     def rename(self, signature_id: int, name: Optional[str]) -> bool:
+        signature_id = self._current(signature_id)      # a signature merged away is named as what it became
         for sig in self.signatures:
             if sig.id == signature_id:
                 sig.name = (name or "").strip() or None

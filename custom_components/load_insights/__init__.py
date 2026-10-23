@@ -57,10 +57,15 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
         runner = runner_of(entry)
-        sig = runner.fleet.signature(ref) if runner else None
+        if runner is None:
+            # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
+            raise ServiceValidationError("Load Insights is still loading; try again once it has")
+        sig = runner.fleet.signature(ref)
         was = sig.name if sig is not None else None
-        if runner is None or not await runner.async_rename(ref, name):
-            raise ServiceValidationError(f"No detected load has id {ref[1]}" + (f" on {ref[0]}" if ref[0] else ""))
+        if not await runner.async_rename(ref, name):
+            raise ServiceValidationError(
+                f"No detected load has id {ref[1]}" + (f" on {ref[0]}" if ref[0] else " under no meter")
+                + ". A signature the detector has since merged into another no longer has its id")
         # what the naming page's Done does: the entities follow the names,
         # and so do the inputs linked to the load
         rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
