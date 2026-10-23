@@ -255,7 +255,7 @@ the Fleet's stream. In the Fleet:
 | dial | kind | value | what |
 |---|---|---|---|
 | `STATE_SUFFIX` | - | `@` | every fed input's state at the step keys the group, judged one input at a time against the state's share of the time (`Detector._by_state`); the five states joined into one key never piled up above chance |
-| falls placed | - | always | a grid fall a several-device meter also fell by is grouped under it, as a rise is; not at a one-device meter (its fall matches the grid's span only sometimes - Polnilnica 79.5 -> 74.0 with every meter's falls placed) |
+| falls placed | - | always, every meter | a grid fall a meter also fell by is grouped under it, as a rise is. Against several-device meters only: Home fed devices 64.7 / 11.2 -> 63.1 / 12.7 - the EVBox 79.5 -> 74.0 (one of ten charges changing shape; band 4.3) and the Hidrofor's impurity +2.3 from a few runs; Kozolec identical. Read as neutral, not a loss (the owner, 2026-10-23: single-run swings are noise) |
 | `CLAIM_PLACED` | policy | 2 | a grid run whose start a meter's step placed (`Run.placed`) waits for that meter's own session and pairs on time alone; the session is not consumed, and later grid pieces inside it pair through the covered rule (`Fleet._owned`) and `_file_as` |
 
 Measured, Home 13-22 Oct (`tests/dishwasher/dw_bench.py`, grid phase A, the AEG states fed): the
@@ -1202,8 +1202,9 @@ Don't re-chase these; each cost real time.
 - **Steps and claims, 2026-10-23.** (a) The inputs' states joined into ONE key per step: no exact
   combination of five states repeats, 43 rises of 1.9 kW sat in Mansarda's plain group - judge each input
   on its own. (b) `MATCH_DURATION_FACTOR` 6 and 12: identical to 3 on the dishwasher scorer; duration does
-  not fragment these loads. (c) Falls placed at one-device meters too: Home fed devices 64.7 / 11.2 ->
-  63.1 / 12.7, Polnilnica -5.5 beyond its band. (d) The placed claim pairing on time while consuming the
+  not fragment these loads. (c) Falls placed at several-device meters ONLY, to spare the plugs: declined - the
+  plugs' swing is one EVBox charge and a few Hidrofor runs, noise, and the asymmetry had no physical
+  reason. (d) The placed claim pairing on time while consuming the
   meter's session: a short grid piece took the EVBox's whole charge (83.9 -> 74.6) - keep the session for
   the later pieces instead. (e) The bench scorer itself was wrong three times (other meters' sessions on
   the same grid phase, merged signature ids counted apart, grid phase C counted as Mansarda C = grid A):

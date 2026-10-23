@@ -552,11 +552,12 @@ SETTLED_SHARE = 0.35
 GAIN_FALLS = False
 # steps-and-claims stage 2 (2026-10-23, the owner: rises and falls handled alike): a
 # fall is placed at the meter that saw it, as a rise is, so a stop is grouped under
-# its owner and not plain - at a meter holding several devices; a one-device meter's
-# fall is placed only when its report happens to match the grid's span (a 60 s plug),
-# and its stop groups then split between placed and plain: Polnilnica fed capture
-# 79.5 -> 74.0 with every meter's falls placed, Home devices 64.7 / 11.2 -> 63.1 / 12.7
-# (2026-10-23) - see _step_meter. A plug's stop is its run's owner's anyway (_meter_stop).
+# its owner and not plain - at every meter, one-device plugs too (the owner, 2026-10-23:
+# no asymmetry between rises and falls). Benched against falls at several-device
+# meters only: Home fed devices 64.7 / 11.2 -> 63.1 / 12.7, which is two plugs -
+# the EVBox 79.5 -> 74.0, one charge of its ten changing shape (its band is 4.3),
+# and the Hidrofor's impurity 10.3 -> 12.6 from a few runs; Kozolec identical.
+# Read as neutral, not a loss (the owner).
 # A grid run whose start a meter's own step placed is that meter's: it waits for the
 # meter's own session and pairs with it on time alone (Run.placed); 2: a piece of it
 # the grid opened again inside the meter's run is its too (Fleet._owned). The owner,
@@ -7617,8 +7618,6 @@ class Fleet:
         main.placement_window = windows.get(meter)
         if raw is not None and not GAIN_UNGATED and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(meter, "p", size, raw)
-        if not up and self.holds_one_device(meter):
-            return None               # a fall is placed at a several-device meter only - see the note at CLAIM_PLACED
         return meter
 
     def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
