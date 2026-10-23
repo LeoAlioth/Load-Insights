@@ -60,6 +60,39 @@ SHELLY = [
 ]
 
 
+def test_voltages_vote_the_inverters_phases_onto_the_meters():
+    """A balanced inverter's steps say nothing about its phases; its voltages
+    do. Three conductors wandering independently, the inverter reading the
+    meter's b as its a and the other way round (Home's SE17K, 2026-10-23): the
+    votes put the matched pairs on top and phase_mapping reads the swap. The
+    total then splits by V x I share onto the METER's phases, and a phase with
+    no amps falls back to thirds."""
+    import math
+    import random
+    rnd = random.Random(7)
+    walk = {p: [] for p in "abc"}
+    v = {"a": 238.0, "b": 240.0, "c": 241.0}
+    for k in range(600):
+        for p in "abc":
+            v[p] += rnd.gauss(0.0, 0.3)
+            walk[p].append((k * 10.0, v[p]))
+    meter = {p: walk[p] for p in "abc"}
+    inverter = {"a": [(t, x - 1.0 + rnd.gauss(0.0, 0.05)) for t, x in walk["b"]],
+                "b": [(t, x - 1.6 + rnd.gauss(0.0, 0.05)) for t, x in walk["a"]],
+                "c": [(t, x - 0.4 + rnd.gauss(0.0, 0.05)) for t, x in walk["c"]]}
+    votes = D.voltage_votes(inverter, meter)
+    assert votes["a"]["b"] > 0.9 > votes["a"]["a"] and votes["b"]["a"] > 0.9 and votes["c"]["c"] > 0.9, votes
+    assert D.phase_mapping(votes) == {"a": "b", "b": "a", "c": "c"}
+    total = [(t, 9000.0) for t, _ in walk["a"]]
+    amps = {"a": [(t, 13.0) for t, _ in walk["a"]], "b": [(t, 12.0) for t, _ in walk["a"]], "c": [(t, 12.5) for t, _ in walk["a"]]}
+    split = D.share_split(total, inverter, amps, {"a": "b", "b": "a", "c": "c"})
+    assert set(split) == {"a", "b", "c"} and all(len(r) == 600 for r in split.values())
+    assert abs(sum(split[p][10][1] for p in "abc") - 9000.0) < 1e-6
+    assert split["b"][10][1] > split["a"][10][1] > split["c"][10][1] - 1e9 and split["b"][10][1] > 3000.0   # the 13 A phase is the meter's b
+    thirds = D.share_split(total, inverter, {"a": amps["a"]}, {"a": "b", "b": "a", "c": "c"})
+    assert all(abs(thirds[p][0][1] - 3000.0) < 1e-9 for p in "abc")
+
+
 def test_line_to_neutral_is_that_phases_own_voltage():
     """The bug: a SolarEdge meter offers no bare "voltage A", only AN/BN/CN,
     so rejecting anything with two letters left the voltages empty."""

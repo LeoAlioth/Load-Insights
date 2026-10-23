@@ -21,6 +21,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 from __future__ import annotations
 
 import bisect
+import itertools
 import functools
 import math
 import operator
@@ -31,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
-from .phases import phase_mapping, support
+from .phases import phase_mapping, share_split, support, voltage_votes
 from .steps import Edge as StepEdge, Step
 
 # A dataclass field that is not stored: a cache, a hook the Fleet or the runner
@@ -634,6 +635,12 @@ MERGE_TOLERANCE_S = 15.0       # sessions on different phases this close in star
 # and on held-out days 68.6 -> 76.7 % and 25.9 -> 42.7 %. Flat from 0.1 to
 # 0.3 s, and well under the 2.4 s Home now polls at (2026-09-23).
 COMBINE_SETTLE_S = 0.3
+# An inverter's phase map from its voltages (Fleet.inverter_map): at least this many
+# passes' votes, counts; and the matched pairs' correlations summed must beat the
+# best other permutation's by this factor (Home: 0.98 x 3 against 0.77 + 0.77 + 0.97 at
+# worst, a factor of 1.17, over two days)
+INVERTER_MAP_MIN_VOTES = 3
+INVERTER_MAP_CLEAR = 1.05
 # ...AND this close in SIZE. A real multi-phase load is balanced by design -
 # a two-phase element, a three-phase motor - and over ten days at home the
 # smallest-to-largest ratio inside kiln-sized groups sat at a median of 0.98.
@@ -5906,6 +5913,33 @@ class Fleet:
     phase_votes: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
     # ...and the energy those sessions carried, in the grid's terms, Wh
     phase_energy: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    # inverter -> its phase -> grid phase -> summed voltage correlation (phases.voltage_votes,
+    # one vote per pass), and the map read from it (phases.phase_mapping): a balanced
+    # inverter's phases are learned from its VOLTAGES, not its steps - see inverter_map
+    inverter_votes: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    inverter_phases: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    def inverter_map(self, name: str, votes: Dict[str, Dict[str, float]]) -> Dict[str, str]:
+        """Add one pass's voltage votes for inverter ``name`` and return its
+        map, the stored one standing on a tie (phase_mapping's rule); empty
+        while the votes are too few (INVERTER_MAP_MIN_VOTES passes) or the
+        best pairs do not stand clearly above the rest."""
+        acc = self.inverter_votes.setdefault(name, {})
+        for c, row in votes.items():
+            mine = acc.setdefault(c, {})
+            for p, r in row.items():
+                mine[p] = mine.get(p, 0.0) + r
+        n = max((sum(1 for _ in row) for row in votes.values()), default=0)
+        if not acc or sum(max(row.values()) for row in acc.values()) < INVERTER_MAP_MIN_VOTES * n:
+            return self.inverter_phases.get(name, {})
+        mp = phase_mapping(acc, tuple(PHASES), self.inverter_phases.get(name) or None)
+        top = sum(acc[c].get(p, 0.0) for c, p in mp.items())
+        rest = max((sum(acc[c].get(p, 0.0) for c, p in other.items())
+                    for other in (dict(zip(mp, perm)) for perm in itertools.permutations(mp.values())) if other != mp), default=0.0)
+        if top < INVERTER_MAP_CLEAR * rest:
+            return self.inverter_phases.get(name, {})
+        self.inverter_phases[name] = mp
+        return mp
     # the grid's fleet, whose votes say what a typical vote carries - see
     # PHASE_MAP_MIN_VOTES; None for the grid's own
     _root: Optional["Fleet"] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -8279,6 +8313,7 @@ class Fleet:
                 "pending_main": [[t, s.to_dict()] for t, s in self.pending_main],
                 "pending_sub": {n: [s.to_dict() for s in v] for n, v in self.pending_sub.items()},
                 "phase_votes": self.phase_votes, "phase_energy": self.phase_energy,
+                "inverter_votes": self.inverter_votes, "inverter_phases": self.inverter_phases,
                 "unfiled": [[t, s.to_dict()] for t, s in self.unfiled], "identity": self.identity,
                 "sub_last": self._sub_last, "wait": self._wait, "wait_at": self._wait_at,
                 "meter_lag": self.meter_lag, "lag_from": self._lag_from, "step_votes_from": self._step_votes_from,
@@ -8305,6 +8340,8 @@ class Fleet:
         timed = lambda rows: [(t, Run.from_dict(x)) for t, x in rows or []]  # noqa: E731 - (when, session)
         f.pending_main = timed(d.get("pending_main"))
         f.pending_sub = {n: [Run.from_dict(x) for x in v] for n, v in (d.get("pending_sub") or {}).items()}
+        f.inverter_votes = {n: {c: dict(r) for c, r in v.items()} for n, v in (d.get("inverter_votes") or {}).items()}
+        f.inverter_phases = {n: dict(m) for n, m in (d.get("inverter_phases") or {}).items()}
         f.phase_votes = {n: {p: dict(r) for p, r in v.items()}
                          for n, v in (d.get("phase_votes") or {}).items()}
         f.phase_energy = {n: {p: dict(r) for p, r in v.items()}

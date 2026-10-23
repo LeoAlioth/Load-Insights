@@ -262,6 +262,51 @@ the day log's runs added to the memory's, is what the split needs to see the dis
   step over the same span (netted against another load) is still the owner's - today `_step_meter` wants
   the meter's step to be all of the grid's.
 
+## The under-sized grid piece, looked at in the readings (2026-10-23, with the owner)
+- 21 Oct 13:36:59 (the Sock Eater's 1.84 kW on Mansarda C): the grid's phase A rose 440 -> 1965 -> 2326 ->
+  3260 W over twelve seconds, three declared edges of +1525, +359, +930. Hisa held flat on all three
+  phases. The +930 is the HIDROFOR (its plug 0 -> 1050 W at 13:37:10, a plug directly under the grid):
+  two metered loads 2-10 s apart, and the grid cut Mansarda's one edge into +1525 and +359 across two
+  polls as its reading settled. Neither piece is "all of" Mansarda's 1842 x 1.004 within tolerance, and
+  the ramp window (+2820) is not either, so nothing was placed. The rule: an owner's edge consumes the
+  grid's edges inside its own span up to its gain-scaled size (1525 + 359 = 1884 ~ 1849); what is left
+  (+930) stays for the next owner's claim (the pump's). The learned gains: Mansarda x1.004, Hisa x1.000,
+  Susilna x1.003, Hidrofor x0.973 (778 clean steps).
+- 22 Oct 13:35:32 (+1.07 kW on Mansarda C): the inverter swung 8.3 -> 10.0 -> 8.0 kW in twenty seconds;
+  the grid's piece read ~650-900 W. The combine's phantom steps are a third of the inverter's change for
+  the second or two between the meters' stamps (50-200 W), not a kilowatt; the +-1 kW bouncing from
+  13:36:30 on is the Sock Eater's own element chattering every two seconds (Mansarda reads 1172 / 25 /
+  1172 / 25 W within one second). Stamp offsets, inverter to M1, 21-22 Oct: 95.0 % within 0.1 s (and the
+  same within 0.3, 0.5, 0.8, 1.0, 1.5 s), 98.5 % within 2.0 s, 99.8 % within 2.5 s: the 5 % are a whole
+  M1 poll late, so a wider settle buys nothing under 1.5 s and swallows real readings above 2 s.
+  COMBINE_SETTLE_S stays 0.3.
+- The inverter IS balanced: every inverter change shows on M1's B and C as a third each within 20-40 W.
+  The V x I share differs from a third by 6 W at the median, 24 W at the 90th percentile, 136 W at a 15 kW
+  noon (a 2 V phase-voltage spread). Its phases against the M1's, by voltage correlation over two days:
+  inverter a <-> M1 b (0.981), b <-> a (0.982), c <-> c (0.969), 0.75-0.77 elsewhere - wired a <-> b.
+  Built: phases.voltage_votes + share_split, Fleet.inverter_map (stored, votes summed per pass,
+  INVERTER_MAP_MIN_VOTES / INVERTER_MAP_CLEAR), detection._inverter_split, the bench's _prod_house, the
+  map shown in the diagnostics and the sensor ("X (L1)" per inverter phase). Load Juggler's phases.py
+  copied.
+
+  | thirds -> V x I share through the map | before | after |
+  |---|---|---|
+  | Home fed devices (Sep folder) | 63.5 / 12.6 | 62.1 / 14.4 |
+  | Mansarda (partition) | 54.7 / 11.x | 55.7 / 11.x |
+  | Susilna | 62.6 / 13.4 | 60.5 / 17.5 |
+  | Polnilnica | 83.8 / 3.9 | 80.3 / 3.0 |
+  | Hidrofor | 72.4 / 26.3 | 72.0 / 27.9 |
+  | grid edges, phase a / b / c | 3168 / 3580 / 3674 | 3068 / 3651 / 3446 |
+  | ...of them 11-14 h | 755 / 511 / 557 | 728 / 405 / 506 |
+  | measured idle noise a / b / c | 145 / 10 / 10 W | 145 / 10.4 / 10 W |
+  | dishwasher (Oct folder) | 8/9, 12 runs / 6 sigs, best 6 at 0.55 | 9/9, 13 / 8, best 5 at 0.42; Sock Eater 33 -> 31 of 38 |
+
+  Physically right and the midday edge count drops on every phase (B by a fifth), but the card is a small
+  loss on every table (site -1.4 / +1.8, inside Home's fed band 5.4 / 3.3) and the dishwasher's best
+  signature is less pure. The idle noise does not move: it is the instrument's (and phase A's 145 W is
+  its loads never holding still, fourteen times B and C - worth its own look). Ships by the owner's rule
+  (physically accurate, no big loss), with the loss written down.
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split

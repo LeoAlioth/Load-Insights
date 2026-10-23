@@ -72,6 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import replay as R  # noqa: E402
 
 D = R.D
+P = R.load("insights.phases")
 SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here rebuilds what R._cached keeps
 # Each site's house reading and the device meters ground truth is labelled by.
 SITES = {
@@ -238,7 +239,23 @@ def _prod_house(s: dict, key=None, site: str = "home") -> dict:
     inv = s.get(inverter)
     if inv:
         m1 = {p: s[e] for p, e in grid.items() if s.get(e)}
-        build = lambda: {p: D.combine([(rows, sign), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}  # noqa: E731
+        # the inverter on each grid phase by its V x I share through the map its
+        # voltages vote (phases.voltage_votes), as production splits it; thirds
+        # where the export has no volts and amps for it (detection._inverter_split)
+        stem = inverter.rsplit("_ac_power", 1)[0]
+        gstem = next(iter(grid.values())).rsplit("_ac_power_", 1)[0]
+        volts = {p: s.get(f"{stem}_ac_voltage_{p}n") or [] for p in "abc"}
+        amps = {p: s.get(f"{stem}_ac_current_{p}") or [] for p in "abc"}
+        gv = {p: s.get(f"{gstem}_ac_voltage_{p}n") or [] for p in "abc"}
+        mapping = P.phase_mapping(P.voltage_votes(volts, gv)) if all(volts.values()) and all(gv.values()) else {}
+        if key and len(mapping) == 3 and all(amps.values()):
+            key = key + ("share", tuple(sorted(mapping.items())))        # the cache: thirds and the share apart
+
+        def build():
+            if len(mapping) == 3 and all(amps.values()):
+                per = P.share_split(inv, volts, amps, mapping, "abc")
+                return {p: D.combine([(rows, sign), (per[p], 1.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
+            return {p: D.combine([(rows, sign), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
         for p, rows in (R._cached(key, build) if key else build()).items():
             s[SITES[site]["main"][p]] = rows
             # what the inverter added to each reading, the detector's array as

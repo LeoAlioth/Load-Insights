@@ -117,6 +117,11 @@ def _detection(runner) -> dict:
         "samples_read": runner.samples_read,
         "last_pass": dict(runner.last_pass),
         "reactive_from": dict(runner.reactive_from),
+        # each one-figure inverter's phases on the grid meter's, learned from
+        # its voltages (Fleet.inverter_map): Home's SE17K reads a <-> b
+        "inverter_phases": {n: dict(m) for n, m in runner.fleet.inverter_phases.items()},
+        "inverter_votes": {n: {c: {p: round(r, 2) for p, r in row.items()} for c, row in v.items()}
+                           for n, v in runner.fleet.inverter_votes.items()},
         "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
                        # the loads believed to be running, and what each
                        # is still drawing: an edge that never pairs off

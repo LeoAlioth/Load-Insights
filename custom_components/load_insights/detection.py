@@ -31,6 +31,7 @@ from .const import (
     CONF_HORIZON_SKIP,
     CONF_INPUT_ENTITIES,
     CONF_INVERTERS,
+    CONF_INV_DEVICE,
     CONF_INV_INPUT_PREFIX,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
@@ -69,7 +70,7 @@ from .insights.detect import (
     clears_for_naming,
     offer_for_naming,
 )
-from .insights.phases import beside, match_meter_entities
+from .insights.phases import beside, match_meter_entities, share_split, voltage_votes
 from .insights.model import SiteModel
 from .autonaming import AutoNamer
 from .insights.named import (first_change, metered_device, plan_carry, plan_rewrite,
@@ -458,13 +459,17 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         on is not counted a second time. Nothing here consults a wiring flag,
         because the sum telescopes either way."""
         out: List[tuple] = []
-        for inv in self.entry.options.get(CONF_INVERTERS) or []:
+        for k, inv in enumerate(self.entry.options.get(CONF_INVERTERS) or []):
             for prefix, sign in (("", 1.0), (CONF_INV_INPUT_PREFIX, -1.0)):
                 cfg = {f"power_{p}": inv.get(f"{prefix}power_{p}") for p in PHASES}
                 total = inv.get(f"{prefix}power")
                 if total and not any(cfg.values()):
-                    # a machine that publishes one figure: a three-phase
-                    # inverter is symmetric, so its legs are its total in
+                    split = await self._inverter_split(start, end, inv, total, prefix or f"inv{k}")
+                    if split is not None:
+                        out.append((split, sign))
+                        continue
+                    # a machine that publishes one figure and no volts or amps: a
+                    # three-phase inverter is symmetric, so its legs are its total in
                     # thirds - which reproduced the owner's own templates exactly
                     cfg = {f"power_{p}": total for p in PHASES}
                     share = 1.0 / len(PHASES)
@@ -476,6 +481,35 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 rows, _ = await self._read(start, end, cfg)
                 out.append((rows, sign * share))
         return out
+
+    async def _inverter_split(self, start: datetime, end: datetime, inv: dict, total: str,
+                              name: str) -> Optional[Dict[str, list]]:
+        """A one-figure inverter's output on each GRID phase by its phases' V x I
+        share, through the map its voltages vote against the grid meter's
+        (phases.voltage_votes, Fleet.inverter_map); None without its per-phase
+        volts and amps (the inverter page's fields, else the device's own
+        sensors) or the grid meter's volts, or while the map is not yet clear.
+        Home's SE17K is wired a <-> b against its M1 (2026-10-23): a third on
+        each phase hid that, a share through the wrong map would not."""
+        fields = {f"{kind}_{p}": inv.get(f"{kind}_{p}") for kind in ("voltage", "current") for p in PHASES}
+        if not all(fields.values()) and inv.get(CONF_INV_DEVICE):
+            matched = match_meter_entities(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            fields = {key: fields[key] or matched.get(key) for key in fields}
+        grid_v = {f"voltage_{p}": self.config.get(f"{GRID_PREFIX}voltage_{p}") for p in PHASES}
+        if not all(fields.values()) or not all(grid_v.values()):
+            return None
+        own = await self._read_raw(start, end, {**fields, "power_a": total})
+        grid = await self._read_raw(start, end, grid_v)
+        volts = {p: own.get(("voltage", p)) or [] for p in PHASES}
+        amps = {p: own.get(("current", p)) or [] for p in PHASES}
+        rows = own.get(("power", "a")) or []
+        gv = {p: grid.get(("voltage", p)) or [] for p in PHASES}
+        if not rows or not all(volts.values()) or not all(amps.values()) or not all(gv.values()):
+            return None
+        mapping = self.fleet.inverter_map(name, voltage_votes(volts, gv))
+        if len(mapping) < len(PHASES):
+            return None
+        return share_split(rows, volts, amps, mapping, PHASES)
 
     async def _derive_load(self, start: datetime, end: datetime) -> Dict[str, list]:
         """What the house drew, per phase, from the grid and the inverters.
