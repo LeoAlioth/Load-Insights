@@ -542,14 +542,14 @@ SETTLE_SHARE = 0.3
 #   SHAPE_SETTLED_S of it.
 SETTLED_FOLLOW = 0.25
 SETTLED_SHARE = 0.35
-# INS-9 bench dials (2026-10-19), all OFF: nothing ships from them until the owner decides.
-# (1) the Fleet's cross-meter gain: GAIN_FALLS learns it from falls too (a fall
-# is run through _step_meter for the learning alone, nothing is placed by it);
-# GAIN_MEDIAN reads it as the median of the last GAIN_RING log ratios, not a
-# running mean; GAIN_UNGATED teaches every meter whose one clean step faced the
-# grid's one step within METER_GAIN_BOUND, not only the meter that step was
-# placed on under the gain as it stood.
-GAIN_FALLS = False
+# INS-9 (1), the Fleet's cross-meter gain (benched 2026-10-19/20 as three dials, shipped
+# 2026-10-23 as plain behaviour - the owner: where the values' outcomes are alike, take the
+# most unified code and drop the option): it learns from falls as from rises (a fall goes
+# through _step_meter as a rise does), from EVERY meter whose one clean step faced the
+# grid's one step within METER_GAIN_BOUND (not only the meter the step was placed on), and
+# reads as the median of the last GAIN_RING log ratios, not a running mean. On the card no
+# site moved by a point; on the edge truth card the Hidrofor 42.7 -> 47-48 %, Kozolec's
+# boiler 69 -> 73 %. A library stored before the ring (generation <= 20) reads its mean.
 # steps-and-claims stage 2 (2026-10-23, the owner: rises and falls handled alike): a
 # fall is placed at the meter that saw it, as a rise is, so a stop is grouped under
 # its owner and not plain - at every meter, one-device plugs too (the owner, 2026-10-23:
@@ -564,9 +564,7 @@ GAIN_FALLS = False
 # meter's run is its too (Fleet._owned, _decide). Benched 2026-10-23 as a two-level
 # dial, both levels kept: the dishwasher's runs 8 signatures -> 6, its best 3 -> 6 runs;
 # Home fed 65.6 / 10.8 against 66.1 / 10.7, the plugs held (the owner: stays).
-GAIN_MEDIAN = False
-GAIN_UNGATED = False
-GAIN_RING = 200
+GAIN_RING = 200               # budget: log ratios the gain's median is read from
 # (2) shipped 2026-10-22, no dial: a run's slow changes are part of its steps (edges.py
 # Assembler._ends) - the window after a rise skips the opposite steps that follow it,
 # and the window before a fall the same-way steps that lead up to it, while each is at
@@ -1135,7 +1133,7 @@ class Run:
     wh: Dict[str, float] = field(default_factory=dict)
     # the meter below the grid whose own step was all of this run's start
     # (_Open.meter, placed by the Fleet): the run waits for that meter's own
-    # session and pairs with it on time alone - the placed claim, see GAIN_MEDIAN's note above it
+    # session and pairs with it on time alone - the placed claim, see the note above GAIN_RING
     placed: str = ""
 
     @property
@@ -7581,11 +7579,11 @@ class Fleet:
         slack = lambda x: math.hypot(noise, noise_m) + METER_CAL_SLACK * x               # noqa: E731 - this meter's, x the size
         ramp = lambda win: abs(abs(win[3]) - abs(win[0])) <= slack(abs(win[0]))         # noqa: E731 - see _window_size
         totals = self._meter_totals(ph, since, main.event_window(), up)
-        if GAIN_UNGATED:
-            for n, (_, raw, noise_m, _) in totals.items():
-                if (raw and (raw > 0) == up and size >= 10.0 * math.hypot(noise, noise_m)
-                        and 1.0 / (1.0 + METER_GAIN_BOUND) <= size / abs(raw) <= 1.0 + METER_GAIN_BOUND):
-                    self._learn_gain(n, "p", size, raw)
+        # every meter whose one clean step faced the grid's one step teaches its gain
+        for n, (_, raw, noise_m, _) in totals.items():
+            if (raw and (raw > 0) == up and size >= 10.0 * math.hypot(noise, noise_m)
+                    and 1.0 / (1.0 + METER_GAIN_BOUND) <= size / abs(raw) <= 1.0 + METER_GAIN_BOUND):
+                self._learn_gain(n, "p", size, raw)
         for n, (d, raw, noise_m, conf) in totals.items():
             if d is None:                 # all of the grid's step over the union of both spans
                 if not self._meter_stepped(n, ph, since, 0.5 * size, up):
@@ -7616,8 +7614,6 @@ class Fleet:
         _, raw, noise_m, conf = took[meter]
         main.placement_conf = conf
         main.placement_window = windows.get(meter)
-        if raw is not None and not GAIN_UNGATED and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
-            self._learn_gain(meter, "p", size, raw)
         return meter
 
     def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
@@ -7646,18 +7642,19 @@ class Fleet:
         acc = self.meter_gain.setdefault(name, {}).setdefault(kind, [0.0, 0.0])
         acc[1] += 1.0
         r = math.log(abs(grid) / abs(meter))
-        acc[0] += (r - acc[0]) / min(acc[1], 200.0)
-        if GAIN_MEDIAN:
-            acc.append(r)
-            del acc[2:len(acc) - GAIN_RING]
+        acc[0] += (r - acc[0]) / min(acc[1], 200.0)      # the mean, read where no ring is stored
+        acc.append(r)
+        del acc[2:len(acc) - GAIN_RING]
 
     def gain(self, name: str, kind: str = "p") -> float:
-        """What a meter's step is worth in the grid's terms - 1 until learned."""
+        """What a meter's step is worth in the grid's terms - 1 until learned:
+        the median of the ring of log ratios, the mean for a library from
+        before the ring."""
         acc = (self.meter_gain.get(name) or {}).get(kind, [0.0, 0.0])
         mean, n = acc[0], acc[1]
         if n < METER_GAIN_MIN:
             return 1.0
-        if GAIN_MEDIAN and len(acc) > 2:
+        if len(acc) > 2:
             ring = sorted(acc[2:])
             mean = ring[len(ring) // 2] if len(ring) % 2 else (ring[len(ring) // 2 - 1] + ring[len(ring) // 2]) / 2.0
         return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
