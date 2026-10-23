@@ -558,11 +558,12 @@ GAIN_FALLS = False
 # the EVBox 79.5 -> 74.0, one charge of its ten changing shape (its band is 4.3),
 # and the Hidrofor's impurity 10.3 -> 12.6 from a few runs; Kozolec identical.
 # Read as neutral, not a loss (the owner).
-# A grid run whose start a meter's own step placed is that meter's: it waits for the
-# meter's own session and pairs with it on time alone (Run.placed); 2: a piece of it
-# the grid opened again inside the meter's run is its too (Fleet._owned). The owner,
-# 2026-10-23: stays unless significantly worse - Home fed 65.6 / 10.8 against 66.1 / 10.7.
-CLAIM_PLACED = 2
+# A grid run whose start a meter's own step placed is that meter's (the placed claim,
+# no dial): it waits for the meter's own session (Fleet._ready_at) and pairs with it on
+# time alone (_session_pairs), and a piece of it the grid opened again inside the
+# meter's run is its too (Fleet._owned, _decide). Benched 2026-10-23 as a two-level
+# dial, both levels kept: the dishwasher's runs 8 signatures -> 6, its best 3 -> 6 runs;
+# Home fed 65.6 / 10.8 against 66.1 / 10.7, the plugs held (the owner: stays).
 GAIN_MEDIAN = False
 GAIN_UNGATED = False
 GAIN_RING = 200
@@ -1133,8 +1134,8 @@ class Run:
     # Fleet._meter_wh); a phase without is booked at its levels
     wh: Dict[str, float] = field(default_factory=dict)
     # the meter below the grid whose own step was all of this run's start
-    # (_Open.meter, placed by the Fleet): under CLAIM_PLACED the run waits for
-    # that meter's own session and pairs with it on time alone
+    # (_Open.meter, placed by the Fleet): the run waits for that meter's own
+    # session and pairs with it on time alone - the placed claim, see GAIN_MEDIAN's note above it
     placed: str = ""
 
     @property
@@ -5828,7 +5829,7 @@ class Fleet:
     # house sessions not yet filed, waiting for a sub-meter partner: (when they stop waiting, session)
     unfiled: List[tuple] = field(default_factory=list)
     # (meter, its session, when) of the grid runs a meter holding several
-    # devices owned lately - a re-opened piece of one is its too (CLAIM_PLACED >= 2)
+    # devices owned lately - a re-opened piece of one is its too (the placed claim, _decide)
     _owned: List[tuple] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # One fleet per meter others hang under - its main that meter's
     # detector, its subs the meters inside it - reading them as this one
@@ -6574,7 +6575,7 @@ class Fleet:
         pairs = sorted(self._session_pairs([m], main_iv), key=lambda x: (x[0], x[1]))
         if pairs:
             _, _, name, si = pairs[0]
-            if CLAIM_PLACED and name == m.placed:
+            if name == m.placed:
                 # a placed pair: the meter's session stays for the grid's later pieces
                 # of the same run (the covered rule below), until it ages out
                 s = self.pending_sub[name][si]
@@ -6583,24 +6584,23 @@ class Fleet:
                 return
             self._file_as(m, name, self.pending_sub[name].pop(si))
             return
-        if CLAIM_PLACED >= 2:
-            # a grid run that starts and ends INSIDE a meter's run it already owns,
-            # at about its size, is that run opened again: the grid closed its
-            # first piece on another load's edge and re-opened (15 Oct 10:29:12,
-            # 46 s and 10:30:07, 272 s inside Mansarda's 358 s dishwasher run)
-            self._owned = [row for row in self._owned if self._now - row[2] < 2.0 * MATCH_PATIENCE_S]
-            for name, s, _ in self._owned:
-                # every meter alike: _file_as decides what the pair means (a plug's
-                # identity signature, a 3EM's own signature)
-                tol, gain, mp = self._pair_tol(name, main_iv), self.gain(name, "p"), self.phase_map(name)
-                mapped = {p for c in s.phases for p in (mp.get(c) or "")}
-                if mapped and not set(m.phases) <= mapped:
-                    continue
-                if s.start - tol <= m.start and m.end <= s.end + tol:
-                    a, b = m.max_w, s.max_w * gain
-                    if abs(a - b) <= max(2.0 * MATCH_POWER_REL * max(a, b), MIN_NOISE_W):
-                        self._file_as(m, name, s)
-                        return
+        # a grid run that starts and ends INSIDE a meter's run it already owns,
+        # at about its size, is that run opened again: the grid closed its
+        # first piece on another load's edge and re-opened (15 Oct 10:29:12,
+        # 46 s and 10:30:07, 272 s inside Mansarda's 358 s dishwasher run)
+        self._owned = [row for row in self._owned if self._now - row[2] < 2.0 * MATCH_PATIENCE_S]
+        for name, s, _ in self._owned:
+            # every meter alike: _file_as decides what the pair means (a plug's
+            # identity signature, a 3EM's own signature)
+            tol, gain, mp = self._pair_tol(name, main_iv), self.gain(name, "p"), self.phase_map(name)
+            mapped = {p for c in s.phases for p in (mp.get(c) or "")}
+            if mapped and not set(m.phases) <= mapped:
+                continue
+            if s.start - tol <= m.start and m.end <= s.end + tol:
+                a, b = m.max_w, s.max_w * gain
+                if abs(a - b) <= max(2.0 * MATCH_POWER_REL * max(a, b), MIN_NOISE_W):
+                    self._file_as(m, name, s)
+                    return
         one = [p for p in sorted(self._energy_pairs([m]), key=lambda x: (x[0], x[1])) if self.holds_one_device(p[2])]
         if one:
             self._place(m, one[0][2], self._meter_home(one[0][2], m))
@@ -6908,7 +6908,7 @@ class Fleet:
                 continue
             due = max(due, m.end + self._pair_tol(name, main_iv)
                       + self._declare_lag(name) + HELD_TAIL_S)
-        if CLAIM_PLACED and m.placed in self.subs:
+        if m.placed in self.subs:
             # the meter its start was placed at still has the run open: wait for
             # its own session (handed over at ITS end) - a grid run cut short by
             # another load's edge ended 9 min before Mansarda's 867 s one and
@@ -6958,8 +6958,8 @@ class Fleet:
 
     def _remember_owned(self, name: str, s: Run) -> None:
         """Keep meter ``name``'s session ``s`` for the grid's later pieces of its
-        run (CLAIM_PLACED >= 2, _decide); once."""
-        if CLAIM_PLACED >= 2 and not any(x[1] is s for x in self._owned):
+        run (_decide); once."""
+        if not any(x[1] is s for x in self._owned):
             self._owned.append((name, s, self._now))
 
     def sub_quantum(self, name: str) -> float:
@@ -7060,7 +7060,7 @@ class Fleet:
                 near = order[bisect.bisect_left(starts, m.start - tol):bisect.bisect_right(starts, m.start + tol)]
                 for si in sorted(near):
                     s = subs[si]
-                    if CLAIM_PLACED and name == m.placed:
+                    if name == m.placed:
                         # (the meter's session is NOT consumed by this pair - _decide keeps it
                         # for the grid's later pieces of the same run, see _owned: paired on
                         # time alone and popped, a short grid piece took the EVBox's whole
