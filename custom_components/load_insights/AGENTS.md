@@ -277,6 +277,27 @@ device-merged. Bench: Home fed devices 63.4 / 12.7 -> 63.5 / 12.6, Kozolec 86.0 
 the dishwasher scorer unchanged - its mixed signature holds one or two foreign runs among the twelve
 the memory keeps, under the four a side needs. Spacing is not read yet.
 
+### The inverter on each phase: V x I share through a voltage-learned map (shipped 2026-10-23)
+
+A one-figure three-phase inverter used to be a third on each grid phase. It IS balanced (Home's SE17K:
+every change shows on M1's B and C as a third each within 20-40 W), but the share by each phase's V x I
+carries the phase-voltage unbalance the third ignores (Home: 6 W of the output at the median, 136 W at a
+15 kW noon). The inverter's phases against the grid meter's are learned from VOLTAGES - a balanced
+inverter's steps vote nothing - as the correlation of each phase's voltage with each of the grid's
+(`phases.voltage_votes`, 10 s samples), summed over passes (`Fleet.inverter_votes`), read by
+`phase_mapping` once `INVERTER_MAP_MIN_VOTES` passes have voted and the matched pairs beat the next
+permutation by `INVERTER_MAP_CLEAR` (`Fleet.inverter_map`, stored). Home's SE17K is wired a <-> b against
+its M1 (0.98 on the matched pairs, 0.75-0.77 elsewhere). `detection._inverter_split` reads the inverter's
+volts and amps from its page or its device and the grid's volts from the grid page; without them, thirds.
+`phases.share_split` is the pure split; the bench's `_prod_house` does the same from the export. Shown in
+the diagnostics (`inverter_phases`, `inverter_votes`) and the sensor (`inverter_phases`, "X (L1)").
+Bench, Home fed: devices 63.5 / 12.6 -> 62.1 / 14.4, Susilna impurity 13.4 -> 17.5, Polnilnica 83.8 ->
+80.3, Mansarda +1.0; midday grid edges 755 / 511 / 557 -> 728 / 405 / 506 on a / b / c; idle noise
+unchanged (145 / 10 / 10 W - the instrument's, and phase A's loads). Kept by the owner's rule.
+Measured, not changed: `COMBINE_SETTLE_S` 0.3 s - 95.0 % of inverter stamps are within 0.1 s of an M1
+stamp and the same share within 1.5 s; the rest are a whole M1 poll (2 s) late, which a wider settle
+could only merge by swallowing real readings.
+
 ### Setup pages and their headings (`flowgroups.py`, `sections.py`)
 
 A page with many fields is shown under headed sections (plan, grid, inverters, heat, inputs, detection): `flowgroups.py` says which field sits under which heading (plain data), `sections.py` nests the form on the way out and flattens the input on the way back, so handlers and stored options stay flat. A section key must differ from every field key of its step. The headings and labels live under `sections.<key>` in the translations; `tests/test_flowgroups.py` checks both languages. `sections.py` is a hand-kept copy of Load Juggler's (`config_flow/sections.py`) - change both. Errors on a field inside a section are shown as base errors, because the frontend shows none under a sectioned field.

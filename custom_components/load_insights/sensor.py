@@ -566,6 +566,9 @@ class DetectedLoadsSensor(_DetectionBase):
                  "signature": a["signature"], "name": a.get("name")}
                 for a in det.active(now)
             ],
+            # a one-figure inverter's phases on the grid's, from its voltages: "X (L1)" per phase
+            "inverter_phases": {n: {c.upper(): display_phase(p) for c, p in m.items() if p in PHASES}
+                                for n, m in self._runner.fleet.inverter_phases.items()},
             "signatures": [
                 {"id": s.id, "name": s.name, "description": s.describe(tz, now, s.id in running),
                  "running": s.id in running, "last_seen_ago_s": round(max(0.0, now - s.last_seen)),
