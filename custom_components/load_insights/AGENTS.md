@@ -243,6 +243,28 @@ steps are never declared (they hit the declared ones at chance). Tests:
 `test_the_days_repair_is_the_same_at_every_slicing`, `test_the_days_repair_after_a_restart`.
 Job note: `data/scorecard/jobs/repair-2026-10-12.md`.
 
+### Steps and claims (shipped 2026-10-23; spec `docs/specs/2026-10-23-steps-and-claims.md`, numbers `dev/steps-and-claims-results.md`)
+
+Vocabulary in the root `AGENTS.md` (Terms): an edge is one meter's change, a step the edges of several
+meters of one change, a run a start step with its stop. Code: `Run` (was `Session`), `StepGroup` (was
+`EdgeCluster`), `StepGroup.owner` (was `where`), `Run.parent_signature` (was `Session.owner`); stored keys
+unchanged. The grid's phases are the system phases X, Y, Z, shown as "X (L1)" (`display_phase`); keys stay
+a/b/c. `insights/steps.py` is the pure inside-out claiming (`build_steps`, `tests/steps_bench.py`), not yet
+the Fleet's stream. In the Fleet:
+
+| dial | kind | value | what |
+|---|---|---|---|
+| `STATE_SUFFIX` | - | `@` | every fed input's state at the step keys the group, judged one input at a time against the state's share of the time (`Detector._by_state`); the five states joined into one key never piled up above chance |
+| falls placed | - | always | a grid fall a several-device meter also fell by is grouped under it, as a rise is; not at a one-device meter (its fall matches the grid's span only sometimes - Polnilnica 79.5 -> 74.0 with every meter's falls placed) |
+| `CLAIM_PLACED` | policy | 2 | a grid run whose start a meter's step placed (`Run.placed`) waits for that meter's own session and pairs on time alone; the session is not consumed, and later grid pieces inside it pair through the covered rule (`Fleet._owned`) and `_file_as` |
+
+Measured, Home 13-22 Oct (`tests/dishwasher/dw_bench.py`, grid phase A, the AEG states fed): the
+dishwasher's 12 runs in 8 signatures, best 3 at purity 0.23 -> 6 signatures, best 6 at 0.60; the Sock
+Eater's best signature pure (Steam 9, Dry 4). Card, fed capture / impurity: Home devices 66.1 / 10.7 ->
+64.7 / 11.2 (Mansarda partition 51.7 -> 57.9; Polnilnica 83.9 -> 79.5, Hidrofor 78.0 -> 73.2, inside
+their bands), Kozolec 86.8 / 2.1 -> 86.8 / 2.2. The owner's rule: a big win at one load with a small loss
+at another ships. Generation 20 -> 21.
+
 ### Setup pages and their headings (`flowgroups.py`, `sections.py`)
 
 A page with many fields is shown under headed sections (plan, grid, inverters, heat, inputs, detection): `flowgroups.py` says which field sits under which heading (plain data), `sections.py` nests the form on the way out and flattens the input on the way back, so handlers and stored options stay flat. A section key must differ from every field key of its step. The headings and labels live under `sections.<key>` in the translations; `tests/test_flowgroups.py` checks both languages. `sections.py` is a hand-kept copy of Load Juggler's (`config_flow/sections.py`) - change both. Errors on a field inside a section are shown as base errors, because the frontend shows none under a sectioned field.
@@ -1176,6 +1198,16 @@ before until a `reset_detection` re-runs the backfill.
 ## Things already ruled out
 
 Don't re-chase these; each cost real time.
+
+- **Steps and claims, 2026-10-23.** (a) The inputs' states joined into ONE key per step: no exact
+  combination of five states repeats, 43 rises of 1.9 kW sat in Mansarda's plain group - judge each input
+  on its own. (b) `MATCH_DURATION_FACTOR` 6 and 12: identical to 3 on the dishwasher scorer; duration does
+  not fragment these loads. (c) Falls placed at one-device meters too: Home fed devices 64.7 / 11.2 ->
+  63.1 / 12.7, Polnilnica -5.5 beyond its band. (d) The placed claim pairing on time while consuming the
+  meter's session: a short grid piece took the EVBox's whole charge (83.9 -> 74.6) - keep the session for
+  the later pieces instead. (e) The bench scorer itself was wrong three times (other meters' sessions on
+  the same grid phase, merged signature ids counted apart, grid phase C counted as Mansarda C = grid A):
+  check a scorer's phase, owner and merge resolution before trusting its numbers.
 
 - **INS-9 (3) `SAME_SPAN`, a step's windows ending at its comparison's other meters' steps** (benched 2026-10-20, fixed and re-benched 2026-10-21; dial, `Step.lat` and the peers plumbing removed 2026-10-22 on the owner's yes). Once slicing-invariant (each step's own latency, `Step.lat`) it still costs conservation alone (grid>Hidrofor 44.2 -> 39.2 %, Hiša>Blaževa Soba 17.4 -> 13.3, Mansarda>office 41.2 -> 38.9, Kozolec IR panel 73.1 -> 69.2) and adds nothing to `FOLD_SLOW` (Hidrofor 48.0 -> 50.8, but Blaževa Soba 18.0 -> 14.1, office 41.2 -> 38.7, IR panel 73.1 -> 69.2, third site's charger 73.3 -> 70.9). Why: the grid declares the pump's start decay as its own small step a few seconds on, so the grid's window is a few seconds long; a 10 s plug cut to the same span reads its surge reading. The same span is only the same measure where both meters can read a level inside it. Shifted by the median report lag instead of the latency, grid>Hidrofor 23.0 %. Not tried: a same-span bound that waits for the slower meter's next reading.
 

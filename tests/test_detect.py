@@ -5493,11 +5493,12 @@ def test_settled_fold_books_a_pumps_start_at_the_level_its_decay_settled_at():
 
 
 def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
-    """INS-9 (1), bench dials, off. A fall is run through the placement hook for
-    the gain's sake only, and what it leaves on the detector is put back;
-    GAIN_MEDIAN reads the gain as the median of the last GAIN_RING log ratios,
-    so five clean steps of 1.2 among twenty of 1.0 do not move it as they move
-    the running mean."""
+    """INS-9 (1), bench dials, off. A fall goes through the placement hook as a
+    rise does (steps-and-claims, 2026-10-23: a stop is grouped under its owner),
+    whatever GAIN_FALLS says, and what the hook leaves on the detector is put
+    back; GAIN_MEDIAN reads the gain as the median of the last GAIN_RING log
+    ratios, so five clean steps of 1.2 among twenty of 1.0 do not move it as
+    they move the running mean."""
     old = D.GAIN_FALLS, D.GAIN_MEDIAN
     try:
         for on in (False, True):
@@ -5508,8 +5509,9 @@ def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
             det.phases["a"].noise, det.phases["a"].level, det.phases["a"].interval = 25.0, 900.0, 3.0
             det.placement_conf = 0.5
             det.step_meter = lambda ph, since, size, up: calls.append((ph, size, up)) or (setattr(det, "placement_conf", 0.9) or "Pump")
-            det._classify_step("a", T0, -800.0, None, 0.0)
-            assert calls == ([("a", 800.0, False)] if on else [])
+            cluster = det._classify_step("a", T0, -800.0, None, 0.0)
+            assert calls == [("a", 800.0, False)]
+            assert cluster.owner == "Pump"
             assert det.placement_conf == 0.5
         for on in (False, True):
             D.GAIN_MEDIAN = on
@@ -5532,8 +5534,6 @@ def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():
     far above chance and get a group keyed by that one state; the Off ones, no
     rarer than chance, stay in the plain group. The key is ONE input's state, not
     the tuple of every input's (which never repeats)."""
-    old = D.STATE_TAG
-    D.STATE_TAG = 2
     try:
         det = D.Detector()
         rows, spent = [], {"Running": 20000.0, "Off": 80000.0}
@@ -5557,7 +5557,7 @@ def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():
         assert not any(c.keys.get("sensor.washer@") == "Off" for c in ups)     # Off is chance, never a key
         assert "sensor.other@" not in keyed[0].keys
     finally:
-        D.STATE_TAG = old
+        pass
 
 
 def test_grid_phases_read_as_system_phases_with_the_meters_label():

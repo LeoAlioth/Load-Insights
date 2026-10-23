@@ -176,6 +176,32 @@ card above were run with `CLAIM_PLACED=2 STATE_TAG=2 PLACE_FALLS=1`.
   (`dw_bench.py`, `truth.py`, `truth.json`, `unowned2.py`); run from that folder with the dials above.
 - Nothing committed; `git status` lists the files.
 
+## The owner's decisions (2026-10-23) and what shipped as default
+- States at the step: always on, every state (the Sock Eater splitting by cycle phase is welcome).
+- Falls placed: on, flag removed. At several-device meters only: with every meter's falls placed, Home fed
+  devices 64.7 / 11.2 -> 63.1 / 12.7, Polnilnica 79.5 -> 74.0 (band 4.3) - a plug's fall is placed only
+  when its 60 s report matches the grid's span, so its stop groups split. The owner may overturn (one line
+  in `_step_meter`).
+- The claim: unified on every meter - a placed pair no longer consumes the meter's session, later grid
+  pieces of the same run pair through the covered rule and `_file_as` (a plug's identity signature, a
+  3EM's own). Home fed with the claim alone: 65.6 / 10.8 (base 66.1 / 10.7), Polnilnica 83.8, Hidrofor
+  78.2, Mansarda +1.9. `CLAIM_PLACED = 2` by default (two levels, kept as a constant).
+
+Defaults, single replays: Home fed devices 64.7 / 11.2, partition 63.6 (Mansarda 57.9 / 11.4, Susilna
+imp. 15.0, Polnilnica 79.5 / 3.3, Hidrofor 73.2 / 10.3); Kozolec fed devices 86.8 / 2.2, partition
+84.2 / 4.6. Dishwasher on defaults: 12 / 6, best 6 at 0.60, Sock Eater best pure (unchanged).
+Card on defaults (`47d0e99-dirty-sc-defaults-20261023T110645Z.json`), capture / impurity:
+
+| | hidden | circuits | fed |
+|---|---|---|---|
+| Home devices | 32.6 / 14.1 | 42.5 / 12.1 | 64.7 / 11.2 (base 66.1 / 10.7) |
+| Home partition | 46.8 / 14.5 | 54.2 / 9.6 | 63.4 / 10.3 (base 62.5 / 9.3) |
+| Kozolec devices | 84.4 / 5.3 | - | 86.8 / 2.2 (base 86.8 / 2.1) |
+| Kozolec partition | 82.1 / 6.1 | - | 84.2 / 4.6 (base 84.3 / 3.9) |
+
+`tests/run_all.py` on the defaults: 0 failures. `DETECTOR_GENERATION` 20 -> 21 (a ten-day rebuild at
+both sites on deploy).
+
 ## Open
 - Wire `build_steps` into the Fleet (plan task 5), stored phase maps (task 6), step groups by owner (task 7).
 - The mixed `Mansarda#22` is the real target: re-file old runs by input state in the daily rewrite, or split

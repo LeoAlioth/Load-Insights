@@ -550,12 +550,18 @@ SETTLED_SHARE = 0.35
 # grid's one step within METER_GAIN_BOUND, not only the meter that step was
 # placed on under the gain as it stood.
 GAIN_FALLS = False
-# steps-and-claims stage 2 (2026-10-23): a fall is placed at the meter that saw it,
-# as a rise is, so a stop is grouped under its owner and not plain
-PLACE_FALLS = 0
-# ...and a grid run whose start a meter's own step placed is that meter's: it
-# waits for the meter's own session and pairs with it on time alone (Run.placed)
-CLAIM_PLACED = 0
+# steps-and-claims stage 2 (2026-10-23, the owner: rises and falls handled alike): a
+# fall is placed at the meter that saw it, as a rise is, so a stop is grouped under
+# its owner and not plain - at a meter holding several devices; a one-device meter's
+# fall is placed only when its report happens to match the grid's span (a 60 s plug),
+# and its stop groups then split between placed and plain: Polnilnica fed capture
+# 79.5 -> 74.0 with every meter's falls placed, Home devices 64.7 / 11.2 -> 63.1 / 12.7
+# (2026-10-23) - see _step_meter. A plug's stop is its run's owner's anyway (_meter_stop).
+# A grid run whose start a meter's own step placed is that meter's: it waits for the
+# meter's own session and pairs with it on time alone (Run.placed); 2: a piece of it
+# the grid opened again inside the meter's run is its too (Fleet._owned). The owner,
+# 2026-10-23: stays unless significantly worse - Home fed 65.6 / 10.8 against 66.1 / 10.7.
+CLAIM_PLACED = 2
 GAIN_MEDIAN = False
 GAIN_UNGATED = False
 GAIN_RING = 200
@@ -850,11 +856,12 @@ INPUT_TIME_TAU_S = 14 * 86400.0
 # A value this rare or rarer - its share of the time - is one runs are
 # filed in; and only once the shares have been counted for this long.
 INPUT_RARE_SHARE = 0.25
-# An input's CONTINUOUS state at a step - not only a change near it - tags the
-# step's cluster, as a weaker signal: while the washer is Running, a 2 kW step
-# is not the dishwasher's. Rare states only (INPUT_RARE_SHARE), chance being the
-# state's share of the time (2026-10-23, owner). 0 is off; 2 tags every state, not only the rare ones.
-STATE_TAG = 0
+# An input's CONTINUOUS state at a step - not only a change near it - is part of
+# the step's group, judged one input at a time against the state's share of the
+# time (Detector._by_state): while the washer is Running, a 2 kW step is not the
+# dishwasher's. Every state, not only the rare ones (the owner, 2026-10-23: the
+# Sock Eater's signatures splitting by its cycle phase is expected and welcome).
+# The key's name is the input's with this suffix.
 STATE_SUFFIX = "@"
 INPUT_SPLIT_MIN_TIME_S = 86400.0
 # A born-in signature that is chance - a fridge running through a wash -
@@ -4727,13 +4734,12 @@ class Detector:
             if i >= 0:
                 values[name] = rows[i][1]
         keyed = {n: kinds.get(n, "") for n in learned}
-        if STATE_TAG:
-            for name, rows in self.inputs.items():
-                spent = self.input_time.get(name) or {}
-                total = sum(spent.values())
-                i = bisect.bisect_right(rows, (since, "\uffff")) - 1
-                if i >= 0 and total >= INPUT_SPLIT_MIN_TIME_S and (STATE_TAG >= 2 or spent.get(rows[i][1], 0.0) / total < INPUT_RARE_SHARE):
-                    keyed[name + STATE_SUFFIX] = rows[i][1]
+        for name, rows in self.inputs.items():
+            # ...and each input's state at the step, once a day of it is counted - see STATE_SUFFIX
+            total = sum((self.input_time.get(name) or {}).values())
+            i = bisect.bisect_right(rows, (since, "\uffff")) - 1
+            if i >= 0 and total >= INPUT_SPLIT_MIN_TIME_S:
+                keyed[name + STATE_SUFFIX] = rows[i][1]
         where = ""
         if watts > 0 and self.step_meter is not None:
             if len(ph) == 1:
@@ -4751,13 +4757,12 @@ class Detector:
                 where = got.pop() if len(got) == 1 else ""
                 self.placement_conf = min(confs) if where and None not in confs else None
                 self.placement_window = None
-        elif watts < 0 and (GAIN_FALLS or PLACE_FALLS) and self.step_meter is not None and len(ph) == 1:
-            # a fall teaches the gains as a rise does; it is placed at the meter that
-            # saw it only under PLACE_FALLS (steps-and-claims, stage 2)
+        elif watts < 0 and self.step_meter is not None and len(ph) == 1:
+            # a fall is placed at the meter that saw it, as a rise is (steps-and-claims,
+            # stage 2) - and teaches the gains as one does; a fall's window never
+            # resizes it (the ramp rule is a rise's, _window_size)
             conf, win = self.placement_conf, self.placement_window
-            got = self.step_meter(ph, since, size, False)
-            if PLACE_FALLS:
-                where = got or ""
+            where = self.step_meter(ph, since, size, False) or ""
             self.placement_conf, self.placement_window = conf, win
         if where and window_ok and self.placement_window is not None:
             size = abs(self.placement_window[0])     # placed by the ramp's whole window: its size
@@ -6568,6 +6573,13 @@ class Fleet:
         pairs = sorted(self._session_pairs([m], main_iv), key=lambda x: (x[0], x[1]))
         if pairs:
             _, _, name, si = pairs[0]
+            if CLAIM_PLACED and name == m.placed:
+                # a placed pair: the meter's session stays for the grid's later pieces
+                # of the same run (the covered rule below), until it ages out
+                s = self.pending_sub[name][si]
+                self._file_as(m, name, s)
+                self._remember_owned(name, s)
+                return
             self._file_as(m, name, self.pending_sub[name].pop(si))
             return
         if CLAIM_PLACED >= 2:
@@ -6577,8 +6589,8 @@ class Fleet:
             # 46 s and 10:30:07, 272 s inside Mansarda's 358 s dishwasher run)
             self._owned = [row for row in self._owned if self._now - row[2] < 2.0 * MATCH_PATIENCE_S]
             for name, s, _ in self._owned:
-                if self.holds_one_device(name):
-                    continue
+                # every meter alike: _file_as decides what the pair means (a plug's
+                # identity signature, a 3EM's own signature)
                 tol, gain, mp = self._pair_tol(name, main_iv), self.gain(name, "p"), self.phase_map(name)
                 mapped = {p for c in s.phases for p in (mp.get(c) or "")}
                 if mapped and not set(m.phases) <= mapped:
@@ -6586,7 +6598,7 @@ class Fleet:
                 if s.start - tol <= m.start and m.end <= s.end + tol:
                     a, b = m.max_w, s.max_w * gain
                     if abs(a - b) <= max(2.0 * MATCH_POWER_REL * max(a, b), MIN_NOISE_W):
-                        self._meter_owns(m, name, s)
+                        self._file_as(m, name, s)
                         return
         one = [p for p in sorted(self._energy_pairs([m]), key=lambda x: (x[0], x[1])) if self.holds_one_device(p[2])]
         if one:
@@ -6939,10 +6951,15 @@ class Fleet:
     def _meter_owns(self, m: Run, name: str, s: Run) -> None:
         """``m`` is meter ``name``'s session ``s``'s load's - see _file_as."""
         m.parent_signature = (name, s)
-        if CLAIM_PLACED >= 2:
-            self._owned.append((name, s, self._now))
+        self._remember_owned(name, s)
         if self.main._day_from is not None:
             self.main._day_log.append(m)
+
+    def _remember_owned(self, name: str, s: Run) -> None:
+        """Keep meter ``name``'s session ``s`` for the grid's later pieces of its
+        run (CLAIM_PLACED >= 2, _decide); once."""
+        if CLAIM_PLACED >= 2 and not any(x[1] is s for x in self._owned):
+            self._owned.append((name, s, self._now))
 
     def sub_quantum(self, name: str) -> float:
         """What a device meter can RESOLVE, as its own detector measured it
@@ -7042,10 +7059,12 @@ class Fleet:
                 near = order[bisect.bisect_left(starts, m.start - tol):bisect.bisect_right(starts, m.start + tol)]
                 for si in sorted(near):
                     s = subs[si]
-                    if CLAIM_PLACED and name == m.placed and not self.holds_one_device(name):
-                        # (a one-device meter pairs by identity and energy already; paired on
-                        # time alone a short grid piece consumed the EVBox's long charge:
-                        # Polnilnica fed capture 83.9 -> 74.6 on the card, 2026-10-23)
+                    if CLAIM_PLACED and name == m.placed:
+                        # (the meter's session is NOT consumed by this pair - _decide keeps it
+                        # for the grid's later pieces of the same run, see _owned: paired on
+                        # time alone and popped, a short grid piece took the EVBox's whole
+                        # charge and the rest could not pair - Polnilnica fed capture 83.9 ->
+                        # 74.6 on the card, 2026-10-23)
                         # its start was this meter's own step: the meter's session
                         # starting with it is the run, whatever the grid's size
                         # (netted with another load: 1711 W against Mansarda's
@@ -7599,13 +7618,7 @@ class Fleet:
         if raw is not None and not GAIN_UNGATED and size >= 10.0 * math.hypot(noise, noise_m):   # a step both saw clearly, alone, teaches the gains
             self._learn_gain(meter, "p", size, raw)
         if not up and self.holds_one_device(meter):
-            # a fall is placed at a meter holding several devices only: a plug's fall
-            # is placed some of the time (a 60 s plug rarely matches the grid's span),
-            # and its stop groups split between placed and plain, fragmenting the
-            # start>stop pairs - Polnilnica fed capture 83.9 -> 75.2, the Hidrofor
-            # 78.0 -> 72.8 with every fall placed (2026-10-23); its stops are its
-            # run's owner's anyway (_meter_stop)
-            return None
+            return None               # a fall is placed at a several-device meter only - see the note at CLAIM_PLACED
         return meter
 
     def _meter_stepped(self, name: str, ph: str, since: float, least: float, up: bool) -> bool:
