@@ -62,10 +62,13 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
         sig = runner.fleet.signature(ref)
         was = sig.name if sig is not None else None
+        names_before = set(runner.fleet.names())
         if not await runner.async_rename(ref, name):
             raise ServiceValidationError(
                 f"No detected load has id {ref[1]}" + (f" on {ref[0]}" if ref[0] else " under no meter")
                 + ". A signature the detector has since merged into another no longer has its id")
+        if set(runner.fleet.names()) == names_before:
+            return      # the same names, so the same entities and links: no reload (2026-10-23)
         # what the naming page's Done does: the entities follow the names,
         # and so do the inputs linked to the load
         rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
