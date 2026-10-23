@@ -123,6 +123,24 @@ against it, not against memory.
 
 - **Personal project, not Ixtlan work.** Skip the work-context logging for this repo; never add entries for it to `/Volumes/Razvijam/work-context.md` or `open-tickets.md`.
 - **Words.** Call the main detector meter the **grid meter**, never "house" (Hiša is the house circuit at Home).
+- **Terms (the owner, 2026-10-23). The classes carry them (`Run`, `StepGroup`, `StepGroup.owner`, `Run.parent_signature`, since the steps-and-claims work); two older names remain in method and field names: the detector's "step" (`_classify_step`, `_step_meter`, `declared`) is an edge in these terms, and the grid's phase keys stay `a/b/c` (they are also the config fields), shown as X/Y/Z by `display_phase`.**
+  - **reading**: one sensor's value at one time; several values the same sensor sends a few hundredths of a second apart are one reading.
+  - **edge**: one meter's own change between readings. **rise / fall** is its direction.
+  - **step**: the edges several meters saw of one change, joined into one object on the shared system phases. A step with one edge is a step too. A step records the change on every system phase (an untouched phase reads about zero), so there is no separate multi-phase step; the phases it touches are its phase set (the owner, 2026-10-23: this stays whatever the bench shows). A detected step feeds a named signature's power figures.
+  - **start / stop**: the role of a step in a run. **run**: a start step joined with its stop step, so energy can be worked out.
+  - **step group**: steps of one phase set, direction and owner, grouped by size. Steps are what get grouped, not edges.
+  - **library**: never bare. A **step-group library** is a meter's step groups, a **signature library** its signatures; each belongs to the owner meter.
+  - **signature**: a group of runs filed together by power, power factor, duration and input state; what a user names. **load**: a named signature, or the several that share a name.
+  - **phase**: a meter's own phase, as it labels it (Mansarda's C). **system phase**: the grid meter's phases are **X, Y, Z**, and every other meter's phase is mapped onto them once learned.
+  - **claim**: a sub-meter's edge taking over a matching edge of the next meter outward, on the same system phase within size and timing tolerance. **owner**: the innermost meter that claimed a step. **unclaimed edge**: an edge no inner meter claimed, so an unmetered load.
+  - **meter**: the physical measuring unit (a 3EM, a plug); **sensor**: the HA entity it reports through; **load**: an appliance connected to a meter. Say "inner" and "outer" for which meter hangs under which; avoid "device".
+  - **ramp**: an edge spread over several readings; its size is the settled difference, not two raw readings.
+  - **parent signature**: the signature a grid run was handed to (the code's `s.owner`; "owner" now means the meter that claimed a step).
+  - **daily rewrite**: the once-a-day re-filing of runs into signatures. The one place that sees the spacing and length of all runs, and so the one place length may separate signatures.
+  - Device states and their transitions attach to every step. Run pairing is loose on duration. Diagnostics show the system phase with the meter's own label beside it, "X (L1)".
+  - **site consumption**: the computed total, the grid meter plus the inverters (`combine`); the grid meter is the raw meter alone.
+- **Steps are declared on the site consumption.** Never on the raw grid meter alone while PV runs through it.
+- **Staged work keeps every stage.** A change built in stages keeps each stage in place whatever its own bench shows; the stages are judged together (the owner, 2026-10-23).
 - **One measure for every meter.** Every meter's steps come from the same detector, over the same span, on both sides of a comparison. Before adding a mechanism that relates two meters or two steps, check it measures both the same way.
 - **Releases.** Home and Kozolec only, by default. The remote user's site takes a build only when the owner says so.
 - **Git.** Commit each benched version locally before benching it, as a checkpoint; `dev` is fine. Never push `dev` unless the owner asks: a push to `dev` deploys to both sites. No new branches, worktrees or detached checkouts without asking. A push that fails with "Authentication failed" from the shell often works on one retry.

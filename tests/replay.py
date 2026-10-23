@@ -408,7 +408,7 @@ def run(args, transform=None, say=print):
     """Replay the exports ``args`` (see parse) through a Fleet, as production
     would have read them; ``transform`` may rebuild the series first.
     Returns the Fleet, every session its house detector filed or a meter's
-    signature took (Session.owner), in order, and each sub-meter's series as
+    signature took (Run.parent_signature), in order, and each sub-meter's series as
     the Fleet was fed it, its phases summed."""
     series = read_csv(args.csv, args.keep_coarse, say)
     if transform:
@@ -555,7 +555,7 @@ def run(args, transform=None, say=print):
     def wire(fleet):
         """What the runner sets on a Fleet it has just made or loaded, and the
         bench's two hooks: every session the house files, and every one a
-        meter's signature takes (Session.owner). Called again after a restart."""
+        meter's signature takes (Run.parent_signature). Called again after a restart."""
         fleet.wait_cap_s = D.METER_WAIT_CAP_S      # as production's default; METER_WAIT_CAP_S=0 to judge at once
         fleet.parents = dict(p.split("=", 1) for p in args.parent)
         fleet.horizon_skip = set()

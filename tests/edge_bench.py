@@ -28,7 +28,7 @@ card    Home, Kozolec and the third site (or the SITEs given) with every meter
             SLICE=6 (place, direction, pattern within 2 s, non-zero entries)
           4-8 the groups' tightness, mixed, duplicates, count and mirror, beside
             the same figures for today's grid edges - the main detector's
-            classified steps by their EdgeCluster, sized as today (raw watts)
+            classified steps by their StepGroup, sized as today (raw watts)
 diff    two card files, figure by figure.
 
 The steps are each detector's as it classified them (Detector._classify_step:
@@ -126,7 +126,7 @@ def _instrument(asm):
             st["seen"][key] = s
             st["pass"].append(s)
         if not name:
-            today.append({"cid": c.id, "pattern": ph, "up": watts > 0, "where": c.where, "t": since,
+            today.append({"cid": c.id, "pattern": ph, "up": watts > 0, "where": c.owner, "t": since,
                           "size": cur.get("size", abs(watts)), "angle": cur.get("angle"),
                           "legs": [(lph, round(ls, 3), abs(lw)) for lph, ls, lw in legs or [(ph, since, watts)]]})
         return c
@@ -170,7 +170,7 @@ def _instrument(asm):
 
 
 def _today_groups(today: list, edges: list, fleet) -> list:
-    """Today's grid edges as groups: each classified step in its EdgeCluster,
+    """Today's grid edges as groups: each classified step in its StepGroup,
     its size as the detector sized it, its angle a load's (a fall's sign
     flipped), its properties its legs' (the grid's entries), by size."""
     props = {}

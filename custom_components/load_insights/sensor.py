@@ -26,7 +26,7 @@ from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
-from .insights.detect import (PF_MIN_QUANTA, describe_location, location_confidence,
+from .insights.detect import (PF_MIN_QUANTA, PHASES, describe_location, display_phase, location_confidence,
                               most_specific, ref_label, running_markdown, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
@@ -570,6 +570,7 @@ class DetectedLoadsSensor(_DetectionBase):
                 {"id": s.id, "name": s.name, "description": s.describe(tz, now, s.id in running),
                  "running": s.id in running, "last_seen_ago_s": round(max(0.0, now - s.last_seen)),
                  "phases": s.phases.upper(),
+                 "system_phases": [display_phase(p) for p in s.phases if p in PHASES],
                  "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
                  "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
                  "pf": None if s.pf is None else round(s.pf, 2),

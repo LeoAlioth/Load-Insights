@@ -430,7 +430,7 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
     step started is that meter's until the meter shows it stopped
     (PhaseState.owned, the converse of Fleet._meter_stop). With the phase
     quiet it always was. A young plug holds several devices, so the run is
-    its own signature's (Session.owner)."""
+    its own signature's (Run.parent_signature)."""
     for busy in (False, True):
         filed, fleet, on, off = _plug_fleet(busy)
         # the plug's own detector: one 20 h run of its load (a 15 W wobble step
@@ -441,7 +441,7 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
         assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
         run = max(run, key=lambda s: s.duration_s)
         assert abs(run.end - off) < 120 and abs(run.energy_wh - 6000.0) < 300 and _at(fleet, run, "Plug"), (
-            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.owner)
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.parent_signature)
 
 
 def _plug_fleet(busy: bool, fan: float = 0.0, watts: float = 300.0, blip: float = 0.0, leg: float = 0.0):
@@ -611,7 +611,7 @@ def test_a_meters_run_carries_only_a_step_it_can_hold():
 
 def _keep_filed(fleet):
     """Every house session the fleet files, and every one a meter's own
-    signature takes (Session.owner), in order, as the bench keeps them."""
+    signature takes (Run.parent_signature), in order, as the bench keeps them."""
     filed, file, owns = [], fleet.main._file, fleet._meter_owns
 
     def keep(s, *a, **kw):
@@ -627,10 +627,10 @@ def _keep_filed(fleet):
 
 def _at(fleet, s, meter):
     """Is the house session ``s`` placed at ``meter``: its own signature's
-    (a meter holding several - Session.owner), or filed in a house signature
+    (a meter holding several - Run.parent_signature), or filed in a house signature
     located there?"""
-    if s.owner:
-        return s.owner[0] == meter
+    if s.parent_signature:
+        return s.parent_signature[0] == meter
     sig = fleet.main.signature_of(s)
     return bool(sig is not None and sig.locations.get(meter))
 
@@ -650,7 +650,7 @@ def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
         assert len(at_start) >= 2, ("busy" if busy else "quiet", [(round(s.duration_s / 3600, 2), round(s.energy_wh)) for s in at_start])
         run, fan = at_start[0], at_start[1]
         assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and _at(fleet, run, "Plug"), (
-            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.owner)
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), run.parent_signature)
         assert abs(fan.energy_wh / (fan.duration_s / 3600.0) - 48.0) < 12 and fan.duration_s >= 2 * 3600.0, (
             "busy" if busy else "quiet", round(fan.duration_s / 3600, 2), round(fan.energy_wh))
         if not busy:
@@ -730,10 +730,10 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     fleet.main.signatures.append(_sig(1, 880.0, 140.0, 45, first_seen=T0, last_seen=T0,
                                       locations={"pump": D.METER_PHASES_MIN + 20}))
     assert fleet.meter_phases() == {"pump": "a"}
-    two = D.Session("ab", T0 + 1000, T0 + 1140, {"a": [(T0 + 1000, 300.0)], "b": [(T0 + 1000, 420.0)]})
-    other = D.Session("b", T0 + 3000, T0 + 3140, {"b": [(T0 + 3000, 720.0)]})
-    on_a = D.Session("a", T0 + 2000, T0 + 2140, {"a": [(T0 + 2000, 720.0)]})
-    fleet.pending_sub["pump"] = [D.Session("a", t, t + 140, {"a": [(t, 720.0)]}) for t in (T0 + 1000, T0 + 2000, T0 + 3000)]
+    two = D.Run("ab", T0 + 1000, T0 + 1140, {"a": [(T0 + 1000, 300.0)], "b": [(T0 + 1000, 420.0)]})
+    other = D.Run("b", T0 + 3000, T0 + 3140, {"b": [(T0 + 3000, 720.0)]})
+    on_a = D.Run("a", T0 + 2000, T0 + 2140, {"a": [(T0 + 2000, 720.0)]})
+    fleet.pending_sub["pump"] = [D.Run("a", t, t + 140, {"a": [(t, 720.0)]}) for t in (T0 + 1000, T0 + 2000, T0 + 3000)]
     pairs = fleet._session_pairs([two, on_a, other], 5.0)
     assert [mi for _, mi, _, _ in pairs] == [1], pairs          # only the load on A
     # declared as holding several devices, the plug not placed takes anything that fits again...
@@ -764,7 +764,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     fleet._now = T0 + 6000.0                                                  # the clock is past the off
 
     def session(start, end, phase="c"):
-        s = D.Session(phase, start, end, {phase: [(start, 640.0)]})
+        s = D.Run(phase, start, end, {phase: [(start, 640.0)]})
         s.signature_id = 1
         return s
 
@@ -1183,7 +1183,7 @@ def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
     det.signatures = [_sig(1, 1000.0, 300.0, 12, first_seen=T0, last_seen=T0)]
     det.next_id = 2
     det.start_home = {"7": {1: 12.0}}
-    run = D.Session(phases="a", start=T0 + 3600.0, end=T0 + 4560.0, levels={"a": [(T0 + 3600.0, 1000.0)]}, pair=(7, None))
+    run = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 4560.0, levels={"a": [(T0 + 3600.0, 1000.0)]}, pair=(7, None))
     det._file(run, avoid=[1])
     assert run.signature_id == 2 and det._sig(2).apart == [1]
     assert det._merge_devices() == 0 and len(det.signatures) == 2
@@ -1275,17 +1275,17 @@ def test_two_loads_starting_together_are_not_one_two_phase_load():
 def test_how_well_a_run_was_measured_decides_its_weight_and_its_tolerance():
     """Eight samples of a 43-second run and forty-three of the same run are
     not equally good evidence of its power."""
-    coarse = D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=4)
-    fine = D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=40)
+    coarse = D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=4)
+    fine = D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}, samples=40)
     assert coarse.confidence < fine.confidence
-    assert D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
+    assert D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
 
     # and it pulls the running mean less far
     lax = _sig(2, 3000.0, 40.0, 10)
     strict = _sig(3, 3000.0, 40.0, 10)
     import datetime as _dt
-    lax.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=4), _dt.timezone.utc)
-    strict.absorb(D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=40), _dt.timezone.utc)
+    lax.absorb(D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=4), _dt.timezone.utc)
+    strict.absorb(D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=40), _dt.timezone.utc)
     assert lax.power["a"] > strict.power["a"], (lax.power, strict.power)
 
 
@@ -1323,7 +1323,7 @@ def test_a_mature_signature_still_follows_a_load_that_changes():
     first. The count keeps counting; only the WEIGHT is bounded."""
     import datetime as _dt
     tz = _dt.timezone.utc
-    run = lambda w: D.Session(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, w)]}, samples=40)
+    run = lambda w: D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, w)]}, samples=40)
     young, mature = _sig(1, 3000.0, 40.0, 10), _sig(2, 3000.0, 40.0, 300)
     before = mature.power["a"]
     young.absorb(run(2000.0), tz)
@@ -1391,7 +1391,7 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     det = D.Detector()
     sig = _sig(1, 2000.0, 60.0, 0, last_seen=0.0, name="Boiler")
     det.signatures = [sig]
-    run = lambda i: D.Session(phases="a", start=T0 + i * 3600, end=T0 + i * 3600 + 1800.0,
+    run = lambda i: D.Run(phases="a", start=T0 + i * 3600, end=T0 + i * 3600 + 1800.0,
                               levels={"a": [(T0 + i * 3600, 2000.0)]}, samples=20)
     seen = []
     for i in range(5):                       # half an hour at 2 kW is 1 kWh
@@ -1641,7 +1641,7 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
     apart (2026-09-30)."""
     def lib():
         det = D.Detector()
-        det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=600.0)]        # one start cluster: one device
+        det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=600.0)]        # one start cluster: one device
         a = _sig(10, 600.0, 300.0, first_seen=T0, last_seen=T0)
         b = _sig(11, 610.0, 300.0, 3, first_seen=T0, last_seen=T0)
         a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
@@ -1672,7 +1672,7 @@ def test_the_device_merge_judged_where_something_changed_is_the_full_walk():
 
     def run(dev, phases="a", watts=1000.0):
         t[0] += 900.0
-        return D.Session(phases=phases, start=t[0], end=t[0] + 300.0, pair=(dev, None),
+        return D.Run(phases=phases, start=t[0], end=t[0] + 300.0, pair=(dev, None),
                          levels={p: [(t[0], watts / len(phases))] for p in phases})
 
     def file(s, **kw):
@@ -1716,7 +1716,7 @@ def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
     from datetime import datetime, timezone
     det = D.Detector()
     start = datetime(2026, 9, 18, 23, 40, tzinfo=timezone.utc).timestamp()   # a Friday
-    det._file(D.Session(phases="a", start=start, end=start + 6000,
+    det._file(D.Run(phases="a", start=start, end=start + 6000,
                         levels={"a": [(start, 2000.0)]}, pf=1.0))
     sig = det.signatures[0]
     assert round(sum(sig.hour_wh)) == round(2000 * 6000 / 3600), sig.hour_wh
@@ -2035,8 +2035,8 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
     # alone, and the permutation settles it with the other channels
     kiln = {"a": {"a": 79, "c": 79}, "b": {"b": 23}, "c": {"c": 55, "a": 17}}
     assert D.phase_mapping(kiln) == {"a": "a", "b": "b", "c": "c"}
-    s = D.Session(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
-    house = D.Session(phases="ac", start=0.0, end=60.0, levels={"c": [(0.0, 100.0)], "a": [(0.0, 90.0)]})
+    s = D.Run(phases="bc", start=0.0, end=60.0, levels={"b": [(0.0, 100.0)], "c": [(0.0, 90.0)]})
+    house = D.Run(phases="ac", start=0.0, end=60.0, levels={"c": [(0.0, 100.0)], "a": [(0.0, 90.0)]})
     assert D._same_load(house, s, {"a": "b", "b": "c", "c": "a"}) and not D._same_load(house, s, {"b": "b", "c": "c"})
 
 
@@ -2052,10 +2052,10 @@ def test_a_sub_meter_decides_which_signature_a_session_joins():
     other = _sig(2, 1040.0, last_seen=0.0)
     far = _sig(3, 3000.0, last_seen=0.0)
     det.signatures = [near, other, far]
-    s = D.Session(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
+    s = D.Run(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
     det._file(s, prefer=2)
     assert s.signature_id == 2, "the sub-meter's choice, although 1 fits a little better"
-    t = D.Session(phases="a", start=200.0, end=260.0, levels={"a": [(200.0, 1000.0)]})
+    t = D.Run(phases="a", start=200.0, end=260.0, levels={"a": [(200.0, 1000.0)]})
     det._file(t, prefer=3)
     assert t.signature_id == 3, "taken even where the house read it differently"
 
@@ -2071,7 +2071,7 @@ def test_a_session_waits_only_for_meters_that_could_have_seen_it():
     fast, slow = D.Detector(), D.Detector()
     fast.phases["a"].interval, slow.phases["a"].interval = 10.0, 420.0
     fleet.subs = {"plug": fast, "workshop": slow}
-    run = D.Session(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
+    run = D.Run(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 900.0)]})
     # the two meters' tolerance (the grid's 6 s and the plug's latency, three
     # of its 10 s), the plug's declaring lag - its latency twice until one is
     # learned - and its wait for a partner leg
@@ -2080,7 +2080,7 @@ def test_a_session_waits_only_for_meters_that_could_have_seen_it():
     assert fleet._ready_at(run, 6.0) == 60.0 + 36.0 + 12.0 + D.HELD_TAIL_S
     fast.phases["a"].interval = 50.0                                 # a plug as slow as the run: not waited for either
     assert fleet._ready_at(run, 6.0) == 60.0
-    long_run = D.Session(phases="a", start=0.0, end=3000.0, levels={"a": [(0.0, 900.0)]})
+    long_run = D.Run(phases="a", start=0.0, end=3000.0, levels={"a": [(0.0, 900.0)]})
     slow.phases["a"].interval = 1400.0
     assert fleet._ready_at(long_run, 6.0) == 3000.0 + D.MATCH_PATIENCE_S, "never past the patience"
 
@@ -2758,7 +2758,7 @@ def test_a_motors_starting_surge_is_not_a_load_of_its_own():
     for an 830 W pump - and the power it recorded depended on how long the
     session happened to last, so one pump arrived as several loads."""
     t = T0
-    pump = D.Session(phases="a", start=t, end=t + 40.0, samples=5,
+    pump = D.Run(phases="a", start=t, end=t + 40.0, samples=5,
                      levels={"a": [(t, 8886.0), (t + 10, 833.0),
                                    (t + 20, 818.0), (t + 30, 807.0)]})
     assert round(sum(pump.power_by_phase().values())) == 819, pump.power_by_phase()
@@ -2772,13 +2772,13 @@ def test_a_first_stage_that_lasts_is_not_a_surge():
     comes from the session's own sampling rate, which is what tells ten
     seconds on a slow meter from ten minutes of heating on a fast one."""
     t = T0
-    washer = D.Session(phases="a", start=t, end=t + 3000.0, samples=200,
+    washer = D.Run(phases="a", start=t, end=t + 3000.0, samples=200,
                        levels={"a": [(t, 2000.0), (t + 600, 200.0)]})
     assert round(sum(washer.power_by_phase().values())) == 560
     assert washer.inrush_w == 0.0
 
     # and a run with a single level has nothing to strip
-    flat = D.Session(phases="a", start=t, end=t + 60.0, samples=12,
+    flat = D.Run(phases="a", start=t, end=t + 60.0, samples=12,
                      levels={"a": [(t, 1800.0)]})
     assert round(sum(flat.power_by_phase().values())) == 1800
     assert flat.inrush_w == 0.0
@@ -2973,12 +2973,12 @@ def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     keeps its energy per clock hour for HOURLY_KEEP_S (2026-09-29)."""
     sig = _sig(1, 600.0, 1800.0, 0, first_seen=T0, last_seen=T0)
     hour0 = int(T0 // 3600 * 3600)
-    s = D.Session(phases="a", start=hour0 + 3000.0, end=hour0 + 4800.0, levels={"a": [(hour0 + 3000.0, 600.0)]})
+    s = D.Run(phases="a", start=hour0 + 3000.0, end=hour0 + 4800.0, levels={"a": [(hour0 + 3000.0, 600.0)]})
     sig._spread(s, timezone.utc)
     assert {h: round(w) for h, w in sig.hourly.items()} == {hour0: 100, hour0 + 3600: 200}, sig.hourly
     back = D.Signature.from_dict(json.loads(json.dumps(sig.to_dict())))
     assert back.hourly == {hour0: 100.0, hour0 + 3600: 200.0}
-    late = D.Session(phases="a", start=hour0 + D.HOURLY_KEEP_S + 7200.0, end=hour0 + D.HOURLY_KEEP_S + 7260.0,
+    late = D.Run(phases="a", start=hour0 + D.HOURLY_KEEP_S + 7200.0, end=hour0 + D.HOURLY_KEEP_S + 7260.0,
                      levels={"a": [(hour0 + D.HOURLY_KEEP_S + 7200.0, 600.0)]})
     sig._spread(late, timezone.utc)
     assert hour0 not in sig.hourly and len(sig.hourly) == 1          # the old hours aged out
@@ -3044,7 +3044,7 @@ def test_a_load_switched_by_an_input_learns_that_input_at_its_edges():
     assert starts["kind"] == "off→on" and stops["kind"] == "on→off", story
     assert -8.0 < starts["lag_s"] < -2.0, starts
     assert "sensor.room" in story["start"]["values"], story["start"]
-    back = D.EdgeCluster.from_dict(keyed[0].to_dict())
+    back = D.StepGroup.from_dict(keyed[0].to_dict())
     assert back.keys == keyed[0].keys and back.watts == keyed[0].watts
 
 
@@ -3172,7 +3172,7 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
     mat = _sig(1, 635.0, 200.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
     fridge = _sig(2, 600.0, 900.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 10})
     fleet.main.signatures = [mat, fridge]
-    run = lambda a, b: D.Session(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]})
+    run = lambda a, b: D.Run(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]})
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # off throughout: not the mat
     assert fleet._switched_off(run(T0 + 100.0, T0 + 250.0), 2.0) == []     # while it was on
     assert fleet._switched_off(run(T0 + 3000.0, T0 + 3700.0), 2.0) == []   # on for part of it
@@ -3190,7 +3190,7 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
     hour0 = int(T0 // 3600 * 3600)
     for a, b in ((hour0, hour0 + 1800.0), (hour0 + 900.0, hour0 + 2700.0)):
         sig.runs.append((a, b))                                     # as add() does, before spreading
-        sig._spread(D.Session(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]}), timezone.utc)
+        sig._spread(D.Run(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]}), timezone.utc)
     assert round(sig.hourly[hour0]) == 450, sig.hourly              # 45 minutes on, not 60
     assert D._uncovered(0, 10, [(2, 3), (1, 4), (6, 12)]) == [(0, 1), (4, 6)]
     assert D._uncovered(0, 10, []) == [(0, 10)] and D._uncovered(0, 10, [(-5, 20)]) == []
@@ -3203,7 +3203,7 @@ def test_a_pair_is_believed_from_the_run_that_makes_it():
     with none. They are kept as each run is learned, and come back with the
     library."""
     det = D.Detector()
-    det.edges = [D.EdgeCluster(id=i, phase="a", up=up, watts=w)
+    det.edges = [D.StepGroup(id=i, phase="a", up=up, watts=w)
                  for i, up, w in ((1, True, 900.0), (2, False, 880.0), (3, True, 200.0), (4, False, 200.0))]
     for _ in range(50):
         det.note_pair(3, 4, 200.0, 200.0, 60.0)          # the phase's other closes
@@ -3355,9 +3355,9 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
     sig_c = _sig(1, 600.0, 100.0, 20, phases="c", last_seen=0.0)
     det.signatures = [sig_c]
     det.next_id = 2
-    det.edges = [D.EdgeCluster(id=1, phase="a", up=True, watts=650.0, count=30), D.EdgeCluster(id=2, phase="c", up=True, watts=600.0, count=30)]
+    det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=650.0, count=30), D.StepGroup(id=2, phase="c", up=True, watts=600.0, count=30)]
     det.start_home = {"2": {"1": 20.0}}             # the C starts went to the C signature
-    run = D.Session(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(2, None))   # a run of that start on A alone
+    run = D.Run(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(2, None))   # a run of that start on A alone
     det._file(run)
     got = det.signature_of(run)
     assert got is not sig_c and got.phases == "a", (got.id, got.phases, got.power)
@@ -3682,7 +3682,7 @@ def test_a_meter_that_held_through_a_runs_start_is_not_paired_by_energy():
     rows.append((T0 + 3500.0, 0.6))
     f.sub_rows["Hidrofor"] = {"a": rows}
     f._now = T0 + 3600.0
-    run = D.Session(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
+    run = D.Run(phases="c", start=T0, end=T0 + 2820.0, levels={"c": [(T0, 80.0)]})
     assert 0.65 <= D.energy_between(rows, run.start, run.end) / run.energy_wh <= 1.35   # the energies agree
     assert not f._energy_pairs([run])                                     # but the plug held at its start
     f.sub_rows["Hidrofor"] = {"a": [(T0 - 1800.0, 0.5), (T0 + 2.0, 85.0), (T0 + 2810.0, 0.5), (T0 + 3500.0, 0.6)]}   # a plug that started it
@@ -3717,9 +3717,9 @@ def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
     other = _sig(140, 270.0, 600.0, 20, phases="c", first_seen=T0, last_seen=T0)
     f.main.signatures = [home, other]
     f.main.start_home = {"163": {136: 3.0}, "165": {136: 40.0}, "77": {140: 20.0}}
-    run = D.Session(phases="c", start=T0, end=T0 + 9480.0, levels={"c": [(T0, 286.0)]}, pair=(165, None))
+    run = D.Run(phases="c", start=T0, end=T0 + 9480.0, levels={"c": [(T0, 286.0)]}, pair=(165, None))
     assert f._held_homes(run) == [136]                                   # its level, held: not of its kind
-    big = D.Session(phases="c", start=T0, end=T0 + 600.0, levels={"c": [(T0, 1000.0)]}, pair=(77, None))
+    big = D.Run(phases="c", start=T0, end=T0 + 600.0, levels={"c": [(T0, 1000.0)]}, pair=(77, None))
     assert f._held_homes(big) == []                                      # not its size: nothing to say
     owned.meter = None
     assert f._held_homes(run) == []                                      # a run no meter holds: no word on it
@@ -3843,7 +3843,7 @@ def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
     fan = _sig(618, 18.0, 600.0, 83, phases="c")
     fan.locations.update({"Hiša": 59, "Susilna": 4})
     f.main.signatures = [own, fan]
-    night = D.Session(phases="c", start=T0, end=T0 + 72000.0, levels={"c": [(T0, 270.0)]})
+    night = D.Run(phases="c", start=T0, end=T0 + 72000.0, levels={"c": [(T0, 270.0)]})
     assert f._meter_home("Susilna") == 618                                   # most of its sessions
     assert f._meter_home("Susilna", night) == 139                            # of this run's kind
 
@@ -3965,12 +3965,12 @@ def test_every_meters_session_is_matched_by_its_peak_in_the_grids_terms():
     66 s boiler pulse's mean (1,241 W of 1,813) as Kozolec's Shelly did, and
     still pairs by what it peaked at; a meter reading 20 % low pairs once its
     gain is learned, and votes by it."""
-    pulse = D.Session("c", T0, T0 + 66.0, {"c": [(T0, 1813.0)]})
-    slow = D.Session("b", T0 + 5.0, T0 + 71.0, {"b": [(T0 + 5.0, 1800.0), (T0 + 30.0, 900.0)]})
+    pulse = D.Run("c", T0, T0 + 66.0, {"c": [(T0, 1813.0)]})
+    slow = D.Run("b", T0 + 5.0, T0 + 71.0, {"b": [(T0 + 5.0, 1800.0), (T0 + 30.0, 900.0)]})
     assert abs(slow.power_by_phase()["b"] - 1813.0) > D.MATCH_POWER_REL * 1813.0       # its mean misses
     assert D._same_load(pulse, slow, {"b": "c"}, 1.0, 60.0)
     assert not D._same_load(pulse, slow, {"b": "a"}, 1.0, 60.0)                          # placed elsewhere
-    low = D.Session("a", T0 + 5.0, T0 + 71.0, {"a": [(T0 + 5.0, 1450.0)]})
+    low = D.Run("a", T0 + 5.0, T0 + 71.0, {"a": [(T0 + 5.0, 1450.0)]})
     assert not D._same_load(pulse, low, {}, 1.0, 60.0) and D._same_load(pulse, low, {}, 1.25, 60.0)
     f = D.Fleet()
     f.meter_gain["Plug"] = {"p": [math.log(1.25), D.METER_GAIN_MIN]}
@@ -3994,10 +3994,10 @@ def test_a_meter_reading_one_total_of_a_three_phase_load_maps_to_all_three():
     charges, kettles, pool = [], [], []
     for k in range(D.PHASE_MAP_MIN_VOTES):
         t = T0 + 3600.0 * k
-        pool.append(D.Session("abc", t, t + 1800.0, {p: [(t, 3670.0)] for p in "abc"}))
-        charges.append(D.Session("a", t + 3.0, t + 1803.0, {"a": [(t + 3.0, 11000.0)]}))
-        pool.append(D.Session("b", t + 900.0, t + 1080.0, {"b": [(t + 900.0, 2000.0)]}))
-        kettles.append(D.Session("a", t + 902.0, t + 1082.0, {"a": [(t + 902.0, 1990.0)]}))
+        pool.append(D.Run("abc", t, t + 1800.0, {p: [(t, 3670.0)] for p in "abc"}))
+        charges.append(D.Run("a", t + 3.0, t + 1803.0, {"a": [(t + 3.0, 11000.0)]}))
+        pool.append(D.Run("b", t + 900.0, t + 1080.0, {"b": [(t + 900.0, 2000.0)]}))
+        kettles.append(D.Run("a", t + 902.0, t + 1082.0, {"a": [(t + 902.0, 1990.0)]}))
     pool.sort(key=lambda m: m.start)
     f._vote_phases({"Charger": charges, "Plug": kettles, "Hiša": charges[:3]}, 5.0, pool)
     assert f.phase_votes["Charger"] == {"a": {"abc": D.PHASE_MAP_MIN_VOTES}} and f.phase_votes["Hiša"] == {}
@@ -4025,8 +4025,8 @@ def test_a_set_carries_its_subsets():
     assert f.phase_map("Charger") == {"a": "abc"} and f.phase_map("Pump") == {"a": "a"}
     f.phase_votes["L1"], f.phase_energy["L1"] = {"a": {"a": 65, "abc": 4}}, {"a": {"a": 9355.0, "abc": 5051.0}}
     assert f.phase_map("L1") == {"a": "abc"}                    # a sixteenth by count, a third by energy
-    l1 = D.Session("a", T0, T0 + 1800.0, {"a": [(T0, 3600.0)]})
-    own = D.Session("a", T0 + 3.0, T0 + 1803.0, {"a": [(T0 + 3.0, 3610.0)]})
+    l1 = D.Run("a", T0, T0 + 1800.0, {"a": [(T0, 3600.0)]})
+    own = D.Run("a", T0 + 3.0, T0 + 1803.0, {"a": [(T0 + 3.0, 3610.0)]})
     assert D._same_load(l1, own, {"a": "abc"}, 1.0, 60.0) and not D._same_load(l1, own, {"a": "bc"}, 1.0, 60.0)
     view = D.Fleet()
     view.subs["PC"] = D.Detector()
@@ -4084,7 +4084,7 @@ def test_a_meters_energy_answers_only_on_the_sessions_phases():
     his.phases["b"] = D.PhaseState(noise=5.0, interval=10.0)
     _declare(his.phases["a"], (T0 + 2.0, 500.0, None, T0 - 8.0, T0 + 2.0))
     f.phase_votes = {"Hiša": {"a": {"c": D.PHASE_MAP_MIN_VOTES}, "b": {"a": D.PHASE_MAP_MIN_VOTES}}}
-    run = D.Session(phases="c", start=T0, end=T0 + 1800.0, levels={"c": [(T0, 500.0)]})
+    run = D.Run(phases="c", start=T0, end=T0 + 1800.0, levels={"c": [(T0, 500.0)]})
     f._now = T0 + 3600.0
     f.sub_rows["Hiša"] = {"a": [(T0 - 1800.0, 100.0), (T0 + 2.0, 600.0), (T0 + 1800.0, 100.0), (T0 + 3500.0, 100.0)],
                           "b": [(T0 - 1800.0, 50.0), (T0 + 2.0, 2050.0), (T0 + 1800.0, 50.0), (T0 + 3500.0, 50.0)]}
@@ -4166,7 +4166,7 @@ def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
     detected by both meters, shouldn't the reading collapse into a single
     device anyway?"): a load a meter holding several devices saw is that
     meter's own signature - the grid files its runs as that meter's
-    (Session.owner) and grows no copy - so it is offered in that meter's
+    (Run.parent_signature) and grows no copy - so it is offered in that meter's
     list, and named there it is a named load like any other: its energy
     and its running are the meter's own sessions'."""
     f = _tree_fleet()
@@ -4414,11 +4414,11 @@ def test_an_event_on_several_phases_is_placed_where_every_leg_was_one_meters():
     f.phase_votes = {"Hiša": {"a": {"a": D.PHASE_MAP_MIN_VOTES}, "c": {"c": D.PHASE_MAP_MIN_VOTES}}}
     f._bind()
     cl = f.main._classify_step("ac", T0, 4000.0, None, 0.0, legs=[("a", T0, 2000.0), ("c", T0, 2000.0)])
-    assert cl.where == "Hiša", cl.where
+    assert cl.owner == "Hiša", cl.owner
     f.phase_votes = {"Hiša": {"a": {"a": D.PHASE_MAP_MIN_VOTES}}}
     his.phases["c"].declared, his.phases["c"].declared_t = [], []
     cl = f.main._classify_step("ac", T0, 4000.0, None, 0.0, legs=[("a", T0, 2000.0), ("c", T0, 2000.0)])
-    assert cl.where != "Hiša"
+    assert cl.owner != "Hiša"
 
 
 def test_a_meters_stop_the_grid_did_not_show_ends_its_run():
@@ -4536,7 +4536,7 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     home.locations["Hidrofor"] = 30
     other = _sig(32, 1000.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0)
     f.main.signatures = [home, other]
-    run = D.Session(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
+    run = D.Run(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
     assert f._held_homes(run) == [31]                                    # the plug held: not the hidrofor
     f.single = {"Hidrofor": False}
     assert f._held_homes(run) == [31]                                    # a circuit that held did not start it either
@@ -4549,25 +4549,25 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     session decides which signature a run joins - and its energy places one
     it has no session for - where the meter holds one device, as the user
     declared it or, undeclared, as its library's shape says. A circuit's
-    session makes the run its own signature's (Session.owner) and the grid
+    session makes the run its own signature's (Run.parent_signature) and the grid
     files nothing - unless the grid's signature for the run's device wears
     a name: a name stays where it was given."""
     f = _fleet_with_meters({"Plug": 0.0})
     own = _sig(1, 300.0, 600.0, 40, first_seen=T0, last_seen=T0)
     f.subs["Plug"].signature_of = lambda s: own
-    sub = D.Session("a", T0, T0 + 600.0, {"a": [(T0, 300.0)]})
-    run = D.Session("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]}, pair=(5, None))
+    sub = D.Run("a", T0, T0 + 600.0, {"a": [(T0, 300.0)]})
+    run = D.Run("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]}, pair=(5, None))
     f.identity = {"Plug": {"1": 77}}
     asked = []
     f._place = lambda m, name, prefer: asked.append(prefer)
     f.single = {"Plug": False}
     f._file_as(run, "Plug", sub)
-    assert asked == [] and run.owner == ("Plug", sub), (asked, run.owner)       # the circuit's own
+    assert asked == [] and run.parent_signature == ("Plug", sub), (asked, run.parent_signature)       # the circuit's own
     named = _sig(8, 300.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0, name="Kiln")
     f.main.signatures, f.main.start_home, f.main._device_home = [named], {"5": {8: 3.0}}, None
-    run.owner = None
+    run.parent_signature = None
     f._file_as(run, "Plug", sub)
-    assert asked == [8] and run.owner is None, (asked, run.owner)            # its device's named signature
+    assert asked == [8] and run.parent_signature is None, (asked, run.parent_signature)            # its device's named signature
     f.single = {"Plug": True}
     f._file_as(run, "Plug", sub)
     assert asked == [8, 77], asked
@@ -4583,7 +4583,7 @@ def test_a_run_kept_out_of_its_meters_signature_does_not_move_where_the_device_l
     f.single = {"Plug": True}
     own = _sig(1, 900.0, 60.0, 40, first_seen=T0, last_seen=T0)
     f.subs["Plug"].signature_of = lambda s: own
-    sub = D.Session("a", T0, T0 + 60.0, {"a": [(T0, 900.0)]})
+    sub = D.Run("a", T0, T0 + 60.0, {"a": [(T0, 900.0)]})
     pump = _sig(4, 900.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
     other = _sig(25, 1000.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
     f.main.signatures = [pump, other]
@@ -4594,7 +4594,7 @@ def test_a_run_kept_out_of_its_meters_signature_does_not_move_where_the_device_l
         asked.append(prefer)
         return f.main._sig(went.pop(0))
     f._place = place
-    run = D.Session("c", T0, T0 + 60.0, {"c": [(T0, 900.0)]})
+    run = D.Run("c", T0, T0 + 60.0, {"c": [(T0, 900.0)]})
     f._file_as(run, "Plug", sub)                     # sent to #4, kept out of it, filed in #25
     assert f.identity["Plug"]["1"] == 4, f.identity
     f._file_as(run, "Plug", sub)                     # filed where it was sent
@@ -4933,7 +4933,7 @@ def test_a_run_that_settles_to_its_meters_size_is_that_meters():
         # the plug's: filed under a signature located at it, or (the fold books the
         # blip's step down as the start's decay, so the run sits at the plug's own
         # size) owned by the plug's session
-        plugs = bool(sig is not None and sig.locations.get("Plug")) or (run.owner is not None and run.owner[0] == "Plug")
+        plugs = bool(sig is not None and sig.locations.get("Plug")) or (run.parent_signature is not None and run.parent_signature[0] == "Plug")
         assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and plugs, (
             "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
 
@@ -5335,8 +5335,8 @@ def test_the_days_repair_gives_back_what_the_phase_never_drew():
     loose, held = _sig(1, 1000.0), _sig(2, 500.0)
     det.signatures = [loose, held]
     hour = int(T0 // 3600 * 3600) + 3600
-    a = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]}, signature_id=1)
-    b = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 500.0)]}, signature_id=2,
+    a = D.Run(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]}, signature_id=1)
+    b = D.Run(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 500.0)]}, signature_id=2,
                   wh={"a": 500.0})
     loose.hourly, held.hourly = {hour: 1000.0}, {hour: 500.0}
     loose.hour_wh[int(hour % 86400 // 3600)] = 1000.0
@@ -5350,8 +5350,8 @@ def test_the_days_repair_gives_back_what_the_phase_never_drew():
     assert abs(loose.hour_wh[int(hour % 86400 // 3600)] - 510.0) < 1.0
     # ...and of two unmeasured runs the one open longer gives first: it is
     # the likelier to have stopped unseen
-    old = D.Session(phases="a", start=hour - 600, end=hour + 3600, levels={"a": [(hour - 600, 1000.0)]})
-    new = D.Session(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]})
+    old = D.Run(phases="a", start=hour - 600, end=hour + 3600, levels={"a": [(hour - 600, 1000.0)]})
+    new = D.Run(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]})
     rows = [(day, 200.0), (hour - 600, 1200.0), (hour, 2200.0), (hour + 1800, 1200.0), (hour + 3600, 200.0)]
     D._cap_day(det, [old, new], {"a": rows}, day, day + 86400.0)
     assert abs(new.energy_wh - 1000.0) < 1.0 and abs(old.energy_wh - 1000.0 / 6 - 510.0) < 1.0, (old.energy_wh, new.energy_wh)
@@ -5524,6 +5524,45 @@ def test_the_ins9_gain_dials_learn_from_falls_and_read_a_median():
 
 def test_the_ins9_dials_are_off():
     assert not (D.GAIN_FALLS or D.GAIN_MEDIAN or D.GAIN_UNGATED)
+
+
+def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():
+    """Steps-and-claims stage 3: 24 rises of 1.9 kW on one phase, 16 while a washer
+    reads Running (a fifth of the time) and 8 while Off - the Running ones pile up
+    far above chance and get a group keyed by that one state; the Off ones, no
+    rarer than chance, stay in the plain group. The key is ONE input's state, not
+    the tuple of every input's (which never repeats)."""
+    old = D.STATE_TAG
+    D.STATE_TAG = 2
+    try:
+        det = D.Detector()
+        rows, spent = [], {"Running": 20000.0, "Off": 80000.0}
+        t = 0.0
+        for k in range(24):
+            state = "Running" if k % 3 else "Off"
+            rows.append((t, state))
+            t += 600.0
+        rows += [(t0 + t, s) for t0, s in rows]              # the same day twice over
+        det.inputs = {"sensor.washer": rows, "sensor.other": [(0.0, "Idle")]}
+        det.input_time = {"sensor.washer": spent, "sensor.other": {"Idle": 100000.0}}
+        for i, (since, _) in enumerate(rows):
+            det._classify_step("c", since + 10.0, 1900.0 + (i % 3), None, 0.0)
+        ups = [c for c in det.edges if c.phase == "c" and c.up]
+        keyed = [c for c in ups if c.keys.get("sensor.washer@") == "Running"]
+        plain = [c for c in ups if not any(c.keys.values())]
+        # streamed: the Running steps go plain until enough have piled up (PAIR_MIN_RUNS)
+        # for the state to be above chance, keyed from then on - the second day's all are
+        assert len(keyed) == 1 and keyed[0].count >= 16, [(c.keys, c.count) for c in ups]
+        assert len(plain) == 1 and plain[0].count + keyed[0].count == 48, [(c.keys, c.count) for c in ups]
+        assert not any(c.keys.get("sensor.washer@") == "Off" for c in ups)     # Off is chance, never a key
+        assert "sensor.other@" not in keyed[0].keys
+    finally:
+        D.STATE_TAG = old
+
+
+def test_grid_phases_read_as_system_phases_with_the_meters_label():
+    """Stage 1 of steps-and-claims: the grid's phases are X, Y, Z for a person."""
+    assert [D.display_phase(p) for p in D.PHASES] == ["X (L1)", "Y (L2)", "Z (L3)"]
 
 
 if __name__ == "__main__":
