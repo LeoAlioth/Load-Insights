@@ -717,10 +717,10 @@ def energy(site: str, folder: str, dials: list) -> dict:
     def sid_of(s):
         # the signature it stands in now, merges followed; one since evicted
         # still counts - its runs were detected and their energy written
-        if s.owner:                     # a meter's own signature's (Session.owner): "Mansarda#11"
-            name, own = s.owner
-            while own.owner:            # ...or the meter's own run is a meter's inside it
-                name, own = own.owner
+        if s.parent_signature:                     # a meter's own signature's (Run.parent_signature): "Mansarda#11"
+            name, own = s.parent_signature
+            while own.parent_signature:            # ...or the meter's own run is a meter's inside it
+                name, own = own.parent_signature
             cur = f"{name}#{fleet.subs[name]._current(own.signature_id)}" if own.signature_id is not None else None
             return cur if cur in by_id else f"{name}#gone {own.signature_id}"
         cur = det._current(s.signature_id) if s.signature_id is not None else None

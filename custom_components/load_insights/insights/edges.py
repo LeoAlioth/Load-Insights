@@ -38,7 +38,7 @@ it could still declare can touch it - so the slicing never changes an edge.
 
 Grouping (``group``): per (place, direction, phase pattern on the place
 meter), cut at the valleys of the place entry's size density and then of its
-angle, as the detector's EdgeCluster library cuts today. The scorecard
+angle, as the detector's StepGroup library cuts today. The scorecard
 (``scorecard``, ``conservation``, ``coverage``, ``compare``) needs no devices.
 
 Pure: no Home Assistant. Fed beside the detector in replays
