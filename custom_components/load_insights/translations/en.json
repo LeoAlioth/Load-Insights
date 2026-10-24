@@ -57,6 +57,9 @@
             "detected_loads": {
                 "name": "Detected loads"
             },
+            "signature_library": {
+                "name": "Signature library"
+            },
             "unknown_load_power": {
                 "name": "Unknown load power"
             },

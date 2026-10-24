@@ -14,7 +14,7 @@ from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity import Entity, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -26,8 +26,8 @@ from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
-from .insights.detect import (PF_MIN_QUANTA, PHASES, describe_location, display_phase, location_confidence,
-                              most_specific, ref_label, running_markdown, suggest_levels)
+from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown, signature_rows,
+                              suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -89,7 +89,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             registry.async_remove(ent.entity_id)
     entities += [e for d in heat for e in (HeatIndexSensor(coordinator, entry, d), HeatScorecardSensor(coordinator, entry, d))]
     detection: DetectionRunner = entry.runtime_data.runner
-    entities += [DetectedLoadsSensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+    entities += [DetectedLoadsSensor(detection, entry), SignatureLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
     device_names = {d.label.casefold() for d in site.devices}
     for n in sorted(detection.fleet.names()):
@@ -524,8 +524,9 @@ class _DetectionBase(CoordinatorEntity, SensorEntity):
 
 class DetectedLoadsSensor(_DetectionBase):
     """State: how many unexplained loads are on right now. Attributes: which,
-    the signature library in words, the last sessions, and where the backfill
-    stands."""
+    the last sessions, and where the backfill stands. The signature library is
+    SignatureLibrarySensor's: moved off this sensor, which is rewritten every
+    pass, because its 0.5 MB went to every connected dashboard each time."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 0
@@ -569,40 +570,13 @@ class DetectedLoadsSensor(_DetectionBase):
             # a one-figure inverter's phases on the grid's, from its voltages: "X (L1)" per phase
             "inverter_phases": {n: {c.upper(): display_phase(p) for c, p in m.items() if p in PHASES}
                                 for n, m in self._runner.fleet.inverter_phases.items()},
-            "signatures": [
-                {"id": s.id, "name": s.name, "description": s.describe(tz, now, s.id in running),
-                 "running": s.id in running, "last_seen_ago_s": round(max(0.0, now - s.last_seen)),
-                 "phases": s.phases.upper(),
-                 "system_phases": [display_phase(p) for p in s.phases if p in PHASES],
-                 "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
-                 "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
-                 "pf": None if s.pf is None else round(s.pf, 2),
-                 "pf_mad": round(s.pf_mad, 3), "last_seen": iso(s.last_seen),
-                 # watt-hours per hour of day, and per weekday from Monday
-                 "hour_wh": [round(x) for x in s.hour_wh], "day_wh": [round(x) for x in s.day_wh],
-                 # the downstream meter that also saw it, or "main" (upstream of every submeter)
-                 "location": most_specific(s.locations, s.count, self._runner.parents),
-                 "where": describe_location(s.locations, s.count, self._runner.parents, s.phases),
-                 "seen_by": dict(s.locations),
-                 # three separate scores: whether it is a real repeating load,
-                 # what kind of thing it might be, and where it lives. They
-                 # answer different questions, so they are not blended.
-                 "evidence": s.evidence, "regular": s.regular,
-                 "guess": s.guess().to_dict(),
-                 "where_confidence": location_confidence(s.locations, s.count, self._runner.parents)}
-                # same order as the naming page: best evidence first
-                for s in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
-            ],
-            "meters": {
-                name: {
-                    "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
-                                   for x in sorted(d.signatures, key=lambda y: -y.count)],
-                    "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
-                    "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
-                    "active": [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])} for a in d.active(now)],
-                }
-                for name, d in self._runner.fleet.subs.items()
-            },
+            # which signatures are running now: the library (Signature library sensor) holds nothing that
+            # depends on the clock, so a dashboard joins the two
+            "running_ids": sorted(running),
+            # what each sub-meter has on now; its signatures are in the library sensor's "meters"
+            "meters_active": {name: [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])}
+                                     for a in d.active(now)]
+                              for name, d in self._runner.fleet.subs.items()},
             "meter_hierarchy": self._runner.parents,
             "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
             # names whose signature a reset took, still looking for the load
@@ -624,6 +598,46 @@ class DetectedLoadsSensor(_DetectionBase):
             "pf_floor_w": {p.upper(): round(PF_MIN_QUANTA * st.q_quantum) for p, st in det.phases.items() if st.q_quantum},
             "processed_until": self._runner.last_processed.isoformat() if self._runner.last_processed else None,
             "caught_up": self._runner.caught_up,
+        }
+
+
+class SignatureLibrarySensor(_DetectionBase):
+    """State: how many signatures the detector holds. Attributes: every
+    signature in words and figures, and each sub-meter's own.
+
+    Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
+    pass and its signatures were 0.5 MB - every pass, to every connected
+    dashboard and phone, and into the state machine. Nothing here depends on
+    the clock (``signature_rows``), so a pass that filed nothing writes nothing.
+    Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+    def __init__(self, runner, entry) -> None:
+        super().__init__(runner, entry, "signature_library")
+
+    @property
+    def native_value(self) -> int:
+        return len(self._runner.detector.signatures)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        det = self._runner.detector
+        tz = dt_util.DEFAULT_TIME_ZONE
+        parents = self._runner.parents
+        return {
+            "signatures": signature_rows(det.signatures, tz, parents),
+            "meters": {
+                name: {
+                    "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
+                                   for x in sorted(d.signatures, key=lambda y: -y.count)],
+                    "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
+                    "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
+                }
+                for name, d in self._runner.fleet.subs.items()
+            },
         }
 
 
