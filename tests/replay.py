@@ -29,6 +29,7 @@ import math
 import os
 import pickle
 import sys
+from array import array
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,6 +230,51 @@ def carried(before, row) -> bool:
     return row[0] % 900.0 == 0.0 and row[1] == before[1]
 
 
+class Series:
+    """One entity's readings as two columns of doubles, behaving as the list of
+    (epoch seconds, value) it replaced: Home's 11.4 million readings took 1.8 GB
+    as tuples of float objects and take ~180 MB as columns (2026-10-24)."""
+    __slots__ = ("t", "v")
+
+    def __init__(self, rows=(), t=None, v=None):
+        if t is None:
+            rows = list(rows)
+            t, v = array("d", [r[0] for r in rows]), array("d", [r[1] for r in rows])
+        self.t, self.v = t, v
+
+    def __len__(self):
+        return len(self.t)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return list(zip(self.t[i], self.v[i]))     # a window, as the list it always was
+        return (self.t[i], self.v[i])
+
+    def __iter__(self):
+        return zip(self.t, self.v)
+
+    def __reversed__(self):
+        return zip(reversed(self.t), reversed(self.v))
+
+    def __add__(self, other):
+        return list(self) + list(other)
+
+    def __radd__(self, other):
+        return list(other) + list(self)
+
+    def __bool__(self):
+        return len(self.t) > 0
+
+    def __eq__(self, other):
+        return list(self) == list(other)
+
+    def __getstate__(self):
+        return self.t, self.v
+
+    def __setstate__(self, state):
+        self.t, self.v = state
+
+
 def _series(paths, keep_coarse, scale):
     series = defaultdict(list)
     for eid, ts, raw in _rows(paths):
@@ -244,7 +290,7 @@ def _series(paths, keep_coarse, scale):
         if not keep_coarse:
             rows, gone = drop_aggregates(rows)
             coarse += gone
-        out[eid] = rows
+        out[eid] = Series(rows)
     return out, coarse
 
 
