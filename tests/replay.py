@@ -469,9 +469,10 @@ def run(args, transform=None, say=print):
         fields[key.strip()] = eid.strip()
     fields = {k: v for k, v in fields.items() if v in series}
 
-    span = [t for rows in series.values() for t, _ in rows]
+    first = min(rows[0][0] for rows in series.values() if rows)      # each series is in time order
+    last = max(rows[-1][0] for rows in series.values() if rows)
     say(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
-        f"{(max(span) - min(span)) / 86400:.1f} days")
+        f"{(last - first) / 86400:.1f} days")
     say("matched:")
     for key in sorted(fields):
         say(f"   {key:12} {fields[key]}")
