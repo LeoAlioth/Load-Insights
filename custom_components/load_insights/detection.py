@@ -72,6 +72,7 @@ from .insights.detect import (
 )
 from .insights.phases import beside, match_meter_entities, share_split, voltage_votes
 from .insights.model import SiteModel
+from .insights.solar import array_rows
 from .autonaming import AutoNamer
 from .insights.named import (first_change, metered_device, plan_carry, plan_rewrite,
                              vanished_into)
@@ -630,12 +631,14 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return []
         registry = er.async_get(self.hass)
         spare = list(site.solar_power)
+        grid_power = [self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES]
         out: List[Dict[str, str]] = []
         for stat in site.solar:
             found: Dict[str, str] = {}
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
-                matched = match_meter_entities(device_rows(self.hass, entry.device_id))
+                # the inverter's device may carry the grid meter too (SolarEdge Modbus Multi's M1)
+                matched = match_meter_entities(array_rows(device_rows(self.hass, entry.device_id), grid_power))
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
