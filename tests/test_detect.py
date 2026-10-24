@@ -5338,7 +5338,7 @@ def test_the_kept_density_is_the_full_pass_to_the_bit():
         for bb, w in h.items():
             for j, kw in enumerate(kernel):
                 full[bb - lo - reach + j] += w * kw
-        assert det._dens["a|1"][2:] == [lo, full], k
+        assert det._dens["a|1"][2:4] == [lo, full], k
 
 
 def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
@@ -5601,6 +5601,51 @@ def test_the_daily_rewrite_splits_a_signature_by_length():
     few = D.Signature(id=3, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=9, first_seen=0.0, last_seen=0.0)
     few.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 3 else 600.0)) for k in range(9)]
     assert not few.learn_split() and few.split_s is None
+
+
+def test_the_size_cuts_after_one_step_are_the_whole_scans():
+    """Only the slots near a new step's bin change, so the cuts are worked out
+    from there (_valley_cuts_near); they must be exactly what the whole pass
+    over the density gives, however the array grows around the step."""
+    import random
+    rng = random.Random(7)
+    reach, kernel = D._kernel(D.EDGE_KERNEL / D.EDGE_BIN)
+    peak = kernel[reach]
+    for _ in range(300):
+        n, lo = rng.randint(5, 120), rng.randint(-50, 50)
+        dens = [0.0] * n
+        for _ in range(rng.randint(0, 8)):
+            c, w = rng.randrange(n), rng.choice([1.0, 2.0, 5.0, 0.3])
+            for k, kw in enumerate(kernel):
+                if 0 <= c - reach + k < n:
+                    dens[c - reach + k] += w * kw
+        for _ in range(20):
+            prev = D._valley_cuts(dens, lo, peak)
+            c = rng.randrange(-reach, len(dens) + reach)
+            if c - reach < 0:
+                dens[:0] = [0.0] * (reach - c)
+                lo -= reach - c
+                c = reach
+            if c + reach > len(dens) - 1:
+                dens.extend([0.0] * (c + reach - (len(dens) - 1)))
+            w = rng.choice([1.0, 1.0, 0.5])
+            for k, kw in enumerate(kernel):
+                dens[c - reach + k] += w * kw
+            assert D._valley_cuts_near(dens, lo, peak, prev, lo + c - reach, lo + c + reach) == D._valley_cuts(dens, lo, peak)
+
+
+def test_the_exact_sum_is_the_same_whatever_order_it_was_added_in():
+    import math
+    import random
+    rng = random.Random(1)
+    for _ in range(300):
+        xs = [rng.choice([1.0, rng.random(), rng.random() * 1e-3, rng.random() * 1e3]) for _ in range(rng.randint(1, 60))]
+        parts = []
+        for x in xs:
+            D._exact_add(parts, x)
+        ys = xs[:]
+        rng.shuffle(ys)
+        assert math.fsum(parts) == math.fsum(xs) == math.fsum(ys)
 
 
 def test_grid_phases_read_as_system_phases_with_the_meters_label():

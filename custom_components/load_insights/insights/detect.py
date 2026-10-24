@@ -3942,6 +3942,23 @@ def _kernel(sd: float) -> Tuple[int, List[float]]:
     return reach, [k / total for k in kernel]
 
 
+def _exact_add(parts: List[float], x: float) -> None:
+    """Add ``x`` to the exact sum held as ``parts`` (Shewchuk's partials, as
+    math.fsum keeps them): math.fsum(parts) is then the correctly rounded
+    total, the same whatever order the terms came in."""
+    i = 0
+    for y in parts:
+        if abs(x) < abs(y):
+            x, y = y, x
+        hi = x + y
+        lo = y - (hi - x)
+        if lo:
+            parts[i] = lo
+            i += 1
+        x = hi
+    parts[i:] = [x]
+
+
 def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
     smoothed density: (first bin, last bin) of each, where anything is.
@@ -3975,6 +3992,40 @@ def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int
     if start is not None:
         segs.append((start + lo, hi))
     return segs
+
+
+def _valley_cuts_near(dens: List[float], lo: int, peak: float, prev: List[Tuple[int, int]],
+                      first: int, last: int) -> List[Tuple[int, int]]:
+    """_valley_cuts(dens, lo, peak) when only the slots of bins ``first`` to
+    ``last`` have changed since ``prev`` was cut: the scan restarts after the
+    last slot below the floor left of them (a segment cannot run through it)
+    and stops at the first one right of them, and the cuts either side are kept.
+    The same segments as the whole scan, which every step took a pass over the
+    whole density for."""
+    n = len(dens)
+    floor = 0.1 * peak
+    j = max(first - lo - 2, -1)
+    while j >= 0 and dens[j] >= floor:
+        j -= 1
+    s0 = j + 1                                   # the scan starts here, with no segment running
+    e = last - lo + 1
+    while e < n and dens[e] >= floor:
+        e += 1
+    segs, start = [], None
+    for i in range(s0, min(e, n - 1) + 1):
+        v = dens[i]
+        inside = v >= floor
+        if inside and start is None:
+            start = i
+        cut = start is not None and 0 < i < n - 1 and dens[i - 1] > v <= dens[i + 1]
+        if start is not None and (not inside or cut):
+            segs.append((start + lo, i - 1 + lo if not inside else i + lo))
+            start = None if not inside else i + 1
+    if start is not None:
+        segs.append((start + lo, lo + n - 1))
+    left = [x for x in prev if x[1] - lo < s0]
+    right = [x for x in prev if x[0] - lo > e] if e < n else []
+    return left + segs + right
 
 
 def _pile(hist: Sequence[float], least: float = EDGE_LAG_MIN) -> Optional[Tuple[int, int]]:
@@ -4134,8 +4185,15 @@ class Detector:
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
-    # "size bin:angle bin" -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN
-    edge_hist_angle: Dict[str, Dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
+    # size bin -> angle bin -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN;
+    # stored as "size bin:angle bin" -> weight. Nested so that a segment's angle
+    # density reads only the size bins in the segment (_same_angle)
+    edge_hist_angle: Dict[str, Dict[int, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
+    # group -> (first size bin, last) of a size segment -> angle bin -> the exact partial sums of
+    # that segment's angle density, added to by each step and dropped whenever the histogram is
+    # rewritten (fade, rescale) - see _same_angle
+    _acol: Dict[str, Dict[Tuple[int, int], Dict[int, List[float]]]] = field(
+        default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
@@ -4971,11 +5029,20 @@ class Detector:
             self.edge_hist_at[g] = since
         elif since - at > 3600.0:
             fade = math.exp(-(since - at) / EDGE_TAU_S)
-            for hist in [h, ha] + list(hk.values()):
+            for hist in [h] + list(hk.values()):
                 for k in list(hist):
                     hist[k] *= fade
                     if hist[k] < 1e-3:
                         del hist[k]
+            for sb in list(ha):
+                row = ha[sb]
+                for ab in list(row):
+                    row[ab] *= fade
+                    if row[ab] < 1e-3:
+                        del row[ab]
+                if not row:
+                    del ha[sb]
+            self._acol.pop(g, None)                    # every weight moved: worked out afresh
             self.edge_hist_at[g] = since
             self._dens.pop(g, None)                    # every weight moved: worked out afresh
         added = b not in h
@@ -4985,7 +5052,11 @@ class Detector:
             row[b] = row.get(b, 0.0) + 1.0
         if angle is not None:
             ab = int(math.floor(angle / EDGE_ANGLE_BIN))
-            ha[f"{b}:{ab}"] = ha.get(f"{b}:{ab}", 0.0) + 1.0
+            row = ha.setdefault(b, {})
+            row[ab] = row.get(ab, 0.0) + 1.0
+            for (lo, hi), cols in self._acol.get(g, {}).items():
+                if lo <= b <= hi:
+                    _exact_add(cols.setdefault(ab, []), 1.0)
         segs = self._segs[g] = self._valleys(g, h, b, added)      # with this step in it - see EDGE_RECUT
         plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
@@ -4998,7 +5069,7 @@ class Detector:
         members = [c for c in kind if c.owner == where
                    and seg[0] <= _bin(c.watts, unit) <= seg[1]]
         if angle is not None:
-            members = self._same_angle(ha, seg, angle, members)
+            members = self._same_angle(g, ha, seg, angle, members)
         if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
             mine = [c for c in members if c.same_signals(keyed)]
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
@@ -5034,7 +5105,7 @@ class Detector:
             g = _group(members[0].phase, members[0].up, where) if members else None
             ha = self.edge_hist_angle.get(g) if g else None
             if ha:
-                members = self._same_angle(ha, seg, angle, members)
+                members = self._same_angle(g, ha, seg, angle, members)
         mine = [c for c in members if c.same_signals(keyed) and c.keys.get(best[1]) == best[2]]
         return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
 
@@ -5055,9 +5126,9 @@ class Detector:
                 base = k - lo - reach
                 for j, kw in enumerate(kernel):
                     dens[base + j] += w * kw
-            st = self._dens[g] = [h, {k: i for i, k in enumerate(h)}, lo, dens]
+            st = self._dens[g] = [h, {k: i for i, k in enumerate(h)}, lo, dens, None]
         else:
-            _, order, lo, dens = st
+            _, order, lo, dens, _ = st
             if added:
                 order[b] = len(order)                 # a new key comes last in the dict
             if b - reach < lo:
@@ -5073,7 +5144,11 @@ class Detector:
                     if 0 <= j < len(kernel):
                         v += h[k] * kernel[j]
                 dens[i - lo] = v
-        return _valley_cuts(st[3], st[2], kernel[reach])
+        if st[4] is None:
+            st[4] = _valley_cuts(st[3], st[2], kernel[reach])
+        else:
+            st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
+        return st[4]
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
@@ -5084,13 +5159,17 @@ class Detector:
 
         def remap(hist: dict, angled: bool = False) -> dict:
             out: dict = {}
-            for k, w in hist.items():
-                b, ab = (int(k.split(":")[0]), ":" + k.split(":")[1]) if angled else (k, "")
+            for b, w in (hist.items() if not angled else ((sb, row) for sb, row in hist.items())):
                 lo, hi = (edge_scale(math.sinh(x * EDGE_BIN * EDGE_SCALE_REL) * old / EDGE_SCALE_REL, unit) / EDGE_BIN
                           for x in (b, b + 1))
                 for j in range(math.floor(lo), math.ceil(hi)):
-                    key = f"{j}{ab}" if angled else j
-                    out[key] = out.get(key, 0.0) + w * (min(hi, j + 1) - max(lo, j)) / (hi - lo)
+                    share = (min(hi, j + 1) - max(lo, j)) / (hi - lo)
+                    if angled:
+                        row = out.setdefault(j, {})
+                        for ab, wa in w.items():
+                            row[ab] = row.get(ab, 0.0) + wa * share
+                    else:
+                        out[j] = out.get(j, 0.0) + w * share
             return out
         if g in self.edge_hist:
             self.edge_hist[g] = remap(self.edge_hist[g])
@@ -5098,16 +5177,34 @@ class Detector:
             self.edge_hist_keys[g] = {k: remap(row) for k, row in self.edge_hist_keys[g].items()}
         if g in self.edge_hist_angle:
             self.edge_hist_angle[g] = remap(self.edge_hist_angle[g], True)
+        self._acol.pop(g, None)
 
-    def _same_angle(self, ha: Dict[str, float], seg: Tuple[int, int], angle: float,
+    def _same_angle(self, g: str, ha: Dict[int, Dict[int, float]], seg: Tuple[int, int], angle: float,
                     members: List["StepGroup"]) -> List["StepGroup"]:
         """The size segment's clusters whose reactive angle lies in the step's
-        own band of the segment's angle density - see EDGE_ANGLE_BIN."""
-        col: Dict[int, float] = {}
-        for k, w in ha.items():
-            sb, ab = k.split(":")
-            if seg[0] <= int(sb) <= seg[1]:
-                col[int(ab)] = col.get(int(ab), 0.0) + w
+        own band of the segment's angle density - see EDGE_ANGLE_BIN.
+
+        Every step changes the histogram before this reads it, so a cached
+        answer never lasts - but a step only ADDS to it. The segment's angle
+        density is kept per group and segment, each step in the segment added
+        to it (_by_density), and worked out afresh from the size bins inside the
+        segment only when there is none: after a fade, a rescale, a restart or
+        when the segment's edges moved. The sums are exact (partial sums), so
+        the density is the same whichever way it was reached."""
+        cache = self._acol.setdefault(g, {})
+        cols = cache.get(seg)
+        if cols is None:
+            if len(cache) >= 16:
+                del cache[next(iter(cache))]              # the oldest segment
+            cols = cache[seg] = {}
+            if len(ha) <= seg[1] - seg[0] + 1:
+                rows = (row for sb, row in ha.items() if seg[0] <= sb <= seg[1])
+            else:
+                rows = (row for sb in range(seg[0], seg[1] + 1) if (row := ha.get(sb)))
+            for row in rows:
+                for ab, w in row.items():
+                    _exact_add(cols.setdefault(ab, []), w)
+        col = {ab: math.fsum(parts) for ab, parts in cols.items()}
         ab = int(math.floor(angle / EDGE_ANGLE_BIN))
         band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
                      if lo <= ab <= hi), (ab, ab))
@@ -5765,7 +5862,8 @@ class Detector:
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "edge_hist_keys": {g: {k: {str(b): _trim(w, 3) for b, w in h.items() if w >= HIST_FLOOR * TRIM} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
-                "edge_hist_angle": {g: {k: _trim(w, 3) for k, w in h.items() if w >= HIST_FLOOR * TRIM} for g, h in self.edge_hist_angle.items()},
+                "edge_hist_angle": {g: {f"{sb}:{ab}": _trim(w, 3) for sb, row in h.items() for ab, w in row.items() if w >= HIST_FLOOR * TRIM}
+                                    for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
@@ -5812,7 +5910,12 @@ class Detector:
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
-        det.edge_hist_angle = {g: {k: float(w) for k, w in h.items()} for g, h in (d.get("edge_hist_angle") or {}).items()}
+        det.edge_hist_angle = {}
+        for g, h in (d.get("edge_hist_angle") or {}).items():
+            nested = det.edge_hist_angle[g] = {}
+            for k, w in h.items():
+                sb, ab = k.split(":")
+                nested.setdefault(int(sb), {})[int(ab)] = float(w)
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
@@ -5826,7 +5929,7 @@ class Detector:
         for g, st in (d.get("dens") or {}).items():
             if g in det.edge_hist:
                 det._dens[g] = [det.edge_hist[g], {int(k): i for i, k in enumerate(st["order"])}, int(st["lo"]),
-                                [float(x) for x in st["dens"]]]
+                                [float(x) for x in st["dens"]], None]
         det._segs = {g: [tuple(x) for x in segs] for g, segs in (d.get("segs") or {}).items()}
         det._day_log = [Run.from_dict(x) for x in d.get("day_log") or []]
         det._day_rows = {ph: [tuple(r) for r in rows] for ph, rows in (d.get("day_rows") or {}).items()}
@@ -5905,6 +6008,9 @@ class Fleet:
     # meter -> "p" (power) / "q" (reactive) -> [mean log of grid's step over the
     # meter's, steps] - see METER_GAIN_MIN
     meter_gain: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
+    # (meter, kind) -> (the ring list it was worked out from, its count then, the gain): gain() is asked
+    # millions of times and the ring changes only in _learn_gain, which counts every change
+    _gain_memo: Dict[Tuple[str, str], tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # meter -> the meter it hangs under, as the Energy dashboard nests them; set by the runner
     parents: Dict[str, Optional[str]] = field(default_factory=dict, metadata=DERIVED)
     # the readings' clock all meters are read on: the meters' own, the grid
@@ -7868,10 +7974,15 @@ class Fleet:
         mean, n = acc[0], acc[1]
         if n < METER_GAIN_MIN:
             return 1.0
+        hit = self._gain_memo.get((name, kind))
+        if hit is not None and hit[0] is acc and hit[1] == n and hit[2] == len(acc):
+            return hit[3]
         if len(acc) > 2:
             ring = sorted(acc[2:])
             mean = ring[len(ring) // 2] if len(ring) % 2 else (ring[len(ring) // 2 - 1] + ring[len(ring) // 2]) / 2.0
-        return min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
+        got = min(1.0 + METER_GAIN_BOUND, max(1.0 / (1.0 + METER_GAIN_BOUND), math.exp(mean)))
+        self._gain_memo[(name, kind)] = (acc, n, len(acc), got)
+        return got
 
     def _lead(self, st: "PhaseState") -> float:
         """How far ``st``'s readings run ahead of this fleet's main's: its lead
