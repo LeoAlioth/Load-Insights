@@ -57,6 +57,9 @@
             "detected_loads": {
                 "name": "Zaznani porabniki"
             },
+            "signature_library": {
+                "name": "Knjižnica podpisov"
+            },
             "unknown_load_power": {
                 "name": "Moč neznanih porabnikov"
             },

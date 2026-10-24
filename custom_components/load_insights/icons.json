@@ -22,6 +22,9 @@
             "detected_loads": {
                 "default": "mdi:magnify-scan"
             },
+            "signature_library": {
+                "default": "mdi:fingerprint"
+            },
             "unknown_load_power": {
                 "default": "mdi:help-circle-outline"
             },

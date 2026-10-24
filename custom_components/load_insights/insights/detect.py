@@ -9129,3 +9129,36 @@ def location_confidence(locations: Dict[str, int], count: int,
     if where != "main":
         return round(min(1.0, locations.get(where, 0) / count), 2)
     return round(1.0 - min(1.0, (max(locations.values()) / count) if locations else 0.0), 2)
+
+
+def signature_rows(signatures, tz, parents: Optional[Dict[str, Optional[str]]] = None) -> List[dict]:
+    """The signature library as the Signature library sensor shows it, best
+    evidence first. Nothing in a row depends on the clock - no "ran 5 min ago",
+    no "running" flag, no age: a row changes only when its signature does, so
+    Home Assistant writes no new state, and sends nothing to a dashboard, for a
+    pass that filed nothing. Dashboards work the age out of ``last_seen_ts`` and
+    the running ids from the Detected loads sensor's ``running_ids``."""
+    return [
+        {"id": s.id, "name": s.name, "description": s.describe(tz),
+         "phases": s.phases.upper(),
+         "system_phases": [display_phase(p) for p in s.phases if p in PHASES],
+         "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
+         "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
+         "pf": None if s.pf is None else round(s.pf, 2),
+         "pf_mad": round(s.pf_mad, 3), "last_seen": datetime.fromtimestamp(s.last_seen, tz).isoformat(),
+         "last_seen_ts": round(s.last_seen),
+         # watt-hours per hour of day, and per weekday from Monday
+         "hour_wh": [round(x) for x in s.hour_wh], "day_wh": [round(x) for x in s.day_wh],
+         # the downstream meter that also saw it, or "main" (upstream of every submeter)
+         "location": most_specific(s.locations, s.count, parents),
+         "where": describe_location(s.locations, s.count, parents, s.phases),
+         "seen_by": dict(s.locations),
+         # three separate scores: whether it is a real repeating load,
+         # what kind of thing it might be, and where it lives. They
+         # answer different questions, so they are not blended.
+         "evidence": s.evidence, "regular": s.regular,
+         "guess": s.guess().to_dict(),
+         "where_confidence": location_confidence(s.locations, s.count, parents)}
+        # same order as the naming page: best evidence first
+        for s in sorted(signatures, key=lambda x: (-x.evidence, -x.count))
+    ]
