@@ -219,11 +219,11 @@
                         "name": "Samodejno poimenovanje",
                         "data": {
                             "autoname": "Samodejno poimenuj zanesljivo zaznana bremena",
-                            "autoname_dashboard": "Samodejno poimenovana bremena dodaj na nadzorno ploščo Energija"
+                            "autoname_dashboard": "Poimenovana bremena dodaj na nadzorno ploščo Energija"
                         },
                         "data_description": {
                             "autoname": "Hladilnik ali zamrzovalnik (kompresor, ki se vklaplja in izklaplja) in grelnik, ki ju zaznavanje zelo zanesljivo prepozna in je videlo na več dni, dobita ime sama - Hladilnik 1, Grelnik 1 - in se kažeta kot zaznana bremena kot vsako, ki ga poimenuješ. Ime, ki ga daš, spremeniš ali pozabiš, vedno prevlada in se za podobno breme nikoli več ne da samo. Izklopljeno: nič se ne poimenuje samodejno.",
-                            "autoname_dashboard": "Doda energijo vsakega samodejno poimenovanega bremena na seznam naprav nadzorne plošče Energija. Odstranjeni so lahko samo vnosi, dodani tu (ko ime izgine ali ko to izklopiš); vnosov, ki si jih naredil sam, se nikoli ne dotakne, in vnos, ki ga odstraniš, se ne vrne. Pomembno samo, dokler je samodejno poimenovanje vklopljeno."
+                            "autoname_dashboard": "Doda energijo in moč vsakega poimenovanega bremena, ročno ali samodejno poimenovanega, na seznam naprav nadzorne plošče Energija. Vnos preimenovanega bremena sledi novemu imenu. Odstranjeni so lahko samo vnosi, dodani tu (ko ime izgine ali ko to izklopiš); vnosov, ki si jih naredil sam, se nikoli ne dotakne, in vnos, ki ga odstraniš, se ne vrne."
                         }
                     }
                 }

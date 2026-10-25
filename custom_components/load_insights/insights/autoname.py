@@ -304,16 +304,18 @@ def decide(facts: Dict[str, Facts], cands: Dict[str, Candidate], marks: Dict[str
 
 # ---------------------------------------------------------------- the Energy dashboard
 def plan_dashboard(devices: Sequence[dict], wanted: Dict[str, str], added: Sequence[str],
-                   declined: Sequence[str] = ()) -> Tuple[Optional[List[dict]], List[str], List[str]]:
+                   declined: Sequence[str] = (), rates: Optional[Dict[str, str]] = None
+                   ) -> Tuple[Optional[List[dict]], List[str], List[str]]:
     """The Energy dashboard's ``device_consumption`` as it should read.
 
-    ``wanted`` is the energy statistic of each auto-named load -> its name;
+    ``wanted`` is the energy statistic of each named load -> its name (``rates``: the
+    power sensor of some of them, which the power Sankey needs);
     ``added`` the statistics Load Insights put there before, ``declined`` those
     the owner took out again. Returns ``(new list or None when nothing changes,
     added, declined)``:
 
     * a wanted statistic that is not listed (by anyone) is appended as
-      ``{"stat_consumption": stat, "name": name}``; one already listed, by the
+      ``{"stat_consumption": stat, "name": name[, "stat_rate": power]}``; one already listed, by the
       owner or by us, is left alone - no duplicates;
     * a statistic in ``added`` that is no longer wanted is removed - only that
       entry, and only if it is still one of ours (a stat in ``added``);
@@ -333,7 +335,7 @@ def plan_dashboard(devices: Sequence[dict], wanted: Dict[str, str], added: Seque
     for stat, name in sorted(wanted.items()):
         if stat in declined or any(d.get("stat_consumption") == stat for d in new):
             continue
-        new.append({"stat_consumption": stat, "name": name})
+        new.append({"stat_consumption": stat, "name": name, **({"stat_rate": rates[stat]} if rates and rates.get(stat) else {})})
         added.append(stat)
     declined = [s for s in dict.fromkeys(declined) if s in wanted]
     return (new if new != list(devices) else None), added, declined
@@ -386,7 +388,8 @@ def claimed(f: Facts, kind: str, owned: Iterable[Tuple[str, dict]], fridge_word)
 
 
 async def write_dashboard(manager, wanted: Dict[str, str], added: Sequence[str],
-                          declined: Sequence[str]) -> Tuple[bool, List[str], List[str]]:
+                          declined: Sequence[str], rates: Optional[Dict[str, str]] = None
+                          ) -> Tuple[bool, List[str], List[str]]:
     """Read the dashboard's device list off ``manager`` (Home Assistant's
     EnergyManager, or anything with ``data`` and an async ``async_update``),
     plan it (``plan_dashboard``) and write the whole list once if it changes.
@@ -394,7 +397,7 @@ async def write_dashboard(manager, wanted: Dict[str, str], added: Sequence[str],
     has no preferences at all (``data`` is None: never set up)."""
     if manager.data is None:
         return False, list(added), list(declined)
-    new, added, declined = plan_dashboard(list(manager.data.get("device_consumption") or []), wanted, added, declined)
+    new, added, declined = plan_dashboard(list(manager.data.get("device_consumption") or []), wanted, added, declined, rates)
     if new is not None:
         await manager.async_update({"device_consumption": new})
     return new is not None, added, declined

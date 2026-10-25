@@ -219,11 +219,11 @@
                         "name": "Auto-naming",
                         "data": {
                             "autoname": "Auto-name confident loads",
-                            "autoname_dashboard": "Add auto-named loads to the Energy dashboard"
+                            "autoname_dashboard": "Add named loads to the Energy dashboard"
                         },
                         "data_description": {
                             "autoname": "A fridge or freezer (a compressor cycling) and a heating element that detection is very sure of and has seen on several days are named by themselves - Fridge 1, Heater 1 - and show as detected loads like any you name. A name you give, change or forget always wins and is never made again for a load like it. Off: nothing is named automatically.",
-                            "autoname_dashboard": "Puts the energy of each auto-named load on the Energy dashboard's device list. Only the entries added here are ever removed again (when the name goes, or this is turned off); entries you made are never touched, and one you take out is not put back. Only matters while auto-naming is on."
+                            "autoname_dashboard": "Puts the energy and power of every named load, the ones you named and the ones named automatically, on the Energy dashboard's device list. A renamed load's entry follows the new name. Only the entries added here are ever removed again (when the name goes, or this is turned off); entries you made are never touched, and one you take out is not put back."
                         }
                     }
                 }
