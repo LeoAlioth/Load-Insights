@@ -11,7 +11,8 @@ read back, changed in the pure planner and written once).
 
 Run once an hour from `DetectionRunner._check_named`, never while history is
 being re-read. Two options, both on when absent (`CONF_AUTONAME`,
-`CONF_AUTONAME_DASHBOARD`).
+`CONF_AUTONAME_DASHBOARD`). The dashboard option covers EVERY named load, the owner's
+names too, and does not depend on auto-naming (2026-10-25).
 """
 from __future__ import annotations
 
@@ -60,7 +61,8 @@ class AutoNamer:
 
     @property
     def dashboard(self) -> bool:
-        return self.enabled and bool(self._runner.config.get(CONF_AUTONAME_DASHBOARD, True))
+        # every named load goes on the dashboard, the owner's names too (2026-10-25): independent of auto-naming
+        return bool(self._runner.config.get(CONF_AUTONAME_DASHBOARD, True))
 
     # ------------------------------------------------------------ store
     async def async_load(self) -> None:
@@ -182,18 +184,22 @@ class AutoNamer:
         return SiteModel.from_prefs(manager.data or {}).devices
 
     async def _dashboard(self) -> bool:
-        """Put our names' energy on the Energy dashboard - or take ours off. Only entries in ``added`` are ever removed."""
+        """Put every named load's energy on the Energy dashboard - or take ours off. Only entries in ``added`` are
+        ever removed, so a rename (a new energy sensor) moves the entry and an entry the owner made stays his."""
         r = self._runner
         manager = await async_get_manager(r.hass)
         wanted: Dict[str, str] = {}
+        rates: Dict[str, str] = {}
         if self.dashboard:
-            for name in sorted(self.marks):
-                if name in r.fleet.names() and not r.metered_device(name):
+            for name in sorted(r.fleet.names()):
+                if not r.metered_device(name):
                     entity = r.energy_entity(name)
                     if not entity:
                         return False          # its sensor is not made yet (a reload): decide next hour, remove nothing
                     wanted[entity] = name
-        written, added, declined = await A.write_dashboard(manager, wanted, self.added, self.declined)
+                    if rate := r.power_entity(name):
+                        rates[entity] = rate
+        written, added, declined = await A.write_dashboard(manager, wanted, self.added, self.declined, rates)
         moved = (added, declined) != (self.added, self.declined)
         self.added, self.declined = added, declined
         if written:

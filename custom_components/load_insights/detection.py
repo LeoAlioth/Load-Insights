@@ -392,6 +392,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         """The entity id of a named load's own energy sensor (None until it exists)."""
         return er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
 
+    def power_entity(self, name: str) -> Optional[str]:
+        """The entity id of a named load's own power sensor (None until it exists)."""
+        return er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, load_uid(self.entry.entry_id, "power", name))
+
     @property
     def config(self) -> dict:
         # Cleaned on the way out rather than migrated in place: the stale copy

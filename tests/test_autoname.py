@@ -252,6 +252,21 @@ def test_a_dashboard_never_set_up_is_left_alone():
 
 
 # ---------------------------------------------------------------- the options and the words
+def test_a_hand_named_load_goes_on_the_dashboard_with_its_power_and_a_rename_moves_it():
+    wanted = {"sensor.pralni_stroj_energy": "Pralni Stroj?"}
+    rates = {"sensor.pralni_stroj_energy": "sensor.pralni_stroj_power"}
+    new, added, _ = A.plan_dashboard([], wanted, [], [], rates)
+    assert new == [{"stat_consumption": "sensor.pralni_stroj_energy", "name": "Pralni Stroj?",
+                    "stat_rate": "sensor.pralni_stroj_power"}] and added == ["sensor.pralni_stroj_energy"]
+    # renamed: the old entry (ours) goes, the new one comes
+    renamed = {"sensor.washer_energy": "Washer"}
+    new2, added2, _ = A.plan_dashboard(new, renamed, added, [], {"sensor.washer_energy": "sensor.washer_power"})
+    assert [d["stat_consumption"] for d in new2] == ["sensor.washer_energy"] and added2 == ["sensor.washer_energy"]
+    # an entry the owner made (not in added) is never touched, rate or not
+    mine = [{"stat_consumption": "sensor.plug_energy", "stat_rate": "sensor.plug_power"}]
+    assert A.plan_dashboard(mine, {}, [], [], {})[0] is None
+
+
 def test_both_switches_are_options_on_by_default_and_translated():
     const = (BASE / "const.py").read_text(encoding="utf-8")
     flow = (BASE / "config_flow.py").read_text(encoding="utf-8")
@@ -260,7 +275,9 @@ def test_both_switches_are_options_on_by_default_and_translated():
     # default on when never saved, in the page and in the runner; a False is stored, not dropped as empty
     assert "current.get(key, True)" in flow and "bool(user_input.get(key, True))" in flow
     assert "get(CONF_AUTONAME, True)" in named and "get(CONF_AUTONAME_DASHBOARD, True)" in named
-    assert "self.enabled and" in named                 # the dashboard switch only means something while naming is on
+    # the dashboard switch covers every named load and does not depend on auto-naming (2026-10-25)
+    assert "self.enabled and" not in named.split("def dashboard")[1].split("# ----")[0]
+    assert "for name in sorted(r.fleet.names())" in named and "sorted(self.marks)" not in named
     for lang in ("en", "sl"):
         t = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
         step = t["options"]["step"]["detection"]
