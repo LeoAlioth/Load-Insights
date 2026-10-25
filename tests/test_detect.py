@@ -2969,6 +2969,34 @@ def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
         [(x.id, x.count, x.born_in, x.takes_in) for x in fridge]
 
 
+def test_a_value_that_came_once_and_stayed_does_not_split_a_load():
+    """A fan switched to 33 % on day 16 and left there: every fridge run after it is in the value, every run
+    before is out - a perfect lift by timing alone. Home's fridge and freezer stopped matching their named
+    signatures that way (791 stray signatures, 2026-10-25). The twin stopped before the fragment began, so it
+    goes back."""
+    fleet = D.Fleet()
+    rnd = random.Random(7)
+    days = 20
+    phase = [(T0, "off"), (T0 + 16 * 86400.0, "33 %")]
+    rows, t = [], T0
+    while t < T0 + days * 86400.0:
+        w = 300.0 + rnd.uniform(-3, 3)
+        if (t - T0) % 1500.0 < 400.0:
+            w += 80.0
+        rows.append((t, w))
+        t += DT
+    a = T0
+    while a < t:
+        b = a + 6 * 3600.0
+        fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      inputs={"fan.x": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                              or [max((p for p in phase if p[0] < a), default=phase[0])]})
+        a = b
+    fridge = [x for x in fleet.main.signatures if 50 < sum(x.power.values()) < 120 and x.count >= 3]
+    assert len(fridge) == 1 and not fridge[0].born_in, \
+        [(x.id, x.count, x.born_in, x.born_judged, x.takes_in) for x in fridge]
+
+
 def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():
     """A fridge that runs through every episode of a short daily value passes
     the coverage judgement in every value (it ran in all of them), so a

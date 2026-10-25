@@ -3276,6 +3276,13 @@ class Signature:
                 runs += sum((row.get("n") or {}).values())
         if e <= 0 or (runs < INPUT_MIN_RUNS and n + e < INPUT_MIN_RUNS):
             return None                   # too few runs seen AND too few expected to say
+        # A value that came once and stayed (a fan left on 33 %) lines up with a load's runs perfectly: every
+        # run since is in it, none before. That is a regime change, not the value's doing - only a twin that ran
+        # on, outside the value, after the fragment began shows the value matters. A twin that stopped before
+        # the fragment began is the same load (Home's fridge and freezer, 791 signatures, 2026-10-25).
+        for frag, twin in ((self, other), (other, self)):
+            if frag.born_in == born and twin.born_in != born and twin.last_seen < frag.first_seen:
+                return 1.0
         return n / e
 
     def files_in(self, context: Optional[str]) -> bool:

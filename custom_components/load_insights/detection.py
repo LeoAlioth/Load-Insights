@@ -202,7 +202,7 @@ STORAGE_VERSION = 1
 #     after every filing, never into a signature a run was kept out of - the
 #     same history read at any slicing files the same library, which differs
 #     from one built in passes.
-DETECTOR_GENERATION = 21      # steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+DETECTOR_GENERATION = 22      # a value that came once and stayed no longer splits a load (2026-10-25); before: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
