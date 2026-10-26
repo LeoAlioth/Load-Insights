@@ -4580,9 +4580,14 @@ class Detector:
                         return True
                 v = as_of(oph, ts)
                 if v is not None:
-                    gone = ost.level - v
-                    if gone > 0 and min(gone, drop) / max(gone, drop) >= CORROBORATE_BALANCE:
-                        return True
+                    # by its settled level - and by its own reading just before, for a leg whose level already
+                    # took this fall (it is judged first when it comes first: Hiša's c at 00:00:56.759, 1 ms
+                    # before a's, left a 79 s a-only run)
+                    times, rows = index[oph]
+                    j = bisect.bisect_left(times, ts - SAME_UPDATE_S) - 1
+                    for gone in (ost.level - v, rows[j][1] - v if j >= 0 else 0.0):
+                        if gone > 0 and min(gone, drop) / max(gone, drop) >= CORROBORATE_BALANCE:
+                            return True
             return False
         check.instant = instant
         return check
