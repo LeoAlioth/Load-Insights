@@ -174,7 +174,11 @@ EXTRA_SUBS = {
     "home": {"Bathroom fan": "sensor.bathroom_fan_switch_0_power",       # a Shelly 1PM Mini, ~15 W
              "West Blinds": "sensor.west_blinds_power",                 # Shelly 2PMs, ~100 W for seconds
              "North Blinds": "sensor.north_blinds_power",
-             "East Blinds": "sensor.living_room_east_blinds_power"},
+             "East Blinds": "sensor.living_room_east_blinds_power",
+             # the EcoFlow's channels (a battery: loads that ramp and switch, truth for what is behind it), fed by FEED= name
+             "EcoFlow AC": "sensor.ef_d30609_ac_output_power",
+             "EcoFlow input": "sensor.ef_d30609_input_power",
+             "EcoFlow USB-C 3": "sensor.ef_d30609_usb_c_3_output_power"},
 }
 # the meters production's options declare to hold one device (2026-09-30), and the bathroom fan
 PROD_SINGLE = {

@@ -2356,6 +2356,11 @@ class PhaseState:
         silence = ts - self.last_ts - SILENCE_CADENCES * self.interval
         return max(0, min(IMPLIED_ZEROS_CAP, int(silence / self.interval)))
 
+    @property
+    def on_change(self) -> bool:
+        """Does this meter report on change: the settings page's answer, else what its gaps say."""
+        return self.change_driven if self.forced is None else self.forced
+
     def _classify(self) -> None:
         """Does this meter report on change - see SUSTAIN_CADENCES_CHANGE."""
         n = len(self.all_gaps)
@@ -2384,7 +2389,7 @@ class PhaseState:
         until a repeat interval is measured."""
         if not self.interval:
             return max(SUSTAIN_SECONDS, self.lag)
-        return max((SUSTAIN_CADENCES_CHANGE if (self.change_driven if self.forced is None else self.forced) else SUSTAIN_CADENCES) * self.interval, self.lag)
+        return max((SUSTAIN_CADENCES_CHANGE if self.on_change else SUSTAIN_CADENCES) * self.interval, self.lag)
 
     def silence_due(self) -> Optional[float]:
         """When the change pending here is confirmed by the meter's silence:
