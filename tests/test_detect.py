@@ -5681,5 +5681,80 @@ def test_grid_phases_read_as_system_phases_with_the_meters_label():
     assert [D.display_phase(p) for p in D.PHASES] == ["X (L1)", "Y (L2)", "Z (L3)"]
 
 
+def _fridge_day(hole, bump=None):
+    """A day of readings: 300 W idle, a 50 W fridge for 20 min every 55 min, none in ``hole`` (hours), and an
+    optional (start s, length s, watts) bump of something else."""
+    rnd = random.Random(3)
+    rows, t = [], T0
+    while t < T0 + 86400.0:
+        w = 300.0 + rnd.uniform(-3, 3)
+        if (t - T0) % 3300.0 < 1200.0:
+            w += 50.0
+        if bump and bump[0] <= t - T0 < bump[0] + bump[1]:
+            w += bump[2]
+        rows.append((t, w))
+        t += DT
+    return rows
+
+
+class _Det:
+    """What _recover_day reads of a Detector."""
+    def __init__(self, sig):
+        self.signatures, self.phases, self.tz_offset_s, self.recovered_log = [sig], {}, 0.0, []
+        self._sig = sig
+
+    def signature_of(self, s):
+        return self._sig if s.signature_id == self._sig.id else None
+
+
+def _fridge_sig(hole):
+    sig = _sig(1, 50.0, dur=1200.0, count=300, phases="a")
+    sig.duration_mad = 20.0
+    sig.runs = [(T0 + k * 3300.0, T0 + k * 3300.0 + 1200.0) for k in range(12)]
+    log = []
+    for k in range(int(86400 // 3300) + 1):
+        a = T0 + k * 3300.0
+        if a + 1200.0 > T0 + 86400.0 or hole[0] <= a - T0 < hole[1]:
+            continue
+        log.append(D.Run(phases="a", start=a, end=a + 1200.0, levels={"a": [(a, 50.0)]}, wh={"a": 50.0 * 1200.0 / 3600.0},
+                         signature_id=1))
+    return sig, log
+
+
+def test_a_regular_cyclers_missed_cycles_are_found_again_in_the_days_readings():
+    """The daily repair books the fridge's cycles back where its runs have a hole and the readings show them
+    (Home, 24 Oct 2026: the day's fridge and freezer energy was a third of normal)."""
+    hole = (36000.0, 54000.0)                                      # 10:00 - 15:00 of its day
+    sig, log = _fridge_sig(hole)
+    rows = _fridge_day(hole)
+    before = sum(sig.hourly.values())
+    det = _Det(sig)
+    D._recover_day(det, log, {"a": rows}, T0, T0 + 86400.0)
+    found = det.recovered_log
+    expect = [k for k in range(27) if hole[0] <= k * 3300.0 < hole[1] and k * 3300.0 + 1200.0 <= hole[1]]
+    assert len(found) >= len(expect) - 1 and all(hole[0] - 60 <= r.start - T0 <= hole[1] + 60 for r in found), \
+        [(round(r.start - T0), round(r.end - T0)) for r in found]
+    assert all(abs(r.end - r.start - 1200.0) < 150.0 and abs(r.energy_wh - 16.7) < 4.0 for r in found), [(r.end - r.start, r.energy_wh) for r in found]
+    assert abs(sum(sig.recovered.values()) - sum(r.energy_wh for r in found)) < 1e-6
+    assert sig.count == 300 and len(sig.runs) == 12                  # what it learns is untouched
+
+
+def test_a_bump_of_another_size_or_length_is_not_booked_as_the_cyclers():
+    hole = (36000.0, 54000.0)
+    for bump in ((40000.0, 1200.0, 120.0), (40000.0, 300.0, 50.0)):  # twice its size / a quarter of its length
+        sig, log = _fridge_sig(hole)
+        rows = [(t, w - 50.0 if hole[0] <= t - T0 < hole[1] and (t - T0) % 3300.0 < 1200.0 else w) for t, w in _fridge_day(hole, bump)]
+        det = _Det(sig)
+        D._recover_day(det, log, {"a": rows}, T0, T0 + 86400.0)
+        assert not det.recovered_log, (bump, [(r.start - T0, r.end - T0) for r in det.recovered_log])
+
+
+def test_a_day_without_a_hole_books_nothing():
+    sig, log = _fridge_sig((0.0, 0.0))
+    det = _Det(sig)
+    D._recover_day(det, log, {"a": _fridge_day((0.0, 0.0))}, T0, T0 + 86400.0)
+    assert not det.recovered_log and not sig.recovered
+
+
 if __name__ == "__main__":
     run_main(globals())

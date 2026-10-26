@@ -28,7 +28,7 @@ import operator
 import statistics
 from collections import ChainMap
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .classify import MAX_CONFIDENCE as MAX_APPLIANCE, Guess, _fmt_s, _fmt_w, classify
@@ -931,6 +931,22 @@ MATCH_PF_TOL = 0.15
 # the grid is read at most METER_WAIT_CAP_S behind them.
 REPAIR_DAY_S = 86400.0
 REPAIR_FLOOR_SHARE = 0.1
+# ...and booked again the other way: a regular cycler (a fridge, a freezer) whose runs the day's log shows a
+# hole in - more than RECOVER_GAP_FACTOR of its own periods between two starts - is looked for in the day's
+# readings (_recover_day): its own step pair, size and length, in what no run was booked on. Found cycles are
+# booked on its hours (Signature.recovered) and kept out of what it learns. 0 is off. The owner, 2026-10-26:
+# regular intervals only; the readings decide, nothing is booked on expectation alone.
+RECOVER_ON = 1
+RECOVER_MIN_RUNS = 20          # a signature's runs before it is looked for
+RECOVER_MIN_GAPS = 6           # start-to-start gaps its runs of the day need to say what its period is
+RECOVER_REGULAR = 0.35         # its period: the median gap; regular when the median miss from it is within this share
+RECOVER_GAP_FACTOR = 2.0       # a gap between starts this many periods long has a missed cycle in it
+RECOVER_MAX_GAP = 8.0          # a longer gap than this many periods is the load being off, not cycles missed
+RECOVER_SLOT = 0.25            # a cycle found is a whole number of periods from a start known, within this share of one
+RECOVER_WINDOW_S = 45.0        # the readings either side of a step that its size is the medians' difference of
+RECOVER_POWER_REL = 0.2        # a step within this share of its power (or 1.5 noises) is its step
+RECOVER_ENERGY_LO, RECOVER_ENERGY_HI = 0.5, 1.6   # the Wh found against its power over the length found
+RECOVER_LOG_KEEP = 5000
 REPAIR_SLACK_NOISE = 2.0
 REPAIR_WAIT_S = MATCH_PATIENCE_S + METER_WAIT_CAP_S
 
@@ -2989,6 +3005,9 @@ class Signature:
     born_judged: bool = False
     # hour start (epoch s) -> Wh used in it - see HOURLY_KEEP_S
     hourly: Dict[int, float] = field(default_factory=dict)
+    # ...of which the daily repair put there from the day's readings (RECOVER_*), not seen live - same hours as
+    # ``hourly``, aged with it; for the live-versus-repaired figures only
+    recovered: Dict[int, float] = field(default_factory=dict)
     # ...and the hours aged out of it that a confident unnamed load keeps -
     # see OLDER_KEEP_S. Not in to_dict: the runner stores them apart
     older: Dict[int, float] = field(default_factory=dict)
@@ -3118,7 +3137,7 @@ class Signature:
 
     def swallow(self, other: "Signature") -> None:
         """Take another signature's sightings into this one, by weight."""
-        for mine, theirs in ((self.hourly, other.hourly), (self.older, other.older)):
+        for mine, theirs in ((self.hourly, other.hourly), (self.older, other.older), (self.recovered, other.recovered)):
             for hour, wh in theirs.items():
                 mine[hour] = mine.get(hour, 0.0) + wh
         for role, used in other.edges.items():
@@ -3535,6 +3554,8 @@ class Signature:
         gone = [h for h in self.hourly if h < cut]
         keep = gone and not self.name and self.count >= OLDER_MIN_COUNT and \
             self.energy_wh >= OLDER_MIN_WH and self.evidence >= OLDER_MIN_EVIDENCE
+        for hour in [h for h in self.recovered if h < cut]:
+            del self.recovered[hour]
         for hour in gone:
             wh = self.hourly.pop(hour)
             if keep:
@@ -3625,6 +3646,7 @@ class Signature:
                 "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
                 "hourly": {str(h): _trim(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05 * TRIM},
+                "recovered": {str(h): _trim(wh, 1) for h, wh in self.recovered.items() if wh >= 0.05 * TRIM},
                 "edges": {role: {str(c): _trim(n, 2) for c, n in used.items()} for role, used in self.edges.items()}}
 
     @classmethod
@@ -3648,6 +3670,7 @@ class Signature:
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
                    born_judged=d.get("born_judged", False),
                    hourly={int(h): float(wh) for h, wh in (d.get("hourly") or {}).items()},
+                   recovered={int(h): float(wh) for h, wh in (d.get("recovered") or {}).items()},
                    edges={role: {int(c): float(n) for c, n in used.items()}
                           for role, used in (d.get("edges") or {}).items()})
 
@@ -4242,6 +4265,8 @@ class Detector:
     _day_from: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _day_log: List[Run] = field(default_factory=list, repr=False, compare=False)
     _day_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, repr=False, compare=False)
+    # the cycles the daily repair found again (_recover_day): the last RECOVER_LOG_KEEP, for the bench and the diagnostics
+    recovered_log: List[Run] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
 
     # ------------------------------------------------ ingest
     def process(self, samples: Dict[str, Sequence[Tuple[float, float]]],
@@ -5847,7 +5872,7 @@ class Detector:
         if heir is None:
             return None
         heir.carried_wh += old.energy_wh
-        for mine, theirs in ((heir.hourly, old.hourly), (heir.older, old.older)):
+        for mine, theirs in ((heir.hourly, old.hourly), (heir.older, old.older), (heir.recovered, old.recovered)):
             for hour, wh in theirs.items():
                 mine[hour] = mine.get(hour, 0.0) + wh
             theirs.clear()
@@ -6373,6 +6398,7 @@ class Fleet:
                 det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b, -math.inf)) - 1, 0):]
             if log:
                 _cap_day(det, log, rows, a, b)
+                _recover_day(det, log, rows, a, b)
             # ...and the length split each signature's run memory shows (the owner,
             # 2026-10-23: length decides here, with the runs' lengths in view, not live)
             for sig in det.signatures:
@@ -8666,6 +8692,153 @@ def _cap_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b
             sig = det.signature_of(s) if s.parent_signature is None else None
             if sig is not None:
                 _unbook(sig, by_hour, tz)
+
+
+def _period(starts: Sequence[float]) -> Optional[float]:
+    """A regular cycler's period on the day: the median start-to-start gap of its runs, when they keep to it."""
+    gaps = [y - x for x, y in zip(starts, starts[1:]) if y > x]
+    if len(gaps) < RECOVER_MIN_GAPS:
+        return None
+    p = _median(gaps)
+    if p <= 0 or _median([abs(g - p) for g in gaps]) > RECOVER_REGULAR * p:
+        return None
+    return p
+
+
+def _residual(rr: Sequence[Tuple[float, float]], runs: Sequence[Run], ph: str) -> List[float]:
+    """The readings on ``ph`` less what the day's runs are booked at, reading by reading."""
+    ev = sorted((t, up * w) for s in runs for t0, t1, w in _booked(s, ph) for t, up in ((t0, 1), (t1, -1)))
+    out, drawn, ie = [], 0.0, 0
+    for t, w in rr:
+        while ie < len(ev) and ev[ie][0] <= t:
+            drawn += ev[ie][1]
+            ie += 1
+        out.append(w - max(drawn, 0.0))
+    return out
+
+
+def _find_cycles(times: Sequence[float], res: Sequence[float], g0: float, g1: float, watts: float, dur: float,
+                 dur_tol: float, tol_w: float, win: float, quota: int) -> List[Tuple[float, float, float]]:
+    """The cycles of a load (its size, its length) that start and stop inside g0..g1 of the residual ``res``:
+    (start, end, Wh). A step is where the median of the readings after it stands ``watts`` above (or below) the
+    median before it; a start pairs with the stop a length later that undoes it, the level between standing
+    ``watts`` above the one before. Best pairs first, none over another."""
+    def med(x0: float, x1: float) -> Optional[float]:
+        i, j = bisect.bisect_left(times, x0), bisect.bisect_left(times, x1)
+        return _median(res[i:j]) if j > i else None
+
+    def edges(sign: int) -> List[Tuple[float, float, float]]:
+        found = []
+        for i in range(bisect.bisect_left(times, g0 - win), bisect.bisect_right(times, g1 + win)):
+            t = times[i]
+            before, after = med(t - win, t), med(t, t + win)
+            if before is None or after is None:
+                continue
+            err = abs(sign * (after - before) - watts)
+            if err <= tol_w:
+                found.append((t, before, err))
+        best: List[Tuple[float, float, float]] = []
+        for e in found:
+            if best and e[0] - best[-1][0] < win:
+                if e[2] < best[-1][2]:
+                    best[-1] = e
+            else:
+                best.append(e)
+        return best
+
+    falls = edges(-1)
+    pairs = []
+    for t0, base, e0 in edges(1):
+        if t0 < g0:
+            continue
+        for t1, _, e1 in falls:
+            if not (t0 + dur - dur_tol <= t1 <= t0 + dur + dur_tol) or t1 > g1:
+                continue
+            inside = med(t0 + win, t1 - win) if t1 - t0 > 2 * win else med(t0, t1)
+            if inside is None:
+                continue
+            e2 = abs(inside - base - watts)
+            if e2 > tol_w:
+                continue
+            i, j = bisect.bisect_left(times, t0), bisect.bisect_left(times, t1)
+            held = [(max(times[k], t0), min(times[k + 1] if k + 1 < len(times) else t1, t1)) for k in range(i - 1 if i else 0, j)]
+            wh = sum(max(res[k] - base, 0.0) * max(y - x, 0.0) for k, (x, y) in zip(range(i - 1 if i else 0, j), held)) / 3600.0
+            want = watts * (t1 - t0) / 3600.0
+            if want > 0 and RECOVER_ENERGY_LO * want <= wh <= RECOVER_ENERGY_HI * want:
+                pairs.append((e0 + e1 + e2, t0, t1, wh))
+    taken: List[Tuple[float, float, float]] = []
+    for _, t0, t1, wh in sorted(pairs):
+        if len(taken) >= quota:
+            break
+        if all(t1 <= x or t0 >= y for x, y, _ in taken):
+            taken.append((t0, t1, wh))
+    return sorted(taken)
+
+
+def _recover_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b: float) -> None:
+    """The day's repair, the other way from _cap_day: where a regular cycler's runs have a hole in them (RECOVER_*),
+    its own steps are looked for in what the day's readings show beyond the runs booked, and the cycles found
+    are booked on its hours (Signature.recovered, as well as hourly) and in det.recovered_log. Its learning -
+    count, power, runs, edges - is never touched."""
+    if not RECOVER_ON:
+        return
+    tz = det.tz_offset_s
+    zone = timezone.utc if not tz else timezone(timedelta(seconds=tz))
+    cache: Dict[str, Tuple[List[float], List[float]]] = {}
+    for sig in det.signatures:
+        ph = sig.phases
+        if len(ph) != 1 or sig.count < RECOVER_MIN_RUNS or ph not in rows or not rows[ph]:
+            continue
+        mine = sorted((s for s in log if ph in s.levels and det.signature_of(s) is sig), key=lambda s: s.start)
+        period, watts, dur = _period([s.start for s in mine]), sig.power.get(ph, 0.0), sig.duration_s
+        if period is None or watts <= 0 or dur <= 0:
+            continue
+        starts = [a] + [s.start for s in mine] + [b]
+        ends = [a] + [s.end for s in mine] + [b]
+        pairs = [i for i in range(len(starts) - 1) if RECOVER_GAP_FACTOR * period < starts[i + 1] - starts[i] <= RECOVER_MAX_GAP * period]
+        holes = [(ends[i], starts[i + 1]) for i in pairs]
+        hole_starts = [(starts[i] if i > 0 else None, starts[i + 1] if i + 1 < len(starts) - 1 else None) for i in pairs]
+        if not holes:
+            continue
+        if ph not in cache:
+            cache[ph] = ([t for t, _ in rows[ph]], _residual(rows[ph], [s for s in log if ph in s.levels], ph))
+        times, res = cache[ph]
+        st = det.phases.get(ph)
+        noise = st.noise_at(watts) if st is not None else MIN_NOISE_W
+        tol_w = min(max(RECOVER_POWER_REL * watts, 1.5 * noise), 0.5 * watts)
+        spacing = _median([y - x for x, y in zip(times, times[1:])]) or 1.0
+        win = max(RECOVER_WINDOW_S, 3.0 * spacing)
+        dur_tol = min(max(2.0 * sig.duration_mad, 0.25 * dur), 0.5 * dur)
+        for (g0, g1), (xl, xr) in zip(holes, hole_starts):
+            quota = int((g1 - g0) // period) + 1
+            anchors = [x for x in (xl, xr) if x is not None]
+            for t0, t1, wh in _find_cycles(times, res, g0, g1, watts, dur, dur_tol, tol_w, win, quota):
+                # on its period: a whole number of them from a start known or already found, within RECOVER_SLOT
+                if not any(abs(t0 - x) >= 0.75 * period and min((abs(t0 - x) % period), period - (abs(t0 - x) % period)) <= RECOVER_SLOT * period
+                           for x in anchors):
+                    continue
+                anchors.append(t0)
+                _book_recovered(sig, t0, t1, wh, zone)
+                det.recovered_log.append(Run(phases=ph, start=t0, end=t1, levels={ph: [(t0, wh * 3600.0 / (t1 - t0))]},
+                                             wh={ph: wh}, quality=0.5, signature_id=sig.id))
+    del det.recovered_log[:-RECOVER_LOG_KEEP]
+
+
+def _book_recovered(sig: "Signature", t0: float, t1: float, wh: float, zone) -> None:
+    """``wh`` over t0..t1 into the hours and days it occupied, as Signature._spread does, and into ``recovered``."""
+    watts = wh * 3600.0 / (t1 - t0)
+    t = t0
+    while t < t1:
+        moment = datetime.fromtimestamp(t, zone)
+        into = moment.minute * 60 + moment.second + moment.microsecond / 1e6
+        step = min(t1 - t, max(3600.0 - into, 1.0))
+        part = watts * step / 3600.0
+        sig.hour_wh[moment.hour] += part
+        sig.day_wh[moment.weekday()] += part
+        hour = int(t - into)
+        sig.hourly[hour] = sig.hourly.get(hour, 0.0) + part
+        sig.recovered[hour] = sig.recovered.get(hour, 0.0) + part
+        t += step
 
 
 def _peaks(s: Run) -> Dict[str, float]:
