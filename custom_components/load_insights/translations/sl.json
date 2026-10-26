@@ -225,6 +225,17 @@
                             "autoname": "Hladilnik ali zamrzovalnik (kompresor, ki se vklaplja in izklaplja) in grelnik, ki ju zaznavanje zelo zanesljivo prepozna in je videlo na več dni, dobita ime sama - Hladilnik 1, Grelnik 1 - in se kažeta kot zaznana bremena kot vsako, ki ga poimenuješ. Ime, ki ga daš, spremeniš ali pozabiš, vedno prevlada in se za podobno breme nikoli več ne da samo. Izklopljeno: nič se ne poimenuje samodejno.",
                             "autoname_dashboard": "Doda energijo in moč vsakega poimenovanega bremena, ročno ali samodejno poimenovanega, na seznam naprav nadzorne plošče Energija. Vnos preimenovanega bremena sledi novemu imenu. Odstranjeni so lahko samo vnosi, dodani tu (ko ime izgine ali ko to izklopiš); vnosov, ki si jih naredil sam, se nikoli ne dotakne, in vnos, ki ga odstraniš, se ne vrne."
                         }
+                    },
+                    "cadence": {
+                        "name": "Poročanje števcev",
+                        "data": {
+                            "change_meters": "Števci, ki poročajo ob spremembi",
+                            "periodic_meters": "Števci, ki poročajo po časovniku"
+                        },
+                        "data_description": {
+                            "change_meters": "Označi števec, ki pošlje meritev le ob spremembi vrednosti, občasno pa še srčni utrip - Shelly. Kratek sunek na njem je le nekaj meritev, zato ga potrdimo v manj lastnih ciklih. Če števca ni v nobenem seznamu, zaznavanje presodi iz njegovih lastnih presledkov.",
+                            "periodic_meters": "Označi števec, ki pošilja meritve po stalnem časovniku - števec omrežja, Victron, vtičnica z rednim branjem. Števec, ki ni v nobenem seznamu, se razvrsti samodejno."
+                        }
                     }
                 }
             },

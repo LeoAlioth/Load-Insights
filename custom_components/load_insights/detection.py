@@ -27,7 +27,9 @@ from .const import (
     GRID_PREFIX,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
+    CONF_CHANGE_METERS,
     CONF_IGNORE_METERS,
+    CONF_PERIODIC_METERS,
     CONF_HORIZON_SKIP,
     CONF_INPUT_ENTITIES,
     CONF_INVERTERS,
@@ -422,6 +424,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         declared = None if declared is None else set(declared)
         ignored = set(self.config.get(CONF_IGNORE_METERS) or [])
         unwaited = set(self.config.get(CONF_HORIZON_SKIP) or [])
+        forced = {**dict.fromkeys(self.config.get(CONF_PERIODIC_METERS) or [], False),
+                  **dict.fromkeys(self.config.get(CONF_CHANGE_METERS) or [], True)}
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
@@ -446,7 +450,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                               "parent": parent.label if parent else None, "energy": dev.energy,
                               # None: not declared, the library's shape decides
                               "single": None if declared is None else dev.energy in declared,
-                              "ignored": dev.energy in ignored, "horizon_skip": dev.energy in unwaited}
+                              "ignored": dev.energy in ignored, "horizon_skip": dev.energy in unwaited,
+                              "cadence": forced.get(dev.energy)}
         return out
 
     async def _refresh_submeters(self) -> None:
@@ -1254,6 +1259,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 # dashboard no longer resolves, whose detector is kept unread
                 self.fleet.horizon_skip = ({n for n, m in self.submeters.items() if m.get("horizon_skip")}
                                            | (set(self.fleet.subs) - set(self.submeters)))
+                self.fleet.cadence_forced = {n: m["cadence"] for n, m in self.submeters.items() if m.get("cadence") is not None}
                 sub_samples, sub_q = {}, {}
                 for name, meter in self.submeters.items():
                     ss, sq = await self._read(start, end, meter["fields"], name)
