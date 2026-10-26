@@ -3033,6 +3033,37 @@ def test_a_family_that_runs_in_a_value_at_chance_takes_its_runs_without_a_fragme
     assert all(x.family for x in sigs)
 
 
+def _hint_family(minority_hours, minority_len=470.0, n_rest=120, n_rare=12):
+    """A family whose runs are mostly short ones all day and a few long ones at ``minority_hours``."""
+    det = D.Detector()
+    sig = D.Signature(id=1, phases="b", power={"b": 2060.0}, duration_s=150.0, pf=None, count=n_rest + n_rare,
+                      first_seen=T0, last_seen=T0 + 86400.0, family=1)
+    det.signatures.append(sig)
+    rnd = random.Random(2)
+    det.family_runs[1] = ([(140.0 + rnd.uniform(-30, 40), rnd.uniform(10, 21)) for _ in range(n_rest)]
+                          + [(minority_len + rnd.uniform(-150, 300), minority_hours[k % len(minority_hours)] + rnd.uniform(0, 0.9))
+                             for k in range(n_rare)])
+    return det, sig
+
+
+def test_a_minority_mode_of_length_that_keeps_to_a_few_hours_splits_its_family_in_the_repair():
+    """Home's Workshop boiler against Hiša's 2 kW element on one phase: 11 runs of 273-992 s at 12:00-15:00 among 134
+    of about 140 s over the day. Length alone or the hour alone never splits (spec section 11)."""
+    det, sig = _hint_family([12.0, 13.0, 14.0])
+    D._hint_split(det)
+    assert sig.split_s is not None and 200.0 < sig.split_s < 400.0 and sig.split_side == -1, (sig.split_s, sig.split_side)
+    assert not sig.takes_len(470.0) and sig.takes_len(140.0)
+
+
+def test_one_hint_alone_does_not_split_a_family():
+    det, sig = _hint_family([6.0, 10.0, 14.0, 18.0, 22.0])        # long runs all over the day: the hour hint is missing
+    D._hint_split(det)
+    assert sig.split_s is None
+    det, sig = _hint_family([12.0, 13.0, 14.0], minority_len=150.0)   # at noon, but as long as the rest: the length hint is missing
+    D._hint_split(det)
+    assert sig.split_s is None
+
+
 def test_a_family_is_named_as_a_whole_and_survives_a_store():
     fleet = _fridge_through_a_washer(3)
     det = fleet.main

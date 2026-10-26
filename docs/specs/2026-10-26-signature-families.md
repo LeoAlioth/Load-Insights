@@ -92,3 +92,19 @@ Two named families with different names never join. A join keeps the older id an
 - Whether a family's `default` member is rebuilt when its runs thin out.
 - How the diagnostics show a family (one row with its members, or a row per member).
 - The UI wording ("load" / "family") on the naming pages.
+
+## 11. Addition to the daily re-process: run length and time of day as hints (decided with the owner 2026-10-26; not built)
+
+The daily re-process (`Fleet._repair`) is the one place that sees all of a day's runs, their lengths and their clock hours at once. It gets two **hints**, neither a split by itself:
+
+1. **Run length.** Per family, the lengths of its runs over a longer memory than the signature's last `RUN_MEMORY` (12): a small log-length histogram kept with the family, decayed like the input rows. The repair asks whether the lengths are two populations (a mixture on log-length, medians at least `MATCH_DURATION_FACTOR` apart, each with at least `SPLIT_MIN_RUNS` runs of weight) and gives each run a soft label for the long mode. The present `learn_split` looks at the last 12 runs and takes the largest gap; a minority load (1 run in 13) never has 4 runs in the window, and on all of a signature's runs the largest gap is an outlier, not the minority's mode (below).
+2. **Time of day.** Per family, the clock hours its runs start in, kept per length mode: a mode that sits in a few hours (the boiler, 12:00-15:00) while the rest spreads over the day is a second hint.
+
+A hint only **proposes**: the repair splits a family (a new member signature for the minority mode, as `learn_split` does for the length side) when the hints together clear the evidence bar, with the family's input weights (section 3) counting as a third hint where an input exists (Load Juggler's tank status, below). One hint alone never splits. The repair re-files only its own day's runs into the new member; learning (count, power, runs) is untouched, as in `_cap_day` and `_recover_day`. Stored per family and persisted with it.
+
+What was measured (Home 15-25 Oct, hidden, grid phase Y, the signature at about 2.06 kW; the boiler plug's own runs as truth): 145 runs, 11 the boiler's (273-992 s, median 472 s), 122 Hiša's element on phase b (median 140 s, 80 % of them 110-179 s), 12 on no meter. A cut at 272 s puts all 11 boiler runs on the long side and 19 of the other 134 with them (11 of 30, 37 % pure); at 300 s 10 of 11 and 18 of 134. The largest log gap over all 145 lengths is 23 to 41 s (an outlier), so the gap rule alone does not find it. Clock: the boiler's 11 runs start 12:00-14:59; Hiša's element starts 10:00-21:00 (26 of 122 in 12:00-14:59). Length and hour together are expected to be much purer than either: to be measured before the bar is set.
+
+Load Juggler's own signal is fed as an input from the same date: `sensor.server_room_hot_water_tank_tank_status` (Heating / idle states of the tank whose element is the 2.15 kW Workshop boiler), linked to `sensor.workshop_boiler_energy`. The boiler is metered, so it is not for the boiler's own detection but for telling similar unmetered 2 kW loads apart from it.
+
+Built 2026-10-26 (`_two_modes`, `_densest_window`, `_hint_split`, `HINT_*`, `Detector.family_runs`; tests `test_a_minority_mode_of_length_...`, `test_one_hint_alone_...`). Bench: Home 15-25 Oct with inputs and the default card on all sites: no scorecard moves beyond 0.7 points (Home hidden partition capture -0.4, impurity -0.7). It does **not** fire on the boiler: the length cut (226 / 273 s, medians 135 / 628 s, ratio 4.65) puts 30 runs in the long mode, the boiler's 11 and 19 of Hiša's longer ones, spread over 07:00-18:00 UTC; the best 3-hour window holds 47 % of them against the 80 % required. A joint cut on length and hour (the long runs inside the window are mostly the boiler's) is the next refinement; the thresholds stay strict until there is truth to judge a looser one against.
+
