@@ -3123,6 +3123,38 @@ def _drifting_kiln(sizes, noise=30.0):
     return det
 
 
+def _kiln_pulsing_fast(c_lag_s):
+    """A two-phase 2.9 kW kiln pulsing 40 s on, 14 s off (shorter than three of the 5 s cadences), read only when
+    a value changes, every reading of the c leg ``c_lag_s`` after the a leg's: Home's Hiša on 25 Oct, a at .155 and
+    c at .156, one reading in each off gap."""
+    det = D.Detector()
+    rows = {"a": [], "c": []}
+    rnd = random.Random(3)
+    for k in range(40):                              # idle: a reading every 5 s until the first pulse
+        rows["a"].append((T0 + 5.0 * k, 34.0 + rnd.uniform(-4, 4)))
+        rows["c"].append((T0 + 5.0 * k + c_lag_s, 280.0 + rnd.uniform(-4, 4)))
+    t = T0 + 200.0
+    while t < T0 + 3600.0:
+        rows["a"].append((t, 3000.0 + rnd.uniform(-8, 8)))
+        rows["c"].append((t + c_lag_s, 3200.0 + rnd.uniform(-8, 8)))
+        for dt_ in (10.0, 20.0, 30.0):               # the pulse is read every 10 s
+            rows["a"].append((t + dt_, 3000.0 + rnd.uniform(-8, 8)))
+            rows["c"].append((t + dt_ + c_lag_s, 3200.0 + rnd.uniform(-8, 8)))
+        rows["a"].append((t + 40.0, 34.0))
+        rows["c"].append((t + 40.0 + c_lag_s, 280.0))
+        t += 54.0
+    det.process(rows, now_ts=T0 + 3700.0)
+    return {ph: sum(x.count for x in det.signatures if x.phases == ph) for ph in ("a", "c", "ac")}
+
+
+def test_the_legs_of_one_pulse_stamped_a_millisecond_apart_stop_together():
+    """A fall on one leg is corroborated by the other leg's reading in the same instant, even when that reading
+    is stamped a millisecond after (SAME_UPDATE_S); without it the leg whose reading came first never closed a
+    pulse shorter than the sustain, and every later pulse of it ran on as one."""
+    runs = _kiln_pulsing_fast(0.001)
+    assert runs["ac"] >= 55 and runs["a"] + runs["c"] <= 3, runs
+
+
 def test_families_of_neighbouring_start_clusters_with_alike_signatures_are_one():
     det = _drifting_kiln([5764.0, 5837.0, 5914.0, 6039.0])
     assert len({x.family for x in det.signatures}) == 1, [x.family for x in det.signatures]

@@ -225,6 +225,9 @@ SUSTAIN_AGREE_REL = 0.15
 # Detector._corroborate. 1.0 kept the most of the hidrofor.
 CORROBORATE_INTERVALS = 1.0
 CORROBORATE_BALANCE = 0.7
+# A fall corroborated by another phase's in the same instant (the instant test, _corroborate) must be at least this
+# many noises tall - a count; the legs of a 3 kW load are 80 noises, a coincident wobble a few.
+CORROBORATE_MIN_NOISES = 20.0
 # When a stop is corroborated, close the edge the other legs vouched for, not
 # whichever open edge of that size is newest. Home's Kompresor leg (~840 W)
 # and hidrofor (~870 W) share phase A inside one pairing tolerance, and the
@@ -2531,6 +2534,24 @@ class PhaseState:
             if o.watts - drop > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts, True):
                 self.close_hint = o
                 return True
+        # a start smaller than the drop, whose partner legs match the DROP: its rise met another load's fall in
+        # the same reading and read short (Home's kiln, 25 Oct 21:50: c rose 2258 for a 2850 step while a 600 W
+        # load on c stopped; the a leg closed and the c leg stayed open five minutes - the a-only and c-only
+        # fragments). The legs switch together, so the leg the others vouch for is the one that closes.
+        for o in reversed(self.open_edges):
+            if drop - o.watts > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts):
+                self.close_hint = o
+                return True
+        # ...or an open edge the size of the drop, whatever its start: the other legs fell by the same amount in the
+        # same instant. A leg left open by an earlier dip that was not held - the kiln's 14 s off gaps against three
+        # cadences of 5 s - never matches a partner's START again, and every later pulse of it stayed one run
+        # (Home, 25 Oct 23:26 - 26 Oct 00:43: a-only runs of 100-500 s beside c-only ones of 40 s).
+        instant = getattr(self.corroborate, "instant", None)
+        if instant is not None:
+            for o in reversed(self.open_edges):
+                if abs(o.watts - drop) <= self._tol(o.watts, drop) and instant(drop, ts):
+                    self.close_hint = o
+                    return True
         return False
 
     def _unseen_stop(self, at: float, level: float) -> List[Run]:
@@ -2703,6 +2724,9 @@ class PhaseState:
         if hint is not None:
             for o in self.open_edges:
                 if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
+                    return [self._end(o, at, watts, var, direct=True)]
+                if o is hint and watts - o.watts > self._tol(o.watts, watts):
+                    # a start that read short (its rise met another load's fall) and the fall of the whole load
                     return [self._end(o, at, watts, var, direct=True)]
                 if o is hint and o.watts - watts > self._tol(o.watts, watts):
                     # the vouched-for leg stopped; the rest is the load that
@@ -4499,7 +4523,9 @@ class Detector:
 
         def as_of(oph: str, ts: float):
             times, rows = index.get(oph, ((), ()))
-            i = bisect.bisect_right(times, ts) - 1
+            # readings SAME_UPDATE_S apart are one instant: the other leg's, a millisecond after this one's
+            # (Hiša's a and c of one pulse, 23:31:05.155 and .156), is its value now, not its next
+            i = bisect.bisect_right(times, ts + SAME_UPDATE_S) - 1
             if i < 0:
                 return None
             st = self.phases[oph]
@@ -4539,6 +4565,26 @@ class Detector:
                     if v is not None and abs((ost.level - v) - owatts) <= ost._tol(owatts, abs(ost.level - v)):
                         return True
             return False
+
+        def instant(drop: float, ts: float) -> bool:
+            """Did another phase fall by about ``drop`` in this very instant (or close its own run then)?"""
+            if drop < CORROBORATE_MIN_NOISES * max((st.noise or MIN_NOISE_W) for st in self.phases.values()):
+                return False                  # a small fall: every phase has one now and then
+            for oph, ost in self.phases.items():
+                if oph == ph or ost.level is None:
+                    continue
+                window = CORROBORATE_INTERVALS * max(self.phases[ph].interval or 0.0, ost.interval or 0.0) or MERGE_TOLERANCE_S
+                for _, owatts, closed_at in ost.recent_closed:
+                    if closed_at is not None and abs(closed_at - ts) <= window \
+                            and min(owatts, drop) / max(owatts, drop) >= CORROBORATE_BALANCE:
+                        return True
+                v = as_of(oph, ts)
+                if v is not None:
+                    gone = ost.level - v
+                    if gone > 0 and min(gone, drop) / max(gone, drop) >= CORROBORATE_BALANCE:
+                        return True
+            return False
+        check.instant = instant
         return check
 
     def signature_of(self, s: Run) -> Optional["Signature"]:
