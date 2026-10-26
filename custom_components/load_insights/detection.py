@@ -202,7 +202,7 @@ STORAGE_VERSION = 1
 #     after every filing, never into a signature a run was kept out of - the
 #     same history read at any slicing files the same library, which differs
 #     from one built in passes.
-DETECTOR_GENERATION = 22      # a value that came once and stayed no longer splits a load (2026-10-25); before: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+DETECTOR_GENERATION = 23      # families: a load's signatures are one family, named together, and a rare value splits it only where its runs depend on it (2026-10-26); before: a value that came once and stayed no longer splits a load (2026-10-25); before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -985,9 +985,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.async_update_listeners()
         return name
 
-    async def async_rename(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
-        """Name the signature (meter, id) - the grid's under "" - or clear it,
-        and persist at once; the caller bumps the entry so the entities follow.
+    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], family: bool = False) -> bool:
+        """Name the signature (meter, id) - the grid's under "" - or clear it (``family``: ref's id is a
+        family's), and persist at once; the caller bumps the entry so the entities follow. Either way the
+        name goes to the whole family: a family is named, not a signature.
 
         Without telling the entities: the bump's reload is what makes the
         name's sensors. Told here, the sensor platform added them too, and
@@ -1002,7 +1003,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         (AGENTS.md, 2026-10-02)."""
         async with self._lock:
             before = self.fleet.names()
-            if not self.fleet.rename(ref, name):
+            if not (self.fleet.rename_family(ref, name) if family else self.fleet.rename(ref, name)):
                 return False
             self._carry_vanished(before)
             await self._persist(force=True)      # a user action, written at once

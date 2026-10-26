@@ -2997,6 +2997,72 @@ def test_a_value_that_came_once_and_stayed_does_not_split_a_load():
         [(x.id, x.count, x.born_in, x.born_judged, x.takes_in) for x in fridge]
 
 
+def _fridge_through_a_washer(days):
+    """A fridge (80 W for 400 s every 25 min, all day) in a house whose washer's phase reads "Spin" 15 min a day."""
+    fleet = D.Fleet()
+    rnd = random.Random(5)
+    phase = []
+    for day in range(days):
+        day0 = T0 + day * 86400.0
+        phase += [(day0, "Off"), (day0 + 36000.0, "Spin"), (day0 + 36900.0, "Off")]
+    rows, t = [], T0
+    while t < T0 + days * 86400.0:
+        w = 300.0 + rnd.uniform(-3, 3)
+        if (t - T0) % 1500.0 < 400.0:
+            w += 80.0
+        rows.append((t, w))
+        t += DT
+    a = T0
+    while a < t:
+        b = a + 6 * 3600.0
+        fleet.process({"a": [r for r in rows if a <= r[0] < b]}, {}, now_ts=b,
+                      inputs={"select.washer": [p for p in phase if a - D.SWITCH_MEMORY_S <= p[0] < b]
+                              or [max((p for p in phase if p[0] < a), default=phase[0])]})
+        a = b
+    return fleet
+
+
+def test_a_family_that_runs_in_a_value_at_chance_takes_its_runs_without_a_fragment():
+    """An established fridge runs through the washer's rare phase at chance: its runs there join it at once, the
+    way the judgement would after three more days - no signature is born in the value (Home's kiln through the
+    washer's Dry, Wash and Rinse, 2026-10-25: nine fragments, none of them named)."""
+    fleet = _fridge_through_a_washer(3)
+    sigs = fleet.main.signatures
+    fridge = [x for x in sigs if 50 < sum(x.power.values()) < 120 and x.count >= 3]
+    assert len(fridge) == 1 and not any(x.born_in for x in sigs), [(x.id, x.count, x.born_in) for x in sigs]
+    assert all(x.family for x in sigs)
+
+
+def test_a_family_is_named_as_a_whole_and_survives_a_store():
+    fleet = _fridge_through_a_washer(3)
+    det = fleet.main
+    big = max(det.signatures, key=lambda x: x.count)
+    twin = D.Signature(id=999, phases=big.phases, power=dict(big.power), duration_s=big.duration_s, pf=big.pf, count=2,
+                       first_seen=big.first_seen, last_seen=big.last_seen, family=big.family)
+    det.signatures.append(twin)                      # a second signature of the same family
+    assert det.rename_family(big.family, "Fridge")
+    assert big.name == twin.name == "Fridge"
+    back = D.Detector.from_dict(det.to_dict())
+    assert {x.family for x in back.signatures if x.name == "Fridge"} == {big.family}
+    assert back.next_family == det.next_family
+
+
+def test_a_library_stored_without_families_gets_them_and_one_name_is_one_family():
+    fleet = _fridge_through_a_washer(3)
+    det = fleet.main
+    big = max(det.signatures, key=lambda x: x.count)
+    twin = D.Signature(id=999, phases=big.phases, power=dict(big.power), duration_s=big.duration_s, pf=big.pf, count=2,
+                       first_seen=big.first_seen, last_seen=big.last_seen, name="Fridge")
+    big.name = "Fridge"
+    det.signatures.append(twin)
+    stored = det.to_dict()
+    for x in stored["signatures"]:
+        x.pop("family", None)
+    back = D.Detector.from_dict(stored)
+    assert all(x.family for x in back.signatures)
+    assert len({x.family for x in back.signatures if x.name == "Fridge"}) == 1
+
+
 def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():
     """A fridge that runs through every episode of a short daily value passes
     the coverage judgement in every value (it ran in all of them), so a
