@@ -129,6 +129,10 @@ MIN_SESSIONS = 60                      # devices below this are too few to read
 # 3EMs); SUBS=none no meter at all - the main-meter estimate, the meters then
 # only the truth. The default (lab) feeds only SITES' device meters, as the
 # bench always has.
+# The meters that are Shellies (their reports go out on change - PhaseState.forced), by their names above
+SHELLIES = {"Hiša", "Mansarda", "Blaževa Soba", "Vtičnice - pisarna", "Susilna", "Workshop charger", "Attic AC",
+            "Bathroom fan", "West Blinds", "North Blinds", "East Blinds",
+            "Boiler", "Car charger", "Washing machine", "Well pump", "Water pump", "Pond", "Pond EVSE", "Bathroom IR Panel"}
 PROD_SUBS = {
     "home": {
         "Hiša": [f"sensor.hisa_phase_{p}_active_power" for p in "abc"],
@@ -191,14 +195,17 @@ LIVE = 0.0                             # the last days in one-minute passes
 RESTART = 0.0                          # hours between restarts of the replayed Fleet (0: none)
 NOQ = False                            # NOQ=1: the replay ignores reactive power (--no-q)
 _flag = lambda v: bool(float(v))  # noqa: E731
-OWN = {"SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag}
+OWN = {"CADENCE": str, "SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag}
+CADENCE = "auto"                     # CADENCE=shellies: every Shelly meter reports on change, the rest on a timer, as production's settings say
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
 STAGES: list = []                      # INPUT=entity dials, fed as --input
 VOLTS: list = []                       # VOLTS=phase:entity dials, fed as --volts (the edges' voltage)
 FEED: list = []                        # FEED=meter dials - see the docstring
 EXTRAS: list = []                      # EXTRA=folder dials - see the docstring
-LISTS = {"SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "VOLTS": VOLTS, "FEED": FEED, "EXTRA": EXTRAS}
+AUTO: list = []                        # AUTO=meter dials: left to the classifier under CADENCE=shellies
+CHANGE: list = []                      # CHANGE=meter dials: forced change-driven under CADENCE=listed, the rest left to the classifier
+LISTS = {"CHANGE": CHANGE, "AUTO": AUTO, "SWITCH": SWITCHES, "DRIVER": DRIVERS, "INPUT": STAGES, "VOLTS": VOLTS, "FEED": FEED, "EXTRA": EXTRAS}
 FIRING_MIN_PULSES = 20                 # fewer is two 3 kW loads coinciding, not a firing
 
 # What each metered device physically is, for `surge`. Kozolec's hidrofor is a
@@ -341,6 +348,10 @@ def _replay(folder: str, site: str | None, before=None):
             argv += ["--single", n] if n in PROD_SINGLE.get(site, []) else []
             # under its circuit where that is fed too; otherwise under the main, as it then would be
             argv += ["--parent", f"{n}={parents[n]}"] if parents.get(n) in feed else []
+        if CADENCE == "listed":
+            argv += [a for n in CHANGE for a in ("--cadence", f"{n}=change")]
+        if CADENCE == "shellies":
+            argv += [a for n in meters if n not in AUTO for a in ("--cadence", f"{n}={'change' if n in SHELLIES else 'periodic'}")]
     elif site and SUBS == "lab":
         for n, e in SITES[site]["subs"].items():
             argv += ["--sub", f"{n}={e}"]

@@ -140,8 +140,12 @@ SUSTAIN_CADENCES = 3.0
 # when more than CHANGE_DRIVEN_SHARE of its last CADENCE_GAPS gaps are longer than CHANGE_DRIVEN_TAIL of its
 # shortest ones (the 10th percentile): a polled meter's gaps are all about one poll (the grid 2 %, a Victron 12 %,
 # Mansarda's 3EM 3-6 %, the UPS 4 %), a meter reporting on change has long silences (Hiša 27-30 %, the 60 s
-# heartbeats 70-87 %, Blaž's PC 44 %). All counts and shares.
-SUSTAIN_CADENCES_CHANGE = 3.0
+# heartbeats 70-87 %, Blaž's PC 44 %). All counts and shares. Two cadences where three confirmed a pulse the meter
+# had shown as two readings late (the kiln on Hiša: 215 -> 241 two-phase runs, 17.1 -> 17.6 kWh; Home partition
+# impurity 9.1 -> 7.7, circuits fed); 1.5 added nothing. Set Hiša and Mansarda to change-driven on the settings page:
+# the classifier is within 2 points of its cut on Hiša, and forcing Mansarda is better than auto for its own loads.
+# A Shelly that reports regularly (Kozolec's Pond EVSE, 10 s) must NOT be forced: impurity 2.9 -> 6.6.
+SUSTAIN_CADENCES_CHANGE = 2.0
 CHANGE_DRIVEN_SHARE = 0.18
 CHANGE_DRIVEN_TAIL = 3.0
 CHANGE_DRIVEN_MIN_GAPS = 100

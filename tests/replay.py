@@ -425,6 +425,8 @@ def parse(argv):
                         help="METER=PARENT: the meter hangs under PARENT, as the Energy dashboard nests them")
     parser.add_argument("--single", action="append", default=[],
                         help="a sub-meter declared to hold one device, as production's options say")
+    parser.add_argument("--cadence", action="append", default=[],
+                        help="METER=change|periodic: how the meter reports, as the settings page says (else classified from its gaps)")
     parser.add_argument("--sub-phases", action="append", default=[],
                         metavar="Name=sensor.a,sensor.b,sensor.c", help="a three-phase meter, per phase")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
@@ -606,6 +608,7 @@ def run(args, transform=None, say=print):
         fleet.wait_cap_s = D.METER_WAIT_CAP_S      # as production's default; METER_WAIT_CAP_S=0 to judge at once
         fleet.parents = dict(p.split("=", 1) for p in args.parent)
         fleet.horizon_skip = set()
+        fleet.cadence_forced = {n: k == "change" for n, k in (c.split("=", 1) for c in args.cadence)}
         file, owns = fleet.main._file, fleet._meter_owns
 
         def keep(s, *a, **kw):
