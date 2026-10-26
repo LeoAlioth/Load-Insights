@@ -202,7 +202,7 @@ STORAGE_VERSION = 1
 #     after every filing, never into a signature a run was kept out of - the
 #     same history read at any slicing files the same library, which differs
 #     from one built in passes.
-DETECTOR_GENERATION = 23      # families: a load's signatures are one family, named together, and a rare value splits it only where its runs depend on it (2026-10-26); before: a value that came once and stayed no longer splits a load (2026-10-25); before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+DETECTOR_GENERATION = 22      # a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
