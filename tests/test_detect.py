@@ -3064,6 +3064,18 @@ def test_one_hint_alone_does_not_split_a_family():
     assert sig.split_s is None
 
 
+def test_a_name_waiting_for_its_load_after_a_rebuild_still_has_its_entities():
+    """A rebuild that finds no run of a named load in the recorder's days leaves its name waiting (orphan_names):
+    its entities go on being made (Fleet.entity_names), and the name is still one when the library has it."""
+    fleet = D.Fleet()
+    fleet.carry_names([{"name": "Kiln", "phases": "ac", "power": {"a": 2900.0, "c": 2900.0}, "duration_s": 50.0, "pf": None},
+                       {"name": "Pump", "phases": "a", "power": {"a": 850.0}, "duration_s": 120.0, "pf": None, "meter": "Mansarda"}])
+    assert fleet.names() == {} and fleet.entity_names() == ["Kiln", "Pump"]
+    fleet.main.signatures.append(D.Signature(id=1, phases="b", power={"b": 100.0}, duration_s=60.0, pf=None, count=3,
+                                             first_seen=T0, last_seen=T0, name="Fan", family=1))
+    assert fleet.entity_names() == ["Fan", "Kiln", "Pump"]
+
+
 def test_a_family_is_named_as_a_whole_and_survives_a_store():
     fleet = _fridge_through_a_washer(3)
     det = fleet.main
@@ -3092,6 +3104,41 @@ def test_a_library_stored_without_families_gets_them_and_one_name_is_one_family(
     back = D.Detector.from_dict(stored)
     assert all(x.family for x in back.signatures)
     assert len({x.family for x in back.signatures if x.name == "Fridge"}) == 1
+
+
+def _drifting_kiln(sizes, noise=30.0):
+    """A detector whose two-phase kiln start is cut into one start cluster per size in ``sizes``, each with a
+    signature of its own on the phase set, the way a drifting start size is cut (Home's kiln, 2026-10-26)."""
+    det = D.Detector()
+    for ph in "ac":
+        det.phases[ph] = D.PhaseState()
+        det.phases[ph].noise = noise
+    for i, w in enumerate(sizes, 1):
+        det.edges.append(D.StepGroup(id=i, phase="ac", up=True, watts=w, count=40.0, watts_mad=60.0))
+        det.signatures.append(D.Signature(id=100 + i, phases="ac", power={"a": w / 2, "c": w / 2 - 50}, duration_s=45.0,
+                                          pf=None, count=20, first_seen=T0, last_seen=T0))
+        det.start_home[str(i)] = {100 + i: 20.0}
+    det._votes = None
+    det._assign_families()
+    return det
+
+
+def test_families_of_neighbouring_start_clusters_with_alike_signatures_are_one():
+    det = _drifting_kiln([5764.0, 5837.0, 5914.0, 6039.0])
+    assert len({x.family for x in det.signatures}) == 1, [x.family for x in det.signatures]
+    det.rename(101, "Kiln")
+    assert {x.name for x in det.signatures} == {"Kiln"}
+
+
+def test_families_of_start_clusters_further_apart_than_their_spread_stay_apart():
+    det = _drifting_kiln([5764.0, 6400.0])
+    assert len({x.family for x in det.signatures}) == 2
+
+
+def test_a_start_too_small_for_its_noise_does_not_join_families():
+    """Steps a few noises tall: every cluster's spread reaches every look-alike, and nothing may be called one."""
+    det = _drifting_kiln([5764.0, 5837.0], noise=400.0)
+    assert len({x.family for x in det.signatures}) == 2
 
 
 def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():

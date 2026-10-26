@@ -92,7 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     entities += [DetectedLoadsSensor(detection, entry), SignatureLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
     device_names = {d.label.casefold() for d in site.devices}
-    for n in sorted(detection.fleet.names()):
+    for n in detection.fleet.entity_names():
         if n.casefold() in device_names:
             # the dashboard device of that name has its own room sensor, from the meter's statistics
             _forget(hass, "sensor", load_uid(entry.entry_id, "room", n))
@@ -111,7 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         if n.casefold() not in device_names:
             entities += [NamedLoadRoom(detection, entry, n), NamedLoadRate(detection, entry, n)]
     add(entities)
-    known = set(detection.fleet.names())
+    known = set(detection.fleet.entity_names())
 
     @callback
     def _follow_names() -> None:
@@ -125,7 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         going away, and leave a stale twin the next one refuses."""
         if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
             return
-        new = [n for n in detection.fleet.names() if n not in known]
+        new = [n for n in detection.fleet.entity_names() if n not in known]
         if not new:
             return
         known.update(new)
@@ -994,7 +994,10 @@ class NamedLoadPower(_PowerW, _DetectionBase):
     @property
     def native_value(self) -> Optional[float]:
         value = self._runner.live_power.get(self._name)
-        return None if value is None else round(value)
+        if value is None:
+            # a name waiting for its load after a rebuild draws nothing, it is not unknown
+            return 0 if self._name not in self._runner.fleet.names() else None
+        return round(value)
 
 
 class NamedLoadRoom(_DetectionBase):
