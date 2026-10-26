@@ -49,9 +49,10 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
             await entry.runtime_data.runner.async_reset(forget_names=bool(call.data.get("forget_names", False)))
 
     async def _name_load(call) -> None:
-        """Name a load by its id, for one the naming page does not offer yet -
+        """Name a load by its family id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
-        the page's bar (2026-09-28). An empty name clears it."""
+        the page's bar (2026-09-28). An empty name clears it. The name goes to every
+        signature of the family (2026-10-26)."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
         ref = ((call.data.get("meter") or "").strip(), int(call.data["load_id"]))
         name = (call.data.get("name") or "").strip() or None
@@ -60,13 +61,13 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         if runner is None:
             # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        sig = runner.fleet.signature(ref)
+        sig = runner.fleet.family_head(ref)
         was = sig.name if sig is not None else None
         names_before = set(runner.fleet.names())
-        if not await runner.async_rename(ref, name):
+        if not await runner.async_rename(ref, name, family=True):
             raise ServiceValidationError(
-                f"No detected load has id {ref[1]}" + (f" on {ref[0]}" if ref[0] else " under no meter")
-                + ". A signature the detector has since merged into another no longer has its id")
+                f"No detected load has family id {ref[1]}" + (f" on {ref[0]}" if ref[0] else " under no meter")
+                + ". A family the detector has since joined into another no longer has its id")
         if set(runner.fleet.names()) == names_before:
             return      # the same names, so the same entities and links: no reload (2026-10-23)
         # what the naming page's Done does: the entities follow the names,

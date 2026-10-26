@@ -703,7 +703,7 @@
             "fields": {
                 "load_id": {
                     "name": "Breme",
-                    "description": "Oznaka zaznanega bremena, kot jo navaja diagnostika."
+                    "description": "Oznaka družine zaznanega bremena - \"family\", ki jo ima vsak podpis v diagnostiki. Ime dobijo vsi podpisi družine."
                 },
                 "meter": {
                     "name": "Števec",

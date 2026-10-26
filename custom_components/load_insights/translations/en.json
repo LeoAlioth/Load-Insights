@@ -703,7 +703,7 @@
             "fields": {
                 "load_id": {
                     "name": "Load",
-                    "description": "The detected load's id, as the diagnostics give it."
+                    "description": "The detected load's family id - the \"family\" each signature carries in the diagnostics. The name goes to every signature of the family."
                 },
                 "meter": {
                     "name": "Meter",

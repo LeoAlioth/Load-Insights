@@ -2992,6 +2992,11 @@ class Signature:
     # back from a born-in twin that turned out to be chance
     born_in: Optional[str] = None
     takes_in: List[str] = field(default_factory=list)
+    # the family it belongs to - one load, as one meter sees it, seen through
+    # every setting's value: the signatures of one start cluster on one set of
+    # phases (Detector._join_families). Every signature has one; most have
+    # it to themselves. A family is named, not a signature (the owner, 2026-10-26).
+    family: int = 0
     # signatures its first run was kept out of - a switch that was off, a
     # one-device meter that held through its start - which it is never
     # merged into for sharing their device (Detector._merge_devices)
@@ -3072,7 +3077,7 @@ class Signature:
     duration_mad: float = 0.0
     interval_mad: Optional[float] = None
 
-    def alike(self, other: "Signature", noise_w: float) -> bool:
+    def alike(self, other: "Signature", noise_w: float, inputs: bool = True) -> bool:
         """Would these two be the same signature if they arrived now?
 
         The same test as ``matches``, between two signatures rather than a
@@ -3083,7 +3088,7 @@ class Signature:
             return False                       # named apart on purpose
         if not self.takes_len(other.duration_s) or not other.takes_len(self.duration_s):
             return False                       # the daily rewrite split them by length
-        if self.born_in != other.born_in:
+        if inputs and self.born_in != other.born_in:
             # apart until judged; a born-in one that is chance goes back
             born = self.born_in or other.born_in
             if self.born_in and other.born_in and not (other.born_in in self.takes_in or self.born_in in other.takes_in):
@@ -3643,7 +3648,7 @@ class Signature:
                 "interval_mad": _trim(self.interval_mad, 1),
                 "inputs": {n: {k: {v: _trim(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
-                "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
+                "family": self.family, "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
                 "hourly": {str(h): _trim(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05 * TRIM},
                 "recovered": {str(h): _trim(wh, 1) for h, wh in self.recovered.items() if wh >= 0.05 * TRIM},
@@ -3665,7 +3670,7 @@ class Signature:
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
                    inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or {}).items()},
-                   born_in=d.get("born_in"),
+                   born_in=d.get("born_in"), family=int(d.get("family") or 0),
                    takes_in=list(d.get("takes_in") or []), apart=list(d.get("apart") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
                    born_judged=d.get("born_judged", False),
@@ -4147,6 +4152,12 @@ class Detector:
     # like them (see _reclaim).
     orphan_names: List[dict] = field(default_factory=list)
     next_id: int = 1
+    # the next family id, and what each family has seen of each rare value it
+    # ran through: family -> "setting=value" -> {"born": the value's episode
+    # count when the family first ran in it, "seen": episodes it ran in, "last":
+    # the last one's start} - see Detector._splits
+    next_family: int = 1
+    family_eps: Dict[int, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     tz_offset_s: float = 0.0
     # number -> sorted [(ts, value)], each held until the next: a step
     # records the value in force (StepGroup.values); fed by the fleet, not persisted
@@ -4582,7 +4593,7 @@ class Detector:
             # elsewhere - Home 79.8 / 76.0 % that way, 86.0 / 85.4 trusted,
             # Kozolec 98.3 / 94.1 and 99.8 / 98.9 (2026-09-30)
             want = self._sig(prefer)
-            if want is not None and want.id not in avoid and want.files_in(context) and want.phases == s.phases and want.takes_run(s):
+            if want is not None and want.id not in avoid and self._takes(want, context) and want.phases == s.phases and want.takes_run(s):
                 best = want
         if best is None and device is not None:
             best = self._device_signature(device, context, avoid, s.phases, s)
@@ -4595,6 +4606,10 @@ class Detector:
                 best.born_ep = (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0
             self.next_id += 1
             self.signatures.append(best)
+            # one more of its device's family, when the device has one (a value the family runs in on its own
+            # - Detector._splits); else a family of its own
+            best.family = (self._device_family(device, s.phases) if device is not None else 0) or self._new_family()
+            best.name = next((m.name for m in self.family_of(best) if m.name and m is not best), None)
             best.absorb(s, tz)
             best.count = 1
         else:
@@ -4606,6 +4621,15 @@ class Detector:
             total = sum((self.input_time.get(name) or {}).values())
             if i >= 0 and total > 0:
                 best.note_input(name, rows[i][1], {v: t / total for v, t in self.input_time[name].items()}, s.start)
+        if context and best.family:
+            row = self.family_eps.setdefault(best.family, {}).get(context)
+            if row is None:
+                setting, _, value = context.partition("=")
+                row = self.family_eps[best.family][context] = {
+                    "born": (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0, "seen": 0.0, "last": -1.0}
+            if row["last"] != episode:
+                row["seen"] += 1.0
+                row["last"] = episode
         if context and best.born_in == context and best.last_ep != episode:
             best.ep_seen += 1.0
             best.last_ep = episode
@@ -4685,6 +4709,10 @@ class Detector:
         and repoint what referred to them."""
         if not moved:
             return
+        for other_id, keep_id in moved.items():
+            other, keep = self._sig(other_id), self._sig(keep_id)
+            if other is not None and keep is not None and other.family and keep.family and other.family != keep.family:
+                self._merge_family(other.family, keep.family)      # one signature of two families makes them one
         self.signatures = [x for x in self.signatures if x.id not in moved]
         for r in self.recent:
             if r.get("signature") in moved:
@@ -5300,6 +5328,135 @@ class Detector:
         expected = p * sum(w for b, w in h.items() if lo <= b <= hi)
         return above_chance(n, expected)
 
+    # ------------------------------------------------ families
+    def family_of(self, sig: "Signature") -> List["Signature"]:
+        """Every signature of ``sig``'s family (itself, when it has none yet)."""
+        return [x for x in self.signatures if x.family == sig.family] if sig.family else [sig]
+
+    def _new_family(self) -> int:
+        self.next_family += 1
+        return self.next_family - 1
+
+    def _assign_families(self) -> None:
+        """Give every signature a family: one of its own, joined with those of its start cluster that are
+        otherwise alike (_join_families). What a library stored before families gets on load."""
+        fresh = [x for x in self.signatures if not x.family]
+        if not fresh:
+            return
+        for x in fresh:
+            x.family = self._new_family()
+        self._join_families()
+
+    def _join_families(self) -> None:
+        """One family per start cluster and phase set: the signatures a setting's values split one load into.
+        And the several signatures one name sits on, when they are otherwise alike."""
+        if self._votes is None:
+            self._rebuild_votes()
+        by: Dict[Tuple[int, str], List["Signature"]] = {}
+        for sig in self.signatures:
+            home = self._home.get(sig.id)
+            if home is not None:
+                by.setdefault((home, sig.phases), []).append(sig)
+        for sigs in by.values():
+            sigs.sort(key=lambda x: (not x.name, -x.count))
+            for other in sigs[1:]:
+                self._join(sigs[0], other)
+        named: Dict[Tuple[str, str], List["Signature"]] = {}
+        for sig in self.signatures:
+            if sig.name:
+                named.setdefault((sig.name, sig.phases), []).append(sig)
+        for sigs in named.values():
+            sigs.sort(key=lambda x: -x.count)
+            noise = max((self.phases[p].noise for p in sigs[0].phases if p in self.phases), default=MIN_NOISE_W)
+            for other in sigs[1:]:
+                if sigs[0].alike(other, noise, inputs=False):
+                    self._join(sigs[0], other)
+
+    def _join(self, keep: "Signature", other: "Signature") -> bool:
+        """Put ``other``'s family into ``keep``'s, unless the two were kept apart on purpose: named apart, a run
+        kept out of the other, or split by length. The name goes to every member."""
+        if keep.family == other.family:
+            return False
+        fa, fb = self.family_of(keep), self.family_of(other)
+        if len({m.name for m in fa + fb if m.name}) > 1:
+            return False
+        for a in fa:
+            for b in fb:
+                if (a.id in {self._current(x) for x in b.apart} or b.id in {self._current(x) for x in a.apart}
+                        or not a.takes_len(b.duration_s) or not b.takes_len(a.duration_s)):
+                    return False
+        self._merge_family(other.family, keep.family)
+        return True
+
+    def _merge_family(self, gone: int, keep: int) -> None:
+        """Every member of family ``gone`` is ``keep``'s now, with the name and what it has seen of the values."""
+        name = next((m.name for m in self.signatures if m.family in (gone, keep) and m.name), None)
+        for m in self.signatures:
+            if m.family == gone:
+                m.family = keep
+        for m in self.signatures:
+            if m.family == keep and m.name != name:
+                m.name = name
+                self._touch(m.id)
+        eps = self.family_eps.setdefault(keep, {})
+        for ctx, row in (self.family_eps.pop(gone, None) or {}).items():
+            mine = eps.get(ctx)
+            if mine is None:
+                eps[ctx] = row
+            else:
+                mine["born"], mine["seen"], mine["last"] = min(mine["born"], row["born"]), max(mine["seen"], row["seen"]), max(mine["last"], row["last"])
+
+    def _splits(self, sig: "Signature", context: str) -> bool:
+        """Does the family of ``sig`` run in the value ``context`` names as it does not elsewhere - so that the
+        runs made in it want a signature of their own? Judged on the family's runs together, at the time it is
+        asked: the same measure as input_of and _judge_born, pooled. A family that has not run enough to say
+        (INPUT_MIN_RUNS) splits, as before; one that runs in the value at chance, or in too few of its
+        episodes (a kiln firing through one afternoon's washing), does not: the washer's cycle phase is
+        everything to the washer's heater and nothing to the kiln."""
+        setting, _, value = context.partition("=")
+        n = e = runs = 0.0
+        for m in self.family_of(sig):
+            row = m.inputs.get(setting) or {}
+            n += (row.get("n") or {}).get(value, 0.0)
+            e += (row.get("e") or {}).get(value, 0.0)
+            runs += sum((row.get("n") or {}).values())
+        if runs < INPUT_MIN_RUNS:
+            return True
+        if n <= 0 or e <= 0 or n / e < INPUT_SPLIT_LIFT:
+            return False
+        eps = (self.family_eps.get(sig.family) or {}).get(context) if sig.family else None
+        if not eps:
+            return False
+        since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - eps["born"]
+        return since >= INPUT_MIN_EPISODES and eps["seen"] / since >= INPUT_MIN_COVERAGE
+
+    def _takes(self, sig: "Signature", context: Optional[str]) -> bool:
+        """May ``sig`` take a run made in ``context`` (None: in no rare value)? An ordinary one takes it unless its
+        family splits on the value; one born in the value only once the family does, or it has been judged to belong."""
+        if sig.born_in is None:
+            return context is None or context in sig.takes_in or not self._splits(sig, context)
+        return sig.born_in == context and (sig.born_judged or self._splits(sig, context))
+
+    def _fits(self, sig: "Signature", run: "Run") -> bool:
+        """Does a run look like what ``sig`` has learned - its size within the match tolerance on every phase, its
+        length within MATCH_DURATION_FACTOR? Asked of a run its family's signature takes in a rare value it has no
+        signature for: the family takes only what looks like it (a washer's phase made some of Home's Hidrofor
+        runs another load's)."""
+        noise = max((self.phases[p].noise for p in sig.phases if p in self.phases), default=MIN_NOISE_W)
+        pw = run.power_by_phase()
+        for ph in sig.phases:
+            mine, theirs = sig.power.get(ph, 0.0), pw.get(ph, 0.0)
+            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise) + ALIKE_MAD_SHARE * sig.power_mad:
+                return False
+        return sig.duration_s / MATCH_DURATION_FACTOR <= run.duration_s <= sig.duration_s * MATCH_DURATION_FACTOR
+
+    def _device_family(self, device: int, phases: str) -> int:
+        """The family of the signature most of this device's runs went to on ``phases``, or 0."""
+        votes = self._device_home.get(device) if self._device_home is not None else None
+        best = max(((n, sid) for sid, n in (votes or {}).items()
+                    if (x := self._sig(self._current(sid))) is not None and x.phases == phases and x.family), default=None)
+        return self._sig(self._current(best[1])).family if best else 0
+
     def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Signature"]:
         """The signature most of this device's runs went to, of those on the
@@ -5317,7 +5474,8 @@ class Detector:
         cands = []
         for sid, n in (self._device_home.get(device) or {}).items():
             sig = self._sig(self._current(sid))
-            if sig is not None and sig.id not in avoid and sig.files_in(context) and sig.phases == phases and (run is None or sig.takes_run(run)):
+            if sig is not None and sig.id not in avoid and self._takes(sig, context) and sig.phases == phases and (run is None or sig.takes_run(run)) \
+                    and (run is None or sig.files_in(context) or self._fits(sig, run)):
                 cands.append((n, sig.id, sig))
         return max(cands)[2] if cands else None
 
@@ -5828,19 +5986,31 @@ class Detector:
             return
         for i, orphan in enumerate(self.orphan_names):
             if _described(orphan).alike(sig, noise_w):
-                sig.name = orphan.get("name")
+                for m in self.family_of(sig):
+                    m.name = orphan.get("name")
+                    self._touch(m.id)
                 self.orphan_names.pop(i)
-                self._touch(sig.id)
                 return
 
     def rename(self, signature_id: int, name: Optional[str]) -> bool:
         signature_id = self._current(signature_id)      # a signature merged away is named as what it became
         for sig in self.signatures:
             if sig.id == signature_id:
-                sig.name = (name or "").strip() or None
-                self._touch(sig.id)
+                name = (name or "").strip() or None
+                for m in self.family_of(sig):       # a family is named, not a signature
+                    m.name = name
+                    self._touch(m.id)
                 return True
         return False
+
+    def family_head(self, family: int) -> Optional["Signature"]:
+        """The family's biggest signature - what stands for it - or None for a family that is gone."""
+        return max((x for x in self.signatures if x.family == family), key=lambda x: x.count, default=None)
+
+    def rename_family(self, family: int, name: Optional[str]) -> bool:
+        """Name a family (None clears it): every signature of it wears the name."""
+        head = self.family_head(family)
+        return head is not None and self.rename(head.id, name)
 
     def predecessor_of(self, signature_id: int) -> Optional["Signature"]:
         """The named signature that thinks this one is what it became.
@@ -5876,8 +6046,10 @@ class Detector:
             for hour, wh in theirs.items():
                 mine[hour] = mine.get(hour, 0.0) + wh
             theirs.clear()
-        old.name, old.successor_id = None, None
-        self._touch(old.id)
+        for m in self.family_of(old):
+            m.name = None
+            self._touch(m.id)
+        old.successor_id = None
         self.rename(signature_id, name)
         return name
 
@@ -5885,6 +6057,8 @@ class Detector:
     def to_dict(self) -> dict:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
+                "next_family": self.next_family,
+                "family_eps": {str(f): {c: dict(row) for c, row in eps.items()} for f, eps in self.family_eps.items()},
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
                 "input_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.input_time.items()},
                 "input_until": dict(self.input_until),
@@ -5931,6 +6105,9 @@ class Detector:
         det.recent = list(d.get("recent") or [])
         det.filed_n = max([0] + [int(r.get("n") or 0) for r in det.recent])
         det.next_id = d.get("next_id", 1)
+        det.next_family = d.get("next_family", 1)
+        det.family_eps = {int(f): {c: {k: float(x) for k, x in row.items()} for c, row in eps.items()}
+                          for f, eps in (d.get("family_eps") or {}).items()}
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
         det.input_time = {n: {v: float(t) for v, t in row.items()} for n, row in (d.get("input_time") or {}).items()}
@@ -5968,6 +6145,7 @@ class Detector:
         det._clock = d.get("clock")
         det._moved = {int(k): int(v) for k, v in (d.get("moved") or {}).items()}
         det._pair_phase = dict(d.get("pair_phase") or {})
+        det._assign_families()
         if "rejudge_all" in d:
             # the devices _merge_devices still has to judge again: a full walk after a restart would
             # merge what the pass-by-pass one had left apart
@@ -8282,6 +8460,15 @@ class Fleet:
     def rename(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
         det = self._det(ref[0])
         return det is not None and det.rename(ref[1], name)
+
+    def family_head(self, ref: Tuple[str, int]) -> Optional["Signature"]:
+        """The biggest signature of family ``ref`` = (meter, family id)."""
+        det = self._det(ref[0])
+        return det.family_head(ref[1]) if det is not None else None
+
+    def rename_family(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
+        det = self._det(ref[0])
+        return det is not None and det.rename_family(ref[1], name)
 
     def adopt(self, ref: Tuple[str, int]) -> Optional[str]:
         det = self._det(ref[0])
