@@ -709,6 +709,17 @@ MATCH_DURATION_FACTOR = 3.0
 # The daily rewrite's length split (Signature.learn_split): runs on each side of
 # the largest gap in a signature's run memory, at least. A count (RUN_MEMORY is 12).
 SPLIT_MIN_RUNS = 4
+# The daily repair's hints that a family is two loads (_hint_split; spec
+# docs/specs/2026-10-26-signature-families.md section 11): its runs' lengths
+# fall in two modes at least MATCH_DURATION_FACTOR apart AND the rarer mode
+# sits in a few hours of the day the other does not. Counts and shares, no
+# watts or seconds. A family remembers its last HINT_KEEP runs' (length,
+# start hour) and is read once it has HINT_MIN_RUNS of them.
+HINT_KEEP = 400
+HINT_MIN_RUNS = 30
+HINT_HOURS = 3.0               # the window of the day the rarer mode must sit in
+HINT_HOUR_SHARE = 0.8          # share of the rarer mode's runs in it
+HINT_HOUR_LIFT = 3.0           # times the other mode's share of its runs in it (never under a uniform day's)
 # Two METERS may disagree about a run's length far more than two sightings of
 # one load may: a 66-second boiler cycle is 66 seconds on its own meter and
 # often minutes on a busy main one, where the down-step pairs with a
@@ -4157,6 +4168,8 @@ class Detector:
     # count when the family first ran in it, "seen": episodes it ran in, "last":
     # the last one's start} - see Detector._splits
     next_family: int = 1
+    # family -> the last HINT_KEEP runs' (length s, start hour of the local day), for the daily repair's hints
+    family_runs: Dict[int, List[Tuple[float, float]]] = field(default_factory=dict)
     family_eps: Dict[int, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     tz_offset_s: float = 0.0
     # number -> sorted [(ts, value)], each held until the next: a step
@@ -4621,6 +4634,10 @@ class Detector:
             total = sum((self.input_time.get(name) or {}).values())
             if i >= 0 and total > 0:
                 best.note_input(name, rows[i][1], {v: t / total for v, t in self.input_time[name].items()}, s.start)
+        if best.family:
+            rows = self.family_runs.setdefault(best.family, [])
+            rows.append((s.duration_s, ((s.start + self.tz_offset_s) % 86400.0) / 3600.0))
+            del rows[:-HINT_KEEP]
         if context and best.family:
             row = self.family_eps.setdefault(best.family, {}).get(context)
             if row is None:
@@ -5398,6 +5415,10 @@ class Detector:
             if m.family == keep and m.name != name:
                 m.name = name
                 self._touch(m.id)
+        if gone in self.family_runs:
+            rows = self.family_runs.setdefault(keep, [])
+            rows.extend(self.family_runs.pop(gone))
+            del rows[:-HINT_KEEP]
         eps = self.family_eps.setdefault(keep, {})
         for ctx, row in (self.family_eps.pop(gone, None) or {}).items():
             mine = eps.get(ctx)
@@ -6058,6 +6079,7 @@ class Detector:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
                 "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
                 "next_family": self.next_family,
+                "family_runs": {str(f): [[_trim(a, 1), _trim(h, 2)] for a, h in rows] for f, rows in self.family_runs.items()},
                 "family_eps": {str(f): {c: dict(row) for c, row in eps.items()} for f, eps in self.family_eps.items()},
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
                 "input_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.input_time.items()},
@@ -6106,6 +6128,7 @@ class Detector:
         det.filed_n = max([0] + [int(r.get("n") or 0) for r in det.recent])
         det.next_id = d.get("next_id", 1)
         det.next_family = d.get("next_family", 1)
+        det.family_runs = {int(f): [(float(a), float(h)) for a, h in rows] for f, rows in (d.get("family_runs") or {}).items()}
         det.family_eps = {int(f): {c: {k: float(x) for k, x in row.items()} for c, row in eps.items()}
                           for f, eps in (d.get("family_eps") or {}).items()}
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
@@ -6582,6 +6605,7 @@ class Fleet:
             for sig in det.signatures:
                 if sig.learn_split() and det._home.get(sig.id) is not None:
                     det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
+            _hint_split(det)
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own
@@ -8879,6 +8903,73 @@ def _cap_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b
             sig = det.signature_of(s) if s.parent_signature is None else None
             if sig is not None:
                 _unbook(sig, by_hour, tz)
+
+
+def _two_modes(lens: Sequence[float]) -> Optional[int]:
+    """The index into the sorted lengths where they split in two modes (the cut maximising the between-class
+    variance of the log-lengths), or None: each side needs SPLIT_MIN_RUNS runs and the sides' medians
+    MATCH_DURATION_FACTOR apart. Over all of a family's lengths, not the last RUN_MEMORY: the gap rule of
+    learn_split finds an outlier there, not a minority load's mode."""
+    ordered = sorted(max(x, 1.0) for x in lens)
+    n = len(ordered)
+    if n < 2 * SPLIT_MIN_RUNS:
+        return None
+    logs = [math.log(x) for x in ordered]
+    pre = [0.0]
+    for x in logs:
+        pre.append(pre[-1] + x)
+    best = None
+    for i in range(SPLIT_MIN_RUNS, n - SPLIT_MIN_RUNS + 1):
+        lo, hi = pre[i] / i, (pre[n] - pre[i]) / (n - i)
+        score = i * (n - i) * (hi - lo) ** 2
+        if best is None or score > best[0]:
+            best = (score, i)
+    if best is None:
+        return None
+    i = best[1]
+    if ordered[i + (n - i) // 2] / ordered[i // 2] < MATCH_DURATION_FACTOR:
+        return None
+    return i
+
+
+def _densest_window(hours: Sequence[float]) -> Tuple[float, float]:
+    """(start hour, share of ``hours``) of the HINT_HOURS-long stretch of the clock holding most of them."""
+    best = (0.0, 0.0)
+    for k in range(24):
+        inside = sum(1 for h in hours if (h - k) % 24.0 < HINT_HOURS)
+        if inside > best[1] * len(hours):
+            best = (float(k), inside / max(len(hours), 1))
+    return best
+
+
+def _hint_split(det: "Detector") -> None:
+    """The daily repair's hints that a family is two loads (HINT_*): the lengths of its runs are in two modes
+    AND the rarer mode keeps to a few hours of the day. One hint alone never splits. The family's biggest
+    signature then takes the length split learn_split would have set (split_s, split_side); runs on the other
+    side are filed into a signature of their own, in the same family, from now on. Learning is untouched."""
+    for fid in list(det.family_runs):
+        rows = det.family_runs[fid]
+        members = [x for x in det.signatures if x.family == fid]
+        if not members:
+            del det.family_runs[fid]
+            continue
+        head = max(members, key=lambda x: x.count)
+        if len(rows) < HINT_MIN_RUNS or head.split_s is not None:
+            continue
+        ordered = sorted(rows)
+        i = _two_modes([a for a, _ in ordered])
+        if i is None:
+            continue
+        lo, hi = ordered[:i], ordered[i:]
+        rare, rest = (lo, hi) if len(lo) < len(hi) else (hi, lo)
+        start, share = _densest_window([h for _, h in rare])
+        other = sum(1 for _, h in rest if (h - start) % 24.0 < HINT_HOURS) / max(len(rest), 1)
+        if share < HINT_HOUR_SHARE or share < HINT_HOUR_LIFT * max(other, HINT_HOURS / 24.0):
+            continue
+        head.split_s = math.sqrt(ordered[i - 1][0] * ordered[i][0])
+        head.split_side = 1 if len(hi) >= len(lo) else -1
+        if det._home.get(head.id) is not None:
+            det._rejudge.add(det._home[head.id])
 
 
 def _period(starts: Sequence[float]) -> Optional[float]:

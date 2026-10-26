@@ -249,6 +249,8 @@ steps are never declared (they hit the declared ones at chance). Tests:
 `test_the_days_repair_is_the_same_at_every_slicing`, `test_the_days_repair_after_a_restart`.
 Job note: `data/scorecard/jobs/repair-2026-10-12.md`.
 
+**Planned addition (2026-10-26, spec `docs/specs/2026-10-26-signature-families.md` section 11):** the repair gets run length and time of day as hints, from a longer length memory and an hour histogram kept per family; together with the family's input weights they propose a split of a family into a minority member (Home's Workshop boiler against Hiša's 2 kW element on Y: 11 of 145 runs, 273-992 s against a median of 140 s, 12:00-15:00 only). One hint never splits.
+
 ### Steps and claims (shipped 2026-10-23; spec `docs/specs/2026-10-23-steps-and-claims.md`, numbers `dev/steps-and-claims-results.md`)
 
 Vocabulary in the root `AGENTS.md` (Terms): an edge is one meter's change, a step the edges of several
