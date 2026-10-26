@@ -143,6 +143,12 @@ def _detection(runner) -> dict:
         # where each input's changes fall against them
         "edges": [e.to_dict() for e in det.edges],
         "lag_windows": {n: lag_window(h) for n, h in det.lag_hist.items()},
+        # how each meter reports (PhaseState.on_change): the gaps it has been judged on, the class, and the
+        # settings page's answer where there is one ("forced": true on change, false polled, null auto)
+        "reporting": {name: {p: {"gaps": len(st.all_gaps), "change_driven": st.change_driven, "forced": st.forced,
+                                 "on_change": st.on_change, "interval_s": st.interval, "latency_s": round(st.latency(), 1)}
+                             for p, st in d.phases.items()}
+                      for name, d in [("", det), *sorted(runner.fleet.subs.items())]},
         "submeter_signatures": {
             name: [_jsonable(s.to_dict()) for s in d.signatures]
             for name, d in runner.fleet.subs.items()
