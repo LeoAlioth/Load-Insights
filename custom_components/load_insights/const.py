@@ -124,6 +124,9 @@ CONF_SINGLE_DEVICE = "single_device"
 # slow polled one not worth waiting for; see Fleet._horizon).
 CONF_IGNORE_METERS = "ignore_meters"
 CONF_HORIZON_SKIP = "horizon_skip"
+# ...and how a meter reports, when not left to detection (PhaseState._classify): on change, or polled
+CONF_CHANGE_METERS = "change_meters"
+CONF_PERIODIC_METERS = "periodic_meters"
 # Inside CONF_DETECTION, both ON when absent (the owner, 2026-10-20; INS-21): name a
 # confidently detected fridge or heating element by itself (insights/autoname.py),
 # and, as its own switch, add the auto-named load's energy to the Energy

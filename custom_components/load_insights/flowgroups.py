@@ -52,6 +52,7 @@ _INPUTS = [
 _DETECTION = [
     ("waiting", ("meter_wait_s", "horizon_skip"), False),
     ("meters", ("single_device", "ignore_meters"), False),
+    ("cadence", ("change_meters", "periodic_meters"), False),
     ("naming", ("autoname", "autoname_dashboard"), False),
 ]
 

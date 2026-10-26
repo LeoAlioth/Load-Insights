@@ -135,6 +135,16 @@ NOISE_MAD_FACTOR = 3.0              # with EDGE_BY_METER, always on: the owner w
 # At two, Home's grid meter (cadence 1.1 s, writing every 2.0-2.3 s) read its
 # ordinary gaps as silence and its energy recall fell to 5 %.
 SUSTAIN_CADENCES = 3.0
+# ...and for a meter that reports on change (a Shelly: its readings stop while a value holds, so a short pulse is
+# two readings, and three of its cadences is longer than the pulse - Home's kiln on Hiša, 2026-10-26). A meter is one
+# when more than CHANGE_DRIVEN_SHARE of its last CADENCE_GAPS gaps are longer than CHANGE_DRIVEN_TAIL of its
+# shortest ones (the 10th percentile): a polled meter's gaps are all about one poll (the grid 2 %, a Victron 12 %,
+# Mansarda's 3EM 3-6 %, the UPS 4 %), a meter reporting on change has long silences (Hiša 27-30 %, the 60 s
+# heartbeats 70-87 %, Blaž's PC 44 %). All counts and shares.
+SUSTAIN_CADENCES_CHANGE = 3.0
+CHANGE_DRIVEN_SHARE = 0.18
+CHANGE_DRIVEN_TAIL = 3.0
+CHANGE_DRIVEN_MIN_GAPS = 100
 # A meter reports its readings of one moment as separate entities, stamped
 # milliseconds apart. Home's grid is the SolarEdge meter plus the inverter: the
 # inverter's write 28 ms before the meter's showed the old level, and a kiln-
@@ -1982,6 +1992,12 @@ class PhaseState:
     # a meter below the grid: its report lag against it, learned by the
     # Fleet (Fleet._learn_lags), 0 until it is - see latency
     lag: float = 0.0
+    # every gap between this phase's readings (SAME_UPDATE_S to 120 s), the last CADENCE_GAPS: what tells a meter
+    # that reports on change from a polled one - see SUSTAIN_CADENCES_CHANGE
+    all_gaps: List[float] = field(default_factory=list)
+    change_driven: bool = field(default=False, repr=False, compare=False, metadata=DERIVED)
+    # the settings page's answer for this meter (Fleet.cadence_forced): None leaves it to _classify
+    forced: Optional[bool] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # ...and how far its readings run AHEAD of the grid's, the other tail of
     # its signed lags: its spans reach this much further on to meet the grid's
     # - see LAG_PERCENTILE and Fleet._near
@@ -2108,6 +2124,11 @@ class PhaseState:
         elif self.last_ts is not None:
             gap = ts - self.last_ts
             if SAME_UPDATE_S < gap < 120.0:   # one update is not a gap; a restart's is not a sampling rate
+                self.all_gaps.append(gap)
+                if len(self.all_gaps) > CADENCE_GAPS:
+                    del self.all_gaps[0]
+                if len(self.all_gaps) % 25 == 0:
+                    self._classify()
                 if self._moved:          # the meter's CADENCE - see CADENCE_GAPS
                     self.moving_gaps.append(gap)
                     if len(self._moving_sorted) != len(self.moving_gaps) - 1:
@@ -2331,6 +2352,14 @@ class PhaseState:
         silence = ts - self.last_ts - SILENCE_CADENCES * self.interval
         return max(0, min(IMPLIED_ZEROS_CAP, int(silence / self.interval)))
 
+    def _classify(self) -> None:
+        """Does this meter report on change - see SUSTAIN_CADENCES_CHANGE."""
+        n = len(self.all_gaps)
+        if n < CHANGE_DRIVEN_MIN_GAPS:
+            return
+        short = sorted(self.all_gaps)[int(MOVING_PERCENTILE * (n - 1))]
+        self.change_driven = sum(g > CHANGE_DRIVEN_TAIL * short for g in self.all_gaps) > CHANGE_DRIVEN_SHARE * n
+
     def latency(self) -> float:
         """How long after a moment this reading's data about it is complete -
         how long a new level must go uncontradicted to be confirmed, a
@@ -2351,7 +2380,7 @@ class PhaseState:
         until a repeat interval is measured."""
         if not self.interval:
             return max(SUSTAIN_SECONDS, self.lag)
-        return max(SUSTAIN_CADENCES * self.interval, self.lag)
+        return max((SUSTAIN_CADENCES_CHANGE if (self.change_driven if self.forced is None else self.forced) else SUSTAIN_CADENCES) * self.interval, self.lag)
 
     def silence_due(self) -> Optional[float]:
         """When the change pending here is confirmed by the meter's silence:
@@ -2978,7 +3007,7 @@ class PhaseState:
                 "idle_diffs": list(self.idle_diffs), "rel_diffs": list(self.rel_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
                 "raw_last": list(self.raw_last) if self.raw_last else None, "lag": self.lag, "lead": self.lead,
-                "floor_zero": self.floor_zero, "moving_gaps": [_trim(x, 2) for x in self.moving_gaps],
+                "floor_zero": self.floor_zero, "moving_gaps": [_trim(x, 2) for x in self.moving_gaps], "all_gaps": [_trim(x, 2) for x in self.all_gaps],
                 # what a pass was in the middle of deciding - see test_a_restart_is_only_a_pause
                 "moved": self._moved, "ended_upto": self.ended_upto, "last_step_ts": self.last_step_ts,
                 "steady_ts": self.steady_ts, "steady_before": self.steady_before, "pv_last": self.pv_last,
@@ -2991,7 +3020,7 @@ class PhaseState:
     def from_dict(cls, d: Optional[dict]) -> "PhaseState":
         if not d:
             return cls()
-        return cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
+        st = cls(baseline=d.get("baseline"), noise=d.get("noise", MIN_NOISE_W), level=d.get("level"),
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
                    interval=d.get("interval", 0.0), noise_rel=d.get("noise_rel", 0.0),
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
@@ -3002,7 +3031,7 @@ class PhaseState:
                    open_edges=[_Open.of(x) for x in d.get("open_edges") or []], last_ts=d.get("last_ts"),
                    raw_last=tuple(d["raw_last"]) if d.get("raw_last") else None, lag=float(d.get("lag") or 0.0),
                    lead=float(d.get("lead") or 0.0),
-                   floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []),
+                   floor_zero=bool(d.get("floor_zero", False)), moving_gaps=list(d.get("moving_gaps") or []), all_gaps=list(d.get("all_gaps") or []),
                    _moved=bool(d.get("moved", False)), ended_upto=d.get("ended_upto"),
                    last_step_ts=d.get("last_step_ts"), steady_ts=d.get("steady_ts"),
                    steady_before=d.get("steady_before"), pv_last=d.get("pv_last"), _stood=d.get("stood"),
@@ -3012,6 +3041,8 @@ class PhaseState:
                    recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
                    declared=[tuple(e) for e in d.get("declared") or []],
                    declared_t=[e[0] for e in d.get("declared") or []])
+        st._classify()
+        return st
 
 
 # ------------------------------------------------------------------ signatures
@@ -6360,6 +6391,8 @@ class Fleet:
     _step_votes_from: Dict[str, float] = field(default_factory=dict)
     # meters the runner says are not to set the horizon (the settings page) - see _horizon
     horizon_skip: set = field(default_factory=set, repr=False, compare=False, metadata=DERIVED)
+    # meter -> True reports on change, False is polled; a meter missing here is classified from its gaps - see PhaseState.forced
+    cadence_forced: Dict[str, bool] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # the grid's readings, reactive and PV newer than the wait, for the next pass
     _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
     # switch -> {on moment: off moment, or None while on}, as the runner last
@@ -6481,7 +6514,10 @@ class Fleet:
                                          for r in byp.values() if r])
         end = now_ts if now_ts is not None else latest
         for name in sorted(set(self.subs) | set(sub_samples)):
-            self.subs.setdefault(name, Detector()).tz_offset_s = self.main.tz_offset_s
+            det = self.subs.setdefault(name, Detector())
+            det.tz_offset_s = self.main.tz_offset_s
+            for st in det.phases.values():
+                st.forced = self.cadence_forced.get(name)
         self._sync_views()
         for name, rows_by_phase in sub_samples.items():
             self._keep_rows(name, rows_by_phase, end)

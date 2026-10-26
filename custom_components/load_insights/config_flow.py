@@ -45,7 +45,9 @@ from .const import (
     CONF_AUTONAME,
     CONF_AUTONAME_DASHBOARD,
     CONF_SINGLE_DEVICE,
+    CONF_CHANGE_METERS,
     CONF_IGNORE_METERS,
+    CONF_PERIODIC_METERS,
     CONF_HORIZON_SKIP,
     CONF_METER_WAIT,
     DETECTION_BACKFILL_DAYS,
@@ -859,7 +861,7 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         meters = await self._device_meters()
         if user_input is not None:
             # a wait of 0 is an answer - judge every step at once - not an empty field
-            lists = (CONF_SINGLE_DEVICE, CONF_IGNORE_METERS, CONF_HORIZON_SKIP)
+            lists = (CONF_SINGLE_DEVICE, CONF_IGNORE_METERS, CONF_HORIZON_SKIP, CONF_CHANGE_METERS, CONF_PERIODIC_METERS)
             cfg = {**current, **{k: v for k, v in user_input.items()
                                  if (v or (k == CONF_METER_WAIT and v is not None)) and k not in lists}}
             if meters:
@@ -882,6 +884,8 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
                                         else [stat for stat, _, guess in meters if guess]))
             fields.update(_meters_field(CONF_HORIZON_SKIP, meters, current.get(CONF_HORIZON_SKIP)))
             fields.update(_meters_field(CONF_IGNORE_METERS, meters, current.get(CONF_IGNORE_METERS)))
+            fields.update(_meters_field(CONF_CHANGE_METERS, meters, current.get(CONF_CHANGE_METERS)))
+            fields.update(_meters_field(CONF_PERIODIC_METERS, meters, current.get(CONF_PERIODIC_METERS)))
         return self.async_show_form(
             step_id="detection",
             data_schema=vol.Schema(fields),

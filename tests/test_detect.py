@@ -3076,6 +3076,33 @@ def test_a_name_waiting_for_its_load_after_a_rebuild_still_has_its_entities():
     assert fleet.entity_names() == ["Fan", "Kiln", "Pump"]
 
 
+def test_a_meter_set_on_the_settings_page_beats_its_own_classification():
+    """Fleet.cadence_forced: True reports on change, False is polled, a meter missing from it is classified from
+    its gaps (PhaseState._classify)."""
+    old = D.SUSTAIN_CADENCES_CHANGE
+    D.SUSTAIN_CADENCES_CHANGE = 2.0
+    try:
+        polled = D.PhaseState()
+        polled.interval = 4.0
+        assert polled.latency() == 12.0                    # auto, never classified: polled
+        polled.forced = True
+        assert polled.latency() == 8.0
+        sparse = D.PhaseState()
+        sparse.interval = 4.0
+        sparse.all_gaps = [4.0] * 70 + [60.0] * 30         # 30 % of the gaps are long: reports on change
+        sparse._classify()
+        assert sparse.latency() == 8.0
+        sparse.forced = False
+        assert sparse.latency() == 12.0
+        fleet = D.Fleet()
+        fleet.cadence_forced = {"Plug": True}
+        fleet.process({}, {"Plug": {"a": [(T0, 10.0)]}, "Other": {"a": [(T0, 10.0)]}}, now_ts=T0 + 60)
+        assert fleet.subs["Plug"].phases["a"].forced is True
+        assert fleet.subs["Other"].phases["a"].forced is None
+    finally:
+        D.SUSTAIN_CADENCES_CHANGE = old
+
+
 def test_a_family_is_named_as_a_whole_and_survives_a_store():
     fleet = _fridge_through_a_washer(3)
     det = fleet.main
