@@ -692,6 +692,9 @@ def energy(site: str, folder: str, dials: list) -> dict:
     finally:
         undo()
     det = fleet.main
+    # the cycles the daily repair found again (detect._recover_day) are sessions of the main meter like any other;
+    # RECOVER_ON=0 scores without them, the live detection alone
+    filed = filed + list(det.recovered_log)
     devices, rest = measured(folder, site, worth)
     tables = _tables(site)
     runs = _fridges(folder) if worth and site == "kozolec" else {}
