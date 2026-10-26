@@ -709,6 +709,15 @@ MATCH_DURATION_FACTOR = 3.0
 # The daily rewrite's length split (Signature.learn_split): runs on each side of
 # the largest gap in a signature's run memory, at least. A count (RUN_MEMORY is 12).
 SPLIT_MIN_RUNS = 4
+# Families of one phase set whose start clusters sit within this many of the clusters' own spread (watts_mad)
+# of each other, and whose signatures are alike, are one family: a load whose start size drifts - the kiln's
+# 5.76 -> 6.05 kW over a firing - is cut into neighbouring clusters, each with signatures of its own
+# (_join_neighbours). A count of measured spreads, not watts.
+FAMILY_REACH_MADS = 3.0
+# ...and only for a start at least this many noises (of its phases together) tall: below that the clusters'
+# spread is the noise's, the spread reaches every look-alike, and the join would make blobs out of loads
+# nobody could tell apart (Home, 2026-10-26: 14 families of 17-22 W steps made one). Also a count.
+FAMILY_REACH_NOISES = 50.0
 # The daily repair's hints that a family is two loads (_hint_split; spec
 # docs/specs/2026-10-26-signature-families.md section 11): its runs' lengths
 # fall in two modes at least MATCH_DURATION_FACTOR apart AND the rarer mode
@@ -5358,11 +5367,10 @@ class Detector:
         """Give every signature a family: one of its own, joined with those of its start cluster that are
         otherwise alike (_join_families). What a library stored before families gets on load."""
         fresh = [x for x in self.signatures if not x.family]
-        if not fresh:
-            return
         for x in fresh:
             x.family = self._new_family()
-        self._join_families()
+        if self.signatures:
+            self._join_families()          # also for a library that has families: the neighbour join is new
 
     def _join_families(self) -> None:
         """One family per start cluster and phase set: the signatures a setting's values split one load into.
@@ -5388,6 +5396,29 @@ class Detector:
             for other in sigs[1:]:
                 if sigs[0].alike(other, noise, inputs=False):
                     self._join(sigs[0], other)
+        self._join_neighbours()
+
+    def _join_neighbours(self) -> None:
+        """One family from the signatures of start clusters that neighbour each other (FAMILY_REACH_MADS) on the
+        same phase set, direction and meter, when the signatures are alike: a start size that drifts is cut into
+        clusters side by side, and each cluster's runs make signatures of their own (Home's kiln, 2026-10-26:
+        seven two-phase clusters from 5.76 to 6.05 kW, seven families, one of them named). Nearest pairs first;
+        _join still refuses a pair kept apart on purpose, split by length or named differently."""
+        by: Dict[Tuple[str, str], List[Tuple[float, float, "Signature"]]] = {}
+        for sig in self.signatures:
+            home = self._home.get(sig.id)
+            c = self.cluster(home) if home is not None else None
+            if c is not None and c.up and c.watts >= FAMILY_REACH_NOISES * sum(
+                    (self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in c.phase):
+                by.setdefault((c.phase, c.owner), []).append((c.watts, c.watts_mad, sig))
+        for rows in by.values():
+            pairs = sorted(((abs(w1 - w2), a, b) for i, (w1, m1, a) in enumerate(rows) for w2, m2, b in rows[i + 1:]
+                            if a.family != b.family and abs(w1 - w2) <= FAMILY_REACH_MADS * max(m1, m2)),
+                           key=lambda x: x[0])
+            for _, a, b in pairs:
+                noise = max((self.phases[p].noise for p in a.phases if p in self.phases), default=MIN_NOISE_W)
+                if a.family != b.family and a.alike(b, noise, inputs=False):
+                    self._join(a, b)
 
     def _join(self, keep: "Signature", other: "Signature") -> bool:
         """Put ``other``'s family into ``keep``'s, unless the two were kept apart on purpose: named apart, a run
@@ -6606,6 +6637,7 @@ class Fleet:
                 if sig.learn_split() and det._home.get(sig.id) is not None:
                     det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
+            det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own
@@ -8509,6 +8541,13 @@ class Fleet:
             for name, ids in det.names().items():
                 out.setdefault(name, []).extend((meter, i) for i in ids)
         return out
+
+    def entity_names(self) -> List[str]:
+        """Every name a named load's entities exist for: the names the library wears and the names still
+        waiting for their load after a rebuild (orphan_names). A rebuild that finds too few runs of a load in
+        the recorder's days must not take its entities away: its meter keeps its reading, its power reads 0,
+        and both go on until the load runs again and the name is back on it (2026-10-26)."""
+        return sorted(set(self.names()) | {o["name"] for _, det in self.detectors() for o in det.orphan_names if o.get("name")})
 
     def _summed(self, per_detector) -> Dict:
         out: Dict = {}

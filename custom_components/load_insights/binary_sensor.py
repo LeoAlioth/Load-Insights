@@ -20,7 +20,7 @@ from .sensor import _child_device, _forget, heat_uid
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     runner: DetectionRunner = entry.runtime_data.runner
     entities = []
-    for name in sorted(runner.fleet.names()):
+    for name in runner.fleet.entity_names():
         if runner.metered_device(name):          # that device: see the sensor platform
             _forget(hass, "binary_sensor", _running_uid(entry.entry_id, name))
         else:
