@@ -56,7 +56,7 @@ Two named families with different names never join. A join keeps the older id an
 
 ## 6. Storage and migration
 
-`DETECTOR_GENERATION` is bumped. A rebuild reads the recorder as now, files every run through section 4 and keeps names through `orphan_names` (a named signature's name goes to the family its signature lands in). Existing stored signatures are loaded as one-member families (phases from the signature, name from `Signature.name`); signatures that share a name join one family when they are otherwise alike (same phase set, `alike`), the rest by section 5 on the next daily repair, so a library that has not rebuilt yet still works. `to_dict` / `from_dict` carry `families`; a stored file without them reads as above.
+`DETECTOR_GENERATION` is **not** bumped (decided 2026-10-26: the recorder keeps 4 days, so a rebuild would drop the older library; a stored library loads into families on its own). A rebuild would read the recorder as now, files every run through section 4 and keeps names through `orphan_names` (a named signature's name goes to the family its signature lands in). Existing stored signatures are loaded as one-member families (phases from the signature, name from `Signature.name`); signatures that share a name join one family when they are otherwise alike (same phase set, `alike`), the rest by section 5 on the next daily repair, so a library that has not rebuilt yet still works. `to_dict` / `from_dict` carry `families`; a stored file without them reads as above.
 
 ## 7. Where it touches (to be verified against the code during the build)
 
