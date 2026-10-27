@@ -690,8 +690,6 @@ WELL_SAMPLED = 12.0
 # count itself keeps counting - this bounds the WEIGHT, not the history
 # (2026-09-18, who picked 100 over the 50 I proposed).
 ABSORB_WINDOW = 100.0
-NOISE_SESSION_WH = 3.0         # a blip smaller than this AND shorter than NOISE_SESSION_S is dropped
-NOISE_SESSION_S = 20.0
 # A motor draws several times its running current for the moment it starts,
 # and a meter catches one sample of it: the owner's pressure pump reads 8886 W in
 # one sample and 830 W in every sample after, four times over in a day. Held
@@ -4527,13 +4525,11 @@ class Detector:
 
     def _release_held(self) -> None:
         """The group due first goes out as one session: filed, or handed to the
-        fleet (``file`` False) - unless it is a blip."""
+        fleet (``file`` False)."""
         g = min(self._groups(), key=lambda g: (self._group_due(g), g[0].start))
         self.held = [s for s in self.held if all(s is not m for m in g)]
         self._held_due = None
         s = self._combine(g)
-        if s.energy_wh < NOISE_SESSION_WH and s.duration_s < NOISE_SESSION_S:
-            return
         if self._file_now:
             self._file(s)
             self._merge_devices()
