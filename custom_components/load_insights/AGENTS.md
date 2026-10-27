@@ -1248,6 +1248,15 @@ before until a `reset_detection` re-runs the backfill.
 
 Don't re-chase these; each cost real time.
 
+- **Pairing a fall that matches no open run by the cluster's usual length, 2026-10-27.** In `_pair`, after the
+  candidate block: an unowned open run whose cluster has a known usual length, aged 0.6-1.5 x that length, within
+  `PAIR_CYCLE_TOL` (0.3 / 0.4 / 0.5) of the fall's size, is closed by it when exactly one run qualifies (aimed at
+  the incubator's 16-22 s pulses, whose falls close nothing: 1 780 of 40-90 W falls on Hiša). Bench Home 15-25 Oct,
+  `CADENCE=listed CHANGE=Hiša CHANGE=Mansarda`, 7 W floor, fresh baseline (a first comparison against a 10 W trace
+  was confounded). Capture / impurity %, hidden / circuits / fed, partition: baseline 43.9/12.3, 49.1/8.8,
+  51.2/7.8; 0.3 43.1/11.5, 49.2/8.3, 51.2/7.5; 0.4 43.0/11.8, 49.2/8.7, 51.2/7.6; 0.5 42.8/11.6, 49.0/8.9,
+  50.8/8.0. Devices hidden 32.2/12.1 -> 32.5/12.0, 32.0/14.1, 32.3/13.0. Hiša trace, runs closed: 18 501 -> 18 498.
+  A wash at every tolerance, so not shipped. Why the recovered falls add nothing was not traced.
 - **Family-level scoring and naming, 2026-10-27 (INS-27).** (a) The scorecard crediting a load per detector
   FAMILY (every signature of a family takes the family's owner, as production names whole families):
   Home devices all-loads capture 33.4 / 45.0 / 61.0 % hidden / circuits / fed -> 33.5 / 44.5 / 61.0, impurity

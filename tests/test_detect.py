@@ -1828,14 +1828,18 @@ def test_the_idle_noise_is_not_learned_while_the_array_moves_under_the_reading()
     rnd = random.Random(2)
     n = 3000
     sun = [0.0] * 600 + [1500.0] * 2400
-    for k in range(601, n):                    # morning: a hazy sky on one phase, 20-30 W a poll
-        sun[k] = sun[k - 1] + rnd.choice([1, -1]) * rnd.uniform(20.0, 30.0)
+    for k in range(601, n):                    # morning: a hazy sky on one phase, 14-21 W a poll
+        sun[k] = sun[k - 1] + rnd.choice([1, -1]) * rnd.uniform(14.0, 21.0)
     rows = [(T0 + DT * k, 300.0 + rnd.choice([-1.0, 0.0, 1.0]) + 0.3 * (sun[k] - sun[k - 1] if k else 0.0))
             for k in range(n)]
     # the highest the noise got, fed in passes of 50 readings: the readings
-    # wander in two modes (+-6..9 W), so where a move from the level counts
-    # (NOISE_FROM_MOVES) the blind noise ends a run at 10 W or ~38 by chance
-    # (4 of 8 seeds at 10 before NOISE_REL_FROM_LEVEL, 6 of 8 since)
+    # wander in two modes (+-4..6 W), so where a move from the level counts
+    # (NOISE_FROM_MOVES) the blind noise ends a run at 7 W or ~27 by chance
+    # (4 of 8 seeds at 10 before NOISE_REL_FROM_LEVEL, 6 of 8 since). The wander
+    # sits just under the floor and is scaled with it: it was 20-30 W array
+    # steps (+-6..9 W) under the 10 W floor, where at 7 W no seed inflated
+    # (2026-10-27, CI failed on it); bigger moves are steps, not noise. Now
+    # 5 of 8 seeds inflate, this one to 26.4 W
     def highest(pv):
         det = D.Detector()
         det.phases["a"].floor_zero = True
