@@ -1249,6 +1249,21 @@ before until a `reset_detection` re-runs the backfill.
 
 Don't re-chase these; each cost real time.
 
+- **Family-level scoring and naming, 2026-10-27 (INS-27).** (a) The scorecard crediting a load per detector
+  FAMILY (every signature of a family takes the family's owner, as production names whole families):
+  Home devices all-loads capture 33.4 / 45.0 / 61.0 % hidden / circuits / fed -> 33.5 / 44.5 / 61.0, impurity
+  12.1 / 13.7 / 11.8 -> 12.4 / 13.8 / 12.8; Hidrofor fed capture 72.4 -> 72.6 % (0.04 kWh of 22.2) with impurity
+  26.8 -> 30.3 %: the uncredited runs are not siblings of the main signature (they sit in other loads' signatures
+  and in one-off ones), so the scatter is not bookkeeping. (b) Auto-naming on a family's POOLED facts (runs, hours,
+  span, pooled start spacing): on both live libraries no family clears pooled that does not clear alone; across
+  look-alike signatures ignoring families Home's 66 W / 11 min / 48 min cluster (11 signatures, 329 runs) fails
+  only irregularity (0.66 against 0.6) and evidence (0.50 against 0.7), and Kozolec's fridge clusters hold ~25
+  runs where hundreds are expected (the runs are not filed at all), so pooling cannot name them. Neither was
+  built into the product. (c) Settings re-check with truth clipped to the main series (kWh captured hidden /
+  circuits / fed; Home devices of 255 kWh: 76.8 / 93.9 / 103.6): sustain 3.0 for change-driven meters, 2.5 for
+  polled, interval percentile 0.07 and 0.15 all move less than the baseline's own spread, with losses of 4-14 kWh
+  at Kozolec's and Andrej's partitions for 2.5 and 0.07: 3 / 2 / p10 stays.
+
 - **Steps and claims, 2026-10-23.** (a) The inputs' states joined into ONE key per step: no exact
   combination of five states repeats, 43 rises of 1.9 kW sat in Mansarda's plain group - judge each input
   on its own. (b) `MATCH_DURATION_FACTOR` 6 and 12: identical to 3 on the dishwasher scorer; duration does

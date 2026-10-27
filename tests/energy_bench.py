@@ -395,7 +395,9 @@ def _measured(folder: str, site: str, worth: bool):
         if e not in s and _clip(rows, a, b):
             s[e] = _clip(rows, a, b)
     subs = {**B.PROD_SUBS[site], **B.EXTRA_SUBS.get(site, {})}
-    parts = {n: [s[e] for e in (e if isinstance(e, list) else [e]) if s.get(e)] for n, e in subs.items()}
+    # every load's truth only over the span the main meter's series covers: Home's house series begins when the
+    # inverter's does (15 Oct 06:38), and a plug read from midnight scored 6 h the detector never saw (2026-10-27)
+    parts = {n: [_clip(s[e], a, b) for e in (e if isinstance(e, list) else [e]) if s.get(e) and _clip(s[e], a, b)] for n, e in subs.items()}
     away = []
     if parts.get(PORTABLE.get(site)):
         house: list = []
@@ -799,6 +801,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
     own = res["owners"]["devices"]
     res["sessions"] = [[s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 3), sid, own.get(sid)]
                        for s, sid in zip(filed, sids)]
+    res["session_closes"] = [[c[0] for c in getattr(s, "closes", ())] for s in filed]   # how each session's run was closed, aligned with "sessions"
     res["bounds"] = sorted(log["bounds"])
     _print_run(res, per_sig, by_id)
     if out_path:
