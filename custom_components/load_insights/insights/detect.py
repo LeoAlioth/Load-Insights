@@ -56,8 +56,11 @@ WEEK_SECONDS = 7 * 24 * 3600.0
 # which is why Kozolec has two fridges and detected neither (2026-09-18).
 # At 10 W it is barely above the quantisation of the readings themselves, and
 # it is safe to be that low because the level-dependent part below is
-# MEASURED rather than assumed.
-MIN_NOISE_W = 10.0
+# MEASURED rather than assumed. 7 W since 2026-10-27 (swept 10 / 7 / 5 / 3 on
+# the Home and Kozolec benches with the blip limits gone: 7 W kept every site
+# within 1 point and gained Home's hidden partition +2.6 points; 5 and 3 W
+# lost the remote site's fed devices 1.3 points or its hidden impurity 6.6 -> 13.1 %).
+MIN_NOISE_W = 7.0
 # ...and a reading wanders more when more is flowing through it, so the floor
 # is not the whole story either (2026-09-18: "can the noise scale with
 # total load or be adaptive in some other way?").
