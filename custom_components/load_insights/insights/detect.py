@@ -345,6 +345,12 @@ CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepG
 # split them (Detector.split_groups).
 VALLEY_SIGMAS = 0.0
 GROUP_SPAN = 3.0
+# A group's overlaps split it where one size puts this share of them on
+# opposite sides (Detector.split_groups). And how a second unit is believed
+# (PhaseState.second_rise, spec open point): 0 on the reading at each rise,
+# 1 only in a group that has shown PAIR_MIN_RUNS overlaps already - bench dial.
+SPLIT_SHARE = 0.8
+UNITS_NEED_HISTORY = 0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -2863,13 +2869,15 @@ class PhaseState:
                   and o.since < keep.since and not self.owned(o)]:
             others = sum(x.watts for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
             noise = self.noise_at(o.watts)
+            group = self.lib.cluster(cid) if self.lib is not None else None
             if (before is not None and self.baseline is not None and o.watts > 2.0 * noise
                     and before - self.baseline - others >= o.watts - noise):
-                group = self.lib.cluster(cid) if self.lib is not None else None
+                seen = group is not None and len(group.cannot) >= PAIR_MIN_RUNS
                 if group is not None:
                     group.cannot.append((o.watts, _angle(o.watts, o.var), keep.watts, _angle(keep.watts, keep.var)))
                     del group.cannot[:-CANNOT_KEEP]
-                continue
+                if not UNITS_NEED_HISTORY or seen:
+                    continue
             tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * noise
             fall = next((d for d in reversed(self.declared) if o.since < d[0] < keep.since
                          and d[1] < 0 and abs(-d[1] - o.watts) <= tight), None)
@@ -4566,6 +4574,9 @@ class Detector:
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    # size bins where overlaps proved a group two devices (split_groups): a
+    # segment is always cut there, whatever its density
+    edge_cuts: Dict[str, List[int]] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # size bin -> angle bin -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN;
     # stored as "size bin:angle bin" -> weight. Nested so that a segment's angle
@@ -5322,6 +5333,35 @@ class Detector:
                 st.open_edges.remove(m["open"])
         return cluster, members
 
+    def split_groups(self) -> int:
+        """The daily pass's split (run lifecycle, 2026-10-28): a rise group
+        with PAIR_MIN_RUNS cannot-link pairs (StepGroup.cannot - two of its
+        rises running at once) is cut at the size that puts SPLIT_SHARE of
+        them on opposite sides, if one does: its two piles are two devices
+        (Kozolec's fridges, similar, not identical). Its steps from then on
+        land either side (edge_cuts); one no size separates keeps its pairs,
+        identical units (a water heater's two elements). Returns how many."""
+        done = 0
+        for c in list(self.edges):
+            if not c.up or len(c.cannot) < PAIR_MIN_RUNS:
+                continue
+            g = _group(c.phase, True, c.owner)
+            unit = self.edge_unit.get(g)
+            if not unit:
+                continue
+            sizes = sorted({w for a, _, b, _ in c.cannot for w in (a, b)})
+            best = max(((sum(1 for a, _, b, _ in c.cannot if min(a, b) <= t < max(a, b)), t)
+                        for t in sizes[:-1]), default=(0, None))
+            if best[1] is None or best[0] < SPLIT_SHARE * len(c.cannot):
+                continue
+            cut = _bin(best[1], unit)
+            if cut not in self.edge_cuts.setdefault(g, []):
+                self.edge_cuts[g].append(cut)
+                self._dens.pop(g, None)
+                c.cannot = []
+                done += 1
+        return done
+
     def running_groups(self, before: float = math.inf, phases: Optional[str] = None) -> Dict[int, Tuple[float, float]]:
         """Rise group -> (the start of its newest unit, that unit's size over
         the phases asked), over the runs open before ``before`` on any of
@@ -5788,7 +5828,10 @@ class Detector:
             st[4] = _valley_cuts(st[3], st[2], kernel[reach])
         else:
             st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
-        return _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
+        segs = _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
+        for c in self.edge_cuts.get(g, ()):
+            segs = [piece for a, b in segs for piece in (((a, c), (c + 1, b)) if a <= c < b else ((a, b),))]
+        return segs
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
@@ -6606,6 +6649,7 @@ class Detector:
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
+                "edge_cuts": {g: list(v) for g, v in self.edge_cuts.items()},
                 "run_time": {str(k): _trim(v, 1) for k, v in self.run_time.items()},
                 "fall_n": {str(k): _trim(v, 3) for k, v in self.fall_n.items()},
                 "order_span": self.order_span, "order_clock": self.order_clock, "order_faded": self.order_faded,
@@ -6671,6 +6715,7 @@ class Detector:
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.order = {k: [float(x) for x in v] for k, v in (d.get("order") or {}).items()}
+        det.edge_cuts = {g: [int(x) for x in v] for g, v in (d.get("edge_cuts") or {}).items()}
         det.run_time = {int(k): float(v) for k, v in (d.get("run_time") or {}).items()}
         det.fall_n = {int(k): float(v) for k, v in (d.get("fall_n") or {}).items()}
         det.order_span = float(d.get("order_span") or 0.0)
@@ -7143,6 +7188,7 @@ class Fleet:
                 if sig.learn_split() and det._home.get(sig.id) is not None:
                     det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
+            det.split_groups()               # groups overlaps proved two devices (run lifecycle)
             det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:

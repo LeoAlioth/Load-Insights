@@ -288,6 +288,34 @@ def test_a_second_rise_without_the_first_carried_ends_the_first_at_its_missed_fa
     assert det.edges[0].cannot == []
 
 
+def test_overlapping_similar_fridges_split_into_two_groups():
+    """Ten overlaps of 83 W and 75 W rises in one group: the daily pass cuts
+    it between them, and a step of each size lands in its own group."""
+    det = D.Detector()
+    det.phases["a"].noise = 20.0                                          # 5 W bins: one segment for both
+    for k in range(6):
+        for w in (83.0, 75.0):
+            det._classify_step("a", T0 + 60.0 * (2 * k + (w < 80)), w, None, 0.0)
+    g = next(c for c in det.edges if c.up)
+    assert len([c for c in det.edges if c.up]) == 1
+    g.cannot = [(83.0, None, 75.0, None)] * 10
+    assert det.split_groups() == 1 and g.cannot == []
+    a = det._classify_step("a", T0 + 9000.0, 84.0, None, 0.0).id
+    b = det._classify_step("a", T0 + 9060.0, 74.0, None, 0.0).id
+    assert a != b, (a, b)
+    back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    assert back.edge_cuts == det.edge_cuts
+
+
+def test_identical_units_are_not_split():
+    det = D.Detector()
+    det.phases["a"].noise = 20.0
+    det._classify_step("a", T0, 2000.0, None, 0.0)
+    g = next(c for c in det.edges if c.up)
+    g.cannot = [(2000.0, None, 2000.0, None)] * 10
+    assert det.split_groups() == 0 and len(g.cannot) == 10
+
+
 def test_a_second_rise_under_the_noise_is_a_missed_fall():
     det, st = _scoring_phase((0.0, 20.0, 1))
     st.noise = 15.0
