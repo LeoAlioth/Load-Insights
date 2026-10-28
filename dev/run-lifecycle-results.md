@@ -90,3 +90,17 @@ charger 89.3 -> 62.5), fed impurity better (Home 12.0 -> 8.3). Closes within 10 
 hidden 48.1 / 73.5 -> 40.6 / 61.6. Suspected: the learned size ratio was averaged over every fall while a group ran,
 other loads' falls of any size among them, so its spread - and the tolerance - grew wide. After this card the ratio
 learns only from falls within PAIR_RATIO_MAX (2x) of the start: Kozolec hidden 80.2 / 6.9 -> 81.2 / 6.8.
+
+Lifecycle check, Home fed, stages 3-5: Inkubator live max 109 W against a 137 W ceiling, over it in 0 of 4,351
+passes (baseline 444 W, 20 passes over); open starts sharing a group: plain 2,201 (baseline 5 - second units the
+reading accepted), owned 5,893; older than 3x their group's usual length 30,777 of 94,891 seen (baseline 28,379 of
+113,705); most open on one phase main 15.
+
+After the ratio fix (PAIR_RATIO_MAX), one Home hidden replay: devices 30.6 / 15.5 (69.7 kWh caught, 12.8 wrong of
+227.92; stages 3-5 card 21.0 / 18.0, baseline 35.2 / 14.0); Susilna 20.8 / 17.9 (18.9 kWh caught; 8.8 before the
+fix, 24.4 baseline); hidrofor 62.4 / 25.7; Polnilnica 59.9 / 4.2; workshop boiler 8.7 / 25.1. The polluted ratio
+was most of the stage-3 loss.
+
+Variants, one Home hidden replay each (devices capture / impurity, against 30.6 / 15.5 after the ratio fix):
+PAIR_TIGHT_NOISES 8 (looser size match) 31.4 / 17.1; PAIR_SCORE_MIN none 31.7 / 14.0 (kept as the default);
+dips off 29.7 / 16.5 (Polnilnica 59.9 / 4.2 -> 57.7 / 8.4: the EVBox's dips) - dips stay.

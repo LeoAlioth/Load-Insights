@@ -327,7 +327,9 @@ MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in 
 # closes; an age's distance from the learned length counts in spreads, never
 # under PAIR_LENGTH_SD_MIN (log seconds). Bench dials (spec open point).
 PAIR_TIGHT_NOISES = 3.0
-PAIR_SCORE_MIN = 0.0
+# no floor: at 0 the age penalty kept true partners off - Home hidden alone
+# 30.6 / 15.5 -> 31.7 / 14.0 % capture / impurity with none (2026-10-28)
+PAIR_SCORE_MIN = -math.inf
 PAIR_LENGTH_SD_MIN = 0.1
 PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size teaches no ratio (note_order)
 # A fall that closed nothing and a rise of its size within this many of the
