@@ -144,7 +144,7 @@ PARALLEL = int(os.environ.get("BENCH_PARALLEL", "8"))   # replays at once: each 
 MOVED_S = 60.0             # a run starting this near one of the other slicing's, same phases, is that run moved
 # what closed a run, by the function that closed it - see _instrument
 KINDS = {"_unseen_stop": "unseen stop", "<genexpr>": "multi-close", "_joint_stop": "joint stop",
-         "end_older": "started again", "_input_ended": "input ended", "_pair": "leg split off"}
+         "second_rise": "started again", "_input_ended": "input ended", "_pair": "leg split off"}
 # worth's targets no meter reads (WORTH=1)
 CEILING = "Ceiling fan"    # Home's CasaFan Eco Neo III 132 - MODELLED truth, see _fan_rows
 CEILING_W = (0.0, 2.3, 3.5, 6.3, 11.2, 18.3, 27.0)   # its watts at speed 0-6 (2026-10-02)
