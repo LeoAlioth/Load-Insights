@@ -104,3 +104,34 @@ was most of the stage-3 loss.
 Variants, one Home hidden replay each (devices capture / impurity, against 30.6 / 15.5 after the ratio fix):
 PAIR_TIGHT_NOISES 8 (looser size match) 31.4 / 17.1; PAIR_SCORE_MIN none 31.7 / 14.0 (kept as the default);
 dips off 29.7 / 16.5 (Polnilnica 59.9 / 4.2 -> 57.7 / 8.4: the EVBox's dips) - dips stay.
+
+## Current (no score floor, ratio fix, dips; card `nogit-lifecycle-s6-20261028T202937Z.json`)
+
+| | hidden | circuits | fed | baseline hidden / fed |
+|---|---|---|---|---|
+| Home devices (227.92) | 31.7 / 14.0 | 40.0 / 14.0 | 52.8 / 6.4 | 35.2 / 14.0, 59.2 / 12.0 |
+| Home partition (604.58) | 44.8 / 13.6 | 53.5 / 9.6 | 58.4 / ? | 48.6 / 14.6, 60.7 / 9.6 |
+| Susilna (91.03) | 20.5 / 11.7 (18.7 kWh caught, 2.5 wrong) | 23.6 / 12.9 | 47.5 / 2.4 (43.2, 1.1) | 24.4 / 14.6, 58.4 / 8.5 |
+| Polnilnica (45.82) | 65.3 / 6.2 | 59.6 / 3.2 | 69.1 | 64.2 / 7.1, 72.7 / 4.7 |
+| Hidrofor (22.19) | 64.2 / 25.6 | 67.8 / 21.7 | 69.7 | 68.7 / 19.8, 68.9 / 28.6 |
+| Workshop boiler (8.84) | 13.2 / 14.5 | 64.5 / 17.1 | 88.5 | 13.9 / 29.1, 91.3 / 7.3 |
+| Kozolec devices (251.22) | 82.3 / 6.2 | - | 84.4 / 3.0 | 84.7 / 4.3, 85.2 / 3.9 |
+| Kozolec boiler (38.45) | 85.5 / 16.7 | - | 90.4 / 1.5 | 86.1 / 8.8, 91.1 / 2.0 |
+| home-hisa Blaževa Soba | 35.5 / 19.1 | - | 67.1 / 18.4 | 31.7 / 21.4, 61.2 / 15.8 |
+| home-mansarda office | 42.2 / 23.6 | - | 47.2 / 9.8 | 36.1 / 18.5, 54.5 / 14.6 |
+| third charger | 87.3 / 5.7 | - | 90.7 / 3.7 | 89.3 / 6.5, 92.2 / 4.6 |
+
+Reading: hidden capture a few points under the baseline at Home and Kozolec, impurity level or better; fed
+impurity much better (Home 12.0 -> 6.4, Susilna 8.5 -> 2.4) with less captured (Home 59.2 -> 52.8). The circuit
+sites (3EMs as the main meter) gain hidden (Blaževa Soba +3.8, office +6.1). Kozolec's boiler hidden impurity
+8.8 -> 16.7 is the emptied-run rule's cost.
+
+Variant VALLEY_SIGMAS 2 (GROUP_SPAN 3), card home kozolec: Home devices hidden 15.0 / 14.9, circuits 23.3 / 12.8,
+fed 49.5 / 7.3; Kozolec hidden 56.2 / 5.5 (its boiler 85.5 -> 10.0 % caught: merged with other loads), fed 84.3 /
+3.6. Far worse: groups wide enough to hold several loads until overlaps split them lose most of what the hidden
+mode found. Not kept (0 stays the default).
+
+Variant UNITS_NEED_HISTORY 1 (a second unit only in a group that has shown PAIR_MIN_RUNS overlaps), card home
+kozolec: Home devices hidden 32.0 / 13.0 (31.7 / 14.0), circuits 39.9 / 12.9, fed 53.0 / 6.5 (52.8 / 6.4); Kozolec
+hidden 81.3 / 3.2 (82.3 / 6.2; its boiler 85.5 / 16.7 -> 85.3 / 6.9), fed 84.5 / 3.1. Kept as the default.
+The owner accepted the trade (fed impurity 12.0 -> 6.4 % for capture 59.2 -> 52.8 %), 2026-10-28.
