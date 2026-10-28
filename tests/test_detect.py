@@ -113,6 +113,152 @@ def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     assert all(s.phases == "ac" for s in closed)
 
 
+def test_a_three_phase_fall_one_reading_apart_is_one_event():
+    """A fall is an all-phase event as a rise is (run lifecycle, 2026-10-28: "why
+    on earth are fall steps per phase"): a three-phase load's legs falling a
+    reading apart are one fall, of one step group on all three phases."""
+    det = D.Detector()
+    on = lambda s: 2000.0 if any(k * 1800 + 300 <= s < k * 1800 + 900 for k in range(4)) else 0.0
+    late = lambda s: 2000.0 if any(k * 1800 + 300 <= s < k * 1800 + 905 for k in range(4)) else 0.0
+    rows = {"a": series(4 * 1800, on), "b": series(4 * 1800, on, seed=1), "c": series(4 * 1800, late, seed=2)}
+    closed = det.process(rows, now_ts=T0 + 4 * 1800 + 120)
+    falls = [g for g in det.edges if not g.up]
+    assert [g.phase for g in falls] == ["abc"], [(g.phase, g.watts, g.count) for g in falls]
+    assert falls[0].count == 4 and abs(falls[0].watts - 6000.0) < 300.0, (falls[0].count, falls[0].watts)
+    assert closed and all(s.phases == "abc" for s in closed), [(s.phases, s.duration_s) for s in closed]
+    assert any(k.endswith(f">{falls[0].id}") for k in det.order), det.order       # counted on the pattern
+
+
+def test_a_fall_waits_for_its_event_and_closes_only_what_was_open_before_it():
+    """The fall's event forms a few readings after it; a start declared in
+    between is not what it closes."""
+    det = D.Detector()
+    a = series(2400, lambda s: 1000.0 if 300 <= s < 900 or 920 <= s < 1520 else 0.0)
+    det.process({"a": a}, now_ts=T0 + 2500)
+    runs = sorted(det.recent, key=lambda r: r["start"])
+    assert len(runs) == 2 and all(0.15 < r["kwh"] < 0.185 for r in runs), runs     # 1 kW x 600 s each
+
+
+def test_order_counts_a_fall_against_every_group_running_then():
+    """Partner evidence is order: a fall counts against every rise group
+    running on its phases before it, whatever it then closes - so a wrong
+    close teaches no pair (run lifecycle, 2026-10-28)."""
+    det = D.Detector()
+    det.phases["a"].open_edges = [D._Open(T0, 500.0, None, [(T0, 500.0)], cluster=1),
+                                  D._Open(T0 + 60, 200.0, None, [(T0 + 60, 200.0)], cluster=2),
+                                  D._Open(T0 + 200, 300.0, None, [(T0 + 200, 300.0)], cluster=4)]   # after the fall
+    det.phases["b"].open_edges = [D._Open(T0, 900.0, None, [(T0, 900.0)], cluster=3)]
+    det.note_order(9, "a", T0 + 120)
+    assert sorted(det.order) == ["1>9", "2>9"], det.order
+    assert det.order["2>9"][0] == 1.0 and abs(det.order["2>9"][1] - math.log(60.0)) < 1e-9
+    assert det.fall_n == {9: 1.0}
+
+
+def _order_cycles(fall_at):
+    """Group 1 runs 100 s of every 1000 s for ten cycles; a fall of group 9 at
+    ``fall_at`` seconds into each cycle."""
+    det = D.Detector()
+    for k in range(10):
+        t0 = T0 + k * 1000.0
+        det._order_tick(t0)
+        det.phases["a"].open_edges = [D._Open(t0, 500.0, None, [(t0, 500.0)], cluster=1)]
+        if fall_at < 100.0:
+            det.note_order(9, "a", t0 + fall_at)
+        det._order_tick(t0 + 100.0)
+        det.phases["a"].open_edges = []
+        if fall_at >= 100.0:
+            det.note_order(9, "a", t0 + fall_at)
+    return det
+
+
+def test_partner_evidence_is_zero_until_above_chance():
+    while_on = _order_cycles(90.0)
+    assert while_on.partner_evidence(1, 9) > 0.0, (while_on.order, while_on.run_time, while_on.order_span)
+    mean, spread = while_on.pair_length(1, 9)
+    assert abs(math.exp(mean) - 90.0) < 1.0 and spread < 1e-6
+    assert _order_cycles(500.0).partner_evidence(1, 9) == 0.0      # never while it ran
+    few = D.Detector()
+    few.order, few.fall_n, few.run_time, few.order_span = {"1>9": [3.0, 0.0, 0.0]}, {9: 3.0}, {1: 10.0}, 1e6
+    assert few.partner_evidence(1, 9) == 0.0                         # under PAIR_MIN_RUNS
+
+
+def test_order_counts_survive_a_restart():
+    det = _order_cycles(90.0)
+    back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+    near = lambda a, b: abs(a - b) <= 1e-3 * max(1.0, abs(b))      # stored at the precision they carry (_trim)
+    assert back.order.keys() == det.order.keys() and all(
+        near(x, y) for k in det.order for x, y in zip(back.order[k], det.order[k]))
+    assert all(near(back.fall_n[k], v) for k, v in det.fall_n.items())
+    assert all(near(back.run_time[k], v) for k, v in det.run_time.items())
+    assert near(back.order_span, det.order_span) and near(back.partner_evidence(1, 9), det.partner_evidence(1, 9))
+
+
+def _scoring_phase(*opens):
+    """A phase at 300 W idle, its library a fresh detector, ``opens`` running:
+    (since offset s, watts, group)."""
+    det = D.Detector()
+    st = det.phases["a"]
+    st.lib, st.name, st.baseline, st.noise, st.floor_zero = det, "a", 300.0, 10.0, True
+    st.open_edges = [D._Open(T0 + a, w, None, [(T0 + a, w)], cluster=c) for a, w, c in opens]
+    st.level = 300.0 + sum(w for _, w, _ in opens)
+    return det, st
+
+
+def _evidence(det, rise, fall, secs, ratio=1.0, n=20):
+    det.order[f"{rise}>{fall}"] = [n, n * math.log(secs), n * math.log(secs) ** 2,
+                                   n * math.log(ratio), n * math.log(ratio) ** 2]
+    det.fall_n[fall], det.run_time[rise], det.order_span = n, 0.1 * 86400.0, 86400.0
+
+
+def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
+    """Susilna's compressor runs two hours; an unrelated 190 W load started
+    three minutes ago. The compressor's partner fall closes the compressor's
+    run, not the newest start of its size (run lifecycle, 2026-10-28)."""
+    det, st = _scoring_phase((0.0, 190.0, 1), (7020.0, 190.0, 2))
+    _evidence(det, 1, 9, 7200.0)
+    st.stop_cluster = 9
+    closed = st._pair(T0 + 7200.0, 190.0, None, 490.0)
+    assert [x.start for x in closed] == [T0], closed
+    assert [o.since for o in st.open_edges] == [T0 + 7020.0]
+
+
+def test_a_drifting_load_is_closed_once_its_ratio_is_learned():
+    """Rise 390 W, fall 300 W: no match while the pair has no evidence (the
+    tight test), closed by the learned ratio once it has."""
+    det, st = _scoring_phase((0.0, 390.0, 1))
+    st.stop_cluster = 9
+    assert st._pair(T0 + 1800.0, 300.0, None, 600.0) == [] and len(st.open_edges) == 1
+    st.held_drops = []
+    _evidence(det, 1, 9, 1800.0, ratio=300.0 / 390.0)
+    closed = st._pair(T0 + 1800.0, 300.0, None, 600.0)
+    assert len(closed) == 1 and st.open_edges == [], closed
+
+
+def test_a_fall_far_from_every_run_closes_nothing():
+    det, st = _scoring_phase((0.0, 1000.0, 1))
+    st.stop_cluster = 9
+    assert st._pair(T0 + 600.0, 400.0, None, 900.0) == [] and len(st.open_edges) == 1
+    assert st.held_drops and st.held_drops[-1][:2] == (T0 + 600.0, 400.0)       # held, as a drop
+
+
+def test_a_dip_and_its_return_open_no_run():
+    """Home's EVBox dipped by 2.1 kW for a reading or two 22 times in a charge,
+    each return a run of its own (2026-10-04): a dip is two levels of the run
+    that carries it (run lifecycle, 2026-10-28)."""
+    det = D.Detector()
+    a = series(4000, lambda s: (8500.0 if 1500 <= s < 1520 else 10600.0) if 300 <= s < 3000 else 0.0)
+    det.process({"a": a}, now_ts=T0 + 3400)
+    assert len(det.recent) == 1, [(r["start"] - T0, r["kwh"], r["levels"]) for r in det.recent]
+    assert det.recent[0]["levels"] >= 3 and det.recent[0]["max_w"] > 10000, det.recent
+
+
+def test_a_late_return_is_a_new_run():
+    det = D.Detector()
+    a = series(4000, lambda s: 10600.0 if 300 <= s < 1500 or 1560 <= s < 3000 else 0.0)
+    det.process({"a": a}, now_ts=T0 + 3400)
+    assert len(det.recent) == 2, [(r["start"] - T0, r["kwh"]) for r in det.recent]
+
+
 def test_a_two_level_session_is_one_session_with_two_levels():
     # a washer, after five idle minutes: 2000 W for 10 min, then 400 W for 20 min, on B
     def washer(s):
@@ -3516,23 +3662,12 @@ def test_a_signature_on_twice_at_once_counts_the_overlap_once():
 
 
 
-def test_a_pair_is_believed_from_the_run_that_makes_it():
-    """The accepted pairs were worked out once a pass: a six-hour slice paired
-    with models six hours old, a minute's pass with a minute's, and one call
-    with none. They are kept as each run is learned, and come back with the
-    library."""
-    det = D.Detector()
-    det.edges = [D.StepGroup(id=i, phase="a", up=up, watts=w)
-                 for i, up, w in ((1, True, 900.0), (2, False, 880.0), (3, True, 200.0), (4, False, 200.0))]
-    for _ in range(50):
-        det.note_pair(3, 4, 200.0, 200.0, 60.0)          # the phase's other closes
-    for _ in range(D.PAIR_MIN_RUNS - 1):
-        det.note_pair(1, 2, 900.0, 880.0, 60.0)
-    assert 1 not in det.partners(2)
-    det.note_pair(1, 2, 900.0, 880.0, 60.0)
-    assert abs(det.partners(2)[1][0] - 880.0 / 900.0) < 1e-9 and abs(det.usual_length(1) - 60.0) < 1e-6
-    back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
-    assert back.partners(2).keys() == det.partners(2).keys() == {1}
+def test_a_groups_usual_length_comes_from_its_partners_by_order():
+    """The step pairs learned from closes went (run lifecycle, 2026-10-28): a
+    group's usual length is its partners' learned length, weighted by falls."""
+    det = _order_cycles(90.0)
+    assert det.partners_of(1) == [9] and abs(det.usual_length(1) - 90.0) < 1.0
+    assert _order_cycles(500.0).usual_length(1) is None
 
 
 def test_a_pair_is_accepted_when_it_is_far_above_chance():
@@ -5704,15 +5839,21 @@ def test_the_days_repair_runs_once_a_day_on_the_readings_clock():
 
 def _repair_history():
     """Three days of a pulser, and each day at 10:00 a 1 kW start that nothing
-    steps down: it fades away over two hours, so its run stays open a day
-    (the repair's case: a run booked far past what the phase drew)."""
+    steps down: it fades to 600 W over two hours and holds there until 20:00,
+    so its run stays open, booked far past what the phase drew (the repair's
+    case). Before the run lifecycle it faded to nothing, and a fall of its
+    faded size closed it by the size it had sagged to; that fall now matches
+    no run (2026-10-28), and the run closed at its faded level was booked
+    under what it drew, which the repair leaves alone."""
     def fn(s):
         day = s % 86400.0
         w = 800.0 if (s % 5400.0) < 1200.0 else 0.0
         if 36000.0 <= day < 36600.0:
             w += 1000.0
         elif 36600.0 <= day < 36600.0 + 7200.0:
-            w += 1000.0 * (1.0 - (day - 36600.0) / 7200.0)
+            w += 1000.0 - 400.0 * (day - 36600.0) / 7200.0
+        elif 43800.0 <= day < 72000.0:
+            w += 600.0
         return w
     return series(3 * 86400.0, fn, seed=3)
 

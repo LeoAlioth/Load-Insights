@@ -320,11 +320,20 @@ SOURCE_IDLE_W = 25.0
 # a reference circuit has to carry something this often to be one
 LIVE_SHARE = 0.2
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
-# How much better a size match must be before it overrides RECENCY when a
-# step down chooses which open start it closes. 0 is pure best-fit, 1 treats
-# every passing candidate as tied and takes the newest - which is what this
-# did for its whole life. Swept on both sites; see the comment in _pair.
-PAIR_TIE_BAND = 1.0
+# A fall closes the open run whose GROUP it ends best (PhaseState._score, run
+# lifecycle 2026-10-28): within PAIR_TIGHT_NOISES of the two steps' noise of
+# the run's own rise while the two groups have no partner evidence, the learned
+# ratio's spread once they have; the best score at PAIR_SCORE_MIN or more
+# closes; an age's distance from the learned length counts in spreads, never
+# under PAIR_LENGTH_SD_MIN (log seconds). Bench dials (spec open point).
+PAIR_TIGHT_NOISES = 3.0
+PAIR_SCORE_MIN = 0.0
+PAIR_LENGTH_SD_MIN = 0.1
+# A fall that closed nothing and a rise of its size within this many of the
+# phase's readings after the sustain (PhaseState.latency: no dip shorter is
+# ever declared) are a dip of a running run (PhaseState._dip): two
+# levels of it, no run of their own. Bench dial (spec open point).
+DIP_INTERVALS = 3.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -2252,7 +2261,8 @@ class PhaseState:
             # nothing is recorded rather than something wrong.
             if len(self.open_edges) == 1:
                 o = self.open_edges[0]
-                above = w - self.baseline if self.baseline is not None else w
+                above = (w - self.baseline if self.baseline is not None else w) \
+                    + (self.lib.pending_fall(self.name, o.since) if self.lib is not None else 0.0)
                 o.lo = above if o.lo is None else min(o.lo, above)
                 o.hi = above if o.hi is None else max(o.hi, above)
             # no step - follow the drift, so a ramp never becomes a load
@@ -2267,8 +2277,10 @@ class PhaseState:
                     if lvl:
                         o.now = lvl
                 else:
-                    # a drop held since it started is not it sagging - see HELD_DROPS
-                    o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since)
+                    # a drop held since it started is not it sagging - see HELD_DROPS -
+                    # nor is a fall still waiting for its event (Detector._form_fall)
+                    o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since) \
+                        + (self.lib.pending_fall(self.name, o.since) if self.lib is not None else 0.0)
             # the relative noise as the idle noise: a move only from a reading
             # at the level too, and from a seed's worth of moves on - see
             # NOISE_REL_FROM_LEVEL
@@ -2286,7 +2298,7 @@ class PhaseState:
                 del self.q_recent[:-Q_RECENT_SAMPLES]
             if pv is not None:
                 self.pv_level = pv if self.pv_level is None else self.pv_level + SLOW_FOLLOW * (pv - self.pv_level)
-            if not self.open_edges and not sun_moving:
+            if self._idle() and not sun_moving:
                 self.baseline += BASELINE_EMA * (w - self.baseline)
                 if self.floor_zero:
                     self.baseline = max(self.baseline, 0.0)
@@ -2378,17 +2390,97 @@ class PhaseState:
         if len(self.declared) > 4000:
             del self.declared[:1000]
             del self.declared_t[:1000]
-        # a fall is split at once; a rise when its event forms (see
-        # Detector._form_event), when the grid's steps across a meter's span
-        # are all declared
-        parts = self.lib.metered_parts(self.name, since, step) if self.lib is not None and step < 0 else [step]
+        # a fall waits for its event as a rise does (run lifecycle, 2026-10-28:
+        # the legs of one load fall together as they rise together): it is
+        # split, paired and closes when its event forms (Detector._form_fall)
+        if step < 0 and self.lib is not None:
+            hint, self.close_hint = self.close_hint, None
+            self.lib.note_fall(self, since, step, step_q, surge, new_level, quality, hint)
+            return []
+        return self.fall_now(since, step, step_q, surge, new_level, quality)
+
+    def _idle(self) -> bool:
+        """Nothing believed running - or nothing but what the falls still
+        waiting for their event (Detector._form_fall) will close: the phase
+        is idle again from the fall, not from its event."""
+        if not self.open_edges:
+            return True
+        waiting = self.lib.pending_fall(self.name, -math.inf) if self.lib is not None else 0.0
+        return waiting > 0 and waiting >= sum(o.watts for o in self.open_edges) - self.noise_at()
+
+    def fall_now(self, since: float, step: float, step_q: Optional[float], surge: float, new_level: float,
+                 quality: float, cid: Optional[int] = None, hint: Optional[_Open] = None) -> List[Run]:
+        """A declared step's parts declared (a rise whole) - for a fall, once its
+        event formed: ``cid`` its event's step group when it spans several
+        phases (then never cut into meters' shares, as a rise on several phases
+        is not), None to classify each part here as a single-phase fall is.
+        Only the runs open before the fall are its to close: a start declared
+        while the fall waited for its event is hidden from it meanwhile."""
+        later = [o for o in self.open_edges if o.since >= since] if step < 0 else []
+        if later:
+            self.open_edges = [o for o in self.open_edges if o.since < since]
+        if hint is not None and hint in self.open_edges:
+            self.close_hint = hint
+        parts = (self.lib.metered_parts(self.name, since, step)
+                 if self.lib is not None and step < 0 and cid is None else [step])
         closed: List[Run] = []
         for k, part in enumerate(parts):
             closed += self._declare(since, part, None if step_q is None else step_q * (part / step if step else 1.0),
-                                    surge if k == len(parts) - 1 else 0.0, new_level, quality)
-        if step < 0:
+                                    surge if k == len(parts) - 1 else 0.0, new_level, quality, cid)
+        if step < 0 and not (later and self._dip(since, -step, later)):
             closed += self._floor_stop(since, new_level)
+        self.close_hint = None
+        self.open_edges.extend(later)
         return closed
+
+    def _dip(self, at: float, watts: float, later: List[_Open]) -> bool:
+        """A fall that closed nothing (held, see HELD_DROPS) and a rise of its
+        size declared before its event formed: a dip, the rise taken out of
+        ``later`` and its event dropped - see _take_dip."""
+        if not self.held_drops or self.held_drops[-1][:2] != (at, watts):
+            return False
+        back = next((o for o in sorted(later, key=lambda x: x.since) if not self.owned(o)
+                     and self._dip_fits(at, watts, o.since, o.watts)), None)
+        if back is None or not self._take_dip(self.held_drops[-1], back.since):
+            return False
+        later.remove(back)
+        if self.lib is not None:
+            self.lib.drop_pending(back)
+        return True
+
+    def _dip_return(self, since: float, step: float) -> bool:
+        """A rise that returns a held fall of its size (HELD_DROPS) within the
+        dip window: a dip's return, which opens nothing - see _take_dip."""
+        for d in reversed(self.held_drops):
+            if since - d[0] > self.latency() + DIP_INTERVALS * (self.interval or 0.0):
+                return False
+            if self._dip_fits(d[0], d[1], since, step) and self._take_dip(d, since):
+                return True
+        return False
+
+    def _dip_fits(self, at: float, watts: float, back_since: float, back_w: float) -> bool:
+        """Is a rise of ``back_w`` at ``back_since`` the return of a fall of
+        ``watts`` at ``at``: within the sustain (no dip shorter is ever
+        declared) and DIP_INTERVALS readings, and within PAIR_TIGHT_NOISES of
+        the two steps' noise."""
+        window = self.latency() + DIP_INTERVALS * (self.interval or 0.0)
+        tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * self.noise_at(watts)
+        return 0.0 <= back_since - at <= window and abs(back_w - watts) <= tight
+
+    def _take_dip(self, drop: tuple, back_since: float) -> bool:
+        """The held fall ``drop`` and its return at ``back_since`` become two
+        levels of the newest run that carried it (run lifecycle, 2026-10-28:
+        Home's EVBox dipped for a reading or two 22 times in a charge, each
+        return a run of its own). False when no run can carry it."""
+        at, watts = drop[0], drop[1]
+        carrier = next((o for o in reversed(self.open_edges) if o.since < at and not self.owned(o)
+                        and o.watts >= watts - self.noise_at(watts)), None)
+        if carrier is None:
+            return False
+        self.held_drops.remove(drop)
+        level = carrier.levels[-1][1] if carrier.levels else carrier.watts
+        carrier.levels += [(at, level - watts), (back_since, level)]
+        return True
 
     def declared_at(self, since: float) -> Optional[tuple]:
         """The step declared exactly at ``since``, if one was."""
@@ -2486,11 +2578,15 @@ class PhaseState:
         return f_snr * f_settle * f_crowd
 
     def _declare(self, since: float, step: float, step_q: Optional[float], surge: float,
-                 new_level: float, quality: float = 1.0) -> List[Run]:
+                 new_level: float, quality: float = 1.0, cid: Optional[int] = None) -> List[Run]:
         """One declared step - or one part of it, see SPLIT_BY_METERS - as a
-        start or a stop."""
-        cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
+        start or a stop; ``cid`` the stop's group where its event already
+        classified it (Detector._form_fall)."""
+        if cid is None:
+            cid = self.lib.classify(self.name, since, step, step_q, surge) if self.lib is not None else None
         if step > 0:
+            if self.held_drops and self._dip_return(since, step):
+                return []
             ended: List[Run] = []
             o = _Open(since, step, step_q, [(since, step)], surge=surge, cluster=cid, q=quality)
             if self.floor_zero:
@@ -2766,29 +2862,16 @@ class PhaseState:
         which case the level is recorded and the session stays open. Anything
         else is a stop we never saw start, and is dropped rather than pinned
         on an unrelated load."""
-        # MOST RECENT first, and deliberately - do NOT "fix" this into the
-        # best-size-fit that _locate uses. Tried, measured, worse at both
-        # sites: Kozolec's boiler fell from 89.2 % of its sessions in one
-        # signature to 79.0 %, and Home's purity from 67.6 % to 65.0 % with
-        # the hidrofor spreading over 61 signatures instead of 49
-        # (2026-09-23). Recency carries information here that it does not
-        # carry there: a step DOWN most likely belongs to the load that most
-        # recently started and matches, whereas _locate is choosing between
-        # sessions that already exist and has no such prior. Size-matching
-        # alone lets a stop close against an older edge of similar size.
-        #
-        # Then swept properly rather than tried once (2026-09-23): the dial
-        # from pure best-fit (PAIR_TIE_BAND 0) to newest-that-passes (1) has
-        # its optimum at 1 at Home and is flat 0.5-1 at Kozolec; widening the
-        # size tolerance past it (MATCH_EDGE_REL) loses at both; and weighting
-        # ABSOLUTE age rather than rank costs about six points wherever it is
-        # added. Recency rank is the information, not how much newer.
-        #
-        # What best-fit DID improve is worth knowing if this is revisited:
-        # the kiln's merged sessions reported a median 47.8 s against a true
-        # pulse of 48, where recency gives 42.1 s. So the durations are
-        # measurably wrong and the fix is not this one - probably a cost
-        # combining size gap AND age rather than either alone.
+        # Not by size and recency any more (run lifecycle, 2026-10-28): the
+        # newest open start of the fall's size closed Susilna's compressor runs
+        # minutes in on an unrelated fall of its size (~50 kWh of its leak).
+        # Each open run is scored as its group (_score): the fall against the
+        # run's own rise, partner evidence learned from ORDER (Detector.
+        # note_order) and the run's age against that pair's length; the best
+        # above PAIR_SCORE_MIN closes, the newest of a tie. Before, swept
+        # 2026-09-23: newest-that-passes beat best-fit at both sites (Kozolec's
+        # boiler 89.2 -> 79.0 % in one signature with best-fit) - size alone,
+        # with no order or age behind it.
         #
         # First what a one-device meter below says: its device stopped here,
         # so the run it started ends, whatever the sizes - see Fleet._meter_stop.
@@ -2801,10 +2884,6 @@ class PhaseState:
                 # ...or its readings show this fall, declared or not: the
                 # device's own dip or taper, its run going on - see Fleet._meter_read
                 return []
-        if self.lib is not None and self.stop_cluster is not None:
-            got = self._pair_by_model(at, watts, var)
-            if got is not None:
-                return got
         hint, self.close_hint = self.close_hint, None
         if hint is not None:
             for o in self.open_edges:
@@ -2826,37 +2905,26 @@ class PhaseState:
         for i, o in enumerate(self.open_edges):
             if self.owned(o):
                 continue                      # its meter still shows it on: not this fall's
-            tol = self._tol(o.watts, watts)
-            gap = abs(o.watts - watts)
-            if o.now is not None and o.now > 0:
-                # ...or at what it has sagged (or grown) to since it started
-                now_tol = self._tol(o.now, watts)
-                if abs(o.now - watts) <= now_tol and abs(o.now - watts) < gap:
-                    tol, gap = now_tol, abs(o.now - watts)
-            if gap <= tol:
-                cands.append((i, gap, tol))
-        if not cands:
-            # ...or, nothing matching, the run a rise of the fall's size opened
-            # seconds ago, whatever part of it a meter took: a 400 W load
-            # dipped twice for 6 s; its first return (+392) was split, 107 W
-            # to a plug's coincident wobble and a 286 W rest, and the second
-            # dip (-402), matching nothing, joint-stopped a 515 W run 102
-            # minutes old (Home 09-24 20:55). The newest run such a rise
-            # opened is the one ending now (2026-10-03)
-            for i in range(len(self.open_edges) - 1, -1, -1):
-                o = self.open_edges[i]
-                if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
-                    continue
-                e = self.declared_at(o.since)
-                rose = e[1] if e is not None else 0.0
-                if rose > o.watts and abs(rose - watts) <= self._tol(rose, watts):
-                    cands.append((i, abs(rose - watts), self._tol(rose, watts)))
-                    break
+            got = self._score(o, watts, at)
+            if got is not None and got >= PAIR_SCORE_MIN:
+                cands.append((got, i))
         if cands:
-            best_gap = min(g for _, g, _ in cands)
-            band = PAIR_TIE_BAND * max(t for _, _, t in cands)
-            i = max(i for i, g, _ in cands if g <= best_gap + band)   # newest of the tied
-            return [self._end(self.open_edges[i], at, watts, var, direct=True)]
+            return [self._end(self.open_edges[max(cands)[1]], at, watts, var, direct=True)]   # the newest of a tie
+        # ...or, nothing matching, the run a rise of the fall's size opened
+        # seconds ago, whatever part of it a meter took: a 400 W load
+        # dipped twice for 6 s; its first return (+392) was split, 107 W
+        # to a plug's coincident wobble and a 286 W rest, and the second
+        # dip (-402), matching nothing, joint-stopped a 515 W run 102
+        # minutes old (Home 09-24 20:55). The newest run such a rise
+        # opened is the one ending now (2026-10-03)
+        for i in range(len(self.open_edges) - 1, -1, -1):
+            o = self.open_edges[i]
+            if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
+                continue
+            e = self.declared_at(o.since)
+            rose = e[1] if e is not None else 0.0
+            if rose > o.watts and abs(rose - watts) <= self._tol(rose, watts):
+                return [self._end(o, at, watts, var, direct=True)]
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if not self.owned(o) and o.watts - watts > self._tol(o.watts, watts) and (
@@ -2930,33 +2998,31 @@ class PhaseState:
             return [self._end(o, at, watts, var)]
         return None
 
-    def _pair_by_model(self, at: float, watts: float, var: Optional[float]) -> Optional[List[Run]]:
-        """Close the open run this fall's cluster is the learned end of - see
-        PAIR_PAIRING. Best by how near the learned stop size and run length it
-        comes; None when no open run is its pair's start."""
-        partners = self.lib.partners(self.stop_cluster)
-        if not partners:
+    def _score(self, o: _Open, watts: float, at: float) -> Optional[float]:
+        """How well the fall being paired (``watts``, group ``stop_cluster``)
+        ends open run ``o``, or None when its size rules it out. Size against
+        the run's own rise within PAIR_TIGHT_NOISES of the two steps' noise -
+        or, once the run's group and the fall's have partner evidence, against
+        the rise times their learned ratio, as wide as its spread; plus the
+        evidence; less the run's age off the pair's learned length, the less
+        the wider that spreads (a boiler's runs follow the weather)."""
+        lib, fall = self.lib, self.stop_cluster
+        ev = lib.partner_evidence(o.cluster, fall) if lib is not None and o.cluster is not None and fall is not None else 0.0
+        sigma = math.sqrt(2.0) * self.noise_at(max(o.watts, watts))
+        expect, width = o.watts, PAIR_TIGHT_NOISES * sigma
+        if ev > 0:
+            mean, spread = lib.pair_ratio(o.cluster, fall)
+            expect = o.watts * math.exp(mean)
+            width = PAIR_TIGHT_NOISES * math.hypot(sigma, expect * spread)
+        gap = abs(watts - expect)
+        if gap > width:
             return None
-        best = None
-        for i, o in enumerate(self.open_edges):
-            model = partners.get(o.cluster)
-            if model is None or self.owned(o):
-                # ...not a run its meter still shows on - see owned: Home's
-                # dehumidifier read 283 W at 21:30 when a learned pair's
-                # 366 W fall ended its 20-hour run 3.5 hours in (09-25)
-                continue
-            ratio, ratio_sd = model[0], model[1]
-            expect = o.watts * ratio
-            tol = self._tol(expect, watts) + 2.0 * ratio_sd * o.watts
-            gap = abs(watts - expect)
-            if gap > tol:
-                continue
-            score = gap / tol
-            if best is None or score <= best[0]:
-                best = (score, i)
-        if best is None:
-            return None
-        return [self._end(self.open_edges[best[1]], at, watts, var, direct=True)]
+        score = 1.0 - gap / width + ev
+        length = lib.pair_length(o.cluster, fall) if ev > 0 else None
+        if length is not None:
+            z = (math.log(max(at - o.since, 1.0)) - length[0]) / max(length[1], PAIR_LENGTH_SD_MIN)
+            score -= 0.5 * z * z / (1.0 + length[1])
+        return score
 
     def _span(self, since: float, until: float) -> int:
         """How many meter samples a run of that length was measured over, from
@@ -2967,12 +3033,10 @@ class PhaseState:
 
     def _close(self, o: _Open, at: float, watts: float, var: Optional[float], direct: bool = False) -> Run:
         """``direct``: closed by the fall being paired, whose cluster is then
-        this run's stop - which teaches the pair (see PAIR_MIN_RUNS)."""
+        this run's stop."""
         if o.cluster is None and self.lib is not None:
             self.lib.resolve_rise(o)             # its event window has not passed: form the event now
         pair = (o.cluster, self.stop_cluster if direct else None)
-        if direct and self.lib is not None:
-            self.lib.note_pair(o.cluster, self.stop_cluster, o.watts, watts, at - o.since)
         levels = list(o.levels)
         if len(levels) == 1:
             # one level throughout: both steps measure the same load, so
@@ -4328,15 +4392,24 @@ class Detector:
     # one a pass brought from after it is not known yet. None: all of them
     horizon: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _pv: Dict[str, Dict[float, float]] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
-    # "rise>fall" cluster ids -> [runs, sum and sum of squares of log(stop/start),
-    # sum and sum of squares of log(seconds)] - see PAIR_MIN_RUNS; and each
-    # pair -> {signature id: runs filed there}
-    pairs: Dict[str, List[float]] = field(default_factory=dict)
+    # Partner evidence by ORDER (run lifecycle, 2026-10-28): "rise>fall" group
+    # ids -> [falls of the fall group while the rise group was running, sum and
+    # sum of squares of log(seconds since its newest start), sum and sum of
+    # squares of log(its size / that start's)], counted at every
+    # fall against every group running then, whatever closed what - so a wrong
+    # close teaches nothing; each rise group's seconds running (one unit or
+    # more), each fall group's falls, and the seconds the counts cover - chance
+    # is a fall group's rate times the share of time a rise group runs. All of
+    # it fades as the step groups' histograms do (EDGE_TAU_S).
+    order: Dict[str, List[float]] = field(default_factory=dict)
+    run_time: Dict[int, float] = field(default_factory=dict)
+    fall_n: Dict[int, float] = field(default_factory=dict)
+    order_span: float = 0.0
+    order_clock: Optional[float] = None
+    order_faded: Optional[float] = None
     # what the fleet read of the inputs for this pass: (changes, their times,
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    _pidx: Optional[dict] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # see _pair_index
-    _pair_phase: Dict[str, str] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # restored by from_dict, see _pair_index
     _by_id: Optional[Dict[int, "StepGroup"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -4947,6 +5020,7 @@ class Detector:
         self.placed_fall = None               # only THIS fall's placement reaches _declare (a share _split_rise classified does not)
         cluster = self._classify_step(ph, since, watts, var, surge)
         self.edge_at.setdefault(ph, []).append((since, cluster.id, watts))
+        self.note_order(cluster.id, ph, since, abs(watts))
         return cluster.id
 
     def metered_parts(self, ph: str, since: float, step: float) -> List[float]:
@@ -4985,6 +5059,13 @@ class Detector:
         self._pending.append({"since": o.since, "ph": state.name, "watts": o.watts, "var": o.var,
                               "surge": o.surge, "open": o})
 
+    def note_fall(self, state: "PhaseState", since: float, step: float, step_q: Optional[float], surge: float,
+                  new_level: float, quality: float, hint: Optional["_Open"]) -> None:
+        """A fall just declared on ``state``'s phase: it waits for companions as
+        a rise does, and closes what it closes when its event forms (_form_fall)."""
+        self._pending.append({"since": since, "ph": state.name, "watts": -step, "var": step_q, "surge": surge,
+                              "fall": (step, new_level, quality), "hint": hint})
+
     def event_window(self) -> float:
         """How long rises on different phases may lie apart and be one event:
         EVENT_WINDOW_INTERVALS of the slowest phase's reading interval."""
@@ -5004,6 +5085,10 @@ class Detector:
         form every waiting rise alone, so a leg whose companion's reading fell
         in the next pass was an event of its own."""
         pend = sorted(self._pending, key=lambda x: x["since"])
+        self._order_tick(pend[0]["since"])           # the groups running until this event
+        if "fall" in pend[0]:
+            self._form_fall(pend[0], pend, self.event_window())
+            return
         st = self.phases.get(pend[0]["ph"])
         if st is not None and pend[0]["since"] <= st.absorb_until:
             # the rest of a ramp a run already holds whole - see _form_event
@@ -5024,7 +5109,7 @@ class Detector:
         pending list. Returns (cluster, members)."""
         members, phases = [first], {first["ph"]}
         for q in sorted(pend, key=lambda x: abs(x["since"] - first["since"])):
-            if q is first or q["ph"] in phases or abs(q["since"] - first["since"]) > window:
+            if q is first or "fall" in q or q["ph"] in phases or abs(q["since"] - first["since"]) > window:
                 continue
             ws = [m["watts"] for m in members] + [q["watts"]]
             if min(ws) < EVENT_BALANCE * max(ws):
@@ -5069,7 +5154,7 @@ class Detector:
             if st is not None:
                 inside = [x for x in st.open_edges if x is not o and o.since < x.since <= win[2] and not x.meter]
                 st.open_edges = [x for x in st.open_edges if x not in inside]
-                self._pending = [q for q in self._pending if q["open"] not in inside]
+                self._pending = [q for q in self._pending if q.get("open") not in inside]
                 st.absorb_until = max(st.absorb_until, win[2])
         for m in members:
             m["open"].cluster = cluster.id
@@ -5101,6 +5186,153 @@ class Detector:
                 # beside the charge (09-25, 2026-10-04) - see Fleet._meter_read
                 st.open_edges.remove(m["open"])
         return cluster, members
+
+    def running_groups(self, before: float = math.inf, phases: Optional[str] = None) -> Dict[int, Tuple[float, float]]:
+        """Rise group -> (the start of its newest unit, that unit's size over
+        the phases asked), over the runs open before ``before`` on any of
+        ``phases`` (all of them for None)."""
+        out: Dict[int, Tuple[float, float]] = {}
+        for ph, st in self.phases.items():
+            if phases is not None and ph not in phases:
+                continue
+            for o in st.open_edges:
+                if o.cluster is None or o.since >= before:
+                    continue
+                was = out.get(o.cluster)
+                if was is None or o.since > was[0]:
+                    out[o.cluster] = (o.since, o.watts)
+                elif o.since == was[0]:
+                    out[o.cluster] = (o.since, was[1] + o.watts)      # another leg of the same start
+        return out
+
+    def _order_tick(self, t: float) -> None:
+        """Book the seconds since the last tick to every group running, and
+        fade the counts hourly as the histograms fade (EDGE_TAU_S)."""
+        if self.order_clock is None or t <= self.order_clock:
+            self.order_clock = t if self.order_clock is None else self.order_clock
+            return
+        dt = t - self.order_clock
+        for cid in self.running_groups():
+            self.run_time[cid] = self.run_time.get(cid, 0.0) + dt
+        self.order_span += dt
+        self.order_clock = t
+        if self.order_faded is None:
+            self.order_faded = t
+        elif t - self.order_faded > 3600.0:
+            fade = math.exp(-(t - self.order_faded) / EDGE_TAU_S)
+            for acc in self.order.values():
+                for i in range(len(acc)):
+                    acc[i] *= fade
+            for d in (self.run_time, self.fall_n):
+                for k in list(d):
+                    d[k] *= fade
+            self.order_span *= fade
+            self.order_faded = t
+
+    def note_order(self, fall: int, phases: str, at: float, watts: float = 0.0) -> None:
+        """A fall of group ``fall`` (``watts`` in all) at ``at`` on ``phases``:
+        counted against every rise group running there before it, with the
+        seconds since its newest start and its size against that start's."""
+        self._order_tick(at)
+        self.fall_n[fall] = self.fall_n.get(fall, 0.0) + 1.0
+        for cid, (since, rose) in self.running_groups(at, phases).items():
+            acc = self.order.setdefault(f"{cid}>{fall}", [0.0, 0.0, 0.0, 0.0, 0.0])
+            ld = math.log(max(at - since, 1.0))
+            lr = math.log(watts / rose) if watts > 0 and rose > 0 else 0.0
+            acc[0] += 1.0
+            acc[1] += ld
+            acc[2] += ld * ld
+            acc[3] += lr
+            acc[4] += lr * lr
+
+    def partner_evidence(self, rise: int, fall: int) -> float:
+        """How far above chance falls of ``fall`` came while ``rise`` ran:
+        log(seen / expected), 0.0 below PAIR_MIN_RUNS or within chance."""
+        acc = self.order.get(f"{rise}>{fall}")
+        if not acc or acc[0] < PAIR_MIN_RUNS or self.order_span <= 0:
+            return 0.0
+        expected = self.fall_n.get(fall, 0.0) * self.run_time.get(rise, 0.0) / self.order_span
+        if expected <= 0 or not above_chance(acc[0], expected):
+            return 0.0
+        return math.log(acc[0] / expected)
+
+    def pair_length(self, rise: int, fall: int) -> Optional[Tuple[float, float]]:
+        """(mean, spread) of log seconds from a ``rise`` start to a ``fall``
+        while it ran, or None while the pair has no evidence."""
+        if self.partner_evidence(rise, fall) <= 0:
+            return None
+        n, s, s2 = self.order[f"{rise}>{fall}"][:3]
+        mean = s / n
+        return mean, math.sqrt(max(0.0, s2 / n - mean * mean))
+
+    def pair_ratio(self, rise: int, fall: int) -> Optional[Tuple[float, float]]:
+        """(mean, spread) of log(fall / rise) for a pair with evidence, or None."""
+        if self.partner_evidence(rise, fall) <= 0:
+            return None
+        acc = self.order[f"{rise}>{fall}"]
+        n, s, s2 = acc[0], acc[3], acc[4]
+        mean = s / n
+        return mean, math.sqrt(max(0.0, s2 / n - mean * mean))
+
+    def partners_of(self, rise: int) -> List[int]:
+        """The fall groups with evidence as ``rise``'s partner."""
+        head = f"{rise}>"
+        return [int(k[len(head):]) for k in self.order if k.startswith(head)
+                and self.partner_evidence(rise, int(k[len(head):])) > 0]
+
+    def usual_length(self, start: int) -> Optional[float]:
+        """Seconds a run that starts with this group usually lasts: over its
+        partners with evidence, weighted by their falls - None when it has none."""
+        rows = [(self.pair_length(start, f), self.order[f"{start}>{f}"][0]) for f in self.partners_of(start)]
+        w = sum(n for _, n in rows)
+        return math.exp(sum(m[0] * n for m, n in rows) / w) if w else None
+
+    def drop_pending(self, o: "_Open") -> None:
+        """A rise that turned out to be a dip's return (PhaseState._dip): its event never forms."""
+        self._pending = [m for m in self._pending if m.get("open") is not o]
+
+    def pending_fall(self, ph: str, after: float) -> float:
+        """Watts of the falls on ``ph`` since ``after`` still waiting for their event."""
+        return sum(m["watts"] for m in self._pending if "fall" in m and m["ph"] == ph and m["since"] > after)
+
+    def _form_fall(self, first: dict, pend: List[dict], window: float) -> None:
+        """``first`` and the falls beside it within ``window`` on other phases,
+        balanced as a rise's legs are (EVENT_BALANCE), are one fall: on one
+        phase it is split and classified there as before (PhaseState.fall_now);
+        on several it is one step group on the phase pattern, and every leg
+        closes with it."""
+        members, phases = [first], {first["ph"]}
+        for q in sorted(pend, key=lambda x: abs(x["since"] - first["since"])):
+            if q is first or "fall" not in q or q["ph"] in phases or abs(q["since"] - first["since"]) > window:
+                continue
+            ws = [m["watts"] for m in members] + [q["watts"]]
+            if min(ws) < EVENT_BALANCE * max(ws):
+                continue
+            members.append(q)
+            phases.add(q["ph"])
+        for m in members:
+            self._pending.remove(m)
+        cid = None
+        if len(members) > 1:
+            qs = [m["var"] for m in members]
+            self.placement_window = None
+            cid = self._classify_step("".join(sorted(phases)), min(m["since"] for m in members),
+                                      -sum(m["watts"] for m in members),
+                                      sum(qs) if all(x is not None for x in qs) else None,
+                                      max(m["surge"] for m in members)).id
+            self.placed_fall = None
+            for m in members:
+                self.edge_at.setdefault(m["ph"], []).append((m["since"], cid, -m["watts"]))
+            self.note_order(cid, "".join(sorted(phases)), min(m["since"] for m in members),
+                            sum(m["watts"] for m in members))
+        for m in members:
+            st = self.phases.get(m["ph"])
+            if st is None:
+                continue
+            step, new_level, quality = m["fall"]
+            self._closed(m["ph"], st.fall_now(m["since"], step, m["var"], m["surge"], new_level, quality,
+                                              cid, m["hint"]))
+        self._closed(None, [])                    # and what a split rise ended meanwhile
 
     def _split_rise(self, m: dict) -> None:
         """A single-phase rise cut into the shares the meters below took with
@@ -5162,7 +5394,7 @@ class Detector:
         that phase while its caller is pairing or flushing there. So callers
         take every run they close out of open_edges before closing any, and
         _form_first re-reads what is pending after each event it forms."""
-        first = next((x for x in self._pending if x["open"] is o), None)
+        first = next((x for x in self._pending if x.get("open") is o), None)
         if first is not None:
             self._form_event(first, list(self._pending), self.event_window())
 
@@ -5848,59 +6080,6 @@ class Detector:
         return next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
                      if pair and pair[0] is not None), None)
 
-    def note_pair(self, start: Optional[int], stop: Optional[int], start_w: float, stop_w: float, secs: float) -> None:
-        if start is None or stop is None or start_w <= 0 or stop_w <= 0:
-            return
-        idx = self._pair_index()                 # before this run counts in it
-        key = f"{start}>{stop}"
-        acc = self.pairs.setdefault(key, [0.0] * 6)
-        if len(acc) < 6:
-            acc.append(0.0)
-        lr, ld = math.log(stop_w / start_w), math.log(max(secs, 1.0))
-        acc[5] = max(acc[5], secs)
-        acc[0] += 1.0
-        acc[1] += lr
-        acc[2] += lr * lr
-        acc[3] += ld
-        acc[4] += ld * ld
-        c = self.cluster(start)
-        self._count_pair(idx, key, start, stop, 1.0, idx["phase"].get(key) or (c.phase if c else "?"))
-
-    def _pair_index(self) -> dict:
-        """The pairs' running totals - closes per start, per stop and per
-        phase - and those with PAIR_MIN_RUNS, by start and by stop: what
-        partners asks, kept as each pair is learned (see PAIR_MIN_RUNS). Built
-        from ``pairs`` on first use, so a restored library has it too."""
-        if self._pidx is None:
-            idx = self._pidx = {"start": {}, "stop": {}, "closes": {}, "phase": {}, "by_stop": {}, "by_start": {}}
-            phase_of = {c.id: c.phase for c in self.edges}
-            for key, acc in self.pairs.items():
-                a, b = (int(x) for x in key.split(">"))
-                self._count_pair(idx, key, a, b, acc[0], self._pair_phase.get(key) or phase_of.get(a, "?"))
-        return self._pidx
-
-    @staticmethod
-    def _count_pair(idx: dict, key: str, a: int, b: int, n: float, phase: str) -> None:
-        idx["phase"][key] = phase
-        idx["start"][a] = idx["start"].get(a, 0.0) + n
-        idx["stop"][b] = idx["stop"].get(b, 0.0) + n
-        idx["closes"][phase] = idx["closes"].get(phase, 0.0) + n
-        idx["by_stop"].setdefault(b, {})[a] = key
-        idx["by_start"].setdefault(a, {})[b] = key
-
-    def _pair_model(self, idx: dict, a: int, b: int) -> Optional[tuple]:
-        """(stop/start ratio, its spread, mean log seconds, its spread) of the
-        pair a > b, or None while it is not accepted - see PAIR_MIN_RUNS."""
-        key = f"{a}>{b}"
-        acc = self.pairs.get(key)
-        n = acc[0] if acc else 0.0
-        if n < PAIR_MIN_RUNS or not above_chance(n, idx["start"][a] * idx["stop"][b] / idx["closes"][idx["phase"][key]]):
-            return None
-        m_lr, m_ld = acc[1] / n, acc[3] / n
-        sd_lr = math.sqrt(max(0.0, acc[2] / n - m_lr * m_lr))
-        sd_ld = math.sqrt(max(0.0, acc[4] / n - m_ld * m_ld))
-        return (math.exp(m_lr), math.exp(m_lr) * sd_lr, m_ld, sd_ld)
-
     def window(self, name: str) -> Optional[Tuple[float, float]]:
         """This input's learned lag window (see lag_window), kept until its histogram changes."""
         if self._windows is None:
@@ -5941,29 +6120,6 @@ class Detector:
                     due = ts[j] - lag
                     return (due, half) if now > due + half else None
         return None
-
-    def usual_length(self, start: int) -> Optional[float]:
-        """Seconds a run that starts with this cluster usually lasts, over its
-        accepted pairs - None when it has none."""
-        idx = self._pair_index()
-        lens = [(model[2], self.pairs[key][0]) for b, key in (idx["by_start"].get(start) or {}).items()
-                for model in [self._pair_model(idx, start, b)] if model is not None]
-        w = sum(n for _, n in lens)
-        return math.exp(sum(ld * n for ld, n in lens) / w) if w else None
-
-    def partners(self, stop: int) -> Dict[int, tuple]:
-        """rise cluster -> (stop/start ratio, its spread, mean log seconds, its
-        spread) for the accepted pairs this fall cluster ends - see
-        PAIR_MIN_RUNS. As learned so far: worked out once a pass, a backfill's
-        slice asked models six hours old, a live pass one minute's and one
-        call none at all."""
-        idx = self._pair_index()
-        out = {}
-        for a in (idx["by_stop"].get(stop) or {}):
-            model = self._pair_model(idx, a, stop)
-            if model is not None:
-                out[a] = model
-        return out
 
     def _link_successors(self, now: float) -> None:
         """Point a named signature that has gone quiet at what may have
@@ -6312,17 +6468,23 @@ class Detector:
                                     for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
-                "pairs": {k: [_trim(x, 4) for x in v] for k, v in self.pairs.items()},
+                "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
+                "run_time": {str(k): _trim(v, 1) for k, v in self.run_time.items()},
+                "fall_n": {str(k): _trim(v, 3) for k, v in self.fall_n.items()},
+                "order_span": self.order_span, "order_clock": self.order_clock, "order_faded": self.order_faded,
                 # rises still in their event window - a pass's end no longer forms them
                 "pending_rises": [[m["ph"], i, m["since"], m["watts"], m["var"], m["surge"]] for m in self._pending
                                   for i, o in enumerate(self.phases[m["ph"]].open_edges if m["ph"] in self.phases else [])
-                                  if o is m["open"]],
+                                  if o is m.get("open")],
+                # ...and falls (run lifecycle): what each closes is decided when its event forms
+                "pending_falls": [[m["ph"], m["since"], m["var"], m["surge"], *m["fall"],
+                                   next((i for i, o in enumerate(self.phases[m["ph"]].open_edges) if o is m["hint"]), None)
+                                   if m["ph"] in self.phases else None]
+                                  for m in self._pending if "fall" in m],
                 # the steps a run filed later still finds its edges by, and the readings' clock
                 "edge_at": {ph: [list(e) for e in rows] for ph, rows in self.edge_at.items()},
                 # the day's runs and readings, for the day's repair (Fleet._repair): what a restart mid-day must not lose
                 "rejudge": sorted(self._rejudge), "rejudge_all": self._rejudge_all,
-                # the phase each pair was learned on: its start cluster may be gone by now (see _pair_index)
-                "pair_phase": dict((self._pidx or {}).get("phase") or self._pair_phase),
                 "day_log": [x.to_dict() for x in self._day_log],
                 "day_rows": {ph: [[_trim(t, 3), _trim(w, 1)] for t, w in rows] for ph, rows in self._day_rows.items()},
                 # the size density kept between steps, as it stands: worked out afresh it can differ by a float's last
@@ -6371,12 +6533,21 @@ class Detector:
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
-        det.pairs = {k: [float(x) for x in v] for k, v in (d.get("pairs") or {}).items()}
+        det.order = {k: [float(x) for x in v] for k, v in (d.get("order") or {}).items()}
+        det.run_time = {int(k): float(v) for k, v in (d.get("run_time") or {}).items()}
+        det.fall_n = {int(k): float(v) for k, v in (d.get("fall_n") or {}).items()}
+        det.order_span = float(d.get("order_span") or 0.0)
+        det.order_clock, det.order_faded = d.get("order_clock"), d.get("order_faded")
         for ph, i, since, watts, var, surge in d.get("pending_rises") or []:
             opens = det.phases[ph].open_edges if ph in det.phases else []
             if 0 <= i < len(opens) and opens[i].since == since:
                 det._pending.append({"since": since, "ph": ph, "watts": watts, "var": var, "surge": surge,
                                      "open": opens[i]})
+        for ph, since, var, surge, step, new_level, quality, hint in d.get("pending_falls") or []:
+            opens = det.phases[ph].open_edges if ph in det.phases else []
+            det._pending.append({"since": since, "ph": ph, "watts": -step, "var": var, "surge": surge,
+                                 "fall": (step, new_level, quality),
+                                 "hint": opens[hint] if hint is not None and 0 <= hint < len(opens) else None})
         det.edge_at = {ph: [tuple(e) for e in rows] for ph, rows in (d.get("edge_at") or {}).items()}
         for g, st in (d.get("dens") or {}).items():
             if g in det.edge_hist:
@@ -6387,7 +6558,6 @@ class Detector:
         det._day_rows = {ph: [tuple(r) for r in rows] for ph, rows in (d.get("day_rows") or {}).items()}
         det._clock = d.get("clock")
         det._moved = {int(k): int(v) for k, v in (d.get("moved") or {}).items()}
-        det._pair_phase = dict(d.get("pair_phase") or {})
         det._assign_families()
         if "rejudge_all" in d:
             # the devices _merge_devices still has to judge again: a full walk after a restart would

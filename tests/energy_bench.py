@@ -618,7 +618,7 @@ def _instrument():
         # the oldest waiting rise, inside a ramp a run already holds whole
         pend = min(det._pending, key=lambda x: x["since"]) if det._pending else None
         st = det.phases.get(pend["ph"]) if pend else None
-        held = st is not None and pend["since"] <= st.absorb_until and pend["open"] in st.open_edges
+        held = st is not None and "open" in pend and pend["since"] <= st.absorb_until and pend["open"] in st.open_edges
         out = first0(det)
         if held and pend["open"] not in st.open_edges:
             log["absorbed"].add(id(pend["open"]))
