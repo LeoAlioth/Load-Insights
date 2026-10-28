@@ -347,6 +347,14 @@ CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepG
 # oven and its fan (2 kW, 900 W, one run each) are one group until overlaps
 # split them (Detector.split_groups).
 VALLEY_SIGMAS = 0.0
+# How a step finds its group (run lifecycle, stage 6, the owner 2026-10-28):
+# "valleys" - the size density cut at its dips (EDGE_BATCH), as before;
+# "mixture" - each group a bell curve over size and reactive angle, its width its
+# own steps' spread but never under the step's measurement error (_mix_widths),
+# a step joining the most likely group within MIX_JOIN_WIDTHS of its centre, else
+# founding one (_by_mixture). Bench dials.
+GROUPING = "valleys"
+MIX_JOIN_WIDTHS = 3.0
 GROUP_SPAN = 3.0
 # A group's overlaps split it where one size puts this share of them on
 # opposite sides (Detector.split_groups). And how a second unit is believed
@@ -5728,6 +5736,9 @@ class Detector:
             where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
+        if GROUPING == "mixture":
+            # the histogram still kept (it places a step at a meter, _likely_meter); the group is the mixture's
+            cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where)
         if cluster is None:
             cluster = StepGroup(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, owner=where)
             self.next_edge_id += 1
@@ -5825,6 +5836,44 @@ class Detector:
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _mix_widths(self, ph: str, size: float, c: "StepGroup") -> Tuple[float, float]:
+        """(size width W, angle width degrees) of group ``c`` for a step of
+        ``size``: its own spread, never under the step's measurement error -
+        sqrt(2) x the phases' quietest noise (the size scale's unit back to a
+        noise, EDGE_NOISE_SHARE), with their measured relative noise at that
+        size; the angle's from the reactive resolution (q_quantum), never under
+        EDGE_ANGLE_KERNEL. See GROUPING."""
+        sts = [self.phases[p] for p in ph if p in self.phases]
+        unit = self.edge_unit.get(_group(ph, c.up, c.owner)) or MIN_NOISE_W * EDGE_NOISE_SHARE
+        noise = unit / EDGE_NOISE_SHARE
+        rel = max((st.noise_rel for st in sts), default=0.0)
+        floor = math.sqrt(2.0) * math.hypot(noise, rel * size)
+        width = max(floor, 1.2533 * c.watts_mad if c.count >= 2 else floor)        # a mean deviation's sd
+        q = max((st.q_quantum for st in sts), default=0.0)
+        afloor = max(EDGE_ANGLE_KERNEL, math.degrees(math.atan2(math.sqrt(2.0) * q, max(size, 1.0))))
+        return width, afloor
+
+    def _by_mixture(self, ph: str, up: bool, size: float, angle: Optional[float], keys: Dict[str, str],
+                    kind: List["StepGroup"], where: str) -> Optional["StepGroup"]:
+        """The group of its key (phase pattern, direction, meter, the inputs the
+        histogram keyed it by) a step is most likely from: within
+        MIX_JOIN_WIDTHS of its centre in size and, where both are measured, in
+        angle; the likelihood under a bell curve of the group's width, times
+        the group's share of steps. None for a new group. See GROUPING."""
+        best = None
+        for c in kind:
+            if c.owner != where or not c.same_signals(keys):
+                continue
+            w, aw = self._mix_widths(ph, size, c)
+            z = (size - c.watts) / w
+            za = (angle - c.angle) / aw if angle is not None and c.angle is not None else 0.0
+            if abs(z) > MIX_JOIN_WIDTHS or abs(za) > MIX_JOIN_WIDTHS:
+                continue
+            score = -0.5 * (z * z + za * za) - math.log(w) + math.log(max(c.count, 1.0))
+            if best is None or score > best[0]:
+                best = (score, c)
+        return best[1] if best else None
 
     def _by_state(self, h: Dict[int, float], hk: Dict[str, Dict[int, float]], unit: float, b: int,
                   seg: Tuple[int, int], states: Dict[str, str], changes: Dict[str, str],
