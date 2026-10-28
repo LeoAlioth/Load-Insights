@@ -146,9 +146,12 @@ def score(hidden: dict, fed: dict) -> dict:
                 continue
             groups = collections.Counter(steps[i]["g"] for i in mine)
             main = groups.most_common(1)[0][1] / len(mine)
-            tot = sum(sum(by_group[(g, up)].values()) for g in groups)
-            other = sum(sum(v for k, v in by_group[(g, up)].items() if k not in (m, "")) for g in groups)
-            unl = sum(by_group[(g, up)][""] for g in groups)
+            # weighted by the device's own steps in each group: a stray step of it in another load's
+            # big group must not count that whole group as its merging
+            share = lambda g, keep: sum(v for k, v in by_group[(g, up)].items() if keep(k)) / sum(by_group[(g, up)].values())  # noqa: E731
+            other = sum(n * share(g, lambda k: k not in (m, "")) for g, n in groups.items()) / len(mine)
+            unl = sum(n * share(g, lambda k: k == "") for g, n in groups.items()) / len(mine)
+            tot = 1.0
             sizes = [abs(steps[i]["w"]) for i in mine]
             sd, cv = _width(sizes)
             row = {"truth": len(truth), "labelled": len(mine), "groups": len(groups), "main": main,
