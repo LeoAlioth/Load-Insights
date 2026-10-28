@@ -69,3 +69,24 @@ the old match against what a run had sagged to (`o.now`) is gone. Kozolec's pond
 charge tapers). Added after this card: a fall that leaves the phase carrying the other runs and no more emptied
 the run, whatever its size (`_score`, house readings only): Kozolec hidden alone 74.2 / 3.6 -> 80.2 / 6.9 (pond
 EVSE 87.5, boiler impurity 8.8 -> 22.8). Capping that fall at the run's size made it worse (72.8 / 9.3), not kept.
+
+## Stages 3-5 - second units, ends by the readings, learned level, emptied runs (card `nogit-lifecycle-s5-20261028T200551Z.json`)
+
+| | hidden | circuits | fed |
+|---|---|---|---|
+| Home devices (227.92) | 21.0 / 18.0 | 28.4 / 14.1 | 53.2 / 8.3 |
+| Home partition (604.58) | 39.1 / 14.3 | 48.9 / 9.4 | 57.8 / 8.2 |
+| Susilna (91.03) | 8.8 / 29.5 (8.0 kWh caught, 3.4 wrong) | 9.0 / 23.2 | 51.8 / 8.3 |
+| Polnilnica | 51.9 / 7.4 | 48.6 / 6.4 | 63.0 / 5.1 |
+| Hidrofor | 30.7 / 27.1 | 29.5 / 21.0 | 68.3 / 9.7 |
+| Workshop boiler | 9.5 / 16.0 | 71.0 / 13.9 | 87.5 / 6.4 |
+| Kozolec devices (251.22) | 80.2 / 6.9 | - | 83.7 / 3.1 |
+| home-hisa Blaževa Soba | 30.5 / 20.7 | - | 66.1 / 19.2 |
+| home-mansarda office | 30.9 / 23.6 | - | 46.3 / 11.4 |
+| third charger | 62.5 / 4.7 | - | 90.1 / 5.1 |
+
+Against the baseline: a large loss hidden everywhere (Home devices -14 points, Susilna 24.4 -> 8.8, the third site's
+charger 89.3 -> 62.5), fed impurity better (Home 12.0 -> 8.3). Closes within 10 / 20 % of their start's size, Home
+hidden 48.1 / 73.5 -> 40.6 / 61.6. Suspected: the learned size ratio was averaged over every fall while a group ran,
+other loads' falls of any size among them, so its spread - and the tolerance - grew wide. After this card the ratio
+learns only from falls within PAIR_RATIO_MAX (2x) of the start: Kozolec hidden 80.2 / 6.9 -> 81.2 / 6.8.

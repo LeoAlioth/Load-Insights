@@ -329,6 +329,7 @@ MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in 
 PAIR_TIGHT_NOISES = 3.0
 PAIR_SCORE_MIN = 0.0
 PAIR_LENGTH_SD_MIN = 0.1
+PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size teaches no ratio (note_order)
 # A fall that closed nothing and a rise of its size within this many of the
 # phase's readings after the sustain (PhaseState.latency: no dip shorter is
 # ever declared) are a dip of a running run (PhaseState._dip): two
@@ -2842,8 +2843,9 @@ class PhaseState:
         if self.lib is not None and o.cluster is not None:
             best = max(((self.lib.partner_evidence(o.cluster, f), f) for f in self.lib.partners_of(o.cluster)),
                        default=None)
-            if best is not None:
-                return o.watts * math.exp(self.lib.pair_ratio(o.cluster, best[1])[0])
+            ratio = self.lib.pair_ratio(o.cluster, best[1]) if best is not None else None
+            if ratio is not None:
+                return o.watts * math.exp(ratio[0])
         return o.now if o.now is not None and o.now > 0 else o.watts
 
     def _not_carried(self, o: _Open, level: float) -> bool:
@@ -3088,10 +3090,10 @@ class PhaseState:
         ev = lib.partner_evidence(o.cluster, fall) if lib is not None and o.cluster is not None and fall is not None else 0.0
         sigma = math.sqrt(2.0) * self.noise_at(max(o.watts, watts))
         expect, width = o.watts, PAIR_TIGHT_NOISES * sigma
-        if ev > 0:
-            mean, spread = lib.pair_ratio(o.cluster, fall)
-            expect = o.watts * math.exp(mean)
-            width = PAIR_TIGHT_NOISES * math.hypot(sigma, expect * spread)
+        ratio = lib.pair_ratio(o.cluster, fall) if ev > 0 else None
+        if ratio is not None:
+            expect = o.watts * math.exp(ratio[0])
+            width = PAIR_TIGHT_NOISES * math.hypot(sigma, expect * ratio[1])
         gap = abs(watts - expect)
         if gap > width:
             # ...or the fall leaves the phase carrying the other runs and no
@@ -5411,14 +5413,21 @@ class Detector:
         self._order_tick(at)
         self.fall_n[fall] = self.fall_n.get(fall, 0.0) + 1.0
         for cid, (since, rose) in self.running_groups(at, phases).items():
-            acc = self.order.setdefault(f"{cid}>{fall}", [0.0, 0.0, 0.0, 0.0, 0.0])
+            acc = self.order.setdefault(f"{cid}>{fall}", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            if len(acc) < 6:
+                acc.append(acc[0])
             ld = math.log(max(at - since, 1.0))
-            lr = math.log(watts / rose) if watts > 0 and rose > 0 else 0.0
             acc[0] += 1.0
             acc[1] += ld
             acc[2] += ld * ld
-            acc[3] += lr
-            acc[4] += lr * lr
+            # the size ratio only from falls within PAIR_RATIO_MAX of the start:
+            # every fall while a group runs counts for order, and another load's
+            # fall of any size spread the learned ratio over half the scale
+            lr = math.log(watts / rose) if watts > 0 and rose > 0 else None
+            if lr is not None and abs(lr) <= math.log(PAIR_RATIO_MAX):
+                acc[3] += lr
+                acc[4] += lr * lr
+                acc[5] += 1.0
 
     def partner_evidence(self, rise: int, fall: int) -> float:
         """How far above chance falls of ``fall`` came while ``rise`` ran:
@@ -5445,7 +5454,9 @@ class Detector:
         if self.partner_evidence(rise, fall) <= 0:
             return None
         acc = self.order[f"{rise}>{fall}"]
-        n, s, s2 = acc[0], acc[3], acc[4]
+        n, s, s2 = (acc[5] if len(acc) > 5 else acc[0]), acc[3], acc[4]
+        if n <= 0:
+            return None
         mean = s / n
         return mean, math.sqrt(max(0.0, s2 / n - mean * mean))
 
@@ -7170,12 +7181,18 @@ class Fleet:
         day's runs and readings, once a day; each detector lets go of its
         runs that started before ``b`` and its readings from before it."""
         for _, det in self.detectors():
-            log = [s for s in det._day_log if a <= s.start < b]
+            # every run not yet repaired that started before the day's end -
+            # one filed after its own day's repair too (a run across midnight,
+            # filed when it closed at 02:00, was dropped unrepaired: INS-31,
+            # run lifecycle 2026-10-28) - with the readings from its start,
+            # the day before kept for it
+            log = [s for s in det._day_log if s.start < b]
             det._day_log = [s for s in det._day_log if s.start >= b]
+            frm = min([a] + [s.start for s in log])
             rows = {}
             for ph, rr in det._day_rows.items():
-                rows[ph] = rr[max(bisect.bisect_left(rr, (a, -math.inf)) - 1, 0):]
-                det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b, -math.inf)) - 1, 0):]
+                rows[ph] = rr[max(bisect.bisect_left(rr, (frm, -math.inf)) - 1, 0):]
+                det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b - REPAIR_DAY_S, -math.inf)) - 1, 0):]
             if log:
                 _cap_day(det, log, rows, a, b)
                 _recover_day(det, log, rows, a, b)
