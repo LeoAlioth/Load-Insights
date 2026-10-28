@@ -49,6 +49,7 @@ from .const import (
 )
 from .insights.detect import (
     HOURLY_KEEP_S,
+    input_rows,
     METER_WAIT_CAP_S,
     SWITCH_MEMORY_S,
     combine,
@@ -717,13 +718,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 if values:
                     numbers[eid] = values
                 elif domain == "sensor" and rows:
-                    inputs[eid] = [(st.last_updated.timestamp(), st.state) for st in rows]
+                    inputs[eid] = input_rows(states.get(eid, []), domain)
                 continue
             if domain in STATE_DOMAINS:
-                inputs[eid] = [(st.last_updated.timestamp(),
-                                st.state if domain != "fan" else
-                                (f"{st.attributes.get('percentage')} %" if st.state == "on" else "off"))
-                               for st in rows]
+                inputs[eid] = input_rows(states.get(eid, []), domain)
             if domain not in SWITCH_DOMAINS:
                 continue
             spans, on = [], None

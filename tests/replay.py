@@ -161,8 +161,9 @@ def _rows(paths, entity_id=None):
 def read_states(paths, entity_id):
     """An entity's TEXT states over time [(ts, state)] - a washer's cycle
     phase, a fan's speed exported as its own series."""
-    return sorted({(ts, state) for _, ts, state in _rows(paths, entity_id)
-                   if state and state not in ("unknown", "unavailable")})
+    rows = sorted({(ts, D.INPUT_DOWN if state in ("unknown", "unavailable") else state)
+                   for _, ts, state in _rows(paths, entity_id) if state})
+    return [r for i, r in enumerate(rows) if i == 0 or r[1] != rows[i - 1][1]]     # states change; a fetch chunk's first row repeats one
 
 
 def read_switch(paths, entity_id):

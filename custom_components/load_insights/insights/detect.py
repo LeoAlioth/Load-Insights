@@ -914,6 +914,13 @@ INPUT_TIME_TAU_S = 14 * 86400.0
 # A value this rare or rarer - its share of the time - is one runs are
 # filed in; and only once the shares have been counted for this long.
 INPUT_RARE_SHARE = 0.25
+# What an input's row says while its integration is down (Home Assistant's
+# unavailable and unknown): no value is in force, so a run made then has no
+# context. Dropping those rows carried the last value on - the Sock Eater's
+# Rinse through the 19 hours of 27-28 Oct it was unavailable, making every
+# pulse of Home's Inkubator a run "in Rinse" and 262 of them a signature of
+# their own (2026-10-28).
+INPUT_DOWN = "unavailable"
 # An input's CONTINUOUS state at a step - not only a change near it - is part of
 # the step's group, judged one input at a time against the state's share of the
 # time (Detector._by_state): while the washer is Running, a 2 kW step is not the
@@ -1515,6 +1522,23 @@ UNIT_SCALE = {
     # a power factor is a ratio; some meters publish it as a percentage
     "%": 0.01,
 }
+
+
+def input_rows(states: Sequence, domain: str) -> List[Tuple[float, str]]:
+    """An input's recorder states as (when, value) rows: a fan's value is its speed ("33 %") or "off", Home
+    Assistant's unavailable and unknown are INPUT_DOWN, and a value that repeats the one before is not a new row
+    (an unknown after an unavailable is the same outage)."""
+    rows: List[Tuple[float, str]] = []
+    for st in states:
+        if st.state in ("unknown", "unavailable"):
+            value = INPUT_DOWN
+        elif domain == "fan":
+            value = f"{st.attributes.get('percentage')} %" if st.state == "on" else "off"
+        else:
+            value = st.state
+        if not rows or rows[-1][1] != value:
+            rows.append((st.last_updated.timestamp(), value))
+    return rows
 
 
 def unit_scale(unit: Optional[str]) -> float:
@@ -4681,6 +4705,8 @@ class Detector:
             i = bisect.bisect_right(rows, ((s.start + s.end) / 2.0, "\uffff")) - 1
             if i < 0 or total < INPUT_SPLIT_MIN_TIME_S:
                 continue
+            if rows[i][1] == INPUT_DOWN:
+                continue
             share = spent.get(rows[i][1], 0.0) / total
             if share < INPUT_RARE_SHARE and (best is None or share < best[0]):
                 best = (share, f"{name}={rows[i][1]}", rows[i][0])
@@ -4738,7 +4764,7 @@ class Detector:
             # as its wash phase does, a moment either side of the change
             i = bisect.bisect_right(rows, ((s.start + s.end) / 2.0, "\uffff")) - 1
             total = sum((self.input_time.get(name) or {}).values())
-            if i >= 0 and total > 0:
+            if i >= 0 and total > 0 and rows[i][1] != INPUT_DOWN:
                 best.note_input(name, rows[i][1], {v: t / total for v, t in self.input_time[name].items()}, s.start)
         if best.family:
             rows = self.family_runs.setdefault(best.family, [])
@@ -5114,7 +5140,7 @@ class Detector:
             # ...and each input's state at the step, once a day of it is counted - see STATE_SUFFIX
             total = sum((self.input_time.get(name) or {}).values())
             i = bisect.bisect_right(rows, (since, "\uffff")) - 1
-            if i >= 0 and total >= INPUT_SPLIT_MIN_TIME_S:
+            if i >= 0 and total >= INPUT_SPLIT_MIN_TIME_S and rows[i][1] != INPUT_DOWN:
                 keyed[name + STATE_SUFFIX] = rows[i][1]
         where = ""
         if watts > 0 and self.step_meter is not None:
