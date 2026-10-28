@@ -1091,7 +1091,21 @@ MAX_RECENT_SESSIONS = 200
 # is still booked from filed runs only.
 LIVE_NAME_SHARE = 0.8
 LIVE_NAME_MIN_RUNS = 3
-LIVE_STALE_FACTOR = 2.0
+LIVE_STALE_FACTOR = 3.0
+# ...but of its USUAL runs, not its longest: Home's Inkubator is a ~20 s pulse,
+# yet one mis-paired fragment run of 1,653 s kept a start that never closed
+# counted for 55 minutes (2026-10-28). The LIVE_STALE_QUANTILE-th of the
+# lengths its runs remember is what a run of the name is, and a name that
+# remembers none falls back to its signatures' own lengths.
+LIVE_STALE_QUANTILE = 0.95
+# And a name never reads more than what one of its signatures draws, with room
+# for the parts of one appliance that run together (a washer's heater and drum
+# motor): a pulse load read 574 W off four stacked open starts and one lumped
+# stretch of energy, against a signature group that tops out at 75 W
+# (2026-10-28, the owner: "a detected load should never be significantly above
+# its signature group"). The ceiling of a signature is the higher of its mean
+# and the top of its level range.
+LIVE_CAP_FACTOR = 1.25
 # How many of its OWN run windows each signature remembers, so "these two are
 # never on at once" can be asked about a load that runs every few days. It
 # was asked of the rolling session list, which a busy house burns through in
@@ -1329,6 +1343,11 @@ def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
         return False
     share = abs(step) / abs(pv_step)
     return PV_SHARE_MIN <= share <= PV_SHARE_MAX
+
+
+def _quantile(ordered: Sequence[float], q: float) -> float:
+    """The ``q``-th quantile of an already sorted list, nearest rank - 0.0 for none."""
+    return ordered[min(len(ordered) - 1, int(q * len(ordered)))] if ordered else 0.0
 
 
 def _trim(value, places: int):
@@ -6110,11 +6129,11 @@ class Detector:
         """(name, since, watts) of each open run a named load owns - see
         LIVE_NAME_SHARE - leaving out one open longer than LIVE_STALE_FACTOR
         times the longest run its name is known for."""
-        longest: Dict[str, float] = {}
+        lengths: Dict[str, List[float]] = {}
         for sig in self.signatures:
             if sig.name:
-                runs = [b - a for a, b in sig.runs] + [sig.duration_s]
-                longest[sig.name] = max(longest.get(sig.name, 0.0), max(runs))
+                lengths.setdefault(sig.name, []).extend([b - a for a, b in sig.runs] or [sig.duration_s])
+        longest = {name: _quantile(sorted(lens), LIVE_STALE_QUANTILE) for name, lens in lengths.items()}
         out = []
         for st in self.phases.values():
             scale = st.open_scale()
@@ -8760,6 +8779,23 @@ class Fleet:
         shown.update(now_shown)
         out = {name: 0.0 for name in self.names()}
         out.update({name: max(row.values()) for name, row in per.items()})
+        ceiling = self.live_ceiling()
+        return {name: min(w, ceiling.get(name, w)) for name, w in out.items()}
+
+    def live_ceiling(self) -> Dict[str, float]:
+        """name -> the most a read of it may show: LIVE_CAP_FACTOR times the
+        highest of its signatures' means and level tops, over the signatures
+        seen at least LIVE_NAME_MIN_RUNS times (all of them for a name that
+        has none yet)."""
+        top: Dict[str, List[Tuple[int, float]]] = {}
+        for _, det in self.detectors():
+            for sig in det.signatures:
+                if sig.name:
+                    top.setdefault(sig.name, []).append((sig.count, max(sig.watts, sig.high or 0.0)))
+        out = {}
+        for name, rows in top.items():
+            seen = [w for n, w in rows if n >= LIVE_NAME_MIN_RUNS] or [w for _, w in rows]
+            out[name] = LIVE_CAP_FACTOR * max(seen)
         return out
 
     def energy_by_name(self) -> Dict[str, float]:

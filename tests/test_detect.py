@@ -3432,6 +3432,40 @@ def test_open_starts_never_add_up_to_more_than_the_phase_carries():
     assert st.open_scale() == 1.0
 
 
+def test_a_named_loads_live_power_never_reads_far_above_its_signatures():
+    """Home's Inkubator read 574 W off four stacked open starts and a lumped stretch
+    of energy, its signatures topping out at 75 W (2026-10-28, the owner: "a
+    detected load should never be significantly above its signature group").
+    The phase's level no longer stops it (nothing to measure against), so only
+    the ceiling does: LIVE_CAP_FACTOR times its strongest signature."""
+    import copy
+    fleet, t = _named_kettle()
+    marks, shown = {}, {}
+    fleet.live_power(t, 60.0, marks, shown)
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # the kettle is on
+    st = next(x for x in fleet.main.phases.values() if x.open_edges)
+    st.baseline = None
+    for _ in range(4):
+        st.open_edges.append(copy.copy(st.open_edges[0]))   # four more starts that never ended
+    top = max(s.watts for s in fleet.main.signatures if s.name == "Kettle")
+    assert sum(w for _, _, w in fleet.main.live_runs(t2)) > 3.0 * top           # stacked, before the ceiling
+    live = fleet.live_power(t2, t2 - t, marks, shown)["Kettle"]
+    assert 0.9 * top < live <= D.LIVE_CAP_FACTOR * top + 1e-6, (live, top)
+
+
+def test_an_open_start_stops_counting_after_the_usual_run_not_the_longest_ever_seen():
+    """One 2,000 s fragment among a name's runs kept the Inkubator's 20 s pulses
+    counted open for 55 minutes (LIVE_STALE_QUANTILE, 2026-10-28)."""
+    fleet, t = _named_kettle()
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # on for 120 s, no stop yet
+    sig = next(s for s in fleet.main.signatures if s.name == "Kettle")
+    sig.runs = [(i * 1000.0, i * 1000.0 + 30.0) for i in range(20)] + [(30000.0, 32000.0)]
+    assert fleet.main.live_runs(t2) == []                   # 120 s open against 2 x 30 s: stale
+    sig.runs = [(i * 1000.0, i * 1000.0 + 300.0) for i in range(21)]
+    assert len(fleet.main.live_runs(t2)) == 1               # the same start against runs of 300 s: live
+    assert D._quantile([], 0.95) == 0.0 and D._quantile([1.0, 2.0, 3.0], 0.95) == 3.0
+
+
 def test_a_named_run_that_began_and_ended_between_two_readings_comes_in_as_its_energy():
     """A run no reading saw open still counts, spread over the stretch (the
     kiln's 44 s pulses, 2026-09-18) - and one a reading did see open is not
