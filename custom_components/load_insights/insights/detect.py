@@ -921,6 +921,9 @@ INPUT_RARE_SHARE = 0.25
 # pulse of Home's Inkubator a run "in Rinse" and 262 of them a signature of
 # their own (2026-10-28).
 INPUT_DOWN = "unavailable"
+# A signature born in a setting's value with this many runs or fewer, never judged, is a fragment: see
+# Detector.retake_fragments.
+FRAGMENT_MAX_RUNS = 2
 # An input's CONTINUOUS state at a step - not only a change near it - is part of
 # the step's group, judged one input at a time against the state's share of the
 # time (Detector._by_state): while the washer is Running, a 2 kW step is not the
@@ -4853,6 +4856,30 @@ class Detector:
         self._absorb(moved)
         return judged
 
+    def retake_fragments(self) -> int:
+        """Once, on a library stored before ``fragments_retaken`` existed: the signatures born in a setting's value
+        that have run FRAGMENT_MAX_RUNS times or fewer and were never judged go into their alike ordinary twin, the
+        one with the most runs and the same name (an unnamed fragment: any). ``_judge_born`` waits for ever on
+        them - ``input_lift`` answers None below INPUT_MIN_RUNS - and a named load's signatures are never pruned:
+        Home's Inkubator had 275 of them, 266 of one or two runs, from a washer phase carried through 19 hours of
+        its integration being unavailable (2026-10-28; 453 -> 169 signatures, no run lost, on that library).
+        Returns how many were taken back."""
+        moved: Dict[int, int] = {}
+        for frag in list(self.signatures):
+            if not frag.born_in or frag.born_judged or frag.count > FRAGMENT_MAX_RUNS or frag.id in moved:
+                continue
+            noise = max((self.phases[p].noise for p in frag.phases if p in self.phases), default=MIN_NOISE_W)
+            born, frag.born_in = frag.born_in, None
+            twins = [o for o in self.signatures if o is not frag and not o.born_in and o.id not in moved
+                     and o.count >= YOUNG_COUNT and (not frag.name or o.name == frag.name) and o.alike(frag, noise)]
+            frag.born_in = born
+            if twins:
+                twin = max(twins, key=lambda o: o.count)
+                twin.swallow(frag)
+                moved[frag.id] = twin.id
+        self._absorb(moved)
+        return len(moved)
+
     def _absorb(self, moved: Dict[int, int]) -> None:
         """Drop the signatures swallowed into others (other id -> keeper id)
         and repoint what referred to them."""
@@ -6268,6 +6295,8 @@ class Detector:
                 # each group's segments as last cut (at its last step): _likely_meter reads those of groups it has not just stepped
                 "segs": {g: [list(x) for x in segs] for g, segs in self._segs.items()},
                 "clock": self._clock, "moved": {str(k): v for k, v in self._moved.items()},
+                # a library without this key is retaken once on loading: Detector.retake_fragments
+                "fragments_retaken": True,
                 }
 
     @classmethod
@@ -6328,6 +6357,8 @@ class Detector:
             # merge what the pass-by-pass one had left apart
             det._rebuild_votes()
             det._rejudge, det._rejudge_all = {int(x) for x in d.get("rejudge") or []}, bool(d["rejudge_all"])
+        if "fragments_retaken" not in d:
+            det.retake_fragments()
         return det
 
 
