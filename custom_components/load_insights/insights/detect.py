@@ -4810,11 +4810,13 @@ class Detector:
                 self._reclaim(sig, noise)
         self._prune(s.end)
 
-    def _judge_born(self) -> List["Signature"]:
+    def _judge_born(self, daily: bool = False) -> List["Signature"]:
         """A born-in signature that has seen its value come round
         INPUT_MIN_EPISODES times belongs to it if it ran in enough of them,
         and is ordinary again - running in that value now and then - if not.
-        Returns the ones judged."""
+        ``daily`` (Fleet._repair, once a day): one that ran in too few of them
+        is not left waiting on a lift that cannot be measured yet. Returns the
+        ones judged."""
         judged = []
         moved: Dict[int, int] = {}
         for sig in self.signatures:
@@ -4846,7 +4848,18 @@ class Detector:
                 judged.append(twin)
                 continue
             if any(lift is None for lift, _ in lifts):
-                continue
+                # a fragment's lift is None until it has INPUT_MIN_RUNS runs, and a named load is never pruned:
+                # Home's library held 312 born-in signatures of two runs or fewer, never judged (2026-10-28). Once a
+                # day one that ran in too few of its value's episodes - the coverage test below - goes back into
+                # its twin (retake_fragments'), or is ordinary again
+                if not daily or sig.ep_seen / since >= INPUT_MIN_COVERAGE:
+                    continue
+                twin = self._fragment_twin(sig, moved)
+                if twin is not None:
+                    twin.swallow(sig)
+                    moved[sig.id] = twin.id
+                    judged.append(twin)
+                    continue
             if sig.ep_seen / since >= INPUT_MIN_COVERAGE:
                 sig.born_judged = True
             else:
@@ -4868,17 +4881,22 @@ class Detector:
         for frag in list(self.signatures):
             if not frag.born_in or frag.born_judged or frag.count > FRAGMENT_MAX_RUNS or frag.id in moved:
                 continue
-            noise = max((self.phases[p].noise for p in frag.phases if p in self.phases), default=MIN_NOISE_W)
-            born, frag.born_in = frag.born_in, None
-            twins = [o for o in self.signatures if o is not frag and not o.born_in and o.id not in moved
-                     and o.count >= YOUNG_COUNT and (not frag.name or o.name == frag.name) and o.alike(frag, noise)]
-            frag.born_in = born
-            if twins:
-                twin = max(twins, key=lambda o: o.count)
+            twin = self._fragment_twin(frag, moved)
+            if twin is not None:
                 twin.swallow(frag)
                 moved[frag.id] = twin.id
         self._absorb(moved)
         return len(moved)
+
+    def _fragment_twin(self, frag: "Signature", moved: Dict[int, int]) -> Optional["Signature"]:
+        """The alike ordinary twin a born-in fragment goes back into, the born gate of alike aside: at least
+        YOUNG_COUNT runs, of its own name (an unnamed fragment: any), the one with the most runs - or None."""
+        noise = max((self.phases[p].noise for p in frag.phases if p in self.phases), default=MIN_NOISE_W)
+        born, frag.born_in = frag.born_in, None
+        twins = [o for o in self.signatures if o is not frag and not o.born_in and o.id not in moved
+                 and o.count >= YOUNG_COUNT and (not frag.name or o.name == frag.name) and o.alike(frag, noise)]
+        frag.born_in = born
+        return max(twins, key=lambda o: o.count, default=None)
 
     def _absorb(self, moved: Dict[int, int]) -> None:
         """Drop the signatures swallowed into others (other id -> keeper id)
@@ -6790,6 +6808,9 @@ class Fleet:
             if log:
                 _cap_day(det, log, rows, a, b)
                 _recover_day(det, log, rows, a, b)
+            # ...the born-in signatures waiting for ever on a lift (Detector._judge_born)
+            for sig in det._judge_born(daily=True):
+                det._touch(sig.id)
             # ...and the length split each signature's run memory shows (the owner,
             # 2026-10-23: length decides here, with the runs' lengths in view, not live)
             for sig in det.signatures:

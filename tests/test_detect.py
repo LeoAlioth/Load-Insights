@@ -6033,6 +6033,34 @@ def test_a_library_fragment_born_in_a_value_goes_back_into_its_named_twin():
     assert det._sig(2) is None and det._current(2) == 1 and det._current(3) == 1
 
 
+def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_round_without_it():
+    """A fragment's lift is None below INPUT_MIN_RUNS runs, so _judge_born waits on it for ever (Home's 312 born-in
+    signatures of two runs or fewer, 2026-10-28). Once a day (Fleet._repair, every meter's detector): one whose value
+    has come round INPUT_MIN_EPISODES times since its birth and that ran in fewer than INPUT_MIN_COVERAGE of them goes
+    into its twin (retake_fragments' search), or - no twin of its name - is ordinary again; one that ran in enough of
+    them still waits, and nothing happens before the value has come round often enough, nor after a filing."""
+    value = "sensor.washer=Rinse"
+    twin = _sig(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
+    stuck = _sig(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value, ep_seen=1.0)
+    covered = _sig(3, 59.0, 33.0, count=2, phases="c", born_in=value, ep_seen=2.0)
+    boiler = _sig(4, 500.0, 600.0, count=20, phases="c")
+    named_apart = _sig(5, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value, ep_seen=1.0)
+    fleet = D.Fleet()
+    det = fleet.subs["Hiša"] = D.Detector()
+    det.signatures = [twin, stuck, covered, boiler, named_apart]
+    det.input_episodes = {"sensor.washer": {"Rinse": 2.0}}
+    fleet._repair(T0, T0 + 86400.0)                                   # come round twice: too soon to judge
+    assert [s.id for s in det.signatures] == [1, 2, 3, 4, 5] and named_apart.born_in == value
+    det.input_episodes["sensor.washer"]["Rinse"] = 3.0
+    det._judge_born()                                                 # after a filing: still waiting on the lift
+    assert [s.id for s in det.signatures] == [1, 2, 3, 4, 5] and named_apart.born_in == value
+    fleet._repair(T0 + 86400.0, T0 + 2 * 86400.0)
+    assert [s.id for s in det.signatures] == [1, 3, 4, 5]
+    assert twin.count == 51 and det._current(2) == 1 and value in twin.takes_in
+    assert covered.born_in == value and not covered.born_judged      # ran in 2 of 3: still the value's to judge
+    assert named_apart.born_in is None and value in named_apart.takes_in and boiler.count == 20
+
+
 def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loading():
     value = "sensor.washer=Rinse"
     det = D.Detector()
