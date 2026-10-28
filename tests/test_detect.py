@@ -1191,6 +1191,22 @@ def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
     assert back.apart == [1]
 
 
+def test_a_run_of_a_shared_start_cluster_joins_the_devices_family_only_when_it_fits_a_member():
+    """Home's Hidrofor (827 W, 110 s) shares a start cluster with a 1 kW heater's starts: the heater's runs founded
+    signatures that adopted the pump's family, so the name covered their energy (2026-10-27: 20.2 % impure by
+    family against 10.4 per signature, 12.6 once a run that fits no member founds a family of its own)."""
+    det = D.Detector()
+    det.signatures = [_sig(1, 827.0, 110.0, 12, first_seen=T0, last_seen=T0, family=1)]
+    det.next_id, det.next_family = 2, 2
+    det.start_home = {"7": {1: 12.0}}
+    heater = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 3789.0, levels={"a": [(T0 + 3600.0, 1026.0)]}, pair=(7, None))
+    det._file(heater, avoid=[1])               # kept out of the pump's signature: its plug did not start it
+    assert heater.signature_id == 2 and det._sig(2).family != 1
+    like = D.Run(phases="a", start=T0 + 7200.0, end=T0 + 7310.0, levels={"a": [(T0 + 7200.0, 840.0)]}, pair=(7, None))
+    det._file(like, avoid=[1, 2])
+    assert like.signature_id == 3 and det._sig(3).family == 1
+
+
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
     """Physics, not statistics. I tried correlating the two series' changes
     first and the owner's own data threw it out: on a day when the grid meter
