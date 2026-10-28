@@ -344,6 +344,43 @@ def test_groups_the_evidence_calls_one_device_are_merged():
         D.GROUP_MERGE = old
 
 
+def _mixture(fn):
+    """Run a test in GROUPING = "mixture" (a bench dial)."""
+    def run():
+        old, D.GROUPING = D.GROUPING, "mixture"
+        try:
+            fn()
+        finally:
+            D.GROUPING = old
+    run.__name__ = fn.__name__
+    return run
+
+
+def _mix_groups(offsets, noise=2.83, base=1000.0, angles=None):
+    det = D.Detector()
+    det.phases["a"].noise = noise                     # a step error of ~4 W (sqrt(2) x noise)
+    ids = []
+    for k, o in enumerate(offsets):
+        var = None if angles is None else (base + o) * math.tan(math.radians(angles[k]))
+        ids.append(det._classify_step("a", T0 + 600.0 * k, base + o, var, 0.0).id)
+    return ids
+
+
+@_mixture
+def test_mixture_groups_the_owners_two_examples_as_he_would():
+    """The owner's examples, offsets from 1 kW, a ~4 W step error: two tight
+    triplets are two groups, an even spread is one (2026-10-28)."""
+    a = _mix_groups([-12, -10, -8, 8, 10, 12])
+    assert len(set(a)) == 2 and a[0] == a[1] == a[2] and a[3] == a[4] == a[5], a
+    assert len(set(_mix_groups([-12, -7, -2, 2, 7, 12]))) == 1
+
+
+@_mixture
+def test_mixture_tells_a_pump_from_a_heater_of_one_size_by_angle():
+    ids = _mix_groups([0, 2, -1, 1, -2, 0], angles=[0, 35, 0, 35, 0, 35])
+    assert len(set(ids)) == 2 and ids[0] == ids[2] == ids[4] and ids[1] == ids[3] == ids[5], ids
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0
