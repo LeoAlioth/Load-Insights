@@ -5463,14 +5463,15 @@ class Detector:
                 self._kinds.setdefault((ph, c.up), []).append(new)
             self._by_id = None
             split += 1
-        live = sorted((c for c in self.edges if c.joined is None and len(c.recent) >= 2), key=lambda c: (c.phase, c.up, c.owner, c.watts))
+        live = sorted((c for c in self.edges if c.joined is None and c.recent), key=lambda c: (c.phase, c.up, c.owner, c.watts))
         for a, b in zip(live, live[1:]):
             if (a.phase, a.up, a.owner, a.keys) != (b.phase, b.up, b.owner, b.keys) or a.joined is not None:
                 continue
             fa = self._mix_widths(a.phase, a.watts, a)[0]
             fb = self._mix_widths(b.phase, b.watts, b)[0]
-            if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
-                continue
+            both = [x for x, _ in a.recent + b.recent]
+            if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb, _robust_sd(both)):
+                continue                    # (before any fit, their steps' spread together is the reach)
             floor = self._mix_widths(a.phase, a.watts, StepGroup(id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0]
             two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
             if two is not None and two[2] > 0:

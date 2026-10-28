@@ -372,7 +372,12 @@ def test_mixture_groups_the_owners_two_examples_as_he_would():
     triplets are two groups, an even spread is one (2026-10-28)."""
     a = _mix_groups([-12, -10, -8, 8, 10, 12])
     assert len(set(a)) == 2 and a[0] == a[1] == a[2] and a[3] == a[4] == a[5], a
-    assert len(set(_mix_groups([-12, -7, -2, 2, 7, 12]))) == 1
+    det = D.Detector()
+    det.phases["a"].noise = 2.83
+    for k, o in enumerate([-12, -7, -2, 2, 7, 12]):
+        det._classify_step("a", T0 + 600.0 * k, 1000.0 + o, None, 0.0)
+    det.mix_daily()                                    # an even spread founded a second group live; the daily join
+    assert sum(c.joined is None for c in det.edges if c.up) == 1, [(c.watts, c.recent, c.joined) for c in det.edges]
 
 
 @_mixture
