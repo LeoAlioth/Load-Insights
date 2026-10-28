@@ -155,40 +155,98 @@
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** On the owner's go: tests, card, invariance, lifecycle_check (the Inkubator's live maximum against the baseline). Results file; patch checkpoint.
 
-## Stage 6 - group width
+## Stage 6 - grouping
 
-### Task 8: Cut only at significant valleys, within a span
+Built first and benched, kept as dials (results in `dev/run-lifecycle-results.md`): Task 8, valley significance
+(`VALLEY_SIGMAS`, `GROUP_SPAN`) - monotonically worse at 0.5 / 1 / 2, off; Task 9, the overlap split
+(`split_groups`, on) and `UNITS_NEED_HISTORY` (1, on); the merge mirror (`GROUP_MERGE`) - a little worse, off.
+
+Redesigned with the owner on 2026-10-28 after that bench: "smooth, then cut at dips" cannot separate two loads
+closer than about two smoothing widths whatever their counts (the steps needed grow with the fourth power of the
+distance to that line), nor tell two tight piles from one spread one (the owner's examples, offsets from 1 kW:
+-12 -10 -8 +8 +10 +12 is two groups, -12 -7 -2 +2 +7 +12 is one). A group becomes a bell curve whose width is
+fitted from its own steps but never under the meter's step error; one-or-two is decided by BIC, overlaps entering as
+cannot-link pairs; at Home a group's size is corrected for voltage by its own exponent k (P ~ V^k: ~2 resistive,
+~1 current-limited, ~0 switched-mode). Current is not a dimension (power and voltage hold it); it stands in for the
+voltage where a meter reports current but no voltage. And the benches measure grouping on its own, not only through
+the energy card (the owner: "the benches only tell us the final result").
+
+### Task 8b: Grouping bench
 
 **Files:**
-- Modify: `detect.py` - `_valley_cuts` / `_valley_cuts_near` (~4144-4195), `_valleys` (~5385), `_by_density` (~5270)
+- Create: `tests/grouping_bench.py`
+
+**Interfaces:**
+- Produces: `python3.14 tests/grouping_bench.py SITE [FOLDER] [DIAL=V ...]` - one fed replay; every rise and fall step
+  of the grid meter labelled by the sub-meter that claimed it (its owner); per metered device: its steps, the groups
+  they fall in (count, its share in its main group = fragmentation), and the share of those groups' steps that are
+  other devices' (merging); its pile width (standard deviation of its step sizes, W and % of its mean) and, at Home,
+  the width after correcting each step to 230 V by the device's own fitted k (`edges.volt_slope`) with k and its
+  error; which voltage source each meter had.
+
+- [ ] **Step 1:** Write it on `bench._run` with the grid's declared steps and the claims (`Step.owner`).
+- [ ] **Step 2:** Run it for home and kozolec on today's grouping; results to `dev/run-lifecycle-results.md`.
+
+### Task 8c: The steps store, with voltage
+
+**Files:**
+- Modify: `detect.py` - `PhaseState._process` declaration (~2375: a step records the voltage before and after it,
+  the medians of the readings either side, from `Fleet.volts` of its meter and phase, else from dP/dI where the meter
+  reports current and no voltage, else None), `Detector.steps` (kept `STEPS_KEEP_S = 10 * 86400`: since, phase
+  pattern, signed W, var, group id, owner, V off, V on); `detection.py` (~384: a store
+  `f"{DOMAIN}.{entry.entry_id}.detection.steps"`, saved after each daily pass and on `HISTORY_SAVE_INTERVAL_S`)
 - Test: `tests/test_detect.py`
 
 **Interfaces:**
-- Produces: `_valley_cuts(dens, lo, peak, counts)` cuts at a local minimum only when both neighbouring peaks exceed it by more than `VALLEY_SIGMAS` times the Poisson spread of the counts there (`sqrt` of the summed weight), and always where the density is empty; a segment wider than `GROUP_SPAN` (largest / smallest step, bench 2 / 3 / 5, start 3) is cut at its deepest minimum. Dials `VALLEY_SIGMAS` (bench 1 / 2 / 3) - the significance test is a spec open point: the owner sees the sweep before a value is kept.
+- Produces: `Fleet.steps_to_dict() -> dict`, `Fleet.load_steps(d: dict) -> None`, out of `Fleet.to_dict`.
 
-- [ ] **Step 1:** Tests: `test_three_steps_are_one_group` (100, 104, 98 W: one group); `test_a_real_valley_splits_once_enough_steps_show_it` (300 steps at 80 W and 300 at 120 W: two groups; 3 of each: one); `test_a_group_never_spans_more_than_group_span` (steps from 100 to 500 W evenly: no group wider than 3x).
-- [ ] **Step 2:** Implement. The incremental `_valley_cuts_near` must give the same segments as the full cut (keep its equality test).
-- [ ] **Step 3:** On the owner's go: tests, card at each `GROUP_SPAN` and `VALLEY_SIGMAS` value, invariance at the chosen one. Results file; patch checkpoint.
-
-### Task 9: Cannot-link pairs and the nightly split
-
-**Unit count:** a spec open point; build two or three variations of how a group learns and uses its count, bench them, and leave the choice to the owner. This task is written for the split.
-
-**Files:**
-- Modify: `detect.py` - `StepGroup` (~3964: `cannot: List[Tuple[float, float, float, float]]`, the two rises' sizes and angles), `Fleet._repair` (~6814), `StepGroup.to_dict` / `from_dict`
-- Test: `tests/test_detect.py`
-
-**Interfaces:**
-- Consumes: the cannot-link pairs Task 5 records.
-- Produces: `Detector.split_groups() -> int` - in the daily pass, for each group with at least `PAIR_MIN_RUNS` cannot-link pairs, the size (then angle) threshold that puts the most pairs on opposite sides; split when it separates `above_chance` of them; the group's runs of the day are re-filed. Returns the number split.
-
-- [ ] **Step 1:** Tests: `test_overlapping_similar_fridges_split_into_two_groups` (83 W and 75 W rises in one group, 10 overlaps: two groups after the daily pass); `test_identical_units_are_not_split` (two 2 kW elements, 10 overlaps, same sizes: one group); `test_cannot_link_pairs_survive_a_restart`.
+- [ ] **Step 1:** Tests: a step records the on- and off-side voltage from the meter's readings; steps older than ten
+  days drop; the steps round-trip through their own store and not `Fleet.to_dict`.
 - [ ] **Step 2:** Implement.
-- [ ] **Step 3:** On the owner's go: tests, card, invariance, lifecycle_check (Kozolec's fridges). Results file; patch checkpoint.
+
+### Task 8d: Mixture grouping, live
+
+**Files:**
+- Modify: `detect.py` - `_classify_step` / `_by_density` (~5169-5350) behind `GROUPING` (`"valleys"` default until
+  the bench, `"mixture"`), `StepGroup` (centre, fitted width, `k`, `k_err`, from the daily pass)
+- Test: `tests/test_detect.py`
+
+**Interfaces:**
+- Produces: in mixture mode a step joins, among the groups of its key (phase pattern, direction, owner, input state),
+  the one under which it is most likely - its size corrected to 230 V by that group's k where known, its angle where
+  measured - when within `MIX_JOIN_WIDTHS` (3; bench 2 / 3 / 4) of its centre in every dimension; else a new group.
+  A group's width per dimension is its steps' running spread, never under the floor: sqrt(2) x the meter's quietest
+  measured noise for size, the angle's error from the var resolution for angle. Angle and size are one fit, not size
+  then angle; the input-state keys stay as today.
+
+- [ ] **Step 1:** Tests: the owner's two examples at 1 kW with a 4 W floor give two groups and one; a resistive
+  load's steps across 225-245 V stay one group once its k is known; a pump and a heater of one size, angles 35 and
+  0 degrees, are two groups.
+- [ ] **Step 2:** Implement.
+
+### Task 8e: Mixture grouping, daily
+
+**Files:**
+- Modify: `detect.py` - `Detector.split_groups` / `merge_groups` (mixture mode), `Fleet._repair`
+- Test: `tests/test_detect.py`
+
+**Interfaces:**
+- Produces: in the daily pass, per group with `PAIR_MIN_RUNS` steps in the store: k fitted (P ~ V^k on its on-side
+  voltages, `edges.volt_slope`, None where the voltage spread is mostly error - Kozolec); a one-or-two test by BIC on
+  corrected size and angle, widths fitted with the floor, the overlap pairs as cannot-link constraints (constrained
+  EM), and a two-slopes test (two k in one group); a split keeps the old id on the larger part. Neighbouring groups
+  with the same k whose piles overlap are tested two-or-one; a join keeps the bigger id.
+
+- [ ] **Step 1:** Tests: ten overlaps of 83 W and 75 W rises split; two identical 2 kW elements with overlaps do not;
+  a heater (k 2) and a switched-mode load (k 0) of one size, steps across 225-245 V, split; one device's steps in two
+  neighbouring groups are joined.
+- [ ] **Step 2:** Implement.
+- [ ] **Step 3:** Bench: the grouping bench and the energy card, mixture against valleys, both sites;
+  `MIX_JOIN_WIDTHS` 2 / 3 / 4. Results to `dev/run-lifecycle-results.md`; the default changes only on the owner's word.
 
 ## Stage 7 - the daily pass across midnight
 
-### Task 10: The steps store
+### Task 10: The steps store (moved to Task 8c)
 
 **Files:**
 - Modify: `detect.py` - `Detector` (`steps: List[list]`, each `[since, phase pattern, signed W, var, group id, owner]`, kept `STEPS_KEEP_S = 10 * 86400`), `detection.py` (~384: a third `Store` `f"{DOMAIN}.{entry.entry_id}.detection.steps"`, saved after each daily pass and on `HISTORY_SAVE_INTERVAL_S` as `_history` is)
