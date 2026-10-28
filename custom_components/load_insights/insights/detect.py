@@ -338,6 +338,8 @@ PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size 
 # levels of it, no run of their own. Bench dial (spec open point).
 DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
+STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
+STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages are the medians of
 # A valley between two piles of step sizes cuts them into two groups only when
 # the shallower pile stands this many Poisson spreads above it (_significant),
 # and no group spans more than GROUP_SPAN times its smallest step (the owner,
@@ -4694,6 +4696,12 @@ class Detector:
     meter_wh: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
     meter_read: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # Every step it grouped, the last STEPS_KEEP_S (run lifecycle, Task 8c): [since,
+    # phase pattern, signed W, var, group id, owner, voltage before, voltage after] -
+    # what the daily pass may read back. Kept in a store of its own, never in the
+    # library's (Fleet.steps_to_dict); the voltage from volts_at, set each pass.
+    steps: List[list] = field(default_factory=list, repr=False, compare=False, metadata={"derived": True, "store": "steps"})
+    volts_at: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
     placement_window: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -5885,6 +5893,7 @@ class Detector:
                 self.edges = [c for c in self.edges if c is not gone]
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
+        self._keep_step(ph, since, watts, var, cluster.id, where)
         if GROUPING == "mixture":
             cluster.recent.append((size, angle))
             del cluster.recent[:-MIX_KEEP]
@@ -5971,6 +5980,18 @@ class Detector:
             return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
         mine = [c for c in members if c.same_signals(plain)]
         return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+
+    def _keep_step(self, ph: str, since: float, watts: float, var: Optional[float], gid: int, where: str) -> None:
+        """A grouped step into the steps store, with the voltage either side of
+        it (the mean over its phases where it spans several), ten days kept."""
+        sides = []
+        for before in (True, False):
+            vs = [v for v in (self.volts_at(p, since, before) if self.volts_at is not None else None for p in ph) if v]
+            sides.append(round(sum(vs) / len(vs), 2) if vs else None)
+        self.steps.append([round(since, 2), ph, round(watts, 1), None if var is None else round(var, 1), gid, where, *sides])
+        if len(self.steps) % 512 == 0:
+            cut = since - STEPS_KEEP_S
+            self.steps = [x for x in self.steps if x[0] >= cut]
 
     def _mix_widths(self, ph: str, size: float, c: "StepGroup") -> Tuple[float, float]:
         """(size width W, angle width degrees) of group ``c`` for a step of
@@ -7297,6 +7318,8 @@ class Fleet:
             self._repaired_to = (first + tz) // REPAIR_DAY_S * REPAIR_DAY_S - tz
         for _, det in self.detectors():
             det._day_from = self._repaired_to
+        for name, det in self.detectors():
+            det.volts_at = functools.partial(self._volts_at, name)
         done = self._run(units, streams, meters, end)
         for name, f in units:
             left: Dict[str, list] = {}
@@ -9338,6 +9361,30 @@ class Fleet:
     # A signature is (meter, id), the grid's under "": a load inside a meter
     # holding several devices is that meter's own signature (_file_as), and
     # named there it is a named load like any other (2026-10-03).
+    def _volts_at(self, name: str, ph: str, t: float, before: bool) -> Optional[float]:
+        """The voltage on meter ``name``'s phase ``ph`` just before ``t`` (or
+        just after): the median of its readings within STEP_VOLT_WIN_S - its own,
+        else the grid's on the system phase it maps to (a plug publishes its
+        voltage, but no one reads it in yet). None where nothing is read."""
+        rows = (self.volts.get(name) or {}).get(ph)
+        if not rows and name:
+            sys_ph = (self.phase_map(name) or {}).get(ph)
+            rows = (self.volts.get("") or {}).get(sys_ph) if sys_ph else None
+        if not rows:
+            return None
+        i = bisect.bisect_left(rows, (t, -math.inf))
+        xs = [v for _, v in (rows[bisect.bisect_left(rows, (t - STEP_VOLT_WIN_S, -math.inf)):i] if before
+                             else rows[i:bisect.bisect_right(rows, (t + STEP_VOLT_WIN_S, math.inf))])]
+        return statistics.median(xs) if xs else None
+
+    def steps_to_dict(self) -> dict:
+        """Every detector's steps store, the last STEPS_KEEP_S - its own store, not the library's."""
+        return {name: det.steps for name, det in self.detectors() if det.steps}
+
+    def load_steps(self, d: Optional[dict]) -> None:
+        for name, det in self.detectors():
+            det.steps = [list(x) for x in (d or {}).get(name) or []]
+
     def detectors(self) -> List[Tuple[str, "Detector"]]:
         """Every meter's detector, the grid's under "" first, then by name."""
         return [("", self.main)] + sorted(self.subs.items(), key=lambda kv: kv[0])

@@ -413,6 +413,25 @@ def test_mixture_daily_splits_two_piles_and_joins_one_device():
     assert one.mix_daily()[1] == 1 and sum(c.joined is None for c in one.edges) == 1
 
 
+def test_a_step_is_stored_with_its_voltage_either_side():
+    """The steps store (run lifecycle, Task 8c): every grouped step with the
+    voltage before and after it - here the grid's, a 2 kW heater pulling its
+    phase from 240 to 236 V - in a store of its own, ten days kept."""
+    f = D.Fleet()
+    f.volts = {"": {"a": [(T0 + k, 240.0 if k < 0 else 236.0) for k in range(-60, 61, 5)]}}
+    f.main.volts_at = lambda ph, t, before: f._volts_at("", ph, t, before)
+    f.main._classify_step("a", T0, 2000.0, None, 0.0)
+    row = f.main.steps[-1]
+    assert row[1] == "a" and row[2] == 2000.0 and row[6:] == [240.0, 236.0], row
+    assert "steps" not in f.main.to_dict()                            # not in the library's store
+    back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
+    back.load_steps(json.loads(json.dumps(f.steps_to_dict())))
+    assert back.main.steps == f.main.steps
+    f.main.steps = [[T0 - 11 * 86400.0, "a", 100.0, None, 1, "", None, None]] * 511
+    f.main._classify_step("a", T0, 2000.0, None, 0.0)                 # the 512th: older than ten days go
+    assert all(x[0] >= T0 - D.STEPS_KEEP_S for x in f.main.steps) and len(f.main.steps) == 1
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0
