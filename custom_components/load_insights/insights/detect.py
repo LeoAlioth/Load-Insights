@@ -4173,6 +4173,7 @@ class StepGroup:
     # daily one-or-two test, and the group it was joined into (never chosen again)
     recent: List[Tuple[float, Optional[float]]] = field(default_factory=list)
     joined: Optional[int] = None
+    mix_sd: Optional[float] = None
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -4242,7 +4243,8 @@ class StepGroup:
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
                 "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
                 "where": self.owner, "cannot": [list(x) for x in self.cannot],
-                "recent": [[_trim(a, 1), _trim(b, 1)] for a, b in self.recent], "joined": self.joined}
+                "recent": [[_trim(a, 1), _trim(b, 1)] for a, b in self.recent], "joined": self.joined,
+                "mix_sd": _trim(self.mix_sd, 2)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4255,7 +4257,17 @@ class StepGroup:
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
                    owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
-                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"))
+                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"), mix_sd=d.get("mix_sd"))
+
+
+def _robust_sd(xs: Sequence[float]) -> float:
+    """1.4826 x the median absolute deviation: a pile's width its tail cannot
+    stretch - Kozolec's boiler holds +-20 W with a tail to 118 W of standard
+    deviation, and a width that wide took every step from 1.45 to 2.15 kW."""
+    if len(xs) < 2:
+        return 0.0
+    m = statistics.median(xs)
+    return 1.4826 * statistics.median(abs(x - m) for x in xs)
 
 
 def _mix_two(xs: Sequence[float], floor: float, pairs: Sequence[Tuple[float, float]] = ()):
@@ -5431,6 +5443,7 @@ class Detector:
             xs = [a for a, _ in c.recent]
             pairs = [(a, b) for a, _, b, _ in c.cannot]
             two = _mix_two(xs, floor, pairs)
+            c.mix_sd = max(floor, _robust_sd(xs))     # one curve, until two win
             if two is None:
                 continue
             (ma, sa, wa), (mb, sb, wb), gain = two
@@ -5440,10 +5453,10 @@ class Detector:
             stay, go = ((ma, sa), (mb, sb)) if keep_a else ((mb, sb), (ma, sa))
             new = StepGroup(id=self.next_edge_id, phase=ph, up=c.up, watts=go[0], keys=dict(c.keys), owner=c.owner)
             self.next_edge_id += 1
-            new.watts_mad, new.count = go[1] / 1.2533, max(1.0, c.count * (min(wa, wb)))
+            new.watts_mad, new.count, new.mix_sd = go[1] / 1.2533, max(1.0, c.count * (min(wa, wb))), go[1]
             new.recent = [x for x in c.recent if abs(x[0] - go[0]) * stay[1] < abs(x[0] - stay[0]) * go[1]]
             c.recent = [x for x in c.recent if x not in new.recent]
-            c.watts, c.watts_mad, c.count = stay[0], stay[1] / 1.2533, max(1.0, c.count * max(wa, wb))
+            c.watts, c.watts_mad, c.count, c.mix_sd = stay[0], stay[1] / 1.2533, max(1.0, c.count * max(wa, wb)), stay[1]
             c.cannot = []
             self.edges.append(new)
             if self._kinds is not None:
@@ -5466,6 +5479,7 @@ class Detector:
             n = keep.count + gone.count
             keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
             keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
+            keep.mix_sd = max(floor, _robust_sd([x for x, _ in keep.recent]))
             gone.joined = keep.id
             joined += 1
         return split, joined
@@ -5961,7 +5975,9 @@ class Detector:
         noise = unit / EDGE_NOISE_SHARE
         rel = max((st.noise_rel for st in sts), default=0.0)
         floor = math.sqrt(2.0) * math.hypot(noise, rel * size)
-        width = max(floor, 1.2533 * c.watts_mad if c.count >= 2 else floor)        # a mean deviation's sd
+        # its width as the daily fit set it (mix_daily), never its running spread: a running spread
+        # widens with every outlier it takes, and takes more the wider it is (Kozolec's boiler, 2026-10-28)
+        width = max(floor, c.mix_sd or 0.0)
         q = max((st.q_quantum for st in sts), default=0.0)
         afloor = max(EDGE_ANGLE_KERNEL, math.degrees(math.atan2(math.sqrt(2.0) * q, max(size, 1.0))))
         return width, afloor
