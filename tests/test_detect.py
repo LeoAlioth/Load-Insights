@@ -265,13 +265,20 @@ def test_two_fridges_overlapping_count_two():
     ends by its own fall (run lifecycle, 2026-10-28)."""
     det, st = _scoring_phase((0.0, 83.0, 1))
     det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]
+    det.edges[0].cannot = [(84.0, None, 74.0, None)] * D.PAIR_MIN_RUNS     # overlaps seen before (UNITS_NEED_HISTORY)
     st.noise = 5.0
     keep = D._Open(T0 + 600.0, 75.0, None, [(T0 + 600.0, 75.0)], cluster=1)
     st.declared = [(T0 + 600.0, 75.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 300.0 + 83.0 + 75.0)]
     st.declared_t = [T0 + 600.0]
     st.open_edges.append(keep)
     assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
-    assert det.edges[0].cannot == [(83.0, None, 75.0, None)]
+    assert det.edges[0].cannot[-1] == (83.0, None, 75.0, None)
+    fresh, st2 = _scoring_phase((0.0, 83.0, 1))                           # no overlaps before: a missed fall,
+    fresh.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]      # the overlap still counted
+    st2.noise, st2.declared, st2.declared_t = 5.0, list(st.declared), list(st.declared_t)
+    keep2 = D._Open(T0 + 600.0, 75.0, None, [(T0 + 600.0, 75.0)], cluster=1)
+    st2.open_edges.append(keep2)
+    assert len(st2.second_rise(1, keep2)) == 1 and len(fresh.edges[0].cannot) == 1
 
 
 def test_a_second_rise_without_the_first_carried_ends_the_first_at_its_missed_fall():

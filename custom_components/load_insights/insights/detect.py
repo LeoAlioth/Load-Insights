@@ -353,7 +353,10 @@ GROUP_SPAN = 3.0
 # (PhaseState.second_rise, spec open point): 0 on the reading at each rise,
 # 1 only in a group that has shown PAIR_MIN_RUNS overlaps already - bench dial.
 SPLIT_SHARE = 0.8
-UNITS_NEED_HISTORY = 0
+# 1 benched better at both sites (2026-10-28, cards home kozolec): Home hidden
+# 31.7 / 14.0 -> 32.0 / 13.0, fed 52.8 / 6.4 -> 53.0 / 6.5; Kozolec hidden
+# 82.3 / 6.2 -> 81.3 / 3.2 (its boiler's impurity 16.7 -> 6.9)
+UNITS_NEED_HISTORY = 1
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
