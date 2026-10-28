@@ -314,6 +314,36 @@ def test_overlapping_similar_fridges_split_into_two_groups():
     assert back.edge_cuts == det.edge_cuts
 
 
+def test_groups_the_evidence_calls_one_device_are_merged():
+    """The mirror of the split (bench mode GROUP_MERGE): a load whose starts
+    fell either side of a shallow valley - two groups, never running at once,
+    one partner fall, the same length - is joined, and its steps land in one
+    group from then on; two that ran together are not."""
+    old = D.GROUP_MERGE
+    D.GROUP_MERGE = 1
+    try:
+        det = D.Detector()
+        det.phases["a"].noise = 4.0
+        a = det._classify_step("a", T0, 100.0, None, 0.0)
+        b = det._classify_step("a", T0 + 60.0, 125.0, None, 0.0)
+        assert a.id != b.id
+        for g in (a, b):
+            g.count = 20.0
+        _evidence(det, a.id, 9, 600.0)
+        _evidence(det, b.id, 9, 650.0)
+        det.run_time[a.id] = det.run_time[b.id] = 0.1 * 86400.0
+        det.co_run = {f"{a.id},{b.id}": 1}
+        assert det.merge_groups() == 0                                     # they ran together once
+        det.co_run = {}
+        assert det.merge_groups() == 1
+        ids = {det._classify_step("a", T0 + 600.0 + 60.0 * k, w, None, 0.0).id for k, w in enumerate((101.0, 124.0))}
+        assert len(ids) == 1, ids
+        back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
+        assert back.edge_joins == det.edge_joins
+    finally:
+        D.GROUP_MERGE = old
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0
