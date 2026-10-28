@@ -335,6 +335,16 @@ PAIR_LENGTH_SD_MIN = 0.1
 # levels of it, no run of their own. Bench dial (spec open point).
 DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
+# A valley between two piles of step sizes cuts them into two groups only when
+# the shallower pile stands this many Poisson spreads above it (_significant),
+# and no group spans more than GROUP_SPAN times its smallest step (the owner,
+# 2026-10-28: 3, wide enough for any device that is not multi-speed or
+# multi-step). Bench dials (spec open point): 0 keeps every valley as before
+# the run lifecycle, the default until the owner has seen the sweep - at 2 the
+# oven and its fan (2 kW, 900 W, one run each) are one group until overlaps
+# split them (Detector.split_groups).
+VALLEY_SIGMAS = 0.0
+GROUP_SPAN = 3.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -4264,10 +4274,13 @@ def _exact_add(parts: List[float], x: float) -> None:
     parts[i:] = [x]
 
 
-def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[Tuple[int, int]]:
+def valley_segments(hist: Dict[int, float], sd: Optional[float] = None,
+                    unit: Optional[float] = None) -> List[Tuple[int, int]]:
     """The bins of a size histogram cut into segments at the valleys of its
     smoothed density: (first bin, last bin) of each, where anything is.
-    ``sd`` is the smoothing in bins - the size histogram's by default."""
+    ``sd`` is the smoothing in bins - the size histogram's by default; with
+    the size scale's ``unit``, only at the valleys that are significant
+    (_significant), as a step group is cut."""
     if not hist:
         return []
     reach, kernel = _kernel(sd or EDGE_KERNEL / EDGE_BIN)
@@ -4277,7 +4290,8 @@ def valley_segments(hist: Dict[int, float], sd: Optional[float] = None) -> List[
         base = b - lo - reach
         for k, kw in enumerate(kernel):
             dens[base + k] += w * kw
-    return _valley_cuts(dens, lo, kernel[reach])
+    segs = _valley_cuts(dens, lo, kernel[reach])
+    return segs if unit is None else _significant(dens, lo, kernel[reach], segs, unit)
 
 
 def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int]]:
@@ -4297,6 +4311,52 @@ def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int
     if start is not None:
         segs.append((start + lo, hi))
     return segs
+
+
+def _significant(dens: List[float], lo: int, peak: float, segs: List[Tuple[int, int]],
+                 unit: float) -> List[Tuple[int, int]]:
+    """The segments ``_valley_cuts`` cut, joined again across every valley
+    the counts do not bear out (run lifecycle, 2026-10-28: steps stay together
+    until there is evidence they are two devices - a freezer restarting after
+    a short gap starts near where it stopped): the shallower side's peak must
+    stand VALLEY_SIGMAS Poisson spreads above the valley, in steps (the
+    density over one step's peak), an empty stretch as a valley of nothing. A segment
+    whose largest size passes GROUP_SPAN times its smallest is cut again at its
+    deepest valley until it does not, or has none."""
+    if len(segs) < 2:
+        return segs
+    at = lambda b: dens[b - lo] if 0 <= b - lo < len(dens) else 0.0       # noqa: E731
+    top = lambda a, b: max(dens[max(a - lo, 0):b - lo + 1], default=0.0)  # noqa: E731
+    out, cuts = [list(segs[0])], {}
+    for a, b in segs[1:]:
+        prev = out[-1]
+        # an empty stretch between them is a valley of nothing: as little
+        # evidence of two devices as a shallow one while the piles are small
+        valley = at(prev[1]) if a == prev[1] + 1 else 0.0
+        shallow = min(top(prev[0], prev[1]), top(a, b))
+        n_v, n_p = valley / peak, shallow / peak
+        if n_p - n_v > VALLEY_SIGMAS * math.sqrt(n_p + n_v) or (VALLEY_SIGMAS <= 0 and n_p > 0):
+            out.append([a, b])
+        else:
+            cuts.setdefault(len(out) - 1, []).append(prev[1])
+            prev[1] = b
+    # ...the span still cuts a joined group at its deepest valley, an empty stretch first
+    size = lambda b: unit * math.sinh(b * EDGE_BIN * EDGE_SCALE_REL) / EDGE_SCALE_REL     # noqa: E731
+    final: List[Tuple[int, int]] = []
+    for k, (a, b) in enumerate(out):
+        inner = sorted(cuts.get(k, []))
+        pieces = [(a, b)]
+        while True:
+            wide = next(((x, y) for x, y in pieces if size(x) > 0 and size(y + 1) > GROUP_SPAN * size(x)
+                         and any(x <= c < y for c in inner)), None)
+            if wide is None:
+                break
+            c = min((c for c in inner if wide[0] <= c < wide[1]), key=at)
+            inner.remove(c)
+            i = pieces.index(wide)
+            pieces[i:i + 1] = [(wide[0], c), (c + 1, wide[1])]
+        final.extend(pieces)
+    return final
 
 
 def _valley_cuts_near(dens: List[float], lo: int, peak: float, prev: List[Tuple[int, int]],
@@ -5728,7 +5788,7 @@ class Detector:
             st[4] = _valley_cuts(st[3], st[2], kernel[reach])
         else:
             st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
-        return st[4]
+        return _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
