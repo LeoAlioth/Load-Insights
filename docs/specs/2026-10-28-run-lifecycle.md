@@ -23,10 +23,16 @@ the Terms entry in `AGENTS.md`, which carries the same decisions as draft notes.
 **Steps and groups.**
 1. Rise and fall steps are one kind of object: an all-phase event either way, with the same event window. A fall
    group has a phase pattern as a rise group does.
-2. A step group keeps steps together until there is evidence they are two devices: a valley in its size density
-   deeper than the count noise explains, or overlap (below). Today a group is cut at every local minimum. A group's
-   largest step is at most `GROUP_SPAN` times its smallest; benched from 3, swept either side (the owner: wide
-   enough for any device that is not multi-speed or multi-step).
+2. A step group keeps steps together until there is evidence they are two devices. Benched (2026-10-28):
+   cutting the smoothed size density only at significant dips (VALLEY_SIGMAS) is monotonically worse, and the
+   method cannot separate two loads closer than about two smoothing widths at all. Redesigned with the owner: a
+   group is a bell curve over size and reactive angle, its width fitted from its own steps but never under the
+   meter's step error (sqrt(2) x its noise); one or two is decided by BIC, overlaps (5) entering as cannot-link
+   pairs. At Home a group's size is corrected to 230 V by its own exponent k (P ~ V^k, fitted in the daily pass
+   from each step's on-side voltage, stored with the step - before and after); where the voltage hardly moves
+   (Kozolec's inverter) there is no k and sizes are taken as measured. Current is no dimension; it stands in for
+   the voltage where a meter reports current and no voltage. Grouping is benched on its own (fragmentation and
+   merging per metered device), not only through the energy card. Plan: Stage 6, Tasks 8b-8e.
 
 **Running groups.**
 3. A rise group whose step was seen is running, with a count of units. A run is still one start step joined to one
