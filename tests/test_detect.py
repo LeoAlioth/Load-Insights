@@ -90,10 +90,10 @@ def test_a_load_the_reading_cannot_be_carrying_is_closed():
     closed = low._unseen_stop(T0 + 300, 100.0)                           # 900 short: no one load fits it,
     assert len(closed) == 2 and low.open_edges == [], closed             # but neither fits in 100 W at all
     big = phase(True)
-    big._unseen_stop(T0 + 300, 500.0)                                    # 500 short of 1000: nothing fits,
-    assert [o.watts for o in big.open_edges] == [600.0, 400.0]           # and either may have sagged into 500 W
-    big._unseen_stop(T0 + 300, 250.0)
-    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # the 600 W run cannot be in 250 W
+    big._unseen_stop(T0 + 300, 500.0)                                    # 500 short of 1000: nothing fits, but
+    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # 500 less the 400 W run is under half
+    big._unseen_stop(T0 + 300, 250.0)                                    # the 600 W (run lifecycle, the owner
+    assert [o.watts for o in big.open_edges] == [400.0], big.open_edges  # 2026-10-28); 250 still carries half of 400
     assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
 
 
@@ -257,6 +257,78 @@ def test_a_late_return_is_a_new_run():
     a = series(4000, lambda s: 10600.0 if 300 <= s < 1500 or 1560 <= s < 3000 else 0.0)
     det.process({"a": a}, now_ts=T0 + 3400)
     assert len(det.recent) == 2, [(r["start"] - T0, r["kwh"]) for r in det.recent]
+
+
+def test_two_fridges_overlapping_count_two():
+    """Kozolec's fridges, 83 W and 75 W, in one group: the second rises while
+    the first still runs - a second unit, both open, a cannot-link pair; each
+    ends by its own fall (run lifecycle, 2026-10-28)."""
+    det, st = _scoring_phase((0.0, 83.0, 1))
+    det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]
+    st.noise = 5.0
+    keep = D._Open(T0 + 600.0, 75.0, None, [(T0 + 600.0, 75.0)], cluster=1)
+    st.declared = [(T0 + 600.0, 75.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 300.0 + 83.0 + 75.0)]
+    st.declared_t = [T0 + 600.0]
+    st.open_edges.append(keep)
+    assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
+    assert det.edges[0].cannot == [(83.0, None, 75.0, None)]
+
+
+def test_a_second_rise_without_the_first_carried_ends_the_first_at_its_missed_fall():
+    det, st = _scoring_phase((0.0, 83.0, 1))
+    det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]
+    st.noise = 5.0
+    keep = D._Open(T0 + 600.0, 80.0, None, [(T0 + 600.0, 80.0)], cluster=1)
+    st.declared = [(T0 + 400.0, -82.0, None, T0 + 395.0, T0 + 400.0, T0 + 405.0, 300.0),     # its fall, seen
+                   (T0 + 600.0, 80.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 380.0)]      # from 300: not carried
+    st.declared_t = [T0 + 400.0, T0 + 600.0]
+    st.open_edges.append(keep)
+    closed = st.second_rise(1, keep)
+    assert [(x.start, x.end) for x in closed] == [(T0, T0 + 400.0)] and st.open_edges == [keep]
+    assert det.edges[0].cannot == []
+
+
+def test_a_second_rise_under_the_noise_is_a_missed_fall():
+    det, st = _scoring_phase((0.0, 20.0, 1))
+    st.noise = 15.0
+    keep = D._Open(T0 + 600.0, 20.0, None, [(T0 + 600.0, 20.0)], cluster=1)
+    st.declared = [(T0 + 600.0, 20.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 340.0)]
+    st.declared_t = [T0 + 600.0]
+    st.open_edges.append(keep)
+    assert len(st.second_rise(1, keep)) == 1 and st.open_edges == [keep]
+
+
+def test_a_lone_open_start_does_not_take_the_phases_other_loads():
+    """Home's 39 W Inkubator pulse read 306 W: alone on its phase, it was
+    followed to the phase's whole level. It draws its own, and what the phase
+    carries beyond it is no one's (run lifecycle, 2026-10-28)."""
+    det = D.Detector()
+    a = series(2400, lambda s: (40.0 if s >= 600 else 0.0) + min(300.0, max(0.0, (s - 900.0) * 0.5)), noise=3.0)   # a ramp, no step
+    det.process({"a": a}, now_ts=T0 + 2400)
+    st = det.phases["a"]
+    small = [o for o in st.open_edges if o.watts < 100.0]
+    assert small and st.level_of(small[0]) < 60.0, [(o.watts, o.now, st.level_of(o)) for o in st.open_edges]
+
+
+def test_a_run_ends_when_the_reading_less_the_others_falls_under_half():
+    """A 1 kW run beside a 2 kW boiler, the reading at 2.4 kW: the 1 kW run is
+    not on, the boiler is (run lifecycle, the owner 2026-10-28)."""
+    det, st = _scoring_phase((0.0, 2000.0, 1), (600.0, 1000.0, 2))
+    closed = st._unseen_stop(T0 + 1200.0, 2400.0)
+    assert [x.start for x in closed] == [T0 + 600.0] and [o.watts for o in st.open_edges] == [2000.0]
+
+
+def test_age_alone_ends_nothing():
+    """A start ten times its group's usual run, the reading still carrying it,
+    stays open - and no longer counts live (LIVE_STALE_FACTOR of its group's
+    usual length)."""
+    fleet, t = _named_kettle()
+    det = fleet.main
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 3000)])                  # on for 3,000 s, its runs 300 s
+    st = next(x for x in det.phases.values() if x.open_edges)
+    usual = det.usual_length(st.open_edges[0].cluster)
+    assert usual and 250.0 < usual < 350.0, usual
+    assert len(st.open_edges) == 1 and det.live_runs(t2) == []
 
 
 def test_a_two_level_session_is_one_session_with_two_levels():
@@ -3601,9 +3673,11 @@ def test_a_named_loads_live_power_never_reads_far_above_its_signatures():
 
 def test_an_open_start_stops_counting_after_the_usual_run_not_the_longest_ever_seen():
     """One 2,000 s fragment among a name's runs kept the Inkubator's 20 s pulses
-    counted open for 55 minutes (LIVE_STALE_QUANTILE, 2026-10-28)."""
+    counted open for 55 minutes (LIVE_STALE_QUANTILE, 2026-10-28) - the name's
+    runs being what a group with no usual length of its own falls back on."""
     fleet, t = _named_kettle()
     t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # on for 120 s, no stop yet
+    fleet.main.order.clear()                               # its group's own length unknown
     sig = next(s for s in fleet.main.signatures if s.name == "Kettle")
     sig.runs = [(i * 1000.0, i * 1000.0 + 30.0) for i in range(20)] + [(30000.0, 32000.0)]
     assert fleet.main.live_runs(t2) == []                   # 120 s open against 2 x 30 s: stale

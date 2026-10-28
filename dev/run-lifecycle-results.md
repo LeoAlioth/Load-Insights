@@ -49,3 +49,23 @@ Small moves either way; the fall waits for its event (a few readings) and closes
 Kozolec fed: `_meter_ended` closes 10.8 % (was 3.3 %), observed 72.5 % (79.6 %).
 
 ## Stage 2 - order evidence: no effect on the card by construction (nothing reads it until stage 3)
+
+## Stage 3 - closing by group score, dips (card `nogit-lifecycle-s3-20261028T194953Z.json`)
+
+| | hidden | circuits | fed |
+|---|---|---|---|
+| Home devices | 22.4 / 13.1 | 31.2 / 13.6 | 57.x (cut) |
+| Home partition | 41.0 / 12.5 | 50.5 / 10.0 | 59.x |
+| Susilna | 8.9 / 13.8 | 12.9 / 20.3 | 57 |
+| Hidrofor | 31.5 / 25.3 | 31.0 / 16.2 | 68 |
+| Kozolec devices | 74.2 / 3.6 | - | 83.7 / 4.1 |
+| home-hisa Blaževa Soba | 30.0 / 9.8 | - | 72.3 / 21.0 |
+| home-mansarda office | 30.7 / 18.5 | - | 42.7 / 8.2 |
+| third charger | 74.1 / 3.6 | - | 91.6 / 4.9 |
+
+A large loss hidden. Closes matched within 10 / 20 % of their start fell (Home hidden 48.5 / 74.3 -> 41.0 / 62.4,
+median off 10.4 -> 13.5 %): with no partner evidence the fall must match the run's own rise within 3 noises, and
+the old match against what a run had sagged to (`o.now`) is gone. Kozolec's pond EVSE 93.6 -> 78.9 % (its
+charge tapers). Added after this card: a fall that leaves the phase carrying the other runs and no more emptied
+the run, whatever its size (`_score`, house readings only): Kozolec hidden alone 74.2 / 3.6 -> 80.2 / 6.9 (pond
+EVSE 87.5, boiler impurity 8.8 -> 22.8). Capping that fall at the run's size made it worse (72.8 / 9.3), not kept.

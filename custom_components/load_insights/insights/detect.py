@@ -334,6 +334,7 @@ PAIR_LENGTH_SD_MIN = 0.1
 # ever declared) are a dip of a running run (PhaseState._dip): two
 # levels of it, no run of their own. Bench dial (spec open point).
 DIP_INTERVALS = 3.0
+CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -1354,6 +1355,11 @@ def _is_the_sun(step: float, pv_step: Optional[float]) -> bool:
     return PV_SHARE_MIN <= share <= PV_SHARE_MAX
 
 
+def _angle(watts: float, var: Optional[float]) -> Optional[float]:
+    """A step's reactive angle in degrees, None without its var."""
+    return math.degrees(math.atan2(var, watts)) if var is not None and watts else None
+
+
 def _quantile(ordered: Sequence[float], q: float) -> float:
     """The ``q``-th quantile of an already sorted list, nearest rank - 0.0 for none."""
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))] if ordered else 0.0
@@ -2276,9 +2282,13 @@ class PhaseState:
                     lvl = self.lib.meter_level(o.meter, self.name, ts, o.since) if self.lib.meter_level is not None else None
                     if lvl:
                         o.now = lvl
-                else:
-                    # a drop held since it started is not it sagging - see HELD_DROPS -
-                    # nor is a fall still waiting for its event (Detector._form_fall)
+                elif ts - o.since <= SHAPE_SETTLED_S:
+                    # followed only while it settles (a pump's start decays,
+                    # SETTLE_SHARE), never after: a lone run followed for good
+                    # took every undeclared load on its phase - Home's 39 W
+                    # Inkubator pulse read 306 W (run lifecycle, 2026-10-28).
+                    # A drop held since it started is not it sagging - see
+                    # HELD_DROPS - nor is a fall still waiting for its event
                     o.now = self.level - self.baseline + sum(d[1] for d in self.held_drops if d[0] > o.since) \
                         + (self.lib.pending_fall(self.name, o.since) if self.lib is not None else 0.0)
             # the relative noise as the idle noise: a move only from a reading
@@ -2787,24 +2797,74 @@ class PhaseState:
         # every sag of a load the reading carried alone ended its run; Home's
         # fed card 71.9 -> 76.4 % partition capture, impurity 6.5 -> 5.6,
         # Hiša's runs 79.5 -> 82.2 (the unify audit, 2026-10-03).
+        # And less what the OTHER runs believed running draw (run lifecycle,
+        # the owner 2026-10-28: "a 1 kW run can safely be closed once the
+        # reading goes under" half of it, the other running groups taken off):
+        # a 1 kW run beside a 2 kW boiler on a reading of 2.4 kW is not on. The
+        # oldest first, each close taken off before the next is judged; a run
+        # its meter still shows on is never judged here, and its meter's
+        # reading is what it draws for the others' (level_of).
         out = []
-        for o in [o for o in self.open_edges
-                  if o.watts - level > max(self.noise_at(level), 0.5 * o.watts) and not self.owned(o)]:
-            # ...unless its meter still shows it on: then the reading is the
-            # one that is wrong, for a moment (Home's house reading is a grid
-            # meter and an inverter combined; Susilna 09-27 19:05)
-            if o not in self.open_edges:
-                continue                  # closed meanwhile - see Detector.resolve_rise
+        while True:
+            o = next((o for o in sorted(self.open_edges, key=lambda x: x.since) if not self.owned(o)
+                      and self._not_carried(o, level)), None)
+            if o is None:
+                break
             out.append(self._end(o, at, o.watts))
         return out
 
-    def end_older(self, cid: int, since: float, keep: "_Open") -> List[Run]:
-        """A start cluster rising again ends the older open run of that
-        cluster on this phase, at its usual length if one is known."""
+    def level_of(self, o: _Open) -> float:
+        """What run ``o`` draws now (run lifecycle, 2026-10-28: its group's
+        learned level, never the phase's reading): what its meter reads of it
+        while the meter shows it on (Fleet._meter_level); else its start times
+        the ratio learned with its strongest partner; else what it settled at
+        (SHAPE_SETTLED_S), or its start's size."""
+        if o.meter and self.owned(o) and self.lib.meter_level is not None and self.last_ts is not None:
+            lvl = self.lib.meter_level(o.meter, self.name, self.last_ts, o.since)
+            if lvl:
+                return lvl
+        if self.lib is not None and o.cluster is not None:
+            best = max(((self.lib.partner_evidence(o.cluster, f), f) for f in self.lib.partners_of(o.cluster)),
+                       default=None)
+            if best is not None:
+                return o.watts * math.exp(self.lib.pair_ratio(o.cluster, best[1])[0])
+        return o.now if o.now is not None and o.now > 0 else o.watts
+
+    def _not_carried(self, o: _Open, level: float) -> bool:
+        """Is the reading, less what the other open runs draw, under half of
+        what ``o`` draws (and under it by more than the noise)?"""
+        size = self.level_of(o)
+        left = level - sum(self.level_of(x) for x in self.open_edges if x is not o)
+        return left < 0.5 * size and size - left > self.noise_at(level)
+
+    def second_rise(self, cid: int, keep: "_Open") -> List[Run]:
+        """A rise of a group already running (run lifecycle, 2026-10-28): a
+        second UNIT where the reading the rise stepped from, less the other
+        runs, still carried the first - the two kept, a cannot-link pair for
+        the group (StepGroup.cannot); else the first's fall was missed, and its
+        run ends at the newest declared fall between the two of its size
+        (PAIR_TIGHT_NOISES), else at its usual length, at most the new rise.
+        A load the noise hides is never called a second unit. A run its meter
+        holds is the meter's to end."""
         out = []
-        for o in [o for o in self.open_edges if o.cluster == cid and o is not keep and not self.owned(o)]:
+        e = self.declared_at(keep.since)
+        before = e[6] - e[1] if e is not None and len(e) > 6 else None
+        for o in [o for o in self.open_edges if o.cluster == cid and o is not keep
+                  and o.since < keep.since and not self.owned(o)]:
+            others = sum(x.watts for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
+            noise = self.noise_at(o.watts)
+            if (before is not None and self.baseline is not None and o.watts > 2.0 * noise
+                    and before - self.baseline - others >= o.watts - noise):
+                group = self.lib.cluster(cid) if self.lib is not None else None
+                if group is not None:
+                    group.cannot.append((o.watts, _angle(o.watts, o.var), keep.watts, _angle(keep.watts, keep.var)))
+                    del group.cannot[:-CANNOT_KEEP]
+                continue
+            tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * noise
+            fall = next((d for d in reversed(self.declared) if o.since < d[0] < keep.since
+                         and d[1] < 0 and abs(-d[1] - o.watts) <= tight), None)
             usual = self.lib.usual_length(cid) if self.lib is not None else None
-            at = min(since, o.since + usual) if usual else since
+            at = fall[0] if fall is not None else (min(keep.since, o.since + usual) if usual else keep.since)
             out.append(self._end(o, at, o.now or o.watts))
         return out
 
@@ -2905,7 +2965,7 @@ class PhaseState:
         for i, o in enumerate(self.open_edges):
             if self.owned(o):
                 continue                      # its meter still shows it on: not this fall's
-            got = self._score(o, watts, at)
+            got = self._score(o, watts, at, new_level)
             if got is not None and got >= PAIR_SCORE_MIN:
                 cands.append((got, i))
         if cands:
@@ -2998,7 +3058,7 @@ class PhaseState:
             return [self._end(o, at, watts, var)]
         return None
 
-    def _score(self, o: _Open, watts: float, at: float) -> Optional[float]:
+    def _score(self, o: _Open, watts: float, at: float, new_level: Optional[float] = None) -> Optional[float]:
         """How well the fall being paired (``watts``, group ``stop_cluster``)
         ends open run ``o``, or None when its size rules it out. Size against
         the run's own rise within PAIR_TIGHT_NOISES of the two steps' noise -
@@ -3016,7 +3076,18 @@ class PhaseState:
             width = PAIR_TIGHT_NOISES * math.hypot(sigma, expect * spread)
         gap = abs(watts - expect)
         if gap > width:
-            return None
+            # ...or the fall leaves the phase carrying the other runs and no
+            # more: it emptied this one, whatever its size against the start -
+            # a charge that tapered, a compressor that settled (Kozolec's pond
+            # EVSE 93.6 -> 78.9 % captured without it, 2026-10-28). On a
+            # reading of the house alone, as _unseen_stop.
+            if new_level is None or self.baseline is None or not self.floor_zero or watts < 0.5 * self.level_of(o):
+                return None
+            gap = abs(new_level - self.baseline
+                      - sum(self.level_of(x) for x in self.open_edges if x is not o and x.since < at))
+            width = PAIR_TIGHT_NOISES * sigma
+            if gap > width:
+                return None
         score = 1.0 - gap / width + ev
         length = lib.pair_length(o.cluster, fall) if ev > 0 else None
         if length is not None:
@@ -3104,7 +3175,7 @@ class PhaseState:
         the sum can pass what the meter holds (a fridge read 226 W as 60 + 83 +
         83, a household 2797 W of a measured 1748 W, 2026-10-18). Nothing is
         known to scale by without a level and a baseline: 1."""
-        total = sum(o.watts for o in self.open_edges)
+        total = sum(self.level_of(o) for o in self.open_edges)
         if total <= 0 or self.level is None or self.baseline is None:
             return 1.0
         return min(1.0, max(self.level - self.baseline, 0.0) / total)
@@ -3115,7 +3186,7 @@ class PhaseState:
         if not self.open_edges:
             return None
         return (min(o.since for o in self.open_edges),
-                sum(o.watts for o in self.open_edges) * self.open_scale())
+                sum(self.level_of(o) for o in self.open_edges) * self.open_scale())
 
     def to_dict(self) -> dict:
         return {"baseline": self.baseline, "noise": self.noise, "level": self.level,
@@ -4055,6 +4126,10 @@ class StepGroup:
     angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE_BIN
     owner: str = ""                           # the meter its steps happened under - see EDGE_BY_METER
     angle_n: float = 0.0
+    # Two of its rises that were two units running at once (PhaseState.
+    # second_rise): (size, angle) of the first and the second - what may split
+    # it in the daily pass (Detector.split_groups), the last CANNOT_KEEP
+    cannot: List[Tuple[float, Optional[float], float, Optional[float]]] = field(default_factory=list)
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -4123,7 +4198,7 @@ class StepGroup:
                 "lags": {k: [_trim(x, 2) for x in v] for k, v in self.lags.items()},
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
                 "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
-                "where": self.owner}
+                "where": self.owner, "cannot": [list(x) for x in self.cannot]}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4135,7 +4210,7 @@ class StepGroup:
                    lags={k: list(v) for k, v in (d.get("lags") or {}).items()},
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
-                   owner=d.get("where") or "")
+                   owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []])
 
 
 def above_chance(n: float, expected: float, odds: float = ABOVE_CHANCE_ODDS) -> bool:
@@ -5100,7 +5175,7 @@ class Detector:
         for m in members:
             st = self.phases.get(m["ph"])
             if st is not None:
-                self._closed(m["ph"], st.end_older(cluster.id, m["since"], m["open"]))
+                self._closed(m["ph"], st.second_rise(cluster.id, m["open"]))
         self._closed(None, [])                    # and what forming it split off (_split_rise)
 
     def _form_event(self, first: dict, pend: List[dict], window: float):
@@ -6295,8 +6370,10 @@ class Detector:
             scale = st.open_scale()
             for o in st.open_edges:
                 name = self.start_name(o.cluster)
-                if name and now_ts - o.since <= LIVE_STALE_FACTOR * longest.get(name, 0.0):
-                    out.append((name, o.since, (o.now if o.now is not None else o.watts) * scale))
+                # its own group's usual run where one is known (run lifecycle), not the name's
+                usual = self.usual_length(o.cluster) if name and o.cluster is not None else None
+                if name and now_ts - o.since <= LIVE_STALE_FACTOR * (usual or longest.get(name, 0.0)):
+                    out.append((name, o.since, st.level_of(o) * scale))
         return out
 
     def start_name(self, cluster: Optional[int]) -> Optional[str]:
