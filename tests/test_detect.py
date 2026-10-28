@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from datetime import timezone  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from _load import load, run_main  # noqa: E402
 
 D = load("insights.detect")
@@ -5977,6 +5977,34 @@ def test_a_day_without_a_hole_books_nothing():
     det = _Det(sig)
     D._recover_day(det, log, {"a": _fridge_day((0.0, 0.0))}, T0, T0 + 86400.0)
     assert not det.recovered_log and not sig.recovered
+
+
+def test_a_run_while_an_input_is_unavailable_has_no_context():
+    """The Sock Eater was unavailable for 19 hours of 27-28 Oct after a Rinse; its last value carried on, and every
+    pulse of Home's Inkubator in that time was a run in Rinse - 262 signatures of their own (2026-10-28). While
+    the integration is down no value is in force: a run then has no context, and the phase before it stays its own."""
+    det = D.Detector()
+    det.inputs = {"select.washer": [(T0, "Off"), (T0 + 1000.0, "Rinse"), (T0 + 2000.0, D.INPUT_DOWN), (T0 + 90000.0, "Off")]}
+    det.input_time = {"select.washer": {"Off": 80000.0, "Rinse": 1000.0, D.INPUT_DOWN: 8000.0}}
+
+    def run(at):
+        return D.Run(phases="a", start=T0 + at, end=T0 + at + 60.0, levels={"a": [(T0 + at, 80.0)]})
+
+    assert det._input_context(run(1200.0))[0] == "select.washer=Rinse"
+    assert det._input_context(run(5000.0)) is None
+    assert det._input_context(run(91000.0)) is None          # Off is most of the time, not a rare value
+
+
+def test_input_rows_keep_an_outage_as_one_row_and_a_fans_speed_as_its_value():
+    class State:
+        def __init__(self, at, state, **attributes):
+            self.state, self.attributes = state, attributes
+            self.last_updated = datetime.fromtimestamp(T0 + at, timezone.utc)
+
+    washer = [State(0.0, "Rinse"), State(60.0, "unavailable"), State(120.0, "unknown"), State(200.0, "Rinse")]
+    assert D.input_rows(washer, "sensor") == [(T0, "Rinse"), (T0 + 60.0, D.INPUT_DOWN), (T0 + 200.0, "Rinse")]
+    fan = [State(0.0, "on", percentage=33), State(30.0, "off"), State(90.0, "unavailable")]
+    assert D.input_rows(fan, "fan") == [(T0, "33 %"), (T0 + 30.0, "off"), (T0 + 90.0, D.INPUT_DOWN)]
 
 
 if __name__ == "__main__":
