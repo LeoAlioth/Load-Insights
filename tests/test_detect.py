@@ -381,6 +381,33 @@ def test_mixture_tells_a_pump_from_a_heater_of_one_size_by_angle():
     assert len(set(ids)) == 2 and ids[0] == ids[2] == ids[4] and ids[1] == ids[3] == ids[5], ids
 
 
+@_mixture
+def test_mixture_daily_splits_two_piles_and_joins_one_device():
+    """The daily one-or-two test: a group holding two piles 60 W apart at
+    1 kW is split; two groups holding one device's spread are joined; one
+    tight pile stays one group."""
+    rnd = random.Random(5)
+    det = D.Detector()
+    det.phases["a"].noise = 2.83
+    g = det._classify_step("a", T0, 1000.0, None, 0.0)
+    g.recent = [(rnd.gauss(970.0, 3.0), None) for _ in range(20)] + [(rnd.gauss(1030.0, 3.0), None) for _ in range(20)]
+    g.watts, g.watts_mad, g.count = 1000.0, 30.0, 40.0
+    assert det.mix_daily() == (1, 0)
+    centres = sorted(round(c.watts) for c in det.edges if c.joined is None)
+    assert len(centres) == 2 and abs(centres[0] - 970) < 5 and abs(centres[1] - 1030) < 5, centres
+    one = D.Detector()
+    one.phases["a"].noise = 2.83
+    a = one._classify_step("a", T0, 990.0, None, 0.0)
+    b = D.StepGroup(id=one.next_edge_id, phase="a", up=True, watts=1006.0, owner="")
+    one.next_edge_id += 1
+    one.edges.append(b)
+    a.recent = [(rnd.gauss(998.0, 8.0), None) for _ in range(15)]
+    b.recent = [(rnd.gauss(998.0, 8.0), None) for _ in range(15)]
+    a.watts_mad = b.watts_mad = 6.0
+    a.count, b.count = 15.0, 15.0
+    assert one.mix_daily()[1] == 1 and sum(c.joined is None for c in one.edges) == 1
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0

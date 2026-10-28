@@ -355,6 +355,8 @@ VALLEY_SIGMAS = 0.0
 # founding one (_by_mixture). Bench dials.
 GROUPING = "valleys"
 MIX_JOIN_WIDTHS = 3.0
+MIX_KEEP = 60                  # recent steps a group keeps for the daily one-or-two test
+MIX_TEST_MIN = 12              # ...and how many before it is tested
 GROUP_SPAN = 3.0
 # A group's overlaps split it where one size puts this share of them on
 # opposite sides (Detector.split_groups). And how a second unit is believed
@@ -4167,6 +4169,10 @@ class StepGroup:
     # second_rise): (size, angle) of the first and the second - what may split
     # it in the daily pass (Detector.split_groups), the last CANNOT_KEEP
     cannot: List[Tuple[float, Optional[float], float, Optional[float]]] = field(default_factory=list)
+    # mixture grouping (GROUPING): its last MIX_KEEP steps (size, angle) for the
+    # daily one-or-two test, and the group it was joined into (never chosen again)
+    recent: List[Tuple[float, Optional[float]]] = field(default_factory=list)
+    joined: Optional[int] = None
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -4235,7 +4241,8 @@ class StepGroup:
                 "lags": {k: [_trim(x, 2) for x in v] for k, v in self.lags.items()},
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
                 "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
-                "where": self.owner, "cannot": [list(x) for x in self.cannot]}
+                "where": self.owner, "cannot": [list(x) for x in self.cannot],
+                "recent": [[_trim(a, 1), _trim(b, 1)] for a, b in self.recent], "joined": self.joined}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4247,7 +4254,51 @@ class StepGroup:
                    lags={k: list(v) for k, v in (d.get("lags") or {}).items()},
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
-                   owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []])
+                   owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
+                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"))
+
+
+def _mix_two(xs: Sequence[float], floor: float, pairs: Sequence[Tuple[float, float]] = ()):
+    """One bell curve against two over sizes ``xs``, widths fitted and never
+    under ``floor``, ``pairs`` of sizes known to be two devices (cannot-link,
+    each pair one on each curve): ((mean, width, share) of each curve, BIC
+    gain of two over one - positive when two explain them better). None for
+    too few. Constrained EM (Shental et al. 2003), 1-D."""
+    n = len(xs)
+    if n < 4:
+        return None
+    pdf = lambda x, m, s: math.exp(-((x - m) ** 2) / (2 * s * s)) / (s * math.sqrt(2 * math.pi))   # noqa: E731
+    m1 = sum(xs) / n
+    s1 = max(floor, math.sqrt(sum((x - m1) ** 2 for x in xs) / n))
+    l1 = sum(math.log(max(pdf(x, m1, s1), 1e-300)) for x in xs) + sum(
+        math.log(max(pdf(a, m1, s1) * pdf(b, m1, s1), 1e-300)) for a, b in pairs)
+    o = sorted(xs)
+    ma, mb, sa, sb, w = o[n // 4], o[(3 * n) // 4], floor, floor, 0.5
+    if ma == mb:
+        ma, mb = ma - floor, mb + floor
+    for _ in range(100):
+        r = [w * pdf(x, ma, sa) / max(w * pdf(x, ma, sa) + (1 - w) * pdf(x, mb, sb), 1e-300) for x in xs]
+        rp = []
+        for a, b in pairs:
+            ab, ba = pdf(a, ma, sa) * pdf(b, mb, sb), pdf(a, mb, sb) * pdf(b, ma, sa)
+            q = ab / max(ab + ba, 1e-300)
+            rp.append((a, q))
+            rp.append((b, 1 - q))
+        pts = list(zip(xs, r)) + rp
+        na = sum(q for _, q in pts)
+        nb = len(pts) - na
+        if na < 1e-6 or nb < 1e-6:
+            return None
+        ma = sum(x * q for x, q in pts) / na
+        mb = sum(x * (1 - q) for x, q in pts) / nb
+        sa = max(floor, math.sqrt(sum(q * (x - ma) ** 2 for x, q in pts) / na))
+        sb = max(floor, math.sqrt(sum((1 - q) * (x - mb) ** 2 for x, q in pts) / nb))
+        w = na / len(pts)
+    l2 = sum(math.log(max(w * pdf(x, ma, sa) + (1 - w) * pdf(x, mb, sb), 1e-300)) for x in xs) + sum(
+        math.log(max(w * (1 - w) * (pdf(a, ma, sa) * pdf(b, mb, sb) + pdf(a, mb, sb) * pdf(b, ma, sa)), 1e-300))
+        for a, b in pairs)
+    gain = 2.0 * (l2 - l1) - 3.0 * math.log(n + 2 * len(pairs))
+    return (ma, sa, w), (mb, sb, 1 - w), gain
 
 
 def above_chance(n: float, expected: float, odds: float = ABOVE_CHANCE_ODDS) -> bool:
@@ -5361,6 +5412,64 @@ class Detector:
                 st.open_edges.remove(m["open"])
         return cluster, members
 
+    def mix_daily(self) -> Tuple[int, int]:
+        """Mixture grouping's daily pass (GROUPING; run lifecycle, Task 8e):
+        each group with MIX_TEST_MIN recent steps is tested one bell curve
+        against two by BIC on their sizes - widths fitted, never under the
+        step error (_mix_widths), its overlap pairs as cannot-link constraints
+        - and split where two win: the larger part keeps the group, the other
+        founds one. Then neighbouring groups of one key, centres within
+        MIX_JOIN_WIDTHS of each other, are tested two against one on their
+        steps together and joined where one wins: the bigger keeps them, the
+        other is never chosen again (StepGroup.joined). Returns (split, joined)."""
+        if GROUPING != "mixture":
+            return 0, 0
+        split = joined = 0
+        for c in [c for c in self.edges if c.joined is None and len(c.recent) >= MIX_TEST_MIN]:
+            ph = c.phase
+            floor = self._mix_widths(ph, c.watts, StepGroup(id=-1, phase=ph, up=c.up, watts=c.watts, owner=c.owner))[0]
+            xs = [a for a, _ in c.recent]
+            pairs = [(a, b) for a, _, b, _ in c.cannot]
+            two = _mix_two(xs, floor, pairs)
+            if two is None:
+                continue
+            (ma, sa, wa), (mb, sb, wb), gain = two
+            if gain <= 0:
+                continue
+            keep_a = wa >= wb
+            stay, go = ((ma, sa), (mb, sb)) if keep_a else ((mb, sb), (ma, sa))
+            new = StepGroup(id=self.next_edge_id, phase=ph, up=c.up, watts=go[0], keys=dict(c.keys), owner=c.owner)
+            self.next_edge_id += 1
+            new.watts_mad, new.count = go[1] / 1.2533, max(1.0, c.count * (min(wa, wb)))
+            new.recent = [x for x in c.recent if abs(x[0] - go[0]) * stay[1] < abs(x[0] - stay[0]) * go[1]]
+            c.recent = [x for x in c.recent if x not in new.recent]
+            c.watts, c.watts_mad, c.count = stay[0], stay[1] / 1.2533, max(1.0, c.count * max(wa, wb))
+            c.cannot = []
+            self.edges.append(new)
+            if self._kinds is not None:
+                self._kinds.setdefault((ph, c.up), []).append(new)
+            self._by_id = None
+            split += 1
+        live = sorted((c for c in self.edges if c.joined is None and len(c.recent) >= 2), key=lambda c: (c.phase, c.up, c.owner, c.watts))
+        for a, b in zip(live, live[1:]):
+            if (a.phase, a.up, a.owner, a.keys) != (b.phase, b.up, b.owner, b.keys) or a.joined is not None:
+                continue
+            fa = self._mix_widths(a.phase, a.watts, a)[0]
+            fb = self._mix_widths(b.phase, b.watts, b)[0]
+            if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
+                continue
+            floor = self._mix_widths(a.phase, a.watts, StepGroup(id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0]
+            two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
+            if two is not None and two[2] > 0:
+                continue
+            keep, gone = (a, b) if a.count >= b.count else (b, a)
+            n = keep.count + gone.count
+            keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
+            keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
+            gone.joined = keep.id
+            joined += 1
+        return split, joined
+
     def merge_groups(self) -> int:
         """The mirror of split_groups (the owner, 2026-10-28; a bench mode,
         GROUP_MERGE): two rise groups of one phase pattern and meter, the
@@ -5753,6 +5862,9 @@ class Detector:
                 self.edges = [c for c in self.edges if c is not gone]
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
+        if GROUPING == "mixture":
+            cluster.recent.append((size, angle))
+            del cluster.recent[:-MIX_KEEP]
         return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
@@ -5863,7 +5975,7 @@ class Detector:
         the group's share of steps. None for a new group. See GROUPING."""
         best = None
         for c in kind:
-            if c.owner != where or not c.same_signals(keys):
+            if c.owner != where or c.joined is not None or not c.same_signals(keys):
                 continue
             w, aw = self._mix_widths(ph, size, c)
             z = (size - c.watts) / w
@@ -7327,6 +7439,7 @@ class Fleet:
             _hint_split(det)
             det.split_groups()               # groups overlaps proved two devices (run lifecycle)
             det.merge_groups()               # ...and groups the evidence calls one (bench mode)
+            det.mix_daily()                  # mixture grouping's one-or-two tests (GROUPING)
             det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:
