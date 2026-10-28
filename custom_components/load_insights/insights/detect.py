@@ -353,6 +353,10 @@ GROUP_SPAN = 3.0
 # (PhaseState.second_rise, spec open point): 0 on the reading at each rise,
 # 1 only in a group that has shown PAIR_MIN_RUNS overlaps already - bench dial.
 SPLIT_SHARE = 0.8
+# The mirror (Detector.merge_groups, bench mode, off): two groups joined when
+# the evidence says one device, the larger at most GROUP_MERGE_RATIO the smaller
+GROUP_MERGE = 0
+GROUP_MERGE_RATIO = 1.5
 # 1 benched better at both sites (2026-10-28, cards home kozolec): Home hidden
 # 31.7 / 14.0 -> 32.0 / 13.0, fed 52.8 / 6.4 -> 53.0 / 6.5; Kozolec hidden
 # 82.3 / 6.2 -> 81.3 / 3.2 (its boiler's impurity 16.7 -> 6.9)
@@ -4584,6 +4588,11 @@ class Detector:
     # size bins where overlaps proved a group two devices (split_groups): a
     # segment is always cut there, whatever its density
     edge_cuts: Dict[str, List[int]] = field(default_factory=dict, repr=False, compare=False)
+    # ...and size ranges (first bin, last bin) where groups the evidence called
+    # one device were joined (merge_groups): no cut inside them
+    edge_joins: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict, repr=False, compare=False)
+    # "a,b" group ids -> times one rose while the other ran
+    co_run: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # size bin -> angle bin -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN;
     # stored as "size bin:angle bin" -> weight. Nested so that a segment's angle
@@ -5250,6 +5259,10 @@ class Detector:
                 st.open_edges.remove(pend[0]["open"])
             return
         cluster, members = self._form_event(pend[0], pend, self.event_window())
+        for other in self.running_groups(min(m["since"] for m in members), cluster.phase):
+            if other != cluster.id:                # two groups running at once: never one device (merge_groups)
+                key = f"{min(other, cluster.id)},{max(other, cluster.id)}"
+                self.co_run[key] = self.co_run.get(key, 0) + 1
         for m in members:
             st = self.phases.get(m["ph"])
             if st is not None:
@@ -5339,6 +5352,47 @@ class Detector:
                 # beside the charge (09-25, 2026-10-04) - see Fleet._meter_read
                 st.open_edges.remove(m["open"])
         return cluster, members
+
+    def merge_groups(self) -> int:
+        """The mirror of split_groups (the owner, 2026-10-28; a bench mode,
+        GROUP_MERGE): two rise groups of one phase pattern and meter, the
+        larger at most GROUP_MERGE_RATIO times the smaller, are joined when the
+        evidence says one device - never running at once (co_run), ending in a
+        common partner fall group (order evidence), usual lengths within 2x -
+        and no overlap split stands between them. Their size range is joined
+        (edge_joins): later steps of either land in one group, the bigger.
+        Returns how many."""
+        if not GROUP_MERGE:
+            return 0
+        ups = sorted((c for c in self.edges if c.up and c.count >= PAIR_MIN_RUNS), key=lambda c: c.watts)
+        done = 0
+        for i, a in enumerate(ups):
+            for b in ups[i + 1:]:
+                if b.watts > GROUP_MERGE_RATIO * a.watts:
+                    break
+                if (a.phase, a.owner, a.keys) != (b.phase, b.owner, b.keys):
+                    continue
+                if self.co_run.get(f"{min(a.id, b.id)},{max(a.id, b.id)}"):
+                    continue
+                if not set(self.partners_of(a.id)) & set(self.partners_of(b.id)):
+                    continue
+                la, lb = self.usual_length(a.id), self.usual_length(b.id)
+                if not la or not lb or max(la, lb) > 2.0 * min(la, lb):
+                    continue
+                g = _group(a.phase, True, a.owner)
+                unit = self.edge_unit.get(g)
+                if not unit:
+                    continue
+                lo_b, hi_b = _bin(a.watts, unit), _bin(b.watts, unit)
+                if any(lo_b <= c < hi_b for c in self.edge_cuts.get(g, ())):
+                    continue
+                joins = self.edge_joins.setdefault(g, [])
+                if any(x <= lo_b and hi_b <= y for x, y in joins):
+                    continue
+                joins.append((lo_b, hi_b))
+                self._dens.pop(g, None)
+                done += 1
+        return done
 
     def split_groups(self) -> int:
         """The daily pass's split (run lifecycle, 2026-10-28): a rise group
@@ -5845,6 +5899,14 @@ class Detector:
         else:
             st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
         segs = _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
+        for lo_b, hi_b in self.edge_joins.get(g, ()):
+            joined: List[Tuple[int, int]] = []
+            for a, b in segs:
+                if joined and lo_b <= joined[-1][1] < hi_b:       # the cut before this segment lies inside the join
+                    joined[-1] = (joined[-1][0], b)
+                else:
+                    joined.append((a, b))
+            segs = joined
         for c in self.edge_cuts.get(g, ()):
             segs = [piece for a, b in segs for piece in (((a, c), (c + 1, b)) if a <= c < b else ((a, b),))]
         return segs
@@ -6666,6 +6728,8 @@ class Detector:
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
                 "edge_cuts": {g: list(v) for g, v in self.edge_cuts.items()},
+                "edge_joins": {g: [list(x) for x in v] for g, v in self.edge_joins.items()},
+                "co_run": dict(self.co_run),
                 "run_time": {str(k): _trim(v, 1) for k, v in self.run_time.items()},
                 "fall_n": {str(k): _trim(v, 3) for k, v in self.fall_n.items()},
                 "order_span": self.order_span, "order_clock": self.order_clock, "order_faded": self.order_faded,
@@ -6732,6 +6796,8 @@ class Detector:
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.order = {k: [float(x) for x in v] for k, v in (d.get("order") or {}).items()}
         det.edge_cuts = {g: [int(x) for x in v] for g, v in (d.get("edge_cuts") or {}).items()}
+        det.edge_joins = {g: [tuple(x) for x in v] for g, v in (d.get("edge_joins") or {}).items()}
+        det.co_run = {k: int(v) for k, v in (d.get("co_run") or {}).items()}
         det.run_time = {int(k): float(v) for k, v in (d.get("run_time") or {}).items()}
         det.fall_n = {int(k): float(v) for k, v in (d.get("fall_n") or {}).items()}
         det.order_span = float(d.get("order_span") or 0.0)
@@ -7211,6 +7277,7 @@ class Fleet:
                     det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
             det.split_groups()               # groups overlaps proved two devices (run lifecycle)
+            det.merge_groups()               # ...and groups the evidence calls one (bench mode)
             det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:
