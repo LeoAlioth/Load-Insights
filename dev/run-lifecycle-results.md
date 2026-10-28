@@ -135,3 +135,16 @@ Variant UNITS_NEED_HISTORY 1 (a second unit only in a group that has shown PAIR_
 kozolec: Home devices hidden 32.0 / 13.0 (31.7 / 14.0), circuits 39.9 / 12.9, fed 53.0 / 6.5 (52.8 / 6.4); Kozolec
 hidden 81.3 / 3.2 (82.3 / 6.2; its boiler 85.5 / 16.7 -> 85.3 / 6.9), fed 84.5 / 3.1. Kept as the default.
 The owner accepted the trade (fed impurity 12.0 -> 6.4 % for capture 59.2 -> 52.8 %), 2026-10-28.
+
+Variant VALLEY_SIGMAS 1 (UNITS_NEED_HISTORY 1), card home kozolec: Home devices hidden 23.4 / 16.2 (default 32.0 /
+13.0), circuits 33.5 / 17.5, fed 51.9 / 6.3 (53.0 / 6.5); Kozolec hidden 80.1 / 6.3 (81.3 / 3.2), fed 84.0 / 3.9.
+Worse than 0, less than 2.
+
+Variant VALLEY_SIGMAS 0.5: Home devices hidden 28.4 / 18.3, circuits 37.3 / 17.9, fed 52.7 / 6.2; Kozolec hidden
+80.9 / 6.3, fed 84.3 / 3.2. Still worse than 0: the valley sweep is monotonic, every step away from "every dip
+cuts" loses hidden capture and adds impurity (S 0 / 0.5 / 1 / 2, Home hidden 32.0 / 28.4 / 23.4 / 15.0).
+
+Variant GROUP_MERGE 1 (the mirror of the split: neighbours joined on evidence), card home kozolec: Home devices
+hidden 30.7 / 15.4 (default 32.0 / 13.0), circuits 40.3 / 13.3 (39.9 / 12.9), fed 53.0 / 6.5 (same); Kozolec hidden
+80.5 / 4.8 (81.3 / 3.2; its boiler 85.3 -> 80.8 % caught), fed 84.5 / 3.1 (same). A little worse hidden, fed
+unchanged - the joins it makes are few and fed runs come from the meters anyway. Not kept (0 stays).
