@@ -5794,6 +5794,52 @@ def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_we
         (a[0], a[1]) == (b[0], b[1]) and abs(a[2] - b[2]) < 0.02 for a, b in zip(runs[0][2], runs[1][2])), (len(runs[0][2]), len(runs[1][2]))
 
 
+def _sigmas(n):
+    """Run a test at VALLEY_SIGMAS = n (a bench dial, 0 by default)."""
+    def wrap(fn):
+        def run():
+            old, D.VALLEY_SIGMAS = D.VALLEY_SIGMAS, n
+            try:
+                fn()
+            finally:
+                D.VALLEY_SIGMAS = old
+        run.__name__ = fn.__name__
+        return run
+    return wrap
+
+
+@_sigmas(2.0)
+def test_three_steps_are_one_group():
+    """Steps stay together until the counts show two devices (run lifecycle,
+    2026-10-28): three steps of about 100 W are one group."""
+    det = D.Detector()
+    det.phases["a"].noise = 20.0
+    ids = {det._classify_step("a", T0 + 60.0 * k, w, None, 0.0).id for k, w in enumerate((100.0, 104.0, 98.0))}
+    assert len(ids) == 1, ids
+
+
+@_sigmas(2.0)
+def test_a_real_valley_splits_once_enough_steps_show_it():
+    def groups(n):
+        rnd = random.Random(4)
+        det = D.Detector()
+        det.phases["a"].noise = 4.0
+        for k in range(n):
+            det._classify_step("a", T0 + 60.0 * k, rnd.gauss(rnd.choice([80.0, 120.0]), 2.0), None, 0.0)
+        return [c for c in det.edges if c.count >= 0.1 * n]
+    assert len(groups(600)) == 2, [(round(c.watts), c.count) for c in groups(600)]
+    assert len(groups(4)) == 1, [(round(c.watts), c.count) for c in groups(4)]      # two of each: no evidence yet
+
+
+@_sigmas(2.0)
+def test_a_group_never_spans_more_than_group_span():
+    segs = D._significant([1.0] * 200 + [0.95] + [1.0] * 200, 10, 1.0, [(10, 210), (211, 410)], 20.0)
+    size = lambda b: 20.0 * math.sinh(b * D.EDGE_BIN * D.EDGE_SCALE_REL) / D.EDGE_SCALE_REL   # noqa: E731
+    assert size(411) > D.GROUP_SPAN * size(10) and segs == [(10, 210), (211, 410)], segs    # cut for the span
+    joined = D._significant([1.0] * 4 + [0.95] + [1.0] * 4, 200, 1.0, [(200, 204), (205, 208)], 20.0)
+    assert joined == [(200, 208)], joined                                   # within the span: joined
+
+
 def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
     """A group's step sizes are cut at their valleys again at every step,
     the step in them (EDGE_RECUT). Cut every 32 steps, the cuts were counted
@@ -5808,7 +5854,7 @@ def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
     for k in range(300):
         size = max(30.0, rnd.gauss(*rnd.choice([(300.0, 20.0), (420.0, 25.0), (900.0, 40.0)])))
         det._classify_step("a", T0 + 97.0 * k, size, None, 0.0)
-        assert det._segs["a|1"] == D.valley_segments(det.edge_hist["a|1"]), k
+        assert det._segs["a|1"] == D.valley_segments(det.edge_hist["a|1"], unit=det.edge_unit["a|1"]), k
 
 
 def test_the_kept_density_is_the_full_pass_to_the_bit():
@@ -5826,7 +5872,7 @@ def test_the_kept_density_is_the_full_pass_to_the_bit():
         b = rnd.randint(-40, 400) if rnd.random() < 0.2 or not h else rnd.choice(list(h))
         added = b not in h
         h[b] = h.get(b, 0.0) + rnd.choice([1.0, 0.37])
-        assert det._valleys("a|1", h, b, added) == D.valley_segments(h), k
+        assert det._valleys("a|1", h, b, added) == D.valley_segments(h, unit=D.MIN_NOISE_W), k
         lo = min(h) - reach
         full = [0.0] * (max(h) + reach - lo + 1)
         for bb, w in h.items():
