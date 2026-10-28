@@ -6007,5 +6007,44 @@ def test_input_rows_keep_an_outage_as_one_row_and_a_fans_speed_as_its_value():
     assert D.input_rows(fan, "fan") == [(T0, "33 %"), (T0 + 30.0, "off"), (T0 + 90.0, D.INPUT_DOWN)]
 
 
+def test_a_library_fragment_born_in_a_value_goes_back_into_its_named_twin():
+    """Home's Inkubator had 266 signatures of one or two runs born in the washer's Rinse, carried through 19 hours of
+    the integration being unavailable (2026-10-28): input_lift answers None for them for ever and a named load is
+    never pruned. retake_fragments puts each into the alike twin of its name with the most runs, and touches
+    nothing else - a fragment that has run three times, one already judged, one nothing is alike, a named one
+    whose only twin is unnamed or named otherwise."""
+    value = "sensor.washer=Rinse"
+    twin = _sig(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
+    small = _sig(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value)
+    unnamed = _sig(3, 59.0, 33.0, count=2, phases="c", born_in=value)
+    three = _sig(4, 60.0, 30.0, count=3, phases="c", name="Inkubator", born_in=value)
+    judged = _sig(5, 60.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value, born_judged=True)
+    far = _sig(6, 300.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value)
+    boiler = _sig(7, 500.0, 600.0, count=20, phases="c")
+    named_apart = _sig(8, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value)
+    det = D.Detector()
+    det.signatures = [twin, small, unnamed, three, judged, far, boiler, named_apart]
+    runs = sum(s.count for s in det.signatures)
+    assert det.retake_fragments() == 2
+    assert sorted(s.id for s in det.signatures) == [1, 4, 5, 6, 7, 8]
+    assert twin.count == 53 and twin.name == "Inkubator" and not twin.born_in
+    assert value in twin.takes_in
+    assert sum(s.count for s in det.signatures) == runs
+    assert det._sig(2) is None and det._current(2) == 1 and det._current(3) == 1
+
+
+def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loading():
+    value = "sensor.washer=Rinse"
+    det = D.Detector()
+    det.signatures = [_sig(1, 60.0, 30.0, count=50, phases="c"), _sig(2, 61.0, 28.0, count=1, phases="c", born_in=value)]
+    stored = det.to_dict()
+    assert stored["fragments_retaken"] is True
+    assert len(D.Detector.from_dict(stored).signatures) == 2          # a library that says so is left as it is
+    del stored["fragments_retaken"]
+    back = D.Detector.from_dict(stored)
+    assert [s.id for s in back.signatures] == [1] and back.signatures[0].count == 51
+    assert back.to_dict()["fragments_retaken"] is True
+
+
 if __name__ == "__main__":
     run_main(globals())
