@@ -432,6 +432,29 @@ def test_a_step_is_stored_with_its_voltage_either_side():
     assert all(x[0] >= T0 - D.STEPS_KEEP_S for x in f.main.steps) and len(f.main.steps) == 1
 
 
+def test_a_heaters_voltage_exponent_is_fitted_and_its_sizes_compared_at_230_volts():
+    """At Home the grid voltage swings with the PV: a 2 kW element reads ~1.91
+    kW at 225 V and ~2.27 kW at 245 V. Its group's k (~2) is fitted from the
+    steps store, and a new step is compared at 230 V; at Kozolec's steady
+    inverter voltage no k is believed."""
+    rnd = random.Random(2)
+    rows = [(2000.0 * (v / 230.0) ** 2 * (1 + rnd.gauss(0, 0.002)), v) for v in (rnd.uniform(225, 245) for _ in range(40))]
+    k, nom = D._volt_k(rows)
+    assert 1.8 < k < 2.2 and abs(nom - 2000.0) < 10.0, (k, nom)
+    assert D._volt_k([(1800.0 + rnd.gauss(0, 10), 230.0 + rnd.gauss(0, 0.3)) for _ in range(40)]) is None
+    old = D.GROUPING
+    D.GROUPING = "mixture"
+    try:
+        det = D.Detector()
+        det.phases["a"].noise = 7.0
+        g = det._classify_step("a", T0, 2000.0, None, 0.0)
+        g.k, g.c_nom, g.count = 2.0, 2000.0, 40.0
+        det.volts_at = lambda ph, t, before: 245.0
+        assert det._classify_step("a", T0 + 600.0, 2269.0, None, 0.0) is g     # 2,269 W at 245 V is 2,000 at 230
+    finally:
+        D.GROUPING = old
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0
