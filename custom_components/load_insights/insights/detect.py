@@ -357,6 +357,7 @@ GROUPING = "valleys"
 MIX_JOIN_WIDTHS = 3.0
 MIX_KEEP = 60                  # recent steps a group keeps for the daily one-or-two test
 MIX_TEST_MIN = 12              # ...and how many before it is tested
+MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
 # A group's overlaps split it where one size puts this share of them on
 # opposite sides (Detector.split_groups). And how a second unit is believed
@@ -5447,7 +5448,10 @@ class Detector:
             if two is None:
                 continue
             (ma, sa, wa), (mb, sb, wb), gain = two
-            if gain <= 0:
+            # close piles are one device's states unless it ran twice at once (the owner,
+            # 2026-10-28: Kozolec's boiler sits at ~1,795 and ~1,820 W, one step error
+            # apart, and never overlaps itself); far piles split on the fit alone
+            if gain <= 0 or (abs(ma - mb) < MIX_SPLIT_FAR * floor and len(c.cannot) < PAIR_MIN_RUNS):
                 continue
             keep_a = wa >= wb
             stay, go = ((ma, sa), (mb, sb)) if keep_a else ((mb, sb), (ma, sa))
@@ -5469,13 +5473,17 @@ class Detector:
                 continue
             fa = self._mix_widths(a.phase, a.watts, a)[0]
             fb = self._mix_widths(b.phase, b.watts, b)[0]
-            both = [x for x, _ in a.recent + b.recent]
-            if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb, _robust_sd(both)):
-                continue                    # (before any fit, their steps' spread together is the reach)
             floor = self._mix_widths(a.phase, a.watts, StepGroup(id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0]
-            two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
-            if two is not None and two[2] > 0:
-                continue
+            if self.co_run.get(f"{min(a.id, b.id)},{max(a.id, b.id)}"):
+                continue                    # one rose while the other ran: two devices
+            if b.watts - a.watts >= MIX_SPLIT_FAR * floor:
+                # far apart: joined only where one curve explains their steps better; a fit
+                # that fails joins nothing (it once chained joins into one 446 W wide group)
+                if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
+                    continue
+                two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
+                if two is None or two[2] > 0:
+                    continue
             keep, gone = (a, b) if a.count >= b.count else (b, a)
             n = keep.count + gone.count
             keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
@@ -5979,9 +5987,15 @@ class Detector:
         # its width as the daily fit set it (mix_daily), never its running spread: a running spread
         # widens with every outlier it takes, and takes more the wider it is (Kozolec's boiler, 2026-10-28)
         width = max(floor, c.mix_sd or 0.0)
+        # the angle's error from the amps' resolution: a reactive power worked out as
+        # sqrt(S^2 - P^2) from V x I loses most near Q = 0 - a quantum dS of apparent
+        # power moves the angle by about sqrt(2 dS / P) radians there (the same
+        # spread as _pf_spread's), at each of the step's two levels: a 1.8 kW heater
+        # at Kozolec's 0.1 A (23 VA) +-13 degrees, its angle noise and nothing else
         q = max((st.q_quantum for st in sts), default=0.0)
-        afloor = max(EDGE_ANGLE_KERNEL, math.degrees(math.atan2(math.sqrt(2.0) * q, max(size, 1.0))))
-        return width, afloor
+        p = max(size, 1.0)
+        aerr = math.degrees(math.sqrt(2.0) * max(math.atan2(q, p), math.sqrt(2.0 * q / p)))
+        return width, max(EDGE_ANGLE_KERNEL, aerr)
 
     def _by_mixture(self, ph: str, up: bool, size: float, angle: Optional[float], keys: Dict[str, str],
                     kind: List["StepGroup"], where: str) -> Optional["StepGroup"]:
