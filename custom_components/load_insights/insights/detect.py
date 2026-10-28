@@ -339,6 +339,7 @@ PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size 
 DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
 STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
+V_NOMINAL = 230.0              # the voltage a group's sizes are compared at once its k is known
 STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages are the medians of
 # A valley between two piles of step sizes cuts them into two groups only when
 # the shallower pile stands this many Poisson spreads above it (_significant),
@@ -4177,6 +4178,11 @@ class StepGroup:
     recent: List[Tuple[float, Optional[float]]] = field(default_factory=list)
     joined: Optional[int] = None
     mix_sd: Optional[float] = None
+    # its voltage exponent (P ~ V^k: ~2 a heater, ~1 a current-limited charger, ~0
+    # a switched-mode supply) and its centre at V_NOMINAL, fitted daily from the steps
+    # store where the voltage moves enough (mix_daily, _volt_k); None elsewhere
+    k: Optional[float] = None
+    c_nom: Optional[float] = None
 
     def same_signals(self, kinds: Dict[str, str]) -> bool:
         """``kinds``: what each input whose lag is known did at this edge. One
@@ -4247,7 +4253,7 @@ class StepGroup:
                 "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
                 "where": self.owner, "cannot": [list(x) for x in self.cannot],
                 "recent": [[_trim(a, 1), _trim(b, 1)] for a, b in self.recent], "joined": self.joined,
-                "mix_sd": _trim(self.mix_sd, 2)}
+                "mix_sd": _trim(self.mix_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4260,7 +4266,32 @@ class StepGroup:
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
                    owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
-                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"), mix_sd=d.get("mix_sd"))
+                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"), mix_sd=d.get("mix_sd"),
+                   k=d.get("k"), c_nom=d.get("c_nom"))
+
+
+def _volt_k(rows: Sequence[Tuple[float, float]], ve: float = 0.5) -> Optional[Tuple[float, float]]:
+    """(k, centre at V_NOMINAL) of a group's steps (size, on-side voltage): the
+    least-squares slope of ln size on ln V, divided by the share of the
+    voltages' spread that is real (regression dilution - the readings' own
+    error ``ve`` V), as edges.volt_slope; None under MIX_TEST_MIN steps or where
+    under half of the spread is real - Kozolec's inverter holds 230 V to about
+    the error of the reading."""
+    n = len(rows)
+    if n < MIX_TEST_MIN:
+        return None
+    xs = [(math.log(v), math.log(w)) for w, v in rows if w > 0 and v > 0]
+    mx, my = sum(x for x, _ in xs) / n, sum(y for _, y in xs) / n
+    sxx = sum((x - mx) ** 2 for x, _ in xs)
+    if sxx <= 0:
+        return None
+    lam = 1.0 - n * (ve / math.exp(mx)) ** 2 / sxx
+    if lam < 0.5:
+        return None
+    k = sum((x - mx) * (y - my) for x, y in xs) / sxx / lam
+    k = max(-1.0, min(3.0, k))                                    # physical: a switched-mode supply to a heater, with room
+    nom = statistics.median(w * (V_NOMINAL / v) ** k for w, v in rows)
+    return k, nom
 
 
 def _robust_sd(xs: Sequence[float]) -> float:
@@ -5446,6 +5477,14 @@ class Detector:
         if GROUPING != "mixture":
             return 0, 0
         split = joined = 0
+        by: Dict[int, List[Tuple[float, float]]] = {}
+        for row in self.steps:
+            v = row[7] if row[2] > 0 else row[6]                 # the on side: after a rise, before a fall
+            if v:
+                by.setdefault(row[4], []).append((abs(row[2]), v))
+        for c in self.edges:
+            got = _volt_k(by.get(c.id) or [])
+            c.k, c.c_nom = (got if got else (None, None))
         for c in [c for c in self.edges if c.joined is None and len(c.recent) >= MIX_TEST_MIN]:
             ph = c.phase
             floor = self._mix_widths(ph, c.watts, StepGroup(id=-1, phase=ph, up=c.up, watts=c.watts, owner=c.owner))[0]
@@ -5878,7 +5917,11 @@ class Detector:
         cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
         if GROUPING == "mixture":
             # the histogram still kept (it places a step at a meter, _likely_meter); the group is the mixture's
-            cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where)
+            von = None
+            if self.volts_at is not None:
+                vs = [v for v in (self.volts_at(p, since, watts < 0) for p in ph) if v]
+                von = sum(vs) / len(vs) if vs else None
+            cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where, von)
         if cluster is None:
             cluster = StepGroup(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, owner=where)
             self.next_edge_id += 1
@@ -6019,7 +6062,7 @@ class Detector:
         return width, max(EDGE_ANGLE_KERNEL, aerr)
 
     def _by_mixture(self, ph: str, up: bool, size: float, angle: Optional[float], keys: Dict[str, str],
-                    kind: List["StepGroup"], where: str) -> Optional["StepGroup"]:
+                    kind: List["StepGroup"], where: str, von: Optional[float] = None) -> Optional["StepGroup"]:
         """The group of its key (phase pattern, direction, meter, the inputs the
         histogram keyed it by) a step is most likely from: within
         MIX_JOIN_WIDTHS of its centre in size and, where both are measured, in
@@ -6030,7 +6073,11 @@ class Detector:
             if c.owner != where or c.joined is not None or not c.same_signals(keys):
                 continue
             w, aw = self._mix_widths(ph, size, c)
-            z = (size - c.watts) / w
+            if c.k is not None and c.c_nom and von:
+                # its size at V_NOMINAL by the group's own exponent, against its centre there
+                z = (size * (V_NOMINAL / von) ** c.k - c.c_nom) / w
+            else:
+                z = (size - c.watts) / w
             za = (angle - c.angle) / aw if angle is not None and c.angle is not None else 0.0
             if abs(z) > MIX_JOIN_WIDTHS or abs(za) > MIX_JOIN_WIDTHS:
                 continue
