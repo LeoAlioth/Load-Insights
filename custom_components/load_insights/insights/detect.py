@@ -4720,7 +4720,14 @@ class Detector:
             self.signatures.append(best)
             # one more of its device's family, when the device has one (a value the family runs in on its own
             # - Detector._splits); else a family of its own
-            best.family = (self._device_family(device, s.phases) if device is not None else 0) or self._new_family()
+            fam = self._device_family(device, s.phases) if device is not None else 0
+            if fam and not any(self._fits(m, s) for m in self.signatures if m.family == fam):
+                # a start cluster shared with another load's starts (Home's Hidrofor surge-high starts of 960-1056 W
+                # and a 1 kW heater's): a run that looks like none of the family's signatures is no member of it,
+                # or the family's name covered the other load's energy (Hidrofor's, by family: 20.2 % impure, 10.4
+                # per signature; 12.6 with this, 2026-10-27)
+                fam = 0
+            best.family = fam or self._new_family()
             best.name = next((m.name for m in self.family_of(best) if m.name and m is not best), None)
             best.absorb(s, tz)
             best.count = 1
