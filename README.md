@@ -1,7 +1,9 @@
 # Load Insights
 
-Consumption forecasts for a Home Assistant site, from what its **Energy
-dashboard already knows**. Companion to [Load Juggler](https://github.com/LeoAlioth/Load-Juggler), which controls loads;
+Non-intrusive load monitoring (NILM) and consumption forecasts for a Home
+Assistant site, from what its **Energy dashboard already knows**: it finds the
+individual appliances in your whole-house meter readings (load disaggregation,
+no training phase, no labelling) and forecasts what the site will use. Companion to [Load Juggler](https://github.com/LeoAlioth/Load-Juggler), which controls loads;
 this one understands them. Fully independent - it does not need Load Juggler,
 and Load Juggler does not need it.
 
