@@ -53,7 +53,6 @@ def test_clusters_from_before_the_angle_keep_their_steps_once_it_is_on():
     det.process({"a": [r for r in rows if r[0] < half]}, q=var, now_ts=half)
     for c in det.edges:                          # a library saved before the angle
         c.angle, c.angle_n = None, 0.0
-    det.edge_hist_angle.clear()
     before = len(det.edges)
     det.process({"a": [r for r in rows if r[0] >= half]}, q=var, now_ts=T0 + 12 * 300 + 60)
     assert before >= 2 and len(det.edges) == before, (before, len(det.edges))
@@ -455,65 +454,25 @@ def test_a_second_rise_without_the_first_carried_ends_the_first_at_its_missed_fa
 
 
 def test_overlapping_similar_fridges_split_into_two_groups():
-    """Ten overlaps of 83 W and 75 W rises in one group: the daily pass cuts
-    it between them, and a step of each size lands in its own group."""
-    det = D.Detector()
-    det.phases["a"].noise = 20.0                                          # 5 W bins: one segment for both
-    for k in range(6):
-        for w in (83.0, 75.0):
-            det._classify_step("a", T0 + 60.0 * (2 * k + (w < 80)), w, None, 0.0)
-    g = next(c for c in det.edges if c.up)
-    assert len([c for c in det.edges if c.up]) == 1
-    g.cannot = [(83.0, None, 75.0, None)] * 10
-    assert det.split_groups() == 1 and g.cannot == []
-    a = det._classify_step("a", T0 + 9000.0, 84.0, None, 0.0).id
-    b = det._classify_step("a", T0 + 9060.0, 74.0, None, 0.0).id
-    assert a != b, (a, b)
-    back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
-    assert back.edge_cuts == det.edge_cuts
-
-
-def test_groups_the_evidence_calls_one_device_are_merged():
-    """The mirror of the split (bench mode GROUP_MERGE): a load whose starts
-    fell either side of a shallow valley - two groups, never running at once,
-    one partner fall, the same length - is joined, and its steps land in one
-    group from then on; two that ran together are not."""
-    old = D.GROUP_MERGE
-    D.GROUP_MERGE = 1
-    try:
+    """Kozolec's two fridges, overlapping now and then: sizes the meter can
+    resolve (86 and 72 W at 3 W of noise) are two groups from their first
+    steps (the mixture); sizes it cannot (83 and 75 W, under the step error)
+    stay one group however often they overlap - which of the two a step was
+    would be a guess - and the overlaps count it as two units (second_rise).
+    The size density's split (split_groups) is gone with it (2026-10-29)."""
+    for (hi, lo), groups in (((86.0, 72.0), 2), ((83.0, 75.0), 1)):
         det = D.Detector()
-        det.phases["a"].noise = 4.0
-        a = det._classify_step("a", T0, 100.0, None, 0.0)
-        b = det._classify_step("a", T0 + 60.0, 125.0, None, 0.0)
-        assert a.id != b.id
-        for g in (a, b):
-            g.count = 20.0
-        _evidence(det, a.id, 9, 600.0)
-        _evidence(det, b.id, 9, 650.0)
-        det.run_time[a.id] = det.run_time[b.id] = 0.1 * 86400.0
-        det.co_run = {f"{a.id},{b.id}": 1}
-        assert det.merge_groups() == 0                                     # they ran together once
-        det.co_run = {}
-        assert det.merge_groups() == 1
-        ids = {det._classify_step("a", T0 + 600.0 + 60.0 * k, w, None, 0.0).id for k, w in enumerate((101.0, 124.0))}
-        assert len(ids) == 1, ids
-        back = D.Detector.from_dict(json.loads(json.dumps(det.to_dict())))
-        assert back.edge_joins == det.edge_joins
-    finally:
-        D.GROUP_MERGE = old
-
-
-def _mixture(fn):
-    """Run a test in GROUPING = "mixture" (a bench dial)."""
-    def run():
-        old, D.GROUPING = D.GROUPING, "mixture"
-        try:
-            fn()
-        finally:
-            D.GROUPING = old
-    run.__name__ = fn.__name__
-    return run
-
+        det.phases["a"].noise = 3.0
+        for k in range(6):
+            for w in (hi, lo):
+                det._classify_step("a", T0 + 60.0 * (2 * k + (w < 80)), w, None, 0.0)
+        ups = [c for c in det.edges if c.up]
+        ups[0].cannot = [(hi, None, lo, None)] * 10
+        if len(ups) == 2:                  # one rose while the other ran, as _form_first counts it live
+            det.co_run = {f"{ups[0].id},{ups[1].id}": 10}
+            det.run_time, det.order_span = {ups[0].id: 600.0, ups[1].id: 600.0}, 86400.0
+        det.mix_daily()
+        assert len([c for c in det.edges if c.up and c.joined is None]) == groups, ((hi, lo), [(c.watts, c.joined) for c in det.edges])
 
 def _mix_groups(offsets, noise=2.83, base=1000.0, angles=None):
     det = D.Detector()
@@ -525,7 +484,6 @@ def _mix_groups(offsets, noise=2.83, base=1000.0, angles=None):
     return ids
 
 
-@_mixture
 def test_mixture_groups_the_owners_two_examples_as_he_would():
     """The owner's examples, offsets from 1 kW, a ~4 W step error: two tight
     triplets are two groups, an even spread is one (2026-10-28)."""
@@ -539,13 +497,11 @@ def test_mixture_groups_the_owners_two_examples_as_he_would():
     assert sum(c.joined is None for c in det.edges if c.up) == 1, [(c.watts, c.recent, c.joined) for c in det.edges]
 
 
-@_mixture
 def test_mixture_tells_a_pump_from_a_heater_of_one_size_by_angle():
     ids = _mix_groups([0, 2, -1, 1, -2, 0], angles=[0, 35, 0, 35, 0, 35])
     assert len(set(ids)) == 2 and ids[0] == ids[2] == ids[4] and ids[1] == ids[3] == ids[5], ids
 
 
-@_mixture
 def test_mixture_daily_splits_two_piles_and_joins_one_device():
     """The daily one-or-two test: a group holding two piles 60 W apart at
     1 kW is split; two groups holding one device's spread are joined; one
@@ -601,20 +557,14 @@ def test_a_heaters_voltage_exponent_is_fitted_and_its_sizes_compared_at_230_volt
     k, nom = D._volt_k(rows)
     assert 1.8 < k < 2.2 and abs(nom - 2000.0) < 10.0, (k, nom)
     assert D._volt_k([(1800.0 + rnd.gauss(0, 10), 230.0 + rnd.gauss(0, 0.3)) for _ in range(40)]) is None
-    old = D.GROUPING
-    D.GROUPING = "mixture"
-    try:
-        det = D.Detector()
-        det.phases["a"].noise = 7.0
-        g = det._classify_step("a", T0, 2000.0, None, 0.0)
-        g.k, g.c_nom, g.count = 2.0, 2000.0, 40.0
-        det.volts_at = lambda ph, t, before: 245.0
-        assert det._classify_step("a", T0 + 600.0, 2269.0, None, 0.0) is g     # 2,269 W at 245 V is 2,000 at 230
-    finally:
-        D.GROUPING = old
+    det = D.Detector()
+    det.phases["a"].noise = 7.0
+    g = det._classify_step("a", T0, 2000.0, None, 0.0)
+    g.k, g.c_nom, g.count = 2.0, 2000.0, 40.0
+    det.volts_at = lambda ph, t, before: 245.0
+    assert det._classify_step("a", T0 + 600.0, 2269.0, None, 0.0) is g     # 2,269 W at 245 V is 2,000 at 230
 
 
-@_mixture
 def test_a_run_of_a_shared_rise_group_is_filed_by_its_stop():
     """A rise group ending in two partner fall groups (the hidrofor's wide
     starts and another load's of their size): each run is that pair's device,
@@ -631,12 +581,15 @@ def test_a_run_of_a_shared_rise_group_is_filed_by_its_stop():
 
 
 def test_identical_units_are_not_split():
+    """A water heater's two identical elements overlapping: their group has
+    cannot-link pairs no size separates, and stays one."""
     det = D.Detector()
     det.phases["a"].noise = 20.0
-    det._classify_step("a", T0, 2000.0, None, 0.0)
+    for k in range(12):
+        det._classify_step("a", T0 + 600.0 * k, 2000.0 + (k % 3), None, 0.0)
     g = next(c for c in det.edges if c.up)
-    g.cannot = [(2000.0, None, 2000.0, None)] * 10
-    assert det.split_groups() == 0 and len(g.cannot) == 10
+    g.cannot = [(2000.0, None, 2001.0, None)] * 10
+    assert det.mix_daily()[0] == 0 and len([c for c in det.edges if c.up and c.joined is None]) == 1
 
 
 def test_a_second_rise_under_the_noise_keeps_the_first_but_counts_no_second_unit():
@@ -1738,7 +1691,7 @@ def test_a_signature_evicted_is_not_where_its_device_files_next():
     cap = D.MAX_SIGNATURES
     det = D.Detector()
     det.signatures = [_sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour) for i in range(cap + 5)]
-    det.start_home = {"7": {2: 5.0}}                 # cluster 7's runs went to signature 2, the stalest
+    det.pair_home = {"7": {2: 5.0}}                 # cluster 7's runs went to signature 2, the stalest
     assert det._device_signature(7, None, (), "a").id == 2
     det._prune(now=(cap + 4) * hour)
     assert all(s.id != 2 for s in det.signatures)
@@ -1755,7 +1708,7 @@ def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
     det = D.Detector()
     det.signatures = [_sig(1, 1000.0, 300.0, 12, first_seen=T0, last_seen=T0)]
     det.next_id = 2
-    det.start_home = {"7": {1: 12.0}}
+    det.pair_home = {"7": {1: 12.0}}
     run = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 4560.0, levels={"a": [(T0 + 3600.0, 1000.0)]}, pair=(7, None))
     det._file(run, avoid=[1])
     assert run.signature_id == 2 and det._sig(2).apart == [1]
@@ -1771,7 +1724,7 @@ def test_a_run_of_a_shared_start_cluster_joins_the_devices_family_only_when_it_f
     det = D.Detector()
     det.signatures = [_sig(1, 827.0, 110.0, 12, first_seen=T0, last_seen=T0, family=1)]
     det.next_id, det.next_family = 2, 2
-    det.start_home = {"7": {1: 12.0}}
+    det.pair_home = {"7": {1: 12.0}}
     heater = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 3789.0, levels={"a": [(T0 + 3600.0, 1026.0)]}, pair=(7, None))
     det._file(heater, avoid=[1])               # kept out of the pump's signature: its plug did not start it
     assert heater.signature_id == 2 and det._sig(2).family != 1
@@ -2235,7 +2188,7 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
         b = _sig(11, 610.0, 300.0, 3, first_seen=T0, last_seen=T0)
         a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
         det.signatures = [a, b]
-        det.start_home = {"1": {10: 5.0, 11: 3.0}}          # its runs went to two signatures
+        det.pair_home = {"1": {10: 5.0, 11: 3.0}}          # its runs went to two signatures
         return det, a, b
     det, a, b = lib()
     b.name = "Oven"
@@ -2251,7 +2204,7 @@ def test_one_devices_signatures_are_one_and_a_name_survives():
 
 
 def test_the_device_merge_judged_where_something_changed_is_the_full_walk():
-    """_merge_devices keeps start_home's votes between filings and judges
+    """_merge_devices keeps pair_home's votes between filings and judges
     only the devices whose signatures changed; after every filing it must
     merge what a walk over the whole library would, in the same order. A
     device's runs filed into a second signature by a meter's word move that
@@ -3737,7 +3690,7 @@ def _drifting_kiln(sizes, noise=30.0):
         det.edges.append(D.StepGroup(id=i, phase="ac", up=True, watts=w, count=40.0, watts_mad=60.0))
         det.signatures.append(D.Signature(id=100 + i, phases="ac", power={"a": w / 2, "c": w / 2 - 50}, duration_s=45.0,
                                           pf=None, count=20, first_seen=T0, last_seen=T0))
-        det.start_home[str(i)] = {100 + i: 20.0}
+        det.pair_home[str(i)] = {100 + i: 20.0}
     det._votes = None
     det._assign_families()
     return det
@@ -4108,8 +4061,12 @@ def test_a_pair_is_accepted_when_it_is_far_above_chance():
 
 
 def test_steps_join_the_cluster_their_size_piles_up_in():
-    """Two loads 7 % apart - a valley between their piles - are two clusters;
-    one load wandering +-3 % is one, however its steps arrive (2026-09-30)."""
+    """Two loads 7 % apart are two groups; one load wandering +-3 % is held
+    by at most two neighbouring groups once the daily pass has joined what it
+    founded beside its spread (mix_daily) - a uniform 120 W wide pile at 2 kW
+    stays two at MIX_JOIN_WIDTHS 2, 62 W apart (2026-09-30; the mixture's
+    since 2026-10-29, dev/TODO.md INS-32). Its runs still file as one device
+    where both pair with its stop group (device_of)."""
     rnd = random.Random(3)
     det = D.Detector()
     got = {}
@@ -4119,13 +4076,14 @@ def test_steps_join_the_cluster_their_size_piles_up_in():
         got.setdefault(round(w / 645.0), set()).add(det._classify_step("a", t, w, None, 0.0).id)
         t += 60.0
     wander = {det._classify_step("a", t + 60.0 * k, 2000.0 * (1 + rnd.uniform(-0.03, 0.03)), None, 0.0).id for k in range(200)}
+    det.mix_daily()
     main = lambda ids: max(ids, key=lambda i: next(c.count for c in det.edges if c.id == i))  # noqa: E731
     assert main(got[1]) != main(got[round(600 / 645)]) or len(got) == 1, got
     six, forty = [c for c in det.edges if abs(c.watts - 600) < 15], [c for c in det.edges if abs(c.watts - 645) < 15]
     assert six and forty and max(six, key=lambda c: c.count).count > 150 and max(forty, key=lambda c: c.count).count > 150, \
         [(round(c.watts), c.count) for c in det.edges]
-    big = max((c for c in det.edges if c.id in wander), key=lambda c: c.count)
-    assert big.count >= 190, [(round(c.watts), c.count) for c in det.edges if c.id in wander]
+    kept = [c for c in det.edges if c.id in wander and c.joined is None]
+    assert len(kept) <= 2 and sum(c.count for c in kept) >= 190, [(round(c.watts), c.count, c.joined) for c in det.edges if c.id in wander]
     assert D.valley_segments({}) == []
 
 
@@ -4239,7 +4197,7 @@ def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
     det.signatures = [sig_c]
     det.next_id = 2
     det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=650.0, count=30), D.StepGroup(id=2, phase="c", up=True, watts=600.0, count=30)]
-    det.start_home = {"2": {"1": 20.0}}             # the C starts went to the C signature
+    det.pair_home = {"2": {"1": 20.0}}             # the C starts went to the C signature
     run = D.Run(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(2, None))   # a run of that start on A alone
     det._file(run)
     got = det.signature_of(run)
@@ -5447,7 +5405,7 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     f._file_as(run, "Plug", sub)
     assert asked == [] and run.parent_signature == ("Plug", sub), (asked, run.parent_signature)       # the circuit's own
     named = _sig(8, 300.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0, name="Kiln")
-    f.main.signatures, f.main.start_home, f.main._device_home = [named], {"5": {8: 3.0}}, None
+    f.main.signatures, f.main.pair_home, f.main._device_home = [named], {"5": {8: 3.0}}, None
     run.parent_signature = None
     f._file_as(run, "Plug", sub)
     assert asked == [8] and run.parent_signature is None, (asked, run.parent_signature)            # its device's named signature
@@ -6174,18 +6132,6 @@ def test_three_steps_are_one_group():
 
 
 @_sigmas(2.0)
-def test_a_real_valley_splits_once_enough_steps_show_it():
-    def groups(n):
-        rnd = random.Random(4)
-        det = D.Detector()
-        det.phases["a"].noise = 4.0
-        for k in range(n):
-            det._classify_step("a", T0 + 60.0 * k, rnd.gauss(rnd.choice([80.0, 120.0]), 2.0), None, 0.0)
-        return [c for c in det.edges if c.count >= 0.1 * n]
-    assert len(groups(600)) == 2, [(round(c.watts), c.count) for c in groups(600)]
-    assert len(groups(4)) == 1, [(round(c.watts), c.count) for c in groups(4)]      # two of each: no evidence yet
-
-
 @_sigmas(2.0)
 def test_a_group_never_spans_more_than_group_span():
     segs = D._significant([1.0] * 200 + [0.95] + [1.0] * 200, 10, 1.0, [(10, 210), (211, 410)], 20.0)
@@ -6237,21 +6183,25 @@ def test_the_kept_density_is_the_full_pass_to_the_bit():
 
 
 def test_a_step_dropped_moves_few_later_steps_to_another_cluster():
-    """...and so a step gone missing moves only the steps whose cluster it
-    decides: of 1,459 steps after it, at most 17 over twenty draws, against
-    up to 362 cut every 32 steps (2026-10-04)."""
+    """...and so a step gone missing moves only the steps whose group it
+    decides. The size density's groups moved at most 17 of the 1,459 steps
+    after it over twenty draws (2026-10-04); the mixture's (2026-10-29), its
+    daily joins not run here, moves none in most draws but founds a group a
+    step earlier or later now and then: 0-22 in 18 of 20, 54 and 212 in two
+    (dev/TODO.md, INS-32)."""
     def clusters(steps):
         det = D.Detector()
         det.phases["a"].noise = 20.0
         born = {}
         return {t: born.setdefault(det._classify_step("a", t, w, None, 0.0).id, t) for t, w in steps}
+    moved = []
     for seed in range(20):
         rnd = random.Random(seed)
         sizes = [(300.0, 20.0), (420.0, 25.0), (900.0, 40.0), (1200.0, 50.0)]
         steps = [(T0 + 97.0 * k, max(30.0, rnd.gauss(*rnd.choice(sizes)))) for k in range(1500)]
         a, b = clusters(steps), clusters(steps[:40] + steps[41:])
-        moved = sum(1 for t, _ in steps[41:] if a[t] != b[t])
-        assert moved <= 30, (seed, moved)
+        moved.append(sum(1 for t, _ in steps[41:] if a[t] != b[t]))
+    assert max(moved) <= 0.15 * 1459 and sum(m > 30 for m in moved) <= 2, moved
 
 
 def test_the_days_repair_gives_back_what_the_phase_never_drew():

@@ -373,34 +373,24 @@ CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepG
 STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
 V_NOMINAL = 230.0              # the voltage a group's sizes are compared at once its k is known
 STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages are the medians of
-# A valley between two piles of step sizes cuts them into two groups only when
-# the shallower pile stands this many Poisson spreads above it (_significant),
-# and no group spans more than GROUP_SPAN times its smallest step (the owner,
-# 2026-10-28: 3, wide enough for any device that is not multi-speed or
-# multi-step). Bench dials (spec open point): 0 keeps every valley as before
-# the run lifecycle, the default until the owner has seen the sweep - at 2 the
-# oven and its fan (2 kW, 900 W, one run each) are one group until overlaps
-# split them (Detector.split_groups).
+# The size density's segments - no longer a step's group (that is the
+# mixture's, below) but where an input's change or state at a step is judged
+# to pile up above chance (_keyed_above_chance) and where a step no meter
+# placed most likely happened (_likely_meter): a valley cuts two piles only
+# when the shallower stands this many Poisson spreads above it (_significant),
+# and no segment spans more than GROUP_SPAN times its smallest step.
 VALLEY_SIGMAS = 0.0
-# How a step finds its group (run lifecycle, stage 6, the owner 2026-10-28):
-# "valleys" - the size density cut at its dips (EDGE_BATCH), as before;
-# "mixture" - each group a bell curve over size and reactive angle, its width its
-# own steps' spread but never under the step's measurement error (_mix_widths),
-# a step joining the most likely group within MIX_JOIN_WIDTHS of its centre, else
-# founding one (_by_mixture). Bench dials.
-GROUPING = "valleys"
-MIX_JOIN_WIDTHS = 3.0
+# How a step finds its group (run lifecycle, stage 6, the owner 2026-10-28;
+# the only way since 2026-10-29, the size density's own groups removed): each
+# group a bell curve over size and reactive angle, its width its own steps'
+# spread but never under the step's measurement error (_mix_widths), a step
+# joining the most likely group within MIX_JOIN_WIDTHS of its centre, else
+# founding one (_by_mixture). 2, as every card since 2026-10-29 benched it.
+MIX_JOIN_WIDTHS = 2.0
 MIX_KEEP = 60                  # recent steps a group keeps for the daily one-or-two test
 MIX_TEST_MIN = 12              # ...and how many before it is tested
 MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
-# A group's overlaps split it where one size puts this share of them on
-# opposite sides (Detector.split_groups).
-SPLIT_SHARE = 0.8
-# The mirror (Detector.merge_groups, bench mode, off): two groups joined when
-# the evidence says one device, the larger at most GROUP_MERGE_RATIO the smaller
-GROUP_MERGE = 0
-GROUP_MERGE_RATIO = 1.5
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -499,16 +489,17 @@ EDGE_TAU_S = 10 * 86400.0
 EVENT_WINDOW_INTERVALS = 3.0
 EVENT_BALANCE = 0.2
 # A second clustering dimension - the step's reactive angle, atan2(dQ, dP)
-# in degrees. Within a size segment, steps are cut again at the valleys of
-# their angle density: a pump (~35 deg) and a heater (0 deg) of one size are
-# two kinds of edge (Hart 1992; Barsim & Yang 2014 cluster dP and dQ
+# in degrees: a pump (~35 deg) and a heater (0 deg) of one size are two kinds
+# of edge (the mixture's groups are bell curves in angle too, never narrower
+# than EDGE_ANGLE_KERNEL - _mix_widths; first cut at the valleys of the angle
+# density within a size segment, as benched here) (Hart 1992; Barsim & Yang 2014 cluster dP and dQ
 # together). Benched on 2026-10-12 with ten days of Home's signed var: Home
 # fed devices capture +3.7 / impurity -1.3, hidden partition +3.9 / -1.9, Hiša
 # hidden +9.9 / -4.0, Kozolec hidden impurity -5.5 (its unsigned V x I var still
 # separates), the third site +1.3 / -1.7; fragmentation no worse. A step with no var
-# reading has no angle and is cut by size alone.
-EDGE_ANGLE_BIN = 3.0           # degrees
-EDGE_ANGLE_KERNEL = 6.0        # degrees, the smoothing before the valleys
+# reading has no angle and is grouped by size alone.
+EDGE_ANGLE_BIN = 3.0           # degrees - the cross-meter edges' angle bins (insights/edges.py)
+EDGE_ANGLE_KERNEL = 6.0        # degrees, the narrowest a group's angle width is
 # A house step that meters below it stepped with at the same moment is
 # several steps: each meter's own share (less its sub-meters', see
 # _meter_steps), and the rest. Kozolec's boiler pulses 1.9 kW about
@@ -4363,14 +4354,14 @@ class StepGroup:
     # look-alike's +630 W with nothing are two kinds of edge. Only half of the
     # +630 W steps on Home's phase C came with the thermostat (2026-09-29).
     keys: Dict[str, str] = field(default_factory=dict)
-    angle: Optional[float] = None             # mean reactive angle, degrees - see EDGE_ANGLE_BIN
+    angle: Optional[float] = None             # mean reactive angle, degrees - see _mix_widths
     owner: str = ""                           # the meter its steps happened under - see EDGE_BY_METER
     angle_n: float = 0.0
     # Two of its rises that were two units running at once (PhaseState.
-    # second_rise): (size, angle) of the first and the second - what may split
-    # it in the daily pass (Detector.split_groups), the last CANNOT_KEEP
+    # second_rise): (size, angle) of the first and the second - cannot-link
+    # pairs for the daily split (Detector.mix_daily), the last CANNOT_KEEP
     cannot: List[Tuple[float, Optional[float], float, Optional[float]]] = field(default_factory=list)
-    # mixture grouping (GROUPING): its last MIX_KEEP steps (size, angle) for the
+    # its last MIX_KEEP steps (size, angle) for the
     # daily one-or-two test, and the group it was joined into (never chosen again)
     recent: List[Tuple[float, Optional[float]]] = field(default_factory=list)
     joined: Optional[int] = None
@@ -4489,6 +4480,14 @@ def _volt_k(rows: Sequence[Tuple[float, float]], ve: float = 0.5) -> Optional[Tu
     k = max(-1.0, min(3.0, k))                                    # physical: a switched-mode supply to a heater, with room
     nom = statistics.median(w * (V_NOMINAL / v) ** k for w, v in rows)
     return k, nom
+
+
+PAIR_ID_BASE = 100003                 # device_of's pair id: -(start x this + stop)
+
+
+def _pair_start(device: int) -> int:
+    """The start group of a pair's device id (device_of)."""
+    return (-device) // PAIR_ID_BASE
 
 
 def _phi(z: float) -> float:
@@ -4899,13 +4898,22 @@ class Detector:
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    # start cluster -> {signature id: runs filed there} - see DEVICE_FILING
+    # start cluster -> {signature id: runs filed there}: a running load's name
+    # (start_name) and a meter's homes - read by the start, all an open run has
     start_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
+    # device (device_of: the start and stop groups' pair, or a start with no
+    # partner yet) -> {signature id: runs filed there}: what a run is filed by
+    # and devices merged by - see DEVICE_FILING (the owner, 2026-10-29: filing by
+    # the pair had looked a device up here while the runs were counted by start,
+    # so no run ever found its device's signature - every one founded a new one
+    # and the start's merge folded them back, a washer's Wash-born heater lost
+    # into a kettle's)
+    pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     # what _merge_devices keeps between filings, so a pass judges only the
-    # devices whose signatures changed: start_home's votes by the signature
-    # they count for now (devices in start_home order), each signature's
-    # device, each device's place in start_home, the devices to judge again
-    # and whether all of them are. None: built again from start_home.
+    # devices whose signatures changed: pair_home's votes by the signature
+    # they count for now (devices in pair_home order), each signature's
+    # device, each device's place in pair_home, the devices to judge again
+    # and whether all of them are. None: built again from pair_home.
     _votes: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _home: Dict[int, int] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     _dev_pos: Dict[int, int] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
@@ -4916,24 +4924,9 @@ class Detector:
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
-    # size bins where overlaps proved a group two devices (split_groups): a
-    # segment is always cut there, whatever its density
-    edge_cuts: Dict[str, List[int]] = field(default_factory=dict, repr=False, compare=False)
-    # ...and size ranges (first bin, last bin) where groups the evidence called
-    # one device were joined (merge_groups): no cut inside them
-    edge_joins: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict, repr=False, compare=False)
     # "a,b" group ids -> times one rose while the other ran
     co_run: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
-    # size bin -> angle bin -> weight, per phase pattern and direction - see EDGE_ANGLE_BIN;
-    # stored as "size bin:angle bin" -> weight. Nested so that a segment's angle
-    # density reads only the size bins in the segment (_same_angle)
-    edge_hist_angle: Dict[str, Dict[int, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
-    # group -> (first size bin, last) of a size segment -> angle bin -> the exact partial sums of
-    # that segment's angle density, added to by each step and dropped whenever the histogram is
-    # rewritten (fade, rescale) - see _same_angle
-    _acol: Dict[str, Dict[Tuple[int, int], Dict[int, List[float]]]] = field(
-        default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, var) -> the innermost meter that saw all of the step, set by the Fleet - see EDGE_BY_METER
@@ -5327,6 +5320,8 @@ class Detector:
             want = self._sig(prefer)
             if want is not None and want.id not in avoid and self._takes(want, context) and want.phases == s.phases and want.takes_run(s):
                 best = want
+        if device is not None and device < 0:
+            self._promote(_pair_start(device))
         if best is None and device is not None:
             best = self._device_signature(device, context, avoid, s.phases, s)
         if best is None:
@@ -5384,10 +5379,13 @@ class Detector:
             if pair and pair[0] is not None:
                 row = self.start_home.setdefault(str(pair[0]), {})
                 row[best.id] = row.get(best.id, 0.0) + 1.0
-                self._vote(str(pair[0]), best.id)
-                if self._device_home is not None:
-                    pooled = self._device_home.setdefault(pair[0], {})
-                    pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
+        if device is not None:
+            row = self.pair_home.setdefault(str(device), {})
+            row[best.id] = row.get(best.id, 0.0) + 1.0
+            self._vote(str(device), best.id)
+            if self._device_home is not None:
+                pooled = self._device_home.setdefault(device, {})
+                pooled[best.id] = pooled.get(best.id, 0.0) + 1.0
         self.filed_n += 1
         self.recent.append({"n": self.filed_n, "wh": round(s.energy_wh, 2),
                             "start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
@@ -5601,7 +5599,7 @@ class Detector:
             usual = self.usual_length(other) if other != cluster.id else None
             if usual and at - since_o > 3.0 * usual:
                 continue                           # a run left open long past its usual length: no witness
-            if other != cluster.id:                # two groups running at once: never one device (merge_groups)
+            if other != cluster.id:                # two groups running at once: never one device (mix_daily, _co_evidence)
                 key = f"{min(other, cluster.id)},{max(other, cluster.id)}"
                 self.co_run[key] = self.co_run.get(key, 0) + 1
         for m in members:
@@ -5695,7 +5693,7 @@ class Detector:
         return cluster, members
 
     def mix_daily(self) -> Tuple[int, int]:
-        """Mixture grouping's daily pass (GROUPING; run lifecycle, Task 8e):
+        """Mixture grouping's daily pass (run lifecycle, Task 8e):
         each group with MIX_TEST_MIN recent steps is tested one bell curve
         against two by BIC on their sizes - widths fitted, never under the
         step error (_mix_widths), its overlap pairs as cannot-link constraints
@@ -5704,8 +5702,6 @@ class Detector:
         MIX_JOIN_WIDTHS of each other, are tested two against one on their
         steps together and joined where one wins: the bigger keeps them, the
         other is never chosen again (StepGroup.joined). Returns (split, joined)."""
-        if GROUPING != "mixture":
-            return 0, 0
         split = joined = 0
         by: Dict[int, List[Tuple[float, float]]] = {}
         for row in self.steps:
@@ -5825,76 +5821,6 @@ class Detector:
             return False
         expected = max(a.count * self.run_time.get(b.id, 0.0), b.count * self.run_time.get(a.id, 0.0)) / self.order_span
         return above_chance(n, expected)
-
-    def merge_groups(self) -> int:
-        """The mirror of split_groups (the owner, 2026-10-28; a bench mode,
-        GROUP_MERGE): two rise groups of one phase pattern and meter, the
-        larger at most GROUP_MERGE_RATIO times the smaller, are joined when the
-        evidence says one device - never running at once (co_run), ending in a
-        common partner fall group (order evidence), usual lengths within 2x -
-        and no overlap split stands between them. Their size range is joined
-        (edge_joins): later steps of either land in one group, the bigger.
-        Returns how many."""
-        if not GROUP_MERGE:
-            return 0
-        ups = sorted((c for c in self.edges if c.up and c.count >= PAIR_MIN_RUNS), key=lambda c: c.watts)
-        done = 0
-        for i, a in enumerate(ups):
-            for b in ups[i + 1:]:
-                if b.watts > GROUP_MERGE_RATIO * a.watts:
-                    break
-                if (a.phase, a.owner, a.keys) != (b.phase, b.owner, b.keys):
-                    continue
-                if self.co_run.get(f"{min(a.id, b.id)},{max(a.id, b.id)}"):
-                    continue
-                if not set(self.partners_of(a.id)) & set(self.partners_of(b.id)):
-                    continue
-                la, lb = self.usual_length(a.id), self.usual_length(b.id)
-                if not la or not lb or max(la, lb) > 2.0 * min(la, lb):
-                    continue
-                g = _group(a.phase, True, a.owner)
-                unit = self.edge_unit.get(g)
-                if not unit:
-                    continue
-                lo_b, hi_b = _bin(a.watts, unit), _bin(b.watts, unit)
-                if any(lo_b <= c < hi_b for c in self.edge_cuts.get(g, ())):
-                    continue
-                joins = self.edge_joins.setdefault(g, [])
-                if any(x <= lo_b and hi_b <= y for x, y in joins):
-                    continue
-                joins.append((lo_b, hi_b))
-                self._dens.pop(g, None)
-                done += 1
-        return done
-
-    def split_groups(self) -> int:
-        """The daily pass's split (run lifecycle, 2026-10-28): a rise group
-        with PAIR_MIN_RUNS cannot-link pairs (StepGroup.cannot - two of its
-        rises running at once) is cut at the size that puts SPLIT_SHARE of
-        them on opposite sides, if one does: its two piles are two devices
-        (Kozolec's fridges, similar, not identical). Its steps from then on
-        land either side (edge_cuts); one no size separates keeps its pairs,
-        identical units (a water heater's two elements). Returns how many."""
-        done = 0
-        for c in list(self.edges):
-            if not c.up or len(c.cannot) < PAIR_MIN_RUNS:
-                continue
-            g = _group(c.phase, True, c.owner)
-            unit = self.edge_unit.get(g)
-            if not unit:
-                continue
-            sizes = sorted({w for a, _, b, _ in c.cannot for w in (a, b)})
-            best = max(((sum(1 for a, _, b, _ in c.cannot if min(a, b) <= t < max(a, b)), t)
-                        for t in sizes[:-1]), default=(0, None))
-            if best[1] is None or best[0] < SPLIT_SHARE * len(c.cannot):
-                continue
-            cut = _bin(best[1], unit)
-            if cut not in self.edge_cuts.setdefault(g, []):
-                self.edge_cuts[g].append(cut)
-                self._dens.pop(g, None)
-                c.cannot = []
-                done += 1
-        return done
 
     def running_groups(self, before: float = math.inf, phases: Optional[str] = None) -> Dict[int, Tuple[float, float]]:
         """Rise group -> (the start of its newest unit, that unit's size over
@@ -6236,14 +6162,14 @@ class Detector:
         if len(ph) == 1 and watts > 0 and not where:
             where = self._likely_meter(ph, watts > 0, size, since)
         angle = math.degrees(math.atan2(var, size)) if var is not None and size > 0 else None
-        cluster, keys, where = self._by_density(ph, watts > 0, since, size, keyed, kind, angle, where)
-        if GROUPING == "mixture":
-            # the histogram still kept (it places a step at a meter, _likely_meter); the group is the mixture's
-            von = None
-            if self.volts_at is not None:
-                vs = [v for v in (self.volts_at(p, since, watts < 0) for p in ph) if v]
-                von = sum(vs) / len(vs) if vs else None
-            cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where, von)
+        # the size density keys the step by its inputs and places it at a meter
+        # (_likely_meter); its group is the mixture's
+        keys, where = self._by_density(ph, watts > 0, since, size, keyed, where)
+        von = None
+        if self.volts_at is not None:
+            vs = [v for v in (self.volts_at(p, since, watts < 0) for p in ph) if v]
+            von = sum(vs) / len(vs) if vs else None
+        cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where, von)
         if cluster is None:
             cluster = StepGroup(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, owner=where)
             self.next_edge_id += 1
@@ -6259,22 +6185,20 @@ class Detector:
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
         self._keep_step(ph, since, watts, var, cluster.id, where)
-        if GROUPING == "mixture":
-            cluster.recent.append((size, angle))
-            del cluster.recent[:-MIX_KEEP]
+        cluster.recent.append((size, angle))
+        del cluster.recent[:-MIX_KEEP]
         return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
-                    kind: List["StepGroup"], angle: Optional[float] = None, where: str = ""):
-        """(the cluster whose segment of this phase and direction's size density
-        the step falls in, or None for a new one; the keys a new one gets).
-
-        What the inputs did is part of the clustering, not a split made before
-        it (2026-09-30): a step that came with an input's change joins a
-        cluster of its own only where such steps pile up in the segment far
-        above chance - the floor mat's +630 W with its thermostat, beside a
-        look-alike's +630 W with nothing - and otherwise the segment's plain
-        one. See EDGE_BATCH."""
+                    where: str = "") -> Tuple[Dict[str, str], str]:
+        """(the input keys the step's group is filed under, its meter): the step
+        added to this phase and direction's size density, whose segments judge
+        the inputs. What the inputs did is part of the grouping, not a split
+        made before it (2026-09-30): a step that came with an input's change is
+        keyed by it only where such steps pile up in its size segment far above
+        chance - the floor mat's +630 W with its thermostat, beside a
+        look-alike's +630 W with nothing - and otherwise plain. See EDGE_BATCH.
+        The density's own groups are gone (2026-10-29): the mixture groups."""
         g = _group(ph, up, where)
         # a state at the step (STATE_SUFFIX) is judged on its own, one input at a
         # time: the five states joined into one key never piled up above chance
@@ -6293,7 +6217,6 @@ class Detector:
         b = _bin(size, unit)
         h = self.edge_hist.setdefault(g, {})
         hk = self.edge_hist_keys.setdefault(g, {})
-        ha = self.edge_hist_angle.setdefault(g, {})
         at = self.edge_hist_at.get(g)
         if at is None:
             self.edge_hist_at[g] = since
@@ -6304,15 +6227,6 @@ class Detector:
                     hist[k] *= fade
                     if hist[k] < 1e-3:
                         del hist[k]
-            for sb in list(ha):
-                row = ha[sb]
-                for ab in list(row):
-                    row[ab] *= fade
-                    if row[ab] < 1e-3:
-                        del row[ab]
-                if not row:
-                    del ha[sb]
-            self._acol.pop(g, None)                    # every weight moved: worked out afresh
             self.edge_hist_at[g] = since
             self._dens.pop(g, None)                    # every weight moved: worked out afresh
         added = b not in h
@@ -6320,31 +6234,15 @@ class Detector:
         if key:
             row = hk.setdefault(key, {})
             row[b] = row.get(b, 0.0) + 1.0
-        if angle is not None:
-            ab = int(math.floor(angle / EDGE_ANGLE_BIN))
-            row = ha.setdefault(b, {})
-            row[ab] = row.get(ab, 0.0) + 1.0
-            for (lo, hi), cols in self._acol.get(g, {}).items():
-                if lo <= b <= hi:
-                    _exact_add(cols.setdefault(ab, []), 1.0)
         segs = self._segs[g] = self._valleys(g, h, b, added)      # with this step in it - see EDGE_RECUT
         plain = {n: "" for n in keyed}
         seg = next(((lo, hi) for lo, hi in segs if lo <= b <= hi), None)
         if states:
-            got = self._by_state(h, hk, unit, b, seg or (b, b), states, changes, kind, angle, where)
+            got = self._by_state(h, hk, b, seg or (b, b), states, changes)
             if got is not None:
-                return got
-        if seg is None:
-            return None, (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, b, b, keyed) else plain), where
-        members = [c for c in kind if c.owner == where
-                   and seg[0] <= _bin(c.watts, unit) <= seg[1]]
-        if angle is not None:
-            members = self._same_angle(g, ha, seg, angle, members)
-        if key and self._keyed_above_chance(hk.get(key, {}), h, seg[0], seg[1], keyed):
-            mine = [c for c in members if c.same_signals(keyed)]
-            return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
-        mine = [c for c in members if c.same_signals(plain)]
-        return (max(mine, key=lambda c: c.count) if mine else None), plain, where
+                return got, where
+        lo, hi = seg if seg is not None else (b, b)
+        return (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, lo, hi, keyed) else plain), where
 
     def _keep_step(self, ph: str, since: float, watts: float, var: Optional[float], gid: int, where: str) -> None:
         """A grouped step into the steps store, with the voltage either side of
@@ -6364,7 +6262,7 @@ class Detector:
         sqrt(2) x the phases' quietest noise (the size scale's unit back to a
         noise, EDGE_NOISE_SHARE), with their measured relative noise at that
         size; the angle's from the reactive resolution (q_quantum), never under
-        EDGE_ANGLE_KERNEL. See GROUPING."""
+        EDGE_ANGLE_KERNEL. See MIX_JOIN_WIDTHS."""
         sts = [self.phases[p] for p in ph if p in self.phases]
         unit = self.edge_unit.get(_group(ph, c.up, c.owner)) or MIN_NOISE_W * EDGE_NOISE_SHARE
         noise = unit / EDGE_NOISE_SHARE
@@ -6389,7 +6287,7 @@ class Detector:
         histogram keyed it by) a step is most likely from: within
         MIX_JOIN_WIDTHS of its centre in size and, where both are measured, in
         angle; the likelihood under a bell curve of the group's width, times
-        the group's share of steps. None for a new group. See GROUPING."""
+        the group's share of steps. None for a new group. See MIX_JOIN_WIDTHS."""
         best = None
         for c in kind:
             if c.owner != where or c.joined is not None or not c.same_signals(keys):
@@ -6408,13 +6306,13 @@ class Detector:
                 best = (score, c)
         return best[1] if best else None
 
-    def _by_state(self, h: Dict[int, float], hk: Dict[str, Dict[int, float]], unit: float, b: int,
-                  seg: Tuple[int, int], states: Dict[str, str], changes: Dict[str, str],
-                  kind: List["StepGroup"], angle: Optional[float], where: str):
-        """_by_density's answer where one input's STATE at the step piles up in
+    def _by_state(self, h: Dict[int, float], hk: Dict[str, Dict[int, float]], b: int,
+                  seg: Tuple[int, int], states: Dict[str, str],
+                  changes: Dict[str, str]) -> Optional[Dict[str, str]]:
+        """_by_density's keys where one input's STATE at the step piles up in
         the size segment above chance - the input furthest above it decides,
-        and the cluster is keyed by that one state (with the change keys);
-        None where none does, so the step is filed by the change keys alone.
+        and the group is keyed by that one state (with the change keys);
+        None where none does, so the step is keyed by the change keys alone.
         Called with the step already in the group's histogram ``h`` and the
         segments cut; the state histograms are kept per input in ``hk``."""
         for n, k in states.items():
@@ -6432,14 +6330,7 @@ class Detector:
             return None
         keyed = dict(changes)
         keyed[best[1]] = best[2]
-        members = [c for c in kind if c.owner == where and seg[0] <= _bin(c.watts, unit) <= seg[1]]
-        if angle is not None:
-            g = _group(members[0].phase, members[0].up, where) if members else None
-            ha = self.edge_hist_angle.get(g) if g else None
-            if ha:
-                members = self._same_angle(g, ha, seg, angle, members)
-        mine = [c for c in members if c.same_signals(keyed) and c.keys.get(best[1]) == best[2]]
-        return (max(mine, key=lambda c: c.count) if mine else None), keyed, where
+        return keyed
 
     def _valleys(self, g: str, h: Dict[int, float], b: int, added: bool) -> List[Tuple[int, int]]:
         """valley_segments(h) just after a step was added to bin ``b`` (a new
@@ -6480,18 +6371,7 @@ class Detector:
             st[4] = _valley_cuts(st[3], st[2], kernel[reach])
         else:
             st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
-        segs = _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
-        for lo_b, hi_b in self.edge_joins.get(g, ()):
-            joined: List[Tuple[int, int]] = []
-            for a, b in segs:
-                if joined and lo_b <= joined[-1][1] < hi_b:       # the cut before this segment lies inside the join
-                    joined[-1] = (joined[-1][0], b)
-                else:
-                    joined.append((a, b))
-            segs = joined
-        for c in self.edge_cuts.get(g, ()):
-            segs = [piece for a, b in segs for piece in (((a, c), (c + 1, b)) if a <= c < b else ((a, b),))]
-        return segs
+        return _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
@@ -6500,62 +6380,18 @@ class Detector:
         step, the step in them (EDGE_RECUT)."""
         old, self.edge_unit[g] = self.edge_unit[g], unit
 
-        def remap(hist: dict, angled: bool = False) -> dict:
+        def remap(hist: dict) -> dict:
             out: dict = {}
-            for b, w in (hist.items() if not angled else ((sb, row) for sb, row in hist.items())):
+            for b, w in hist.items():
                 lo, hi = (edge_scale(math.sinh(x * EDGE_BIN * EDGE_SCALE_REL) * old / EDGE_SCALE_REL, unit) / EDGE_BIN
                           for x in (b, b + 1))
                 for j in range(math.floor(lo), math.ceil(hi)):
-                    share = (min(hi, j + 1) - max(lo, j)) / (hi - lo)
-                    if angled:
-                        row = out.setdefault(j, {})
-                        for ab, wa in w.items():
-                            row[ab] = row.get(ab, 0.0) + wa * share
-                    else:
-                        out[j] = out.get(j, 0.0) + w * share
+                    out[j] = out.get(j, 0.0) + w * (min(hi, j + 1) - max(lo, j)) / (hi - lo)
             return out
         if g in self.edge_hist:
             self.edge_hist[g] = remap(self.edge_hist[g])
         if g in self.edge_hist_keys:
             self.edge_hist_keys[g] = {k: remap(row) for k, row in self.edge_hist_keys[g].items()}
-        if g in self.edge_hist_angle:
-            self.edge_hist_angle[g] = remap(self.edge_hist_angle[g], True)
-        self._acol.pop(g, None)
-
-    def _same_angle(self, g: str, ha: Dict[int, Dict[int, float]], seg: Tuple[int, int], angle: float,
-                    members: List["StepGroup"]) -> List["StepGroup"]:
-        """The size segment's clusters whose reactive angle lies in the step's
-        own band of the segment's angle density - see EDGE_ANGLE_BIN.
-
-        Every step changes the histogram before this reads it, so a cached
-        answer never lasts - but a step only ADDS to it. The segment's angle
-        density is kept per group and segment, each step in the segment added
-        to it (_by_density), and worked out afresh from the size bins inside the
-        segment only when there is none: after a fade, a rescale, a restart or
-        when the segment's edges moved. The sums are exact (partial sums), so
-        the density is the same whichever way it was reached."""
-        cache = self._acol.setdefault(g, {})
-        cols = cache.get(seg)
-        if cols is None:
-            if len(cache) >= 16:
-                del cache[next(iter(cache))]              # the oldest segment
-            cols = cache[seg] = {}
-            if len(ha) <= seg[1] - seg[0] + 1:
-                rows = (row for sb, row in ha.items() if seg[0] <= sb <= seg[1])
-            else:
-                rows = (row for sb in range(seg[0], seg[1] + 1) if (row := ha.get(sb)))
-            for row in rows:
-                for ab, w in row.items():
-                    _exact_add(cols.setdefault(ab, []), w)
-        col = {ab: math.fsum(parts) for ab, parts in cols.items()}
-        ab = int(math.floor(angle / EDGE_ANGLE_BIN))
-        band = next(((lo, hi) for lo, hi in valley_segments(col, EDGE_ANGLE_KERNEL / EDGE_ANGLE_BIN)
-                     if lo <= ab <= hi), (ab, ab))
-        # a cluster from before the angle was measured has none yet: it still
-        # matches, and takes its angle from the steps it now gets - so a saved
-        # library carries over instead of every load starting again
-        return [c for c in members if c.angle is None
-                or band[0] <= int(math.floor(c.angle / EDGE_ANGLE_BIN)) <= band[1]]
 
     def _likely_meter(self, ph: str, up: bool, size: float, since: float) -> str:
         """Where a step no meter placed most likely happened: the meter whose
@@ -6766,6 +6602,24 @@ class Detector:
                     if (x := self._sig(self._current(sid))) is not None and x.phases == phases and x.family), default=None)
         return self._sig(self._current(best[1])).family if best else 0
 
+    def _promote(self, start: int) -> None:
+        """A start group filed as a device alone (device_of) has learned its
+        stop partner: its record moves, once, to the pair with its strongest
+        partner, so the signature its runs went to becomes the pair's - one
+        load, not two devices either side of the run its stop group became
+        known (the owner, 2026-10-29). A later partner inherits nothing: a run
+        of its pair takes the signature only where it fits it."""
+        rec = self.pair_home.get(str(start))
+        if not rec:
+            return
+        partners = {self._final(f): self.partner_evidence(start, f) for f in self.partners_of(start)}
+        if not partners:
+            return
+        into = self.pair_home.setdefault(str(-(start * PAIR_ID_BASE + max(partners, key=partners.get))), {})
+        for sid, n in self.pair_home.pop(str(start)).items():
+            into[sid] = into.get(sid, 0.0) + n
+        self._device_home, self._votes = None, None
+
     def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Signature"]:
         """The signature most of this device's runs went to, of those on the
@@ -6776,7 +6630,7 @@ class Detector:
         carried all three phases (Home, ten days, 2026-09-30)."""
         if self._device_home is None:
             self._device_home = {}
-            for k, home in self.start_home.items():
+            for k, home in self.pair_home.items():
                 pooled = self._device_home.setdefault(int(k), {})
                 for sid, n in home.items():
                     pooled[sid] = pooled.get(sid, 0.0) + n
@@ -6851,17 +6705,17 @@ class Detector:
         return len(moved)
 
     def _rebuild_votes(self) -> None:
-        """start_home's votes by the signature each counts for now - what
+        """pair_home's votes by the signature each counts for now - what
         _merge_devices walked every pass - and every device to judge."""
         votes: Dict[int, Dict[int, float]] = {}
-        for k, home in self.start_home.items():
+        for k, home in self.pair_home.items():
             d = int(k)
             for sid, n in home.items():
                 row = votes.setdefault(self._current(sid), {})
                 row[d] = row.get(d, 0.0) + n
         self._votes = votes
         self._home = {sid: max(row, key=row.get) for sid, row in votes.items()}
-        self._dev_pos = {int(k): i for i, k in enumerate(self.start_home)}
+        self._dev_pos = {int(k): i for i, k in enumerate(self.pair_home)}
         self._rejudge_all = True
 
     def _touch(self, sid: int) -> None:
@@ -6871,14 +6725,14 @@ class Detector:
             self._rejudge.add(home)
 
     def _vote(self, key: str, sid: int) -> None:
-        """One more of start cluster ``key``'s runs filed into ``sid`` - as
-        start_home now says - kept in the votes _merge_devices reads."""
+        """One more of device ``key``'s runs filed into ``sid`` - as
+        pair_home now says - kept in the votes _merge_devices reads."""
         if self._votes is None:
             return
         d = int(key)
         pos = self._dev_pos.setdefault(d, len(self._dev_pos))
-        if len(self._dev_pos) != len(self.start_home):
-            self._votes = None                    # start_home was not grown through here: build again
+        if len(self._dev_pos) != len(self.pair_home):
+            self._votes = None                    # pair_home was not grown through here: build again
             return
         row = self._votes.get(sid)
         if row is None:
@@ -6900,7 +6754,7 @@ class Detector:
         self._home.pop(other_id, None)
         row = self._votes.get(keep_id)
         if gone is None or row is None:
-            self._votes = None                    # not what start_home says: build again
+            self._votes = None                    # not what pair_home says: build again
             return
         for d, n in gone.items():
             row[d] = row.get(d, 0.0) + n
@@ -6928,14 +6782,12 @@ class Detector:
         if pair is None:
             return None
         start, stop = pair[0], (pair[1] if len(pair) > 1 else None)
-        if GROUPING != "mixture":
-            return start
         start = self._final(start)
         partners = {self._final(f): self.partner_evidence(start, f) for f in self.partners_of(start)}
         stop = self._final(stop) if stop is not None else None
         if stop not in partners:
             stop = max(partners, key=partners.get) if partners else None
-        return -(start * 100003 + stop) if stop is not None else start
+        return -(start * PAIR_ID_BASE + stop) if stop is not None else start
 
     def _final(self, gid: int) -> int:
         """The group ``gid`` ended in after the daily joins (StepGroup.joined).
@@ -7339,13 +7191,10 @@ class Detector:
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "edge_hist_keys": {g: {k: {str(b): _trim(w, 3) for b, w in h.items() if w >= HIST_FLOOR * TRIM} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
-                "edge_hist_angle": {g: {f"{sb}:{ab}": _trim(w, 3) for sb, row in h.items() for ab, w in row.items() if w >= HIST_FLOOR * TRIM}
-                                    for g, h in self.edge_hist_angle.items()},
                 "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
+                "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
-                "edge_cuts": {g: list(v) for g, v in self.edge_cuts.items()},
-                "edge_joins": {g: [list(x) for x in v] for g, v in self.edge_joins.items()},
                 "co_run": dict(self.co_run),
                 "run_time": {str(k): _trim(v, 1) for k, v in self.run_time.items()},
                 "fall_n": {str(k): _trim(v, 3) for k, v in self.fall_n.items()},
@@ -7402,18 +7251,11 @@ class Detector:
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
-        det.edge_hist_angle = {}
-        for g, h in (d.get("edge_hist_angle") or {}).items():
-            nested = det.edge_hist_angle[g] = {}
-            for k, w in h.items():
-                sb, ab = k.split(":")
-                nested.setdefault(int(sb), {})[int(ab)] = float(w)
         det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
+        det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.order = {k: [float(x) for x in v] for k, v in (d.get("order") or {}).items()}
-        det.edge_cuts = {g: [int(x) for x in v] for g, v in (d.get("edge_cuts") or {}).items()}
-        det.edge_joins = {g: [tuple(x) for x in v] for g, v in (d.get("edge_joins") or {}).items()}
         det.co_run = {k: int(v) for k, v in (d.get("co_run") or {}).items()}
         det.run_time = {int(k): float(v) for k, v in (d.get("run_time") or {}).items()}
         det.fall_n = {int(k): float(v) for k, v in (d.get("fall_n") or {}).items()}
@@ -7896,9 +7738,7 @@ class Fleet:
                 if sig.learn_split() and det._home.get(sig.id) is not None:
                     det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
-            det.split_groups()               # groups overlaps proved two devices (run lifecycle)
-            det.merge_groups()               # ...and groups the evidence calls one (bench mode)
-            det.mix_daily()                  # mixture grouping's one-or-two tests (GROUPING)
+            det.mix_daily()                  # the groups' one-or-two tests and joins (run lifecycle)
             det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:
