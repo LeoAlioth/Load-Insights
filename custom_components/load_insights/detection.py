@@ -205,7 +205,14 @@ STORAGE_VERSION = 1
 #     after every filing, never into a signature a run was kept out of - the
 #     same history read at any slicing files the same library, which differs
 #     from one built in passes.
-DETECTOR_GENERATION = 22      # a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+# 23 = the run lifecycle (2026-10-28/29): a fall closes the run it most
+#     likely ends (size likeness x pair evidence x age, a probability; legs
+#     of a multi-phase run only on a fall across them; a second rise never
+#     ends the first without a fall or the readings), steps grouped by the
+#     mixture only (joins at 2 widths), runs filed and merged by their start
+#     and stop groups' pair (pair_home) - groups, devices and signatures all
+#     differ from 22's.
+DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
