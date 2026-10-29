@@ -251,3 +251,39 @@ Cards, capture / impurity (A = 582d4da with the mixture dials, B = density group
 A -> B is the split_groups cuts, which shaped the segments the input keying reads (circuits -7.1 kWh caught);
 B -> C, pair filing, costs ~3 kWh of Home's 228 and is kept as the design (a device is its pair) with the bug
 fixed. Two mixture weaknesses found on the way: dev/TODO.md INS-32.
+
+## A second rise ends the first at a fall of its size; a new fall group is no evidence (2026-10-29)
+
+Kozolec's boiler over-booked its main signature 30.24 kWh against 27.99 drawn, most of it three runs with no stop:
+3 Oct 08:40 booked 2,180 Wh for 72.5 min while the boiler, pulsing 1.8 kW every 20-40 s, drew 835. The cascade:
+the pond EVSE stepped 3,570 -> 2,190 W at 08:38:51 and the 0.5 rule closed the boiler for it; the boiler's next
+fall went to the charge (0.662 vs 0.644), so 2.2 kW of charge sat in the reading with no run; each later boiler
+rise came in a new step group (size off by up to 110 W, angle -43..+34 degrees - Kozolec's reactive from V x I
+on a 4.5-6.3 kW reading) and each fall too, so the newest pulse, at FALL_NO_PAIR 0.7 and no age vote, took every
+fall from the group-12 run at FALL_OTHER_PAIR 0.4 with an age vote of 0.57-0.72; and at every later group-12
+rise second_rise found ~4.3 kW "left" for it and kept it. Two changes (the owner):
+
+1. second_rise: a fall alike the first run (FALL_STEP_ALIKE) seen between the two rises that ended no run of the
+   group ends the first there (PhaseState.closed_groups records each close's group; a fall that ended a run of
+   the same group is that run's, so two units are still decided by the reading).
+2. _score_held: FALL_OTHER_PAIR only where the fall's group is some start's partner (Library.is_partnered); a
+   fall in a group nobody is partnered with scores every run at FALL_NO_PAIR.
+
+Cards against the quantum-guard commit (capture / impurity, kWh caught and wrong):
+
+| | before | after |
+|---|---|---|
+| Kozolec devices hidden | 82.0 / 4.1 (206.0, 8.8) | 86.0 / 4.7 (216.0, 10.7) |
+| Kozolec Boiler hidden | 82.2 / 15.0 (31.6, 5.6) | 92.8 / 17.2 (35.7, 7.4) |
+| Kozolec Pond EVSE hidden | 88.2 / 1.7 (132.4, 2.3) | 92.1 / 1.6 (138.2, 2.3) |
+| Kozolec devices fed | 82.9 / 4.1 | 82.9 / 4.1 |
+| Home devices hidden | 39.3 / 11.7 (89.6, 11.9) | 38.6 / 10.2 (88.0, 10.0) |
+| Home devices circuits | 44.4 / 11.4 (101.2, 13.0) | 42.6 / 10.2 (97.1, 11.0) |
+| Home devices fed | 53.8 / 6.3 (122.6, 8.2) | 53.9 / 6.1 (122.8, 8.0) |
+
+Losses: Home's Polnilnica hidden 70.1 -> 62.3 (-3.6 kWh, beyond its band), Workshop boiler impurity +15 points
+hidden and circuits (~1.3 kWh of 8.84), Kozolec's well pump 15.1 -> 0 (0.25 kWh). The boiler's main signature
+now books 29.48 kWh against 28.11 drawn; its impurity rose because a second signature (17 runs, 5.85 kWh: 3.37
+boiler, 1.1 Rest, 0.97 EVSE) now goes to it. Left: three no-stop runs (3 Oct 09:52 65 min +848 Wh, 7 Oct 12:52
++510, 3 Oct 10:59 +269), and the start of the cascade - an unmatched fall the 0.5 rule ends a run for when it
+fits another run stepping down - for the owner to design.
