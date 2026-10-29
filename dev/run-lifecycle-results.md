@@ -184,3 +184,28 @@ Filing by pair (Detector.device_of: start group + stop group), mixture, MIX_JOIN
 | Kozolec devices hidden / fed | 81.3 / 3.2, 84.5 / 3.1 | 82.5 / 3.9, 83.5 / 3.4 |
 
 The owner, 2026-10-29: "that is absolutely great". The default is still valleys until he says to switch.
+
+## The fall score as a probability (2026-10-29, bench dial FALL_SCORE, default legacy)
+
+The owner's design: a fall closes the open run with the highest size likeness x pair factor x age vote, at
+FALL_NOTHING_MIN 0.2 or more (fall_similarity: 1 within one noise, then a steep curve 0.5 at r = 0.75 with a
+straight tail, a miss upwards x2.5; pair factor the evidence's share over chance, 0.7 with no partner, 0.4 a
+partner of others; age a bell over log seconds, at most -0.3 younger, -0.5 older). With it: the 0.5 rule ends
+the least likely still running first; joined groups keep their order counts (_fold_order); a fall leaving the
+rest of the run's rise carried is a step down; two or three runs ending together are one candidate; a run is
+scored also less the drops held since it started. Susilna's "too big" closes of compressor-sized runs 50 -> 23.
+
+Cards (mixture, join 2), capture / impurity, legacy -> probability:
+
+| | hidden | circuits | fed |
+|---|---|---|---|
+| Home devices (227.9 kWh) | 34.2 / 12.7 -> 27.4 / 9.9 (78.0 -> 62.5 kWh caught, 11.3 -> 6.9 wrong) | 37.2 / 13.3 -> 40.2 / 11.1 (84.8 -> 91.6, 13.0 -> 11.4) | 52.2 / 6.2 -> 53.8 / 6.4 (119.0 -> 122.6, 7.9 -> 8.4) |
+| Home partition (604.6 kWh) | 44.8 / 10.9 -> 41.4 / 11.1 | 51.5 / 8.7 -> 51.2 / 7.8 | 56.7 / 6.5 -> 57.2 / 5.4 |
+| Kozolec devices (251.2 kWh) | 82.5 / 3.9 -> 81.8 / 2.6 (207.3 -> 205.5, 8.4 -> 5.5) | - | 83.5 / 3.4 -> 83.1 / 4.1 |
+
+Home hidden loses most at Polnilnica (70.1 -> 47.4 %, -10.4 kWh), Susilna (24.0 -> 20.9, -2.8 kWh), the office
+plug and Blaževa Soba; Susilna fed gains (44.8 -> 48.7). The first probability card (no age bell, combinations or
+held drops) had Home hidden at 32.9 / 10.7 and Kozolec at 78.1 / 8.3: the Kozolec fixes cost Home hidden - next
+to trace. Kozolec's earlier loss was the age vote vetoing a 537 W run 21 s old (its fall then shrank an EVSE
+charge), boiler + a 1 kW load falling together taken for one run, and a mid-charge drop held but not consulted
+(the charge booked at its stop's 2,604 W for 3.4 h). Default left at legacy until the owner decides.
