@@ -370,6 +370,7 @@ FALL_AGE_LONG_W = 0.5
 # levels of it, no run of their own. Bench dial (spec open point).
 DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
+CLOSED_KEEP = 500              # the closes a phase remembers for second_rise (PhaseState.closed_groups)
 STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
 V_NOMINAL = 230.0              # the voltage a group's sizes are compared at once its k is known
 STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages are the medians of
@@ -2092,6 +2093,9 @@ class PhaseState:
     # (since, watts, closed_at) of edges closed in the last minute, for the
     # same question from the other side.
     recent_closed: List[Tuple[float, float, float]] = field(default_factory=list, repr=False, compare=False)
+    # (closed_at, start group) of every run closed since the oldest open one
+    # started: which falls already ended a run of a group (second_rise)
+    closed_groups: List[Tuple[float, Optional[int]]] = field(default_factory=list, repr=False, compare=False)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the detector whose edge library and pair models this phase asks, its
@@ -2938,7 +2942,10 @@ class PhaseState:
         a group with no history of two units called it a missed fall); under
         half it fell unseen, closed at the seen fall of its size between the
         two (PAIR_TIGHT_NOISES), else the newest fall between, else the new
-        rise - never at its usual length. A load the noise hides is kept but
+        rise - never at its usual length. First, though: a fall alike the first
+        (FALL_STEP_ALIKE) seen between the two that ended no run of the group
+        ended it - the reading can carry a load no run holds (Kozolec's untracked
+        charge kept a boiler pulse open 72 min). A load the noise hides is kept but
         never counted as a second unit. A run its meter holds is the meter's
         to end."""
         out = []
@@ -2951,6 +2958,18 @@ class PhaseState:
             others = sum(self.level_of(x) for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
             left = before - self.baseline - others
             noise = self.noise_at(o.watts)
+            # a fall alike it seen between the two that ended no run of its
+            # group was its end (the owner, 2026-10-29): Kozolec's boiler run
+            # kept for 72 min by an unmetered charge in the reading, its falls
+            # taken by its own pulses filed in other groups
+            sigma = math.sqrt(2.0) * noise
+            used = [t for t, g in self.closed_groups if g == cid]
+            seen = next((d for d in self.declared[bisect.bisect_right(self.declared_t, o.since):]
+                         if d[0] < keep.since and d[1] < 0 and not any(abs(d[0] - t) < 0.01 for t in used)
+                         and fall_similarity(o.watts, -d[1], FALL_PLATEAU_NOISES * sigma) >= FALL_STEP_ALIKE), None)
+            if seen is not None:
+                out.append(self._end(o, seen[0], o.now or o.watts))
+                continue
             if left >= 0.5 * self.level_of(o):
                 group = self.lib.cluster(o.cluster) if self.lib is not None else None
                 if group is not None and o.watts > 2.0 * noise and left >= o.watts - noise:
@@ -3337,9 +3356,14 @@ class PhaseState:
         # explain. Kozolec's pond EVSE charges for hours beside the boiler, and
         # the boiler's falls came while it ran 3x chance (evidence 1.1) against
         # the boiler's own pair's 8x (2.0): counted alike, a charge took the
-        # boiler's fall (hidden EVSE 89.9 -> 81.5 % caught, 2026-10-29)
+        # boiler's fall (hidden EVSE 89.9 -> 81.5 % caught, 2026-10-29). A fall
+        # group no start is partnered with yet is nobody's, no evidence against
+        # a run whose group has partners: Kozolec's boiler, at 0.4, lost its
+        # falls (each in a new group) to its own rises filed in new groups at
+        # 0.7 and stayed open for an hour (2026-10-29)
         known = (max(FALL_OTHER_PAIR, 1.0 - math.exp(-ev)) if ev > 0
-                 else FALL_OTHER_PAIR if lib is not None and o.cluster is not None and lib.partners_of(o.cluster)
+                 else FALL_OTHER_PAIR if (lib is not None and o.cluster is not None and lib.partners_of(o.cluster)
+                                          and fall is not None and lib.is_partnered(fall))
                  else FALL_NO_PAIR)
         return alike * known * self._age_fit(o, at, fall), pick
 
@@ -3355,6 +3379,8 @@ class PhaseState:
         this run's stop."""
         if o.cluster is None and self.lib is not None:
             self.lib.resolve_rise(o)             # its event window has not passed: form the event now
+        oldest = min((x.since for x in self.open_edges if x is not o), default=at)
+        self.closed_groups = [c for c in self.closed_groups if c[0] >= oldest][-CLOSED_KEEP:] + [(at, o.cluster)]
         pair = (o.cluster, self.stop_cluster if direct else None)
         levels = list(o.levels)
         if len(levels) == 1:
@@ -3453,6 +3479,7 @@ class PhaseState:
                 "stood": self._stood, "rel_tick": self._rel_tick,
                 "absorb_until": None if self.absorb_until == -math.inf else self.absorb_until,
                 "held_drops": [list(x) for x in self.held_drops], "recent_closed": [list(x) for x in self.recent_closed],
+                "closed_groups": [[_trim(x[0], 3), x[1]] for x in self.closed_groups],
                 "declared": [[_trim(x, 3) for x in e] for e in self.declared]}
 
     @classmethod
@@ -3478,6 +3505,7 @@ class PhaseState:
                    absorb_until=-math.inf if d.get("absorb_until") is None else float(d["absorb_until"]),
                    held_drops=[tuple(x) for x in d.get("held_drops") or []],
                    recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
+                   closed_groups=[tuple(x) for x in d.get("closed_groups") or []],
                    declared=[tuple(e) for e in d.get("declared") or []],
                    declared_t=[e[0] for e in d.get("declared") or []])
         st._classify()
@@ -5919,7 +5947,7 @@ class Detector:
         counts stand still."""
         stamp = (self._order_ver, len(self.order), self.order_span)
         if self._ev_cache is None or self._ev_cache[0] != stamp:
-            self._ev_cache = (stamp, {}, {})
+            self._ev_cache = (stamp, {}, {}, {})
         return self._ev_cache
 
     def _evidence(self, rise: int, fall: int) -> float:
@@ -5972,6 +6000,14 @@ class Detector:
             self._elig = (len(self.order), idx)
         memo[key] = [f for f, acc in self._elig[1].get(rise, ()) if self.partner_evidence(rise, f) > 0]
         return list(memo[key])
+
+    def is_partnered(self, fall: int) -> bool:
+        """Whether some start group has ``fall`` among its partners."""
+        memo = self._order_memo()[3]
+        if "falls" not in memo:
+            self.partners_of(-1)                 # builds _elig
+            memo["falls"] = {self._fin(f) for r in self._elig[1] for f in self.partners_of(r)}
+        return self._fin(fall) in memo["falls"]
 
     def usual_length(self, start: int) -> Optional[float]:
         """Seconds a run that starts with this group usually lasts: over its

@@ -346,6 +346,35 @@ def test_a_second_rise_never_ends_the_first_without_a_fall_or_the_readings():
     assert [(x.start, x.end) for x in st.second_rise(1, keep)] == [(T0, T0 + 70.0)]   # no fall seen: the new rise
 
 
+def test_a_second_rise_ends_the_first_at_a_fall_of_its_size_no_run_of_its_group_took():
+    """Kozolec 3 Oct 08:40: a boiler pulse kept 72 min because an unmetered
+    charge in the reading looked like it still carried it, its fall taken by
+    its own next pulse filed in another group (the owner, 2026-10-29). A fall
+    that ended a run of the same group is that run's: two units, the reading
+    decides."""
+    rows = [(T0 + 40.0, -3390.0, None, T0 + 35.0, T0 + 40.0, T0 + 45.0, 300.0 + 5000.0),
+            (T0 + 70.0, 5700.0, None, T0 + 65.0, T0 + 70.0, T0 + 75.0, 300.0 + 5000.0 + 5700.0)]
+    det, st, keep = _second_rise_phase(rows)
+    st.closed_groups = [(T0 + 40.0, 2)]
+    assert [(x.start, x.end) for x in st.second_rise(1, keep)] == [(T0, T0 + 40.0)]
+    det, st, keep = _second_rise_phase(rows)
+    st.closed_groups = [(T0 + 40.0, 1)]
+    assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
+
+
+def test_a_fall_group_nobody_is_partnered_with_is_no_evidence_against_a_run():
+    """A fall in a group no start has as a partner scores a run whose group has
+    partners as one with none (FALL_NO_PAIR): Kozolec's boiler lost its falls,
+    each in a new group, at FALL_OTHER_PAIR (2026-10-29)."""
+    det, st = _scoring_phase((0.0, 1800.0, 1))
+    _evidence(det, 1, 7, 600.0)
+    st.stop_cluster = 9
+    fresh = st._score_held(st.open_edges[0], 1800.0, T0 + 600.0)[0]
+    _evidence(det, 2, 9, 600.0)
+    taken = st._score_held(st.open_edges[0], 1800.0, T0 + 600.0)[0]
+    assert abs(fresh / taken - D.FALL_NO_PAIR / D.FALL_OTHER_PAIR) < 1e-6, (fresh, taken)
+
+
 def test_two_runs_stopping_in_one_reading_are_one_candidate():
     """Kozolec 14 Oct 19:15: the boiler (1,829 W) and a 1 kW load fell together,
     2,827 W, beside a 3,604 W charge: the two close, the charge goes on (the
