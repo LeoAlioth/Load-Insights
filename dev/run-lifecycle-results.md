@@ -227,3 +227,27 @@ Soba 18.8 -> 26.7, Susilna 24.0 / 14.3 -> 25.5 / 14.9 hidden and 44.8 -> 46.3 fe
 8.2 -> 15.0 hidden (3.1 -> 5.6 kWh wrong). The owner: "the results are good" - the probability score becomes the
 only one: the legacy score, FALL_SCORE, PAIR_SCORE_MIN and UNITS_NEED_HISTORY are removed (2026-10-29); the
 dials named above for earlier runs no longer exist.
+
+## Mixture the only grouping, pair filing made real (2026-10-29)
+
+The owner: drop the size density's groups and file by the pair. Removed: GROUPING (mixture only), the density's
+cluster choice and its angle bands, split_groups / edge_cuts, merge_groups / edge_joins / GROUP_MERGE,
+SPLIT_SHARE; MIX_JOIN_WIDTHS 3 -> 2 as benched. The density stays for input keying and meter placement. And a bug
+found removing it: filing looked a device up by its pair (device_of) while runs were counted by start
+(start_home), so no run found its device's signature - each founded one and the start's merge folded them back,
+the Wash-born heater lost into a kettle's. Now pair_home is keyed by the device and holds the merge votes; a start
+that learns its stop partner hands its record to the pair with its strongest partner (_promote).
+
+Cards, capture / impurity (A = 582d4da with the mixture dials, B = density groups removed, C = + pair_home):
+
+| | A | B | C |
+|---|---|---|---|
+| Home devices hidden | 36.1 / 13.3 (82.3 kWh caught, 12.6 wrong) | 37.8 / 12.0 (86.2, 11.8) | 36.1 / 12.4 (82.3, 11.6) |
+| Home devices circuits | 41.9 / 11.5 (95.5, 12.4) | 38.8 / 12.8 (88.4, 13.0) | 38.9 / 13.7 (88.7, 14.1) |
+| Home devices fed | 54.0 / 5.6 (123.1, 7.3) | 54.3 / 6.4 (123.8, 8.4) | 53.1 / 7.6 (121.0, 9.9) |
+| Home partition hidden | 49.7 / 11.0 | 50.4 / 11.4 | 48.9 / 11.5 |
+| Kozolec devices hidden / fed | 81.8 / 4.0, 82.9 / 4.1 | 81.8 / 4.0, 82.9 / 4.1 | 82.0 / 4.1, 82.9 / 4.1 |
+
+A -> B is the split_groups cuts, which shaped the segments the input keying reads (circuits -7.1 kWh caught);
+B -> C, pair filing, costs ~3 kWh of Home's 228 and is kept as the design (a device is its pair) with the bug
+fixed. Two mixture weaknesses found on the way: dev/TODO.md INS-32.
