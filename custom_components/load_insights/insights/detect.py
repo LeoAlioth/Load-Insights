@@ -320,16 +320,11 @@ SOURCE_IDLE_W = 25.0
 # a reference circuit has to carry something this often to be one
 LIVE_SHARE = 0.2
 MATCH_EDGE_REL = 0.15          # a step down pairs with a step up this close in size, or the noise
-# A fall closes the open run whose GROUP it ends best (PhaseState._score, run
-# lifecycle 2026-10-28): within PAIR_TIGHT_NOISES of the two steps' noise of
-# the run's own rise while the two groups have no partner evidence, the learned
-# ratio's spread once they have; the best score at PAIR_SCORE_MIN or more
-# closes; an age's distance from the learned length counts in spreads, never
-# under PAIR_LENGTH_SD_MIN (log seconds). Bench dials (spec open point).
+# The tight size match - within PAIR_TIGHT_NOISES of the two steps' noise -
+# that a dip's return (_dip_fits), a step down and an emptied run are judged
+# on; an age's distance from a learned length counts in spreads never under
+# PAIR_LENGTH_SD_MIN (log seconds).
 PAIR_TIGHT_NOISES = 3.0
-# no floor: at 0 the age penalty kept true partners off - Home hidden alone
-# 30.6 / 15.5 -> 31.7 / 14.0 % capture / impurity with none (2026-10-28)
-PAIR_SCORE_MIN = -math.inf
 PAIR_LENGTH_SD_MIN = 0.1
 PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size teaches no ratio (note_order)
 # The fall's score as a probability (the owner, 2026-10-29): how alike the fall
@@ -342,10 +337,11 @@ PAIR_RATIO_MAX = 2.0           # a fall more than this far off its start's size 
 # compressor or a pump settles after its inrush, a heated element draws less
 # warm; a heat-pump water heater, the exception, is learned as a pair. The
 # best at FALL_NOTHING_MIN or more closes; under it the fall ends nothing.
-# FALL_SCORE "legacy" is the 2026-10-28 score: the default until the owner
-# decides (Home hidden 34.2 / 12.7 -> 27.4 / 9.9 under "probability", circuits
-# and fed better - dev/run-lifecycle-results.md, 2026-10-29).
-FALL_SCORE = "legacy"
+# The only score since 2026-10-29 (the owner: "the results are good"): against
+# the 2026-10-28 one - a tight size test plus evidence less an age penalty -
+# Home devices hidden 34.2 / 12.7 -> 36.1 / 13.3 %, circuits 37.2 / 13.3 ->
+# 41.9 / 11.5, fed 52.2 / 6.2 -> 54.0 / 5.6; Kozolec hidden 82.5 / 3.9 ->
+# 81.8 / 4.0 (dev/run-lifecycle-results.md).
 FALL_PLATEAU_NOISES = 1.0
 FALL_SIM_MID = 0.75
 FALL_SIM_STEEP = 30.0
@@ -399,18 +395,12 @@ MIX_TEST_MIN = 12              # ...and how many before it is tested
 MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
 # A group's overlaps split it where one size puts this share of them on
-# opposite sides (Detector.split_groups). And how a second unit is believed
-# (PhaseState.second_rise, spec open point): 0 on the reading at each rise,
-# 1 only in a group that has shown PAIR_MIN_RUNS overlaps already - bench dial.
+# opposite sides (Detector.split_groups).
 SPLIT_SHARE = 0.8
 # The mirror (Detector.merge_groups, bench mode, off): two groups joined when
 # the evidence says one device, the larger at most GROUP_MERGE_RATIO the smaller
 GROUP_MERGE = 0
 GROUP_MERGE_RATIO = 1.5
-# 1 benched better at both sites (2026-10-28, cards home kozolec): Home hidden
-# 31.7 / 14.0 -> 32.0 / 13.0, fed 52.8 / 6.4 -> 53.0 / 6.5; Kozolec hidden
-# 82.3 / 6.2 -> 81.3 / 3.2 (its boiler's impurity 16.7 -> 6.9)
-UNITS_NEED_HISTORY = 1
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -2853,11 +2843,9 @@ class PhaseState:
         if short <= self.noise_at(level):
             return []
         # the least likely still running first (the owner, 2026-10-29), the
-        # oldest of a tie; FALL_SCORE legacy: the oldest first
-        legacy = FALL_SCORE == "legacy"
-        order = (sorted(self.open_edges, key=lambda x: x.since) if legacy
-                 else sorted(self.open_edges, key=lambda x: (self.still_on(x, at), x.since)))
-        for o in (list(self.open_edges) if legacy else order):
+        # oldest of a tie - oldest first before
+        order = sorted(self.open_edges, key=lambda x: (self.still_on(x, at), x.since))
+        for o in order:
             if self.owned(o):
                 continue
             size = o.now or o.watts
@@ -2932,65 +2920,40 @@ class PhaseState:
         return left < 0.5 * size and size - left > self.noise_at(level)
 
     def second_rise(self, cid: int, keep: "_Open") -> List[Run]:
-        """A rise of a group already running (run lifecycle, 2026-10-28): a
-        second UNIT where the reading the rise stepped from, less the other
-        runs, still carried the first - the two kept, a cannot-link pair for
-        the group (StepGroup.cannot); else the first's fall was missed, and its
-        run ends at the newest declared fall between the two of its size
-        (PAIR_TIGHT_NOISES), else at its usual length, at most the new rise.
-        A load the noise hides is never called a second unit. A run its meter
-        holds is the meter's to end."""
+        """A rise of a group already running (run lifecycle, 2026-10-28): never
+        closes the first without a fall seen or the readings showing it fell
+        (the owner, 2026-10-29). The reading the new rise stepped from, less the
+        other runs and the floor, still carries at least half of the first -
+        both stay on, the overlap recorded as a cannot-link pair for the group
+        (StepGroup.cannot) where it carried all of it (Home's EVBox ramping 3.4
+        then 5.7 kW in one group lost its first part for a whole charge when
+        a group with no history of two units called it a missed fall); under
+        half it fell unseen, closed at the seen fall of its size between the
+        two (PAIR_TIGHT_NOISES), else the newest fall between, else the new
+        rise - never at its usual length. A load the noise hides is kept but
+        never counted as a second unit. A run its meter holds is the meter's
+        to end."""
         out = []
         e = self.declared_at(keep.since)
         before = e[6] - e[1] if e is not None and len(e) > 6 else None
         for o in [o for o in self.open_edges if o.cluster == cid and o is not keep
                   and o.since < keep.since and not self.owned(o)]:
-            if FALL_SCORE != "legacy":
-                out += self._second_rise_seen(o, keep, before)
+            if before is None or self.baseline is None:
                 continue
-            others = sum(x.watts for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
+            others = sum(self.level_of(x) for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
+            left = before - self.baseline - others
             noise = self.noise_at(o.watts)
-            group = self.lib.cluster(cid) if self.lib is not None else None
-            if (before is not None and self.baseline is not None and o.watts > 2.0 * noise
-                    and before - self.baseline - others >= o.watts - noise):
-                seen = group is not None and len(group.cannot) >= PAIR_MIN_RUNS
-                if group is not None:
+            if left >= 0.5 * self.level_of(o):
+                group = self.lib.cluster(o.cluster) if self.lib is not None else None
+                if group is not None and o.watts > 2.0 * noise and left >= o.watts - noise:
                     group.cannot.append((o.watts, _angle(o.watts, o.var), keep.watts, _angle(keep.watts, keep.var)))
                     del group.cannot[:-CANNOT_KEEP]
-                if not UNITS_NEED_HISTORY or seen:
-                    continue
+                continue
             tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * noise
-            fall = next((d for d in reversed(self.declared) if o.since < d[0] < keep.since
-                         and d[1] < 0 and abs(-d[1] - o.watts) <= tight), None)
-            usual = self.lib.usual_length(cid) if self.lib is not None else None
-            at = fall[0] if fall is not None else (min(keep.since, o.since + usual) if usual else keep.since)
-            out.append(self._end(o, at, o.now or o.watts))
+            between = [d for d in reversed(self.declared) if o.since < d[0] < keep.since and d[1] < 0]
+            fall = next((d for d in between if abs(-d[1] - o.watts) <= tight), between[0] if between else None)
+            out.append(self._end(o, fall[0] if fall is not None else keep.since, o.now or o.watts))
         return out
-
-    def _second_rise_seen(self, o: _Open, keep: _Open, before: Optional[float]) -> List[Run]:
-        """second_rise under the probability score (the owner, 2026-10-29: never
-        closed without a fall seen or the readings showing it fell): the
-        reading the new rise stepped from, less the other runs and the floor,
-        still carries at least half of ``o`` - both stay on (Home's EVBox
-        ramping 3.4 then 5.7 kW in one group lost its first part for the whole
-        charge), the overlap recorded as two units where it carried all of it;
-        under half - it fell unseen, closed at the seen fall of its size between
-        the two, else the newest fall between, else the new rise."""
-        if before is None or self.baseline is None:
-            return []
-        others = sum(self.level_of(x) for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
-        left = before - self.baseline - others
-        noise = self.noise_at(o.watts)
-        if left >= 0.5 * self.level_of(o):
-            group = self.lib.cluster(o.cluster) if self.lib is not None else None
-            if group is not None and o.watts > 2.0 * noise and left >= o.watts - noise:
-                group.cannot.append((o.watts, _angle(o.watts, o.var), keep.watts, _angle(keep.watts, keep.var)))
-                del group.cannot[:-CANNOT_KEEP]
-            return []
-        tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * noise
-        between = [d for d in reversed(self.declared) if o.since < d[0] < keep.since and d[1] < 0]
-        fall = next((d for d in between if abs(-d[1] - o.watts) <= tight), between[0] if between else None)
-        return [self._end(o, fall[0] if fall is not None else keep.since, o.now or o.watts)]
 
     def _remember_close(self, o, at: float) -> None:
         self.recent_closed.append((o.since, o.watts, at))
@@ -3049,10 +3012,11 @@ class PhaseState:
         # Not by size and recency any more (run lifecycle, 2026-10-28): the
         # newest open start of the fall's size closed Susilna's compressor runs
         # minutes in on an unrelated fall of its size (~50 kWh of its leak).
-        # Each open run is scored as its group (_score): the fall against the
-        # run's own rise, partner evidence learned from ORDER (Detector.
-        # note_order) and the run's age against that pair's length; the best
-        # above PAIR_SCORE_MIN closes, the newest of a tie. Before, swept
+        # Each open run is scored as its group (_score, a probability since
+        # 2026-10-29): the fall's likeness to where the run should stop, partner
+        # evidence learned from ORDER (Detector.note_order) and the run's age
+        # against that pair's length; the best at FALL_NOTHING_MIN or more
+        # closes, the newest of a tie. Before, swept
         # 2026-09-23: newest-that-passes beat best-fit at both sites (Kozolec's
         # boiler 89.2 -> 79.0 % in one signature with best-fit) - size alone,
         # with no order or age behind it.
@@ -3085,12 +3049,19 @@ class PhaseState:
                     o.levels, o.var, o.surge, o.lo, o.hi = [(o.since, o.watts)], None, 0.0, None, None
                     self._remember_close(part, at)
                     return [self._close(part, at, watts, var)]
-        if FALL_SCORE != "legacy":
-            got = self._just_risen(at, watts, var)
-            if got:
-                return got
+        # ...but first the run a rise of the fall's size opened seconds ago,
+        # whatever part of it a meter took: a 400 W load dipped twice for 6 s;
+        # its first return (+392) was split, 107 W to a plug's coincident wobble
+        # and a 286 W rest, and the second dip (-402), matching nothing,
+        # joint-stopped a 515 W run 102 minutes old (Home 09-24 20:55). The
+        # newest run such a rise opened is the one ending now (2026-10-03) -
+        # before the score: a fall a fifth under a run's size scores, and the
+        # 515 W run took the 402 W dip again (2026-10-29)
+        got = self._just_risen(at, watts, var)
+        if got:
+            return got
         cands, picks = [], {}
-        floor = PAIR_SCORE_MIN if FALL_SCORE == "legacy" else FALL_NOTHING_MIN
+        floor = FALL_NOTHING_MIN
         for i, o in enumerate(self.open_edges):
             if self.owned(o):
                 continue                      # its meter still shows it on: not this fall's
@@ -3098,7 +3069,7 @@ class PhaseState:
             if got is not None and got >= floor:
                 cands.append((got, i))
                 picks[i] = pick
-        combo = self._combination(at, watts) if FALL_SCORE != "legacy" else None
+        combo = self._combination(at, watts)
         if combo is not None and combo[0] >= floor and (not cands or combo[0] > max(cands)[0]):
             # several runs stopping in one reading, scored as one candidate (the
             # owner, 2026-10-29): Kozolec's boiler and a 1 kW load fell together
@@ -3119,18 +3090,6 @@ class PhaseState:
                     level -= w
                     o.levels.append((t, level))
             return [self._end(o, at, watts, var, direct=True)]
-        # ...or, nothing matching, the run a rise of the fall's size opened
-        # seconds ago, whatever part of it a meter took: a 400 W load
-        # dipped twice for 6 s; its first return (+392) was split, 107 W
-        # to a plug's coincident wobble and a 286 W rest, and the second
-        # dip (-402), matching nothing, joint-stopped a 515 W run 102
-        # minutes old (Home 09-24 20:55). The newest run such a rise
-        # opened is the one ending now (2026-10-03). Before the score since it
-        # is a probability (2026-10-29): a fall a fifth under a run's size
-        # scores, and the 515 W run took the 402 W dip again
-        got = self._just_risen(at, watts, var) if FALL_SCORE == "legacy" else None
-        if got:
-            return got
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
             if not self.owned(o) and o.watts - watts > self._tol(o.watts, watts) and (
@@ -3292,9 +3251,9 @@ class PhaseState:
         owner, 2026-10-29: a three-phase load stops on all its phases at once).
         Kozolec's and Home's chargers lost legs to other loads' single-phase
         falls - the EVBox's A leg to a 1,751 W fall on A at 11 Oct 08:12, its
-        charge running on 46 minutes. The legacy score (FALL_SCORE) asks not."""
+        charge running on 46 minutes."""
         lib = self.lib
-        if FALL_SCORE == "legacy" or lib is None or o.cluster is None:
+        if lib is None or o.cluster is None:
             return True
         g = lib.cluster(o.cluster)
         if g is None or len(g.phase) < 2:
@@ -3307,15 +3266,17 @@ class PhaseState:
 
     def _score_held(self, o: _Open, watts: float, at: float,
                     new_level: Optional[float] = None) -> Tuple[Optional[float], Optional[list]]:
-        """The fall's probability-like score of ending run ``o`` (FALL_SCORE),
+        """The fall's probability-like score of ending run ``o``,
         and the drops held since ``o`` started that it is scored with, or None:
         alike in size to where ``o`` should stop - its rise, times the ratio
         learned with the fall's group once the pair has evidence, the band one
         noise of the two steps widened by that ratio's spread - times what the
         pair is known to be (FALL_NO_PAIR, FALL_OTHER_PAIR) and how typical
         its age is for an end (_age_fit). A fall that leaves the phase
-        carrying the other runs and no more emptied it, whatever its size
-        (see the legacy score below); one that leaves it carrying the rest of
+        carrying the other runs and no more emptied it, whatever its size - a
+        charge that tapered, a compressor that settled (Kozolec's pond EVSE
+        93.6 -> 78.9 % captured without it, 2026-10-28), on a reading of the
+        house alone; one that leaves it carrying the rest of
         the run's rise stepped it down (FALL_STEP_ALIKE): None. The size is
         also tried less one or two drops held since the run started (what it
         draws now), the best kept: Kozolec's EVSE lowered its charge 3,533 ->
@@ -3323,8 +3284,6 @@ class PhaseState:
         alone above the floor against its 3,568 W rise, the charge booked at
         2,604 W for 3.4 h where the joint stop (_joint_stop) had it in two
         levels (2026-10-29)."""
-        if FALL_SCORE == "legacy":
-            return self._score_legacy(o, watts, at, new_level), None
         if not self._fall_covers(o):
             return None, None
         lib, fall = self.lib, self.stop_cluster
@@ -3375,43 +3334,6 @@ class PhaseState:
                  else FALL_OTHER_PAIR if lib is not None and o.cluster is not None and lib.partners_of(o.cluster)
                  else FALL_NO_PAIR)
         return alike * known * self._age_fit(o, at, fall), pick
-
-    def _score_legacy(self, o: _Open, watts: float, at: float, new_level: Optional[float] = None) -> Optional[float]:
-        """How well the fall being paired (``watts``, group ``stop_cluster``)
-        ends open run ``o``, or None when its size rules it out. Size against
-        the run's own rise within PAIR_TIGHT_NOISES of the two steps' noise -
-        or, once the run's group and the fall's have partner evidence, against
-        the rise times their learned ratio, as wide as its spread; plus the
-        evidence; less the run's age off the pair's learned length, the less
-        the wider that spreads (a boiler's runs follow the weather)."""
-        lib, fall = self.lib, self.stop_cluster
-        ev = lib.partner_evidence(o.cluster, fall) if lib is not None and o.cluster is not None and fall is not None else 0.0
-        sigma = math.sqrt(2.0) * self.noise_at(max(o.watts, watts))
-        expect, width = o.watts, PAIR_TIGHT_NOISES * sigma
-        ratio = lib.pair_ratio(o.cluster, fall) if ev > 0 else None
-        if ratio is not None:
-            expect = o.watts * math.exp(ratio[0])
-            width = PAIR_TIGHT_NOISES * math.hypot(sigma, expect * ratio[1])
-        gap = abs(watts - expect)
-        if gap > width:
-            # ...or the fall leaves the phase carrying the other runs and no
-            # more: it emptied this one, whatever its size against the start -
-            # a charge that tapered, a compressor that settled (Kozolec's pond
-            # EVSE 93.6 -> 78.9 % captured without it, 2026-10-28). On a
-            # reading of the house alone, as _unseen_stop.
-            if new_level is None or self.baseline is None or not self.floor_zero or watts < 0.5 * self.level_of(o):
-                return None
-            gap = abs(new_level - self.baseline
-                      - sum(self.level_of(x) for x in self.open_edges if x is not o and x.since < at))
-            width = PAIR_TIGHT_NOISES * sigma
-            if gap > width:
-                return None
-        score = 1.0 - gap / width + ev
-        length = lib.pair_length(o.cluster, fall) if ev > 0 else None
-        if length is not None:
-            z = (math.log(max(at - o.since, 1.0)) - length[0]) / max(length[1], PAIR_LENGTH_SD_MIN)
-            score -= 0.5 * z * z / (1.0 + length[1])
-        return score
 
     def _span(self, since: float, until: float) -> int:
         """How many meter samples a run of that length was measured over, from
@@ -4577,7 +4499,7 @@ def _phi(z: float) -> float:
 def fall_similarity(expect: float, fall: float, band: float) -> float:
     """How alike a fall of ``fall`` W is to the ``expect`` W a run should stop
     at, ``band`` W of measurement either side counting as alike - 0..1, see
-    FALL_SCORE."""
+    FALL_PLATEAU_NOISES."""
     lo, hi = min(expect, fall), max(expect, fall)
     if hi <= 0.0:
         return 1.0
@@ -5857,8 +5779,7 @@ class Detector:
                 keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
                 keep.mix_sd = max(floor, _robust_sd([x for x, _ in keep.recent]))
                 gone.joined = keep.id
-                if FALL_SCORE != "legacy":
-                    self._fold_order(gone.id, keep.id)
+                self._fold_order(gone.id, keep.id)
                 joined += 1
                 if gone is a:
                     break
@@ -5890,8 +5811,8 @@ class Detector:
                 self.co_run[nk] = self.co_run.get(nk, 0) + n
 
     def _fin(self, gid: Optional[int]) -> Optional[int]:
-        """``gid`` followed through its joins (_final), but for FALL_SCORE legacy."""
-        return gid if gid is None or FALL_SCORE == "legacy" else self._final(gid)
+        """``gid`` followed through its joins (_final)."""
+        return gid if gid is None else self._final(gid)
 
     def _co_evidence(self, a: "StepGroup", b: "StepGroup") -> bool:
         """Did one of ``a`` and ``b`` rise while the other ran far more often than
