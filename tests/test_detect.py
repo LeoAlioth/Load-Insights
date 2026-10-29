@@ -1682,6 +1682,17 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     assert D.ESTABLISHED_HORIZON_S > 365 * day, "a yearly load must survive its own year"
 
 
+def test_a_start_is_known_by_its_own_record_and_every_pair_it_starts():
+    """An open run has a start and no stop yet: its name and its meter's homes
+    come from where the runs of its start went - filed as the start alone
+    before a partner was learned and as each pair it starts since (pair_home;
+    start_home is gone, 2026-10-29)."""
+    det = D.Detector()
+    pair = lambda start, stop: str(-(start * D.PAIR_ID_BASE + stop))   # noqa: E731
+    det.pair_home = {"7": {1: 5.0}, pair(7, 9): {2: 3.0, 1: 1.0}, pair(8, 9): {3: 4.0}}
+    assert det.start_homes(7) == {1: 6.0, 2: 3.0} and det.start_homes(8) == {3: 4.0} and det.start_homes(None) == {}
+
+
 def test_a_signature_evicted_is_not_where_its_device_files_next():
     """_prune left the signature lookup holding what it had just evicted, so
     a device whose home it was filed its next run into a signature no longer
@@ -4557,7 +4568,7 @@ def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
     home.locations.update({"Mansarda": 7, "Vtičnice - pisarna": 2})       # as on the day: none of the plug's yet
     other = _sig(140, 270.0, 600.0, 20, phases="c", first_seen=T0, last_seen=T0)
     f.main.signatures = [home, other]
-    f.main.start_home = {"163": {136: 3.0}, "165": {136: 40.0}, "77": {140: 20.0}}
+    f.main.pair_home = {"163": {136: 3.0}, "165": {136: 40.0}, "77": {140: 20.0}}
     run = D.Run(phases="c", start=T0, end=T0 + 9480.0, levels={"c": [(T0, 286.0)]}, pair=(165, None))
     assert f._held_homes(run) == [136]                                   # its level, held: not of its kind
     big = D.Run(phases="c", start=T0, end=T0 + 600.0, levels={"c": [(T0, 1000.0)]}, pair=(77, None))
