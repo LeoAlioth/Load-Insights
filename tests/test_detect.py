@@ -3164,6 +3164,31 @@ def test_a_reading_measures_what_it_can_resolve_not_just_how_it_jitters():
     assert st.noise >= 46.0, "a step it cannot resolve is not a step"
 
 
+def test_a_load_stepping_in_one_size_is_not_the_meters_resolution():
+    """Home's phase A, 13 Oct 22:38 local: a hob simmering stepped 150, 150,
+    -300 W every 2 s for twenty minutes, so nearly every change of the reading
+    was a multiple of 150 W - two 2 W ones among eighty - and the resolution
+    test took 144 W for the meter's, the phase's noise 7 -> 144 W, minutes
+    after the reading had moved by 1-2 W. One change smaller than a resolution
+    disproves it (QUANTUM_MEMORY_BLOCKS)."""
+    window = [150.0, 150.0, 300.0] * 26 + [2.0, 2.0]
+    assert D.quantum_of_steps(window) == 0.0                       # its smallest change is off the lattice
+    assert D.quantum_of_steps([150.0, 150.0, 300.0] * 27) == 150.0  # ...and alone it would pass
+    st = D.PhaseState(min_noise=7.0)
+    t, w = 0.0, 800.0
+    for i in range(300):                                           # a quiet reading first: 1-2 W moves
+        w += (1.0 if i % 2 else -1.0) * (1 + i % 2)
+        st.process(t, w)
+        t += 2.0
+    for i in range(600):                                           # then the hob, nothing else
+        w += (150.0, 150.0, -300.0)[i % 3]
+        st.process(t, w)
+        t += 2.0
+    assert st.quantum < 10.0 and st.noise < 20.0, (st.quantum, st.noise)
+    back = D.PhaseState.from_dict(json.loads(json.dumps(st.to_dict())))
+    assert back.change_mins == st.change_mins and back.change_mins
+
+
 def test_a_power_factor_carries_how_far_wrong_it_could_be():
     """A factor from coarse amps is not thrown away - it is given its error
     bar, and the bar is what stops it constraining anything.

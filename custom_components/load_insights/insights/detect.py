@@ -1143,6 +1143,15 @@ QUANTUM_PERCENTILE = 0.05
 # a whole multiple.
 QUANTUM_LATTICE_TOL = 0.25
 QUANTUM_LATTICE_SHARE = 0.9
+# A resolution is the meter's and fixed: one change smaller than it disproves
+# it. So the window's smallest change must lie on the lattice too
+# (quantum_of_steps), and no change under half the candidate may have come in
+# the last QUANTUM_MEMORY_BLOCKS blocks of QUANTUM_MIN_SAMPLES changes - the
+# smallest of each block kept (PhaseState.change_mins). Home's phase A, 13 Oct
+# 22:38 local: a hob simmering in 150 W stages every 2 s filled a window with
+# 150 / 300 W changes, two of 2 W among them, and the phase's noise went from
+# 7 to 144 W for twenty minutes, minutes after the reading had moved by 1-2 W.
+QUANTUM_MEMORY_BLOCKS = 25
 
 PRUNE_GRACE_S = 6 * 3600.0
 MAX_RECENT_SESSIONS = 200
@@ -1929,6 +1938,8 @@ def quantum_of_steps(steps: Sequence[float]) -> float:
     if q <= 0:
         return 0.0
     tol = QUANTUM_LATTICE_TOL * q
+    if kept[0] < q - tol:
+        return 0.0                         # a change smaller than the resolution: there is none
     on = sum(1 for x in kept if abs(x - q * round(x / q)) <= tol)
     return q if on >= QUANTUM_LATTICE_SHARE * len(kept) else 0.0
 
@@ -2065,6 +2076,7 @@ class PhaseState:
     # it can express.
     quantum: float = 0.0
     step_diffs: List[float] = field(default_factory=list)
+    change_mins: List[float] = field(default_factory=list)    # the smallest change of each block - see QUANTUM_MEMORY_BLOCKS
     moving_gaps: List[float] = field(default_factory=list)   # the gaps after a move, see CADENCE_GAPS
     _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)   # all_gaps, sorted (_classify)
@@ -2138,7 +2150,12 @@ class PhaseState:
         if self.last_w is not None and w != self.last_w:
             self.step_diffs.append(abs(w - self.last_w))
             if len(self.step_diffs) >= QUANTUM_MIN_SAMPLES * 2:
-                self.quantum = quantum_of_steps(self.step_diffs)
+                q = quantum_of_steps(self.step_diffs)
+                if q and min(self.change_mins + self.step_diffs) < 0.5 * q:
+                    q = 0.0                        # it moved by less, not long ago - see QUANTUM_MEMORY_BLOCKS
+                self.quantum = q
+                self.change_mins.append(min(self.step_diffs[-QUANTUM_MIN_SAMPLES:]))
+                del self.change_mins[:-QUANTUM_MEMORY_BLOCKS]
                 self.step_diffs = self.step_diffs[-QUANTUM_MIN_SAMPLES:]
                 # At once, not at the next recompute: noise is only remeasured
                 # every 240 IDLE samples, and a reading coarse enough to need
@@ -3424,7 +3441,7 @@ class PhaseState:
                 "q_level": self.q_level, "q_recent": list(self.q_recent), "interval": self.interval,
                 "min_noise": self.min_noise, "noise_rel": self.noise_rel,
                 "quantum": self.quantum, "q_quantum": self.q_quantum,
-                "step_diffs": list(self.step_diffs), "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
+                "step_diffs": list(self.step_diffs), "change_mins": list(self.change_mins), "last_w": self.last_w, "pv_level": self.pv_level, "seed": self.seed,
                 "seed_zeros": self.seed_zeros,
                 "idle_diffs": list(self.idle_diffs), "rel_diffs": list(self.rel_diffs), "pending": [list(x) for x in self.pending],
                 "open_edges": [o.as_list() for o in self.open_edges], "last_ts": self.last_ts,
@@ -3446,7 +3463,7 @@ class PhaseState:
                    q_level=d.get("q_level"), q_recent=list(d.get("q_recent") or []),
                    interval=d.get("interval", 0.0), noise_rel=d.get("noise_rel", 0.0),
                    quantum=d.get("quantum", 0.0), q_quantum=d.get("q_quantum", 0.0),
-                   step_diffs=list(d.get("step_diffs") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
+                   step_diffs=list(d.get("step_diffs") or []), change_mins=list(d.get("change_mins") or []), last_w=d.get("last_w"), pv_level=d.get("pv_level"), seed=list(d.get("seed") or []),
                    seed_zeros=int(d.get("seed_zeros") or 0),
                    idle_diffs=list(d.get("idle_diffs") or []), rel_diffs=list(d.get("rel_diffs") or []),
                    pending=[tuple(x) for x in d.get("pending") or []],
