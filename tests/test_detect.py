@@ -455,6 +455,20 @@ def test_a_heaters_voltage_exponent_is_fitted_and_its_sizes_compared_at_230_volt
         D.GROUPING = old
 
 
+@_mixture
+def test_a_run_of_a_shared_rise_group_is_filed_by_its_stop():
+    """A rise group ending in two partner fall groups (the hidrofor's wide
+    starts and another load's of their size): each run is that pair's device,
+    its stop the reliable signature; one with no stop is the start's."""
+    det = _order_cycles(90.0)
+    det.order["1>8"] = list(det.order["1>9"])
+    det.fall_n[8] = det.fall_n[9]
+    assert sorted(det.partners_of(1)) == [8, 9]
+    run = lambda stop: D.Run(phases="a", start=T0, end=T0 + 90.0, levels={"a": [(T0, 900.0)]}, pair=(1, stop))   # noqa: E731
+    assert det.device_of(run(9)) != det.device_of(run(8)) and det.device_of(run(9)) < 0
+    assert det.device_of(run(None)) == 1
+
+
 def test_identical_units_are_not_split():
     det = D.Detector()
     det.phases["a"].noise = 20.0
