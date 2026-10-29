@@ -359,6 +359,13 @@ FALL_OTHER_PAIR = 0.4
 # run down (a washer's 2 kW heater to its 400 W motor) unless it is this alike
 # the rise (fall_similarity): then the rest is another load that started with it
 FALL_STEP_ALIKE = 0.9
+# A fall that ended nothing, where the 0.5 rule would close a run for the
+# shortfall it made, is read two ways and a later step decides (the owner,
+# 2026-10-29, PhaseState._step_down): the largest other run stepped down by it
+# while the run stays open - until the run's own fall, a rise of its group, the
+# stepped run's stop at its full size, or this long (or the run's usual length)
+# past the fall, when it stopped there after all. A judgement, not measured.
+LOOKBACK_S = 900.0
 # the age's vote (PhaseState._age_fit): the most a run's age off its learned
 # length takes off its score, younger and older (the owner: a run cut short is
 # likelier than one far too long; size votes more than age)
@@ -377,10 +384,8 @@ STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages
 # The size density's segments - no longer a step's group (that is the
 # mixture's, below) but where an input's change or state at a step is judged
 # to pile up above chance (_keyed_above_chance) and where a step no meter
-# placed most likely happened (_likely_meter): a valley cuts two piles only
-# when the shallower stands this many Poisson spreads above it (_significant),
+# placed most likely happened (_likely_meter): every valley cuts two piles,
 # and no segment spans more than GROUP_SPAN times its smallest step.
-VALLEY_SIGMAS = 0.0
 # How a step finds its group (run lifecycle, stage 6, the owner 2026-10-28;
 # the only way since 2026-10-29, the size density's own groups removed): each
 # group a bell curve over size and reactive angle, its width its own steps'
@@ -2012,10 +2017,12 @@ class _Open:
     # event's cluster `where`, placed, not guessed): the run is that meter's
     # until the meter shows it stopped - see PhaseState.owned
     meter: Optional[str] = None
+    # what it stepped down by, a fall that ended nothing read as its level change (_step_down)
+    down: float = 0.0
 
     def as_list(self) -> list:
         return [self.since, self.watts, self.var, [list(x) for x in self.levels], self.lo, self.hi,
-                self.surge, self.cluster, self.meter, self.now, self.q, self.short0]
+                self.surge, self.cluster, self.meter, self.now, self.q, self.short0, self.down]
 
     @classmethod
     def of(cls, raw) -> "_Open":
@@ -2024,7 +2031,7 @@ class _Open:
         return cls(since=since, watts=watts, var=var, levels=levels, lo=raw[4], hi=raw[5],
                    surge=raw[6], cluster=raw[7], meter=raw[8] if len(raw) > 8 else None,
                    now=raw[9] if len(raw) > 9 else None, q=raw[10] if len(raw) > 10 else 1.0,
-                   short0=raw[11] if len(raw) > 11 else 0.0)
+                   short0=raw[11] if len(raw) > 11 else 0.0, down=raw[12] if len(raw) > 12 else 0.0)
 
 
 @dataclass
@@ -2096,6 +2103,11 @@ class PhaseState:
     # (closed_at, start group) of every run closed since the oldest open one
     # started: which falls already ended a run of a group (second_rise)
     closed_groups: List[Tuple[float, Optional[int]]] = field(default_factory=list, repr=False, compare=False)
+    # a fall read two ways (_step_down): [at, watts, A since, A watts, B since,
+    # B watts] - A stepped down by it, or B stopped at it; and runs a later step
+    # closed in deciding it, handed out with the next step's
+    step_pending: Optional[List[float]] = field(default=None, repr=False, compare=False)
+    _resolved: List["Run"] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the detector whose edge library and pair models this phase asks, its
@@ -2509,6 +2521,7 @@ class PhaseState:
         is not), None to classify each part here as a single-phase fall is.
         Only the runs open before the fall are its to close: a start declared
         while the fall waited for its event is hidden from it meanwhile."""
+        self._pending_due(since)
         later = [o for o in self.open_edges if o.since >= since] if step < 0 else []
         if later:
             self.open_edges = [o for o in self.open_edges if o.since < since]
@@ -2524,6 +2537,9 @@ class PhaseState:
             closed += self._floor_stop(since, new_level)
         self.close_hint = None
         self.open_edges.extend(later)
+        if self._resolved:
+            closed += self._resolved
+            self._resolved = []
         return closed
 
     def _dip(self, at: float, watts: float, later: List[_Open]) -> bool:
@@ -2854,6 +2870,8 @@ class PhaseState:
         short = sum(o.now or o.watts for o in self.open_edges) - level
         if short <= self.noise_at(level):
             return []
+        if self._step_down(at, level):
+            return []
         # the least likely still running first (the owner, 2026-10-29), the
         # oldest of a tie - oldest first before
         order = sorted(self.open_edges, key=lambda x: (self.still_on(x, at), x.since))
@@ -2906,6 +2924,102 @@ class PhaseState:
             out.append(self._end(o, at, o.watts))
         return out
 
+    def _step_down(self, at: float, level: float) -> bool:
+        """A fall that ended nothing (held at ``at``), where the 0.5 rule would
+        close a run B for the shortfall it made, read two ways (LOOKBACK_S):
+        the largest other run A it leaves everything carried as stepped down by
+        it, B kept open, both kept in step_pending for a later step to decide.
+        Kozolec's pond EVSE stepping 3,570 -> 2,190 W closed the boiler beside
+        it, which fitted the reading as well to 25 W (the owner, 2026-10-29;
+        choosing A or B at the fall - by the largest, the least alike, or the
+        group that changes level most - lost ~6 kWh at Kozolec: a chattering
+        boiler's stop measured short reads as a step down as often). True where
+        it was read so."""
+        if not self.held_drops or self.held_drops[-1][0] != at:
+            return False
+        w = self.held_drops[-1][1]
+        order = sorted(self.open_edges, key=lambda x: (self.still_on(x, at), x.since))
+        b = next((o for o in order if not self.owned(o) and self._not_carried(o, level)), None)
+        if b is None:
+            return False
+        tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * self.noise_at(w)
+        cands = []
+        for o in self.open_edges:
+            if o is b or self.owned(o) or o.since >= at or self.level_of(o) - w <= tight:
+                continue
+            o.down, was_now = o.down + w, o.now
+            o.now = (o.now or o.watts) - w
+            if not any(self._not_carried(x, level) for x in self.open_edges if not self.owned(x)):
+                cands.append(o)
+            o.down, o.now = o.down - w, was_now
+        if not cands:
+            return False
+        if self.step_pending is not None:
+            self._pending_b_stopped()                # one question at a time: the older one as the 0.5 rule had it
+        a = max(cands, key=self.level_of)
+        self.held_drops.pop()
+        a.down += w
+        a.now = (a.now or a.watts) - w
+        a.levels.append((at, a.now))
+        self.step_pending = [at, w, a.since, a.watts, b.since, b.watts]
+        return True
+
+    def _pending_runs(self) -> Tuple[Optional[_Open], Optional[_Open]]:
+        """The open runs a pending fall is read against: (A, B)."""
+        p = self.step_pending
+        if p is None:
+            return None, None
+        find = lambda t, w: next((o for o in self.open_edges if o.since == t and o.watts == w), None)  # noqa: E731
+        return find(p[2], p[3]), find(p[4], p[5])
+
+    def _pending_undo(self, a: Optional[_Open]) -> None:
+        """A did not step down: its level back."""
+        at, w = self.step_pending[0], self.step_pending[1]
+        if a is not None:
+            a.down -= w
+            a.now = (a.now or a.watts) + w
+            a.levels = [lv for lv in a.levels if lv[0] != at] or [(a.since, a.watts)]
+
+    def _pending_b_stopped(self) -> None:
+        """The pending fall was B's stop: B closed back at it, A's step undone."""
+        a, b = self._pending_runs()
+        at = self.step_pending[0]
+        self._pending_undo(a)
+        self.step_pending = None
+        if b is not None:
+            self._resolved.append(self._end(b, at, b.now or b.watts))
+
+    def _pending_close(self, o: _Open, watts: float, direct: bool) -> None:
+        """A run read against the pending fall closes: B by any path - it was
+        still on, A stepped down; A by its own fall - the size it had before the
+        step says it never stepped, so B stopped at the pending fall."""
+        p = self.step_pending
+        if o.since == p[4] and o.watts == p[5]:
+            self.step_pending = None
+        elif o.since == p[2] and o.watts == p[3]:
+            band = FALL_PLATEAU_NOISES * math.sqrt(2.0) * self.noise_at(o.watts)
+            if direct and fall_similarity(o.watts, watts, band) > fall_similarity(o.watts - p[1], watts, band):
+                self.step_pending = [p[0], p[1], None, None, p[4], p[5]]
+                o.down, o.now = o.down - p[1], (o.now or o.watts) + p[1]
+                o.levels = [lv for lv in o.levels if lv[0] != p[0]] or [(o.since, o.watts)]
+                self._pending_b_stopped()
+            else:
+                self.step_pending = None
+
+    def _pending_due(self, now: float) -> None:
+        """Nothing decided the pending fall within LOOKBACK_S or B's usual
+        length: B stopped at it, as the 0.5 rule had it."""
+        p = self.step_pending
+        if p is None:
+            return
+        a, b = self._pending_runs()
+        if b is None:
+            self.step_pending = None                 # B went another way: A's step stands
+            return
+        usual = self.lib.usual_length(b.cluster) if self.lib is not None and b.cluster is not None else None
+        if now - p[0] > max(LOOKBACK_S, usual or 0.0):
+            self._pending_b_stopped()
+
     def level_of(self, o: _Open) -> float:
         """What run ``o`` draws now (run lifecycle, 2026-10-28: its group's
         learned level, never the phase's reading): what its meter reads of it
@@ -2921,7 +3035,7 @@ class PhaseState:
                        default=None)
             ratio = self.lib.pair_ratio(o.cluster, best[1]) if best is not None else None
             if ratio is not None:
-                return o.watts * math.exp(ratio[0])
+                return max(0.0, o.watts * math.exp(ratio[0]) - o.down)
         return o.now if o.now is not None and o.now > 0 else o.watts
 
     def _not_carried(self, o: _Open, level: float) -> bool:
@@ -2949,6 +3063,11 @@ class PhaseState:
         never counted as a second unit. A run its meter holds is the meter's
         to end."""
         out = []
+        b = self._pending_runs()[1]
+        if b is not None and b.cluster == cid and b is not keep:
+            self._pending_b_stopped()                # a rise of its group: it had stopped
+            out += self._resolved
+            self._resolved = []
         e = self.declared_at(keep.since)
         before = e[6] - e[1] if e is not None and len(e) > 6 else None
         for o in [o for o in self.open_edges if o.cluster == cid and o is not keep
@@ -3316,16 +3435,16 @@ class PhaseState:
         lib, fall = self.lib, self.stop_cluster
         ev = lib.partner_evidence(o.cluster, fall) if lib is not None and o.cluster is not None and fall is not None else 0.0
         sigma = math.sqrt(2.0) * self.noise_at(max(o.watts, watts))
-        expect, band = o.watts, FALL_PLATEAU_NOISES * sigma
+        expect, band = o.watts - o.down, FALL_PLATEAU_NOISES * sigma
         ratio = lib.pair_ratio(o.cluster, fall) if ev > 0 else None
         if ratio is not None:
-            expect = o.watts * math.exp(ratio[0])
+            expect = o.watts * math.exp(ratio[0]) - o.down
             band = math.hypot(band, expect * ratio[1])
         alike = fall_similarity(expect, watts, band)
-        pick, rest_of = None, o.watts
+        pick, rest_of = None, o.watts - o.down
         held = [d for d in self.held_drops if d[0] > o.since]
         for combo in [[d] for d in held] + [[a, b] for k, a in enumerate(held) for b in held[k + 1:]]:
-            left_w = o.watts - sum(d[1] for d in combo)
+            left_w = o.watts - o.down - sum(d[1] for d in combo)
             if left_w <= 0:
                 continue
             got = fall_similarity(left_w, watts, FALL_PLATEAU_NOISES * sigma)
@@ -3379,6 +3498,8 @@ class PhaseState:
         this run's stop."""
         if o.cluster is None and self.lib is not None:
             self.lib.resolve_rise(o)             # its event window has not passed: form the event now
+        if self.step_pending is not None:
+            self._pending_close(o, watts, direct)
         oldest = min((x.since for x in self.open_edges if x is not o), default=at)
         self.closed_groups = [c for c in self.closed_groups if c[0] >= oldest][-CLOSED_KEEP:] + [(at, o.cluster)]
         pair = (o.cluster, self.stop_cluster if direct else None)
@@ -3480,6 +3601,7 @@ class PhaseState:
                 "absorb_until": None if self.absorb_until == -math.inf else self.absorb_until,
                 "held_drops": [list(x) for x in self.held_drops], "recent_closed": [list(x) for x in self.recent_closed],
                 "closed_groups": [[_trim(x[0], 3), x[1]] for x in self.closed_groups],
+                "step_pending": self.step_pending,
                 "declared": [[_trim(x, 3) for x in e] for e in self.declared]}
 
     @classmethod
@@ -3506,6 +3628,7 @@ class PhaseState:
                    held_drops=[tuple(x) for x in d.get("held_drops") or []],
                    recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
                    closed_groups=[tuple(x) for x in d.get("closed_groups") or []],
+                   step_pending=d.get("step_pending"),
                    declared=[tuple(e) for e in d.get("declared") or []],
                    declared_t=[e[0] for e in d.get("declared") or []])
         st._classify()
@@ -4702,14 +4825,11 @@ def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int
 
 def _significant(dens: List[float], lo: int, peak: float, segs: List[Tuple[int, int]],
                  unit: float) -> List[Tuple[int, int]]:
-    """The segments ``_valley_cuts`` cut, joined again across every valley
-    the counts do not bear out (run lifecycle, 2026-10-28: steps stay together
-    until there is evidence they are two devices - a freezer restarting after
-    a short gap starts near where it stopped): the shallower side's peak must
-    stand VALLEY_SIGMAS Poisson spreads above the valley, in steps (the
-    density over one step's peak), an empty stretch as a valley of nothing. A segment
-    whose largest size passes GROUP_SPAN times its smallest is cut again at its
-    deepest valley until it does not, or has none."""
+    """The segments ``_valley_cuts`` cut, joined again across a valley only
+    where one side holds nothing (every valley with steps both sides cuts; the
+    bench dial that asked for Poisson spreads above it, VALLEY_SIGMAS, removed
+    2026-10-29). A segment whose largest size passes GROUP_SPAN times its
+    smallest is cut again at its deepest valley until it does not, or has none."""
     if len(segs) < 2:
         return segs
     at = lambda b: dens[b - lo] if 0 <= b - lo < len(dens) else 0.0       # noqa: E731
@@ -4717,12 +4837,7 @@ def _significant(dens: List[float], lo: int, peak: float, segs: List[Tuple[int, 
     out, cuts = [list(segs[0])], {}
     for a, b in segs[1:]:
         prev = out[-1]
-        # an empty stretch between them is a valley of nothing: as little
-        # evidence of two devices as a shallow one while the piles are small
-        valley = at(prev[1]) if a == prev[1] + 1 else 0.0
-        shallow = min(top(prev[0], prev[1]), top(a, b))
-        n_v, n_p = valley / peak, shallow / peak
-        if n_p - n_v > VALLEY_SIGMAS * math.sqrt(n_p + n_v) or (VALLEY_SIGMAS <= 0 and n_p > 0):
+        if min(top(prev[0], prev[1]), top(a, b)) > 0:
             out.append([a, b])
         else:
             cuts.setdefault(len(out) - 1, []).append(prev[1])
