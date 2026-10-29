@@ -466,7 +466,9 @@ def test_a_run_of_a_shared_rise_group_is_filed_by_its_stop():
     assert sorted(det.partners_of(1)) == [8, 9]
     run = lambda stop: D.Run(phases="a", start=T0, end=T0 + 90.0, levels={"a": [(T0, 900.0)]}, pair=(1, stop))   # noqa: E731
     assert det.device_of(run(9)) != det.device_of(run(8)) and det.device_of(run(9)) < 0
-    assert det.device_of(run(None)) == 1
+    assert det.device_of(run(None)) in (det.device_of(run(8)), det.device_of(run(9)))   # its strongest partner's pair
+    alone = D.Detector()
+    assert alone.device_of(run(None)) == 1                                  # no partner learned yet: the start alone
 
 
 def test_identical_units_are_not_split():

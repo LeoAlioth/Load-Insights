@@ -6622,21 +6622,37 @@ class Detector:
         self._touch(sid)
 
     def device_of(self, s: "Run") -> Optional[int]:
-        """The start cluster of the run, or of its first leg: its device - or,
-        where that start group ends in several partner fall groups by order
-        evidence and this run was closed by one of them, the pair: its stop is
-        the reliable signature (the owner, 2026-10-29: the hidrofor's wide rise
-        group also holds other loads' 850-1,000 W starts, its falls sit at 808
-        +- 17 W). A pair's device id is negative, never a group's."""
+        """The start cluster of the run, or of its first leg: its device. In
+        mixture grouping (the owner, 2026-10-29: "a device should be a pair of
+        the start and stop group") the pair of its start group and its stop
+        group, each followed through its daily joins: the stop is the reliable
+        signature (the hidrofor's rise group is 51 W wide to hold its inrush
+        scatter, its falls sit at 808 +- 17 W). A run with no stop of its own, or
+        one closed by a fall group that is no partner of its start's, is its
+        start's strongest partner pair's; a start with no partner yet is a
+        device alone until one is learned. A pair's id is negative, never a
+        group's."""
         pair = next((p for p in ([s.pair] if s.pair else []) + list(s.legs) if p and p[0] is not None), None)
         if pair is None:
             return None
         start, stop = pair[0], (pair[1] if len(pair) > 1 else None)
-        if GROUPING == "mixture" and stop is not None:
-            partners = self.partners_of(start)
-            if len(partners) >= 2 and stop in partners:
-                return -(start * 100003 + stop)
-        return start
+        if GROUPING != "mixture":
+            return start
+        start = self._final(start)
+        partners = {self._final(f): self.partner_evidence(start, f) for f in self.partners_of(start)}
+        stop = self._final(stop) if stop is not None else None
+        if stop not in partners:
+            stop = max(partners, key=partners.get) if partners else None
+        return -(start * 100003 + stop) if stop is not None else start
+
+    def _final(self, gid: int) -> int:
+        """The group ``gid`` ended in after the daily joins (StepGroup.joined)."""
+        for _ in range(64):
+            c = self.cluster(gid)
+            if c is None or c.joined is None:
+                return gid
+            gid = c.joined
+        return gid
 
     def window(self, name: str) -> Optional[Tuple[float, float]]:
         """This input's learned lag window (see lag_window), kept until its histogram changes."""
