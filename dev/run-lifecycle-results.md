@@ -148,3 +148,27 @@ Variant GROUP_MERGE 1 (the mirror of the split: neighbours joined on evidence), 
 hidden 30.7 / 15.4 (default 32.0 / 13.0), circuits 40.3 / 13.3 (39.9 / 12.9), fed 53.0 / 6.5 (same); Kozolec hidden
 80.5 / 4.8 (81.3 / 3.2; its boiler 85.3 -> 80.8 % caught), fed 84.5 / 3.1 (same). A little worse hidden, fed
 unchanged - the joins it makes are few and fed runs come from the meters anyway. Not kept (0 stays).
+
+## Stage 6 - mixture grouping (2026-10-29)
+
+Grouping bench (tests/grouping_bench.py), Kozolec rises, groups / main share / unlabelled share: valleys -> mixture
+after the three fixes (angle error from the amps' resolution, close piles by overlaps, no join on a failed fit):
+boiler 6 / 98.5 / 3.3 -> 11 / 95.2 / 3.3; water pump 37 / 17.1 / 26 -> 8 / 64.6 / 38.5; IR panel 7 / 82.2 / 8.0 ->
+4 / 88.9 / 13.3; pond 9 / 38.6 / 43 -> 1 / 100 / 78; 325 -> 145 groups. Home: 3,106 -> 1,701 groups; five of six
+plugs more in one group (Susilna 31.8 -> 42.8 %, office 48.8 -> 69.4, UPS 26.5 -> 80.0, Blaževa Soba 53.7 -> 68.3,
+workshop boiler 77.8 -> 88.9), the hidrofor worse (94.1 -> 46.4: its inrush scatters its rises).
+
+Energy card, Home and Kozolec, mixture sweep on the code before the hidrofor fixes (devices capture / impurity):
+
+| | Home hidden | Home partition hidden | Kozolec hidden | Home groups |
+|---|---|---|---|---|
+| valleys (default) | 32.0 / 13.0 | 44.8 / 13.6 | 81.3 / 3.2 | 3,106 |
+| mixture far 4, join 3 | 25.7 / 24.2 | 38.3 / 17.3 | 82.7 / 3.8 | 1,701 |
+| far 6 | 22.7 / 20.8 | 38.2 / 17.2 | 82.8 / 3.8 | 1,694 |
+| far 8 | 22.3 / 19.9 | 37.7 / 17.8 | 82.7 / 3.8 | 1,693 |
+| join 2 | 29.2 / 15.3 | 41.5 / 12.5 | 82.8 / 4.6 | 3,627 |
+
+At Home the mixture merges too much: groups take unmetered loads' steps, which the grouping bench (plugs only)
+cannot see. Hidrofor fixes afterwards (fresh, above-chance co-runs; joins across every pair in reach; rise groups
+sharing a partner fall joined): its rises 46.4 -> 76.2 % in one group at step time, 93.0 % once the daily joins
+apply; falls 85.6 %.
