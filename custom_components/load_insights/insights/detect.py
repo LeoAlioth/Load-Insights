@@ -4898,12 +4898,9 @@ class Detector:
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    # start cluster -> {signature id: runs filed there}: a running load's name
-    # (start_name) and a meter's homes - read by the start, all an open run has
-    start_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     # device (device_of: the start and stop groups' pair, or a start with no
-    # partner yet) -> {signature id: runs filed there}: what a run is filed by
-    # and devices merged by - see DEVICE_FILING (the owner, 2026-10-29: filing by
+    # partner yet) -> {signature id: runs filed there}: what a run is filed by,
+    # devices are merged by, and an open run is named by (start_homes) - see DEVICE_FILING (the owner, 2026-10-29: filing by
     # the pair had looked a device up here while the runs were counted by start,
     # so no run ever found its device's signature - every one founded a new one
     # and the start's merge folded them back, a washer's Wash-born heater lost
@@ -5375,10 +5372,6 @@ class Detector:
         self._touch(best.id)
         if self._day_from is not None:
             self._day_log.append(s)
-        for pair in ([s.pair] if s.pair else []) + list(s.legs):
-            if pair and pair[0] is not None:
-                row = self.start_home.setdefault(str(pair[0]), {})
-                row[best.id] = row.get(best.id, 0.0) + 1.0
         if device is not None:
             row = self.pair_home.setdefault(str(device), {})
             row[best.id] = row.get(best.id, 0.0) + 1.0
@@ -7026,10 +7019,26 @@ class Detector:
                     out.append((name, o.since, st.level_of(o) * scale))
         return out
 
+    def start_homes(self, cluster: Optional[int]) -> Dict[int, float]:
+        """{signature id: runs filed there} of the runs that started with
+        ``cluster``, followed through its joins: its own record while it had no
+        partner and every pair it starts (pair_home) - what an open run, with
+        no stop yet, is known by (start_name, Fleet._held_homes)."""
+        out: Dict[int, float] = {}
+        if cluster is None:
+            return out
+        start = self._final(cluster)
+        for k, home in self.pair_home.items():
+            d = int(k)
+            if d == start or (d < 0 and _pair_start(d) == start):
+                for sid, n in home.items():
+                    out[sid] = out.get(sid, 0.0) + n
+        return out
+
     def start_name(self, cluster: Optional[int]) -> Optional[str]:
         """The name a start of ``cluster`` belongs to: the one LIVE_NAME_SHARE
         of its filed runs went to, over at least LIVE_NAME_MIN_RUNS - else None."""
-        home = self.start_home.get(str(cluster)) if cluster is not None else None
+        home = self.start_homes(cluster)
         if not home:
             return None
         by: Dict[Optional[str], float] = {}
@@ -7191,7 +7200,6 @@ class Detector:
                 "edge_hist_at": dict(self.edge_hist_at), "edge_unit": dict(self.edge_unit),
                 "edge_hist_keys": {g: {k: {str(b): _trim(w, 3) for b, w in h.items() if w >= HIST_FLOOR * TRIM} for k, h in rows.items()}
                                    for g, rows in self.edge_hist_keys.items()},
-                "start_home": {k: {str(i): n for i, n in v.items()} for k, v in self.start_home.items()},
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
@@ -7251,7 +7259,6 @@ class Detector:
         det.edge_unit = {g: float(u) for g, u in (d.get("edge_unit") or {}).items()}
         det.edge_hist_keys = {g: {k: {int(b): float(w) for b, w in h.items()} for k, h in rows.items()}
                               for g, rows in (d.get("edge_hist_keys") or {}).items()}
-        det.start_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("start_home") or {}).items()}
         det.pair_home = {k: {int(i): float(n) for i, n in v.items()} for k, v in (d.get("pair_home") or {}).items()}
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
@@ -8441,8 +8448,7 @@ class Fleet:
                 if not (o.meter and o.since < m.start and abs(o.watts - w) <= MATCH_EDGE_REL * max(o.watts, w)
                         and self._meter_held(o.meter, ph, m.start, True)):
                     continue
-                homes = {self.main._current(int(sid)) for k, home in self.main.start_home.items()
-                         if o.cluster is not None and int(k) == o.cluster for sid in home}
+                homes = {self.main._current(int(sid)) for sid in self.main.start_homes(o.cluster)}
                 homes |= {sig.id for sig in self.main.signatures if sig.locations.get(o.meter, 0)}
                 out += [sid for sid in sorted(homes) if sid not in out]
         return out
