@@ -5370,7 +5370,11 @@ class Detector:
                 st.open_edges.remove(pend[0]["open"])
             return
         cluster, members = self._form_event(pend[0], pend, self.event_window())
-        for other in self.running_groups(min(m["since"] for m in members), cluster.phase):
+        at = min(m["since"] for m in members)
+        for other, (since_o, _) in self.running_groups(at, cluster.phase).items():
+            usual = self.usual_length(other) if other != cluster.id else None
+            if usual and at - since_o > 3.0 * usual:
+                continue                           # a run left open long past its usual length: no witness
             if other != cluster.id:                # two groups running at once: never one device (merge_groups)
                 key = f"{min(other, cluster.id)},{max(other, cluster.id)}"
                 self.co_run[key] = self.co_run.get(key, 0) + 1
@@ -5515,30 +5519,56 @@ class Detector:
             self._by_id = None
             split += 1
         live = sorted((c for c in self.edges if c.joined is None and c.recent), key=lambda c: (c.phase, c.up, c.owner, c.watts))
-        for a, b in zip(live, live[1:]):
-            if (a.phase, a.up, a.owner, a.keys) != (b.phase, b.up, b.owner, b.keys) or a.joined is not None:
-                continue
-            fa = self._mix_widths(a.phase, a.watts, a)[0]
-            fb = self._mix_widths(b.phase, b.watts, b)[0]
-            floor = self._mix_widths(a.phase, a.watts, StepGroup(id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0]
-            if self.co_run.get(f"{min(a.id, b.id)},{max(a.id, b.id)}"):
-                continue                    # one rose while the other ran: two devices
-            if b.watts - a.watts >= MIX_SPLIT_FAR * floor:
-                # far apart: joined only where one curve explains their steps better; a fit
-                # that fails joins nothing (it once chained joins into one 446 W wide group)
-                if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
+        for i, a in enumerate(live):
+            for b in live[i + 1:]:
+                if (a.phase, a.up, a.owner) != (b.phase, b.up, b.owner):
+                    break
+                if a.joined is not None:
+                    break
+                if b.joined is not None or a.keys != b.keys:
                     continue
-                two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
-                if two is None or two[2] > 0:
-                    continue
-            keep, gone = (a, b) if a.count >= b.count else (b, a)
-            n = keep.count + gone.count
-            keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
-            keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
-            keep.mix_sd = max(floor, _robust_sd([x for x, _ in keep.recent]))
-            gone.joined = keep.id
-            joined += 1
+                fa = self._mix_widths(a.phase, a.watts, a)[0]
+                fb = self._mix_widths(b.phase, b.watts, b)[0]
+                if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb, self._mix_widths(a.phase, a.watts, StepGroup(
+                        id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0] * MIX_SPLIT_FAR):
+                    break                   # sorted by size: every later one is further
+                if self._co_evidence(a, b):
+                    continue                # one rose while the other ran, above chance: two devices
+                floor = self._mix_widths(a.phase, a.watts, StepGroup(id=-1, phase=a.phase, up=a.up, watts=a.watts, owner=a.owner))[0]
+                shared = a.up and bool(set(self.partners_of(a.id)) & set(self.partners_of(b.id)))
+                if b.watts - a.watts >= MIX_SPLIT_FAR * floor and not shared:
+                    # far apart: joined only where one curve explains their steps better; a
+                    # fit that fails joins nothing (it once chained joins into one 446 W wide
+                    # group). Two rise groups ending in one partner fall group are one device's
+                    # starts whatever their spread (the owner, 2026-10-29: the hidrofor's inrush
+                    # scatters its rises over 860-1,000 W, its falls sit at 808 +- 17 W)
+                    if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
+                        continue
+                    two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
+                    if two is None or two[2] > 0:
+                        continue
+                keep, gone = (a, b) if a.count >= b.count else (b, a)
+                n = keep.count + gone.count
+                keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
+                keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
+                keep.mix_sd = max(floor, _robust_sd([x for x, _ in keep.recent]))
+                gone.joined = keep.id
+                joined += 1
+                if gone is a:
+                    break
         return split, joined
+
+    def _co_evidence(self, a: "StepGroup", b: "StepGroup") -> bool:
+        """Did one of ``a`` and ``b`` rise while the other ran far more often than
+        chance - PAIR_MIN_RUNS times and above_chance, chance being the one's
+        rises times the share of the time the other runs (order's run_time)?
+        One stray co-run is a run left open, not a second device (the
+        hidrofor's groups, 2026-10-29: 6 of ~450 runs)."""
+        n = self.co_run.get(f"{min(a.id, b.id)},{max(a.id, b.id)}", 0)
+        if n < PAIR_MIN_RUNS or self.order_span <= 0:
+            return False
+        expected = max(a.count * self.run_time.get(b.id, 0.0), b.count * self.run_time.get(a.id, 0.0)) / self.order_span
+        return above_chance(n, expected)
 
     def merge_groups(self) -> int:
         """The mirror of split_groups (the owner, 2026-10-28; a bench mode,
