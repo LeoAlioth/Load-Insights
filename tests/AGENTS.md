@@ -157,11 +157,16 @@ everything the main reads, once. Three modes: **hidden** (`SUBS=none`, no meter
 fed - the main-meter estimate), **circuits** (`SUBS=circuits`, Home's two 3EMs
 only) and **fed** (`SUBS=prod`, every meter production reads); the meters are
 the truth in all three, read from the history. Every mode reads everything the
-grid and solar sensors give, as production does: the house power, its reactive
-power, the array, and the grid meter's voltage per phase (`energy_bench.SITE_VOLTS`,
-fed as `VOLTS=` dials since 2026-10-29; earlier cards had no voltage and are not
-comparable). Hidden means no sub-meter and no input (states, temperatures), never
-less of the grid (the owner, 2026-10-29). And two circuit sites,
+grid and solar sensors give, as production does: the house power, the array,
+and the grid meter's voltage and reactive power per phase - `replay.py` finds
+the meter publishing power, voltage and current together (Home's SolarEdge M1,
+Kozolec's MultiPlus output) and feeds its voltage as the grid's (Fleet.volts)
+and its reactive power as production derives it (`_reactive`: the meter's own
+signed var first - Home's M1 - else sqrt(S^2 - P^2) from its apparent power,
+V x I or power factor, unsigned - Kozolec). Hidden means no sub-meter and no
+input (states, temperatures), never less of the grid (the owner, 2026-10-29;
+checked that day on one-day replays: the same voltage series with and without
+`VOLTS=` dials, a power factor on every run). And two circuit sites,
 `home-hisa` and `home-mansarda`: a 3EM as the main meter, scored on the device
 inside it (replayed without reactive power: the 3EMs publish no volts or amps).
 And **the third site** (`third`, since 2026-10-04): the house production
