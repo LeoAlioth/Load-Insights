@@ -210,6 +210,18 @@ def _evidence(det, rise, fall, secs, ratio=1.0, n=20):
     det.fall_n[fall], det.run_time[rise], det.order_span = n, 0.1 * 86400.0, 86400.0
 
 
+def _probability(fn):
+    """Run a test with FALL_SCORE = "probability" (a bench dial, default legacy)."""
+    def run():
+        old, D.FALL_SCORE = D.FALL_SCORE, "probability"
+        try:
+            fn()
+        finally:
+            D.FALL_SCORE = old
+    run.__name__ = fn.__name__
+    return run
+
+
 def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
     """Susilna's compressor runs two hours; an unrelated 190 W load started
     three minutes ago. The compressor's partner fall closes the compressor's
@@ -222,16 +234,143 @@ def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
     assert [o.since for o in st.open_edges] == [T0 + 7020.0]
 
 
+@_probability
 def test_a_drifting_load_is_closed_once_its_ratio_is_learned():
-    """Rise 390 W, fall 300 W: no match while the pair has no evidence (the
-    tight test), closed by the learned ratio once it has."""
+    """Rise 390 W, fall 300 W: the 2026-10-28 score's tight test held it open
+    until the pair had evidence; the probability score (2026-10-29) takes a
+    fall a fifth under its rise at once - a load settles after its start."""
     det, st = _scoring_phase((0.0, 390.0, 1))
     st.stop_cluster = 9
-    assert st._pair(T0 + 1800.0, 300.0, None, 600.0) == [] and len(st.open_edges) == 1
-    st.held_drops = []
-    _evidence(det, 1, 9, 1800.0, ratio=300.0 / 390.0)
-    closed = st._pair(T0 + 1800.0, 300.0, None, 600.0)
-    assert len(closed) == 1 and st.open_edges == [], closed
+    old, D.FALL_SCORE = D.FALL_SCORE, "legacy"
+    try:
+        assert st._pair(T0 + 1800.0, 300.0, None, 600.0) == [] and len(st.open_edges) == 1
+        st.held_drops = []
+        _evidence(det, 1, 9, 1800.0, ratio=300.0 / 390.0)
+        closed = st._pair(T0 + 1800.0, 300.0, None, 600.0)
+        assert len(closed) == 1 and st.open_edges == [], closed
+    finally:
+        D.FALL_SCORE = old
+    det, st = _scoring_phase((0.0, 390.0, 1))
+    st.stop_cluster = 9
+    assert len(st._pair(T0 + 1800.0, 300.0, None, 600.0)) == 1 and st.open_edges == []
+
+
+def test_a_step_down_beside_another_run_is_a_level_not_a_stop():
+    """The owner's sequence (2026-10-29): 0, 2000, 2700, 1100, 400, 0. The
+    -1600 is a step down of the 2 kW run (the phase still carries its 400 W
+    rest beside the 700 W run), the -700 ends the 700 W run, the -400 the
+    2 kW one: two runs, the first of two levels."""
+    lv = [0.0, 2000.0, 2700.0, 1100.0, 400.0, 0.0]
+    det = D.Detector()
+    det.process({"a": series(4500, lambda s: lv[int((s - 300) // 600) + 1] if 300 <= s < 3300 else 0.0)},
+                now_ts=T0 + 5000)
+    runs = sorted((round(r["start"] - T0), round(r["end"] - T0), r["levels"], r["kwh"]) for r in det.recent)
+    assert [x[:3] for x in runs] == [(300, 2700, 2), (900, 2100, 1)], runs
+    assert abs(runs[0][3] - 0.8) < 0.02 and abs(runs[1][3] - 0.233) < 0.01, runs
+
+
+def test_fall_similarity_follows_the_owners_curve():
+    """1 within the band; 0.5 at three quarters; a far miss low, not 0; a fall
+    above its rise counts its miss 2.5 times (the owner, 2026-10-29). The old
+    upright freezer (141 -> 120 W) and the chest (82 -> 61 W) on one plug, a
+    10 W band: each fall alike its own rise, not the other's."""
+    sim = D.fall_similarity
+    assert sim(100.0, 95.0, 10.0) == 1.0 or abs(sim(100.0, 95.0, 10.0) - 1.0) < 1e-3
+    assert abs(sim(100.0, 75.0, 0.0) - 0.5) < 1e-9
+    assert 0.1 <= sim(100.0, 40.0, 0.0) <= 0.2
+    assert sim(141.0, 120.0, 10.0) > 0.9 and sim(82.0, 61.0, 10.0) > 0.9
+    assert sim(82.0, 120.0, 10.0) < 0.25 and sim(141.0, 61.0, 10.0) < 0.25
+    assert sim(100.0, 115.0, 0.0) < sim(100.0, 85.0, 0.0)                  # above its rise: less alike
+
+
+@_probability
+def test_a_fall_ends_the_run_at_its_usual_length_not_the_one_far_younger():
+    """Two 100 W runs, a 100 W fall of a group neither has a pair with: the
+    one three hours into its usual three ends, not the one half an hour into
+    its usual eight - however young or old (the owner, 2026-10-29: the chest
+    freezer two hours into five took the upright's fall at its usual 58 min
+    when scored by its chance of still running)."""
+    det, st = _scoring_phase((0.0, 100.0, 1), (9000.0, 100.0, 2))
+    _evidence(det, 1, 7, 3 * 3600.0)
+    _evidence(det, 2, 8, 8 * 3600.0)
+    st.stop_cluster = 9
+    closed = st._pair(T0 + 3 * 3600.0, 100.0, None, 300.0)
+    assert [x.start for x in closed] == [T0], closed
+    assert abs(st._age_fit(st.open_edges[0], T0 + 3 * 3600.0) - (1.0 - D.FALL_AGE_SHORT_W)) < 0.01
+
+
+@_probability
+def test_a_run_far_younger_than_usual_still_takes_its_own_fall():
+    """Kozolec 14 Oct 18:17: a 537 W load ran 21 s against a usual 20 min. Its
+    -528 W is its stop - the age votes, never vetoes (the owner, 2026-10-29) -
+    and the EVSE's 3,604 W charge beside it keeps its size."""
+    det, st = _scoring_phase((0.0, 3604.0, 1), (55.0, 537.0, 2))
+    _evidence(det, 2, 8, 1200.0)
+    st.stop_cluster = 9
+    closed = st._pair(T0 + 76.0, 528.0, None, 300.0 + 3604.0)
+    assert [x.start for x in closed] == [T0 + 55.0], closed
+    assert [round(o.watts) for o in st.open_edges] == [3604]
+
+
+@_probability
+def test_a_fall_is_scored_against_what_the_run_draws_after_its_held_drops():
+    """Kozolec 4 Oct: the EVSE rose 3,568 W, lowered its charge mid-run (-802 W,
+    matching nothing, held) and stopped -2,604 W. Scored against its rise less
+    the held drop, it closes in two levels, not booked at 2,604 W for 3.4 h
+    (the owner, 2026-10-29)."""
+    det, st = _scoring_phase((0.0, 3568.0, 1))
+    st.held_drops = [(T0 + 10000.0, 802.0, None)]
+    st.stop_cluster = 9
+    (run,) = st._pair(T0 + 12300.0, 2604.0, None, 300.0)
+    assert [round(w) for _, w in run.levels[""]] == [3568, 2766], run.levels
+    assert st.held_drops == [] and st.open_edges == []
+
+
+@_probability
+def test_two_runs_stopping_in_one_reading_are_one_candidate():
+    """Kozolec 14 Oct 19:15: the boiler (1,829 W) and a 1 kW load fell together,
+    2,827 W, beside a 3,604 W charge: the two close, the charge goes on (the
+    owner, 2026-10-29). A run the sum does not need stays: 1,000 + 20 W is not
+    a 1,000 W fall's pair."""
+    det, st = _scoring_phase((0.0, 3604.0, 1), (60.0, 1829.0, 2), (120.0, 1005.0, 3))
+    _evidence(det, 1, 7, 4 * 3600.0)
+    st.stop_cluster = 9
+    closed = st._pair(T0 + 3600.0, 2827.0, None, 300.0 + 3604.0)
+    assert [x.start for x in closed] == [T0 + 60.0, T0 + 120.0], closed
+    assert [round(o.watts) for o in st.open_edges] == [3604]
+    det, st = _scoring_phase((0.0, 1000.0, 1), (60.0, 20.0, 2))
+    assert st._combination(T0 + 600.0, 1000.0) is None
+
+
+@_probability
+def test_the_reading_short_of_its_runs_ends_the_least_likely_still_running():
+    """The reading carries one of two 500 W runs: the one past its usual ten
+    minutes ends, not the older one an hour into its usual eight (the owner,
+    2026-10-29: Susilna's compressor was closed oldest first)."""
+    det, st = _scoring_phase((0.0, 500.0, 1), (3000.0, 500.0, 2))
+    _evidence(det, 1, 7, 8 * 3600.0)
+    _evidence(det, 2, 8, 600.0)
+    closed = st._unseen_stop(T0 + 3600.0, 600.0)
+    assert [x.start for x in closed] == [T0 + 3000.0], closed
+    assert [o.since for o in st.open_edges] == [T0]
+
+
+@_probability
+def test_a_join_keeps_what_the_joined_group_learned_of_order():
+    """Group 5 joins group 4 in the daily pass: its pairs, running time, falls
+    and co-runs add to 4's, and a run still open in 5 is scored as 4's (the
+    hidrofor's young rise groups, 2026-10-29)."""
+    det = D.Detector()
+    det.edges = [D.StepGroup(id=4, phase="a", up=True, watts=900.0), D.StepGroup(id=5, phase="a", up=True, watts=950.0)]
+    _evidence(det, 5, 9, 60.0, ratio=0.86)
+    det.run_time[4], det.co_run = 100.0, {"4,5": 2, "5,6": 3}
+    assert det.partner_evidence(4, 9) == 0.0
+    det.edges[1].joined = 4
+    det._fold_order(5, 4)
+    assert "5>9" not in det.order and det.order["4>9"][0] == 20
+    assert det.run_time == {4: 100.0 + 0.1 * 86400.0} and det.co_run == {"4,6": 3}
+    assert det.partner_evidence(4, 9) > 0.0 and det.partner_evidence(5, 9) == det.partner_evidence(4, 9)
+    assert abs(det.pair_ratio(5, 9)[0] - math.log(0.86)) < 1e-9
 
 
 def test_a_fall_far_from_every_run_closes_nothing():
