@@ -4889,9 +4889,10 @@ class Detector:
     signals: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_id: Optional[Dict[int, "StepGroup"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    # rise group -> the fall groups counted against it in order (partners_of), and the
-    # count of order keys it was built from: keys are only added, or moved by a join
-    _pidx: Optional[Tuple[int, Dict[int, List[tuple]]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # rise group -> [(fall group, its counts)] of the pairs counted PAIR_MIN_RUNS
+    # times or more, in order's own order (partners_of): built again whenever a
+    # pair crosses that count (note_order), the counts fade or a join moves them
+    _elig: Optional[Tuple[int, Dict[int, List[tuple]]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # partner_evidence and partners_of, kept until the order counts move (_order_ver,
     # bumped wherever they do; the stamp also holds the key count and the span)
     _order_ver: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
@@ -5779,7 +5780,7 @@ class Detector:
         its pairs either side, its running time, its falls, its co-runs - is
         added to ``keep``'s, so a join throws no evidence away (the hidrofor's
         young rise groups were joined into its main one without their pairs)."""
-        self._pidx = None
+        self._elig = None
         self._order_ver += 1
         for k in [k for k in self.order if str(gone) in k.split(">")]:
             r, f = (int(x) for x in k.split(">"))
@@ -5857,6 +5858,7 @@ class Detector:
                     d[k] *= fade
             self.order_span *= fade
             self.order_faded = t
+            self._elig = None                     # counts fell: some under PAIR_MIN_RUNS
 
     def note_order(self, fall: int, phases: str, at: float, watts: float = 0.0) -> None:
         """A fall of group ``fall`` (``watts`` in all) at ``at`` on ``phases``:
@@ -5872,6 +5874,8 @@ class Detector:
                 acc.append(acc[0])
             ld = math.log(max(at - since, 1.0))
             acc[0] += 1.0
+            if acc[0] - 1.0 < PAIR_MIN_RUNS <= acc[0]:
+                self._elig = None                 # it reaches the count partners_of walks
             acc[1] += ld
             acc[2] += ld * ld
             # the size ratio only from falls within PAIR_RATIO_MAX of the start:
@@ -5939,17 +5943,17 @@ class Detector:
             return list(memo[rise])
         key = rise
         rise = self._fin(rise)
-        if self._pidx is None or self._pidx[0] != len(self.order):
+        if self._elig is None or self._elig[0] != len(self.order):
+            # a pair counted fewer than PAIR_MIN_RUNS times has no evidence: never
+            # walked (a long-running group is counted against hundreds of fall
+            # groups - 104 s of a 593 s six-day Home profile, 2026-10-29)
             idx: Dict[int, List[tuple]] = {}
             for k, acc in self.order.items():
-                r, f = k.split(">")
-                idx.setdefault(int(r), []).append((int(f), acc))
-            self._pidx = (len(self.order), idx)
-        # a pair counted fewer than PAIR_MIN_RUNS times has no evidence: skipped
-        # before it is worked out (a long-running group is counted against
-        # hundreds of fall groups)
-        memo[key] = [f for f, acc in self._pidx[1].get(rise, ())
-                     if acc[0] >= PAIR_MIN_RUNS and self.partner_evidence(rise, f) > 0]
+                if acc[0] >= PAIR_MIN_RUNS:
+                    r, f = k.split(">")
+                    idx.setdefault(int(r), []).append((int(f), acc))
+            self._elig = (len(self.order), idx)
+        memo[key] = [f for f, acc in self._elig[1].get(rise, ()) if self.partner_evidence(rise, f) > 0]
         return list(memo[key])
 
     def usual_length(self, start: int) -> Optional[float]:
@@ -9373,7 +9377,7 @@ class Fleet:
         """How far ``st``'s readings run ahead of this fleet's main's: its lead
         less the main's (a view's main has one against the grid too), never
         below 0; none for the main's own."""
-        if not st.lead or any(st is p for p in self.main.phases.values()):
+        if not st.lead or self.main.phases.get(st.name) is st:
             return 0.0
         return max(0.0, st.lead - max((p.lead for p in self.main.phases.values()), default=0.0))
 
