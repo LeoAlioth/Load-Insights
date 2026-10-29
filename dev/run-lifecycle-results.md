@@ -287,3 +287,29 @@ now books 29.48 kWh against 28.11 drawn; its impurity rose because a second sign
 boiler, 1.1 Rest, 0.97 EVSE) now goes to it. Left: three no-stop runs (3 Oct 09:52 65 min +848 Wh, 7 Oct 12:52
 +510, 3 Oct 10:59 +269), and the start of the cascade - an unmatched fall the 0.5 rule ends a run for when it
 fits another run stepping down - for the owner to design.
+
+## An unmatched fall is read two ways and a later step decides (2026-10-29)
+
+The cascade's start on 3 Oct 08:38:51: a fall that ended nothing (the EVSE stepping down 1,437 W) left the
+runs short of the reading, and the 0.5 rule closed the boiler for it - both readings fit to 25 W. Now
+(_step_down, the owner): the largest other run the reading still carries once stepped down by the fall takes it
+as a level, the run the 0.5 rule would have closed stays open, and PhaseState.step_pending holds the two
+readings until a later step decides: that run closing (by its own fall or any way) - it was on; a rise of its
+group, the stepped run stopping at its size before the step, or LOOKBACK_S (900 s) or its usual length past the
+fall - it stopped at the fall after all, closed back there and the step undone. Choosing at the fall (by the
+group that changes level most, the largest, the least alike) lost ~6 kWh at Kozolec and is in the detector's
+AGENTS.md under ruled out, with the Susilna emptied-run cap. Removed with it: VALLEY_SIGMAS (a bench dial at 0).
+
+Cards against 6ba2df5 (capture / impurity, kWh caught, wrong):
+
+| | before | after |
+|---|---|---|
+| Home devices hidden | 38.6 / 10.2 (88.0, 10.0) | 40.9 / 9.8 (93.2, 10.1) |
+| Home devices circuits | 42.6 / 10.2 (97.1, 11.0) | 42.8 / 11.8 (97.5, 13.1) |
+| Home devices fed | 53.9 / 6.1 (122.8, 8.0) | 54.0 / 5.3 (123.1, 6.9) |
+| Kozolec devices hidden | 86.0 / 4.7 (216.0, 10.7) | 85.0 / 3.3 (213.5, 7.3) |
+| Kozolec Boiler hidden | 92.8 / 17.2 (35.7, 7.4) | 84.3 / 13.1 (32.4, 4.9) |
+| Kozolec devices fed | 82.9 / 4.1 | 82.9 / 4.1 |
+
+Polnilnica hidden 62.3 -> 77.1 (+6.8 kWh); losses: Workshop boiler hidden 33.0 -> 13.3 (-1.7 kWh of 8.84), the
+Kozolec boiler's capture (-3.3 kWh, its wrong energy -2.5), Kozolec water pump impurity 7.3 -> 11.1.

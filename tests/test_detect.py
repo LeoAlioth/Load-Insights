@@ -362,6 +362,32 @@ def test_a_second_rise_ends_the_first_at_a_fall_of_its_size_no_run_of_its_group_
     assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
 
 
+def test_a_fall_read_two_ways_is_decided_by_the_next_step():
+    """Look back (_step_down): the 1,437 W fall beside the boiler and the
+    EVSE is the EVSE stepping down while the boiler stays on, until a later step
+    decides: the boiler's own fall (it was on), or the EVSE stopping from its
+    full 3,498 W (it never stepped: the boiler stopped back at the fall)."""
+    for second in ("boiler", "evse"):
+        det, st = _scoring_phase((0.0, 1836.0, 12), (60.0, 3498.0, 50))
+        st.baseline = 54.0
+        _evidence(det, 12, 13, 1400.0)
+        _evidence(det, 77, 14, 600.0)
+        st.stop_cluster = 14
+        at, level = T0 + 1400.0, 54.0 + 1836.0 + 3498.0 - 1437.0
+        assert st._pair(at, 1437.0, None, level) + st._unseen_stop(at, level) == []
+        assert st.step_pending is not None and [round(o.now or o.watts) for o in st.open_edges] == [1836, 2061]
+        if second == "boiler":
+            st.stop_cluster = 13
+            closed = st._pair(at + 49.0, 1828.0, None, level - 1828.0)
+            assert [x.start for x in closed] == [T0] and st.step_pending is None
+            assert [round(o.now or o.watts) for o in st.open_edges] == [2061]
+        else:
+            st.stop_cluster = 51
+            evse = st.open_edges[1]
+            st._end(evse, at + 600.0, 3498.0, None, direct=True)
+            assert st.step_pending is None and [(r.start, r.end) for r in st._resolved] == [(T0, at)]
+
+
 def test_a_fall_group_nobody_is_partnered_with_is_no_evidence_against_a_run():
     """A fall in a group no start has as a partner scores a run whose group has
     partners as one with none (FALL_NO_PAIR): Kozolec's boiler lost its falls,
@@ -6172,21 +6198,6 @@ def test_a_reading_dropped_long_ago_leaves_the_noise_and_the_sessions_as_they_we
         (a[0], a[1]) == (b[0], b[1]) and abs(a[2] - b[2]) < 0.02 for a, b in zip(runs[0][2], runs[1][2])), (len(runs[0][2]), len(runs[1][2]))
 
 
-def _sigmas(n):
-    """Run a test at VALLEY_SIGMAS = n (a bench dial, 0 by default)."""
-    def wrap(fn):
-        def run():
-            old, D.VALLEY_SIGMAS = D.VALLEY_SIGMAS, n
-            try:
-                fn()
-            finally:
-                D.VALLEY_SIGMAS = old
-        run.__name__ = fn.__name__
-        return run
-    return wrap
-
-
-@_sigmas(2.0)
 def test_three_steps_are_one_group():
     """Steps stay together until the counts show two devices (run lifecycle,
     2026-10-28): three steps of about 100 W are one group."""
@@ -6196,14 +6207,12 @@ def test_three_steps_are_one_group():
     assert len(ids) == 1, ids
 
 
-@_sigmas(2.0)
-@_sigmas(2.0)
 def test_a_group_never_spans_more_than_group_span():
     segs = D._significant([1.0] * 200 + [0.95] + [1.0] * 200, 10, 1.0, [(10, 210), (211, 410)], 20.0)
     size = lambda b: 20.0 * math.sinh(b * D.EDGE_BIN * D.EDGE_SCALE_REL) / D.EDGE_SCALE_REL   # noqa: E731
     assert size(411) > D.GROUP_SPAN * size(10) and segs == [(10, 210), (211, 410)], segs    # cut for the span
-    joined = D._significant([1.0] * 4 + [0.95] + [1.0] * 4, 200, 1.0, [(200, 204), (205, 208)], 20.0)
-    assert joined == [(200, 208)], joined                                   # within the span: joined
+    joined = D._significant([1.0] * 4 + [0.0] + [0.0] * 4, 200, 1.0, [(200, 204), (205, 208)], 20.0)
+    assert joined == [(200, 208)], joined                                   # one side empty: joined
 
 
 def test_a_step_is_clustered_against_the_size_histogram_as_it_stands():
