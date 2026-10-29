@@ -93,6 +93,7 @@ ON_STATES = {"on", "heating", "cooling", "drying"}
 
 
 CACHE = Path.home() / ".cache" / "load_insights_bench"
+TEMPLATE_HOUSE = "sensor.se17k_home_power_phase_"   # the owner's HA template house sensor - never replayed (run)
 SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here re-parses
 
 
@@ -464,6 +465,16 @@ def run(args, transform=None, say=print):
         series = transform(series)
     # what an inverter added to a reading built with it (bench._prod_house): its array for the detector
     arrays = {k[:-len("|array")]: series.pop(k) for k in list(series) if k.endswith("|array")}
+    # Never the owner's template house sensor: production builds the house from
+    # the grid meter and the inverter itself (bench._prod_house, the only thing
+    # that hands over an array with it), so a replay that would read the
+    # template as recorded stops here (the owner, 2026-10-29: an EVBox charge
+    # scored 41 % hidden on it against 70 % on production's house)
+    raw = sorted(k for k in series if k.startswith(TEMPLATE_HOUSE) and k not in arrays)
+    if raw:
+        raise SystemExit(f"{', '.join(raw)}: the owner's template house sensor, which production never "
+                         "reads - replay this folder through tests/bench.py, which builds the house as "
+                         "production does (PROD_HOUSE)")
     if not series:
         raise SystemExit("no numeric rows found - is this a History panel export?")
     fields = guess_roles(series, say)

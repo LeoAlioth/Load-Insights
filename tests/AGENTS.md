@@ -86,7 +86,7 @@ python3 tests/bench.py score SITE FOLDER SUBS=prod        # feed production's me
 python3 tests/bench.py attrib SITE FOLDER                 # where each device's sessions are placed
 python3 tests/bench.py pump FOLDER HOUSE=prod             # every hidrofor run, run by run
 python3 tests/bench.py lengths KILN_FOLDER PUMP_FOLDER HOUSE=prod   # lengths vs real ones
-python3 tests/replay.py data/history/kozolec              # the raw detector output
+python3 tests/replay.py data/history/kozolec              # the raw detector output (not Home: its house is built by bench.py)
 ```
 
 `data/` is gitignored twice over; site history never reaches the remote. Each
@@ -386,7 +386,14 @@ blob, one signature of 16,876 runs and ~470 kWh holding 4-9 % of every device.
 replay read the owner's template sensor; production sums grid and inverter itself.
 Values agree to 0.1 W, but timestamps and change-only recording differ, and
 the scores did too (purity 67.6 vs 68.4 %). Replay Home through
-`combine()` - `bench.py`'s `HOUSE=prod` - so it matches production. Checked
+`combine()` so it matches production. **Since 2026-10-29 the bench always does**
+(the owner: the integration never reads the template sensor, so no bench may):
+a PROD_HOUSE site is built the production way whatever the dials, and
+`HOUSE=prod` is a no-op kept for old command lines; and `replay.py` refuses to
+run on the template (`TEMPLATE_HOUSE`) unless the bench rebuilt it - a direct
+`replay.py` of a Home folder, a folder the bench cannot tell is Home, or a
+folder missing the inverter all stop with an error. The template moved the
+EVBox's hidden capture from 70 to 41 % on the same ten days. Checked
 against the live generation-12 rebuild (2026-09-23): replayed from the same
 start instant, the bench's kiln signatures came out x338 / x39 against live's
 x335 / x38. From midnight instead they came out x319: the library's history

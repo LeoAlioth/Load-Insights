@@ -18,12 +18,14 @@ writing to it - runs started seconds apart would read different days.
 DIAL is any module-level constant of insights/detect.py, plus one of the
 bench's own:
 
-    HOUSE=prod   build the house reading the way PRODUCTION does - the grid
-                 meter negated plus a third of the inverter, through combine()
-                 with COMBINE_SETTLE_S (PROD_HOUSE) - rather than reading the owner's
-                 template sensor. They agree to 0.1 W but not in timing, and the
-                 scores differed (purity 67.6 vs 68.4 %). Always use it at Home;
-                 The third site has no other house reading.
+    HOUSE=prod   kept for old command lines; it changes nothing. A site in
+                 PROD_HOUSE (Home, the third site) is ALWAYS replayed on the house
+                 reading built the way PRODUCTION does - the grid meter negated
+                 plus a third of the inverter, through combine() with
+                 COMBINE_SETTLE_S - never the owner's template sensor, which the
+                 integration does not read (the owner, 2026-10-29). They agree to
+                 0.1 W but not in timing: purity 67.6 vs 68.4 %, and the EVBox
+                 41 vs 70 % hidden.
     SLICE=6      feed the replay in slices this many hours long, as
                  production's backfill does (the default); 0 for one call
     LIVE=5       ...but the last this many days in one-minute passes, as a
@@ -363,7 +365,10 @@ def _replay(folder: str, site: str | None, before=None):
     def transform(s):
         s = before(s) if before else s                   # planted loads: the house is built afresh
         key = None if before else ("prod_house", stamps(folder), D.COMBINE_SETTLE_S)
-        return _prod_house(s, key, which or "home") if HOUSE == "prod" else s
+        # production's house, always, where the site has one (PROD_HOUSE): the owner's
+        # template sensor is not what the integration reads (the owner, 2026-10-29) -
+        # an EVBox charge scored 41 % hidden on it against 70 % on this
+        return _prod_house(s, key, which) if which in PROD_HOUSE else s
     return R.run(R.parse(argv), transform, say=lambda *a, **k: None)
 
 
