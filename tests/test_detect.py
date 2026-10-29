@@ -4805,6 +4805,25 @@ def test_a_strips_reading_below_a_run_it_owns_ends_the_run():
     assert f._meter_stop("c", T0 + 2216.0, T0 + 2218.0, [older, other], 385.0) is None   # not its: it did not rise for it
 
 
+def test_a_meters_run_changes_level_with_its_meter_and_ends_when_it_stops():
+    """Kozolec's pond EVSE 5 Oct: 3,548 W from 14:41, lowered to 2,868 W at
+    15:11, stopped at 15:36. The step down, the grid falling by about as much,
+    is a level of the run its meter owns, not its end (the owner, 2026-10-29:
+    a charge can go from 16 A to 6 A); the stop to its idle reading ends it. A
+    fall bigger than the run's level is another load's."""
+    f = _fleet_with_meters({"EVSE": 0.0})
+    f.single = {"EVSE": True}                  # a meter holding one device - see Fleet._ended_by
+    ch = f.subs["EVSE"].phases["a"]
+    ch.interval = 10.0
+    _declare(ch, (T0 + 2.0, 3548.0, None, T0 - 8.0, T0 + 2.0), (T0 + 1800.0, -732.0, None, T0 + 1790.0, T0 + 1800.0),
+             (T0 + 3300.0, -2850.0, None, T0 + 3290.0, T0 + 3300.0))
+    f.sub_rows["EVSE"] = {"a": [(T0 - 60.0, 36.0), (T0 + 2.0, 3584.0), (T0 + 1800.0, 2852.0), (T0 + 3300.0, 2.0)]}
+    run = D._Open(since=T0, watts=3548.0, var=None, levels=[(T0, 3548.0)], meter="EVSE")
+    got = f._meter_stop("c", T0 + 1797.0, T0 + 1799.0, [run], 740.0)
+    assert isinstance(got, tuple) and got[1] is run and [round(w) for _, w in run.levels] == [3548, 2816], got
+    assert f._meter_stop("c", T0 + 3297.0, T0 + 3299.0, [run], 2840.0) is run
+
+
 def test_a_channel_the_votes_do_not_place_yet_may_carry_any_phase():
     """A channel's phase is what the votes say and nothing else (the unify
     audit, 2026-10-03): with 29 votes a plug is placed nowhere and asked
@@ -6147,6 +6166,22 @@ def test_a_meter_owns_a_start_only_where_its_own_rise_is_half_of_it():
     assert f._meter_totals("c", T0, 6.0, True)["Hidrofor"][0] is None          # "all of it", as on the day
     assert f._step_meter("c", T0, 3937.0, True) is None                       # ...but not of a start four times its rise
     assert f._step_meter("c", T0, 942.0, True) == "Hidrofor"                  # the rise alone is its
+
+
+def test_a_meters_step_the_grid_took_as_its_own_is_no_share_of_the_next():
+    """Kozolec 3 Oct 12:21:52: the boiler rose (+1,857 on the grid, +1,888 on
+    its meter at :56), and a car charge 16 s later (+2,189 at 12:22:08) spanned
+    back over the boiler meter's step: carved out of the charge again, it left
+    a phantom boiler run and the charge at 377 W (2026-10-29). A meter's step
+    the grid took as a step of its own, alike in size, is that step's; a bigger
+    grid step beside it is not that (the kiln's beside a pump's rise)."""
+    f = _fleet_with_meters({"Boiler": 0.0})
+    boiler, grid = f.subs["Boiler"].phases["a"], f.main.phases["c"]
+    boiler.interval, grid.interval = 5.0, 5.0
+    _declare(boiler, (T0 + 4.0, 1888.0, None, T0 - 1.0, T0 + 4.0))
+    _declare(grid, (T0, 1857.0, None, T0 - 5.0, T0), (T0 + 16.0, 2189.0, None, T0 + 3.0, T0 + 16.0))
+    assert f._meter_totals("c", T0, 6.0, True)["Boiler"][0] != 0.0                 # its own step's
+    assert f._meter_totals("c", T0 + 16.0, 6.0, True)["Boiler"][0] == 0.0          # not the charge's
 
 
 def test_a_meter_stop_the_grid_has_not_read_to_is_not_netted_into_a_rise_before_it():

@@ -313,3 +313,45 @@ Cards against 6ba2df5 (capture / impurity, kWh caught, wrong):
 
 Polnilnica hidden 62.3 -> 77.1 (+6.8 kWh); losses: Workshop boiler hidden 33.0 -> 13.3 (-1.7 kWh of 8.84), the
 Kozolec boiler's capture (-3.3 kWh, its wrong energy -2.5), Kozolec water pump impurity 7.3 -> 11.1.
+
+## More meters must not lose energy: a meter's step counted twice, a charge's step down read as its stop (2026-10-29)
+
+The owner: "giving the detector more meters makes some loads worse - investigate in detail". Kozolec's car
+charger 28.9 kWh caught hidden, 21.7 fed; the pond EVSE 138.6 / 135.1 (wrong 1.5 -> 4.8 kWh); Home's Polnilnica
+35.3 hidden, 27.6 circuits. Traced:
+
+1. Kozolec 3 Oct 12:22:08: the charge's +2,189 W grid rise was cut into "Boiler 1,812 + 377" by metered_shares:
+   the boiler meter's +1,888 W at 12:21:56, already the grid's own +1,857 step at 12:21:52, was offered again
+   (_meter_totals had no guard for a same-way step the grid took as its own; _meter_started has had one). A
+   phantom boiler run, the charge left at 377 W, and _meter_started's right answer ("Car charger 2,193 W, all of
+   it") never asked. Now a meter step the grid took as another step of its own, ALIKE in size (_grid_took
+   alike=True - a kiln pulse beside a pump's rise is the kiln's), is no share of this one.
+2. A run a meter owns was ended by any meter fall that left it reading under the run's start ("cannot still be
+   running on less than it started with", 2026-10-03): the pond EVSE lowering its charge 3,600 -> 2,868 W 25 min
+   before it stopped (5 Oct; 4 Oct 37 min early), and the car charger's taper - closed at its first step down and
+   booked at the smaller of start and stop, 148 min at 317 W, 786 Wh of 5,737. Now, on a meter holding one device
+   (holds_one_device): its fall ends the run where it is about the run's level now, or the meter reads too little
+   to carry the run and is back where it stood before the run started; a smaller fall the grid fell about as much
+   with is a level of the run (Fleet._ended_by -> METER_LEVEL); a rise of the meter's again is that run coming
+   back up (Detector._form_event, meter_single). A charge can go from 16 A to 6 A (the owner). Other meters keep
+   the old rule.
+
+Also fixed: the look back (_step_down) stepped a run from its start size while testing it at level_of (a learned
+ratio can put that above the start): an EVBox leg stepped to -121 W (Home 7 Oct 18:11).
+
+Cards against 7181bb1, devices capture / impurity (kWh caught, wrong):
+
+| | before | rule on every meter | rises only on one-device meters | rule on one-device meters (shipped) |
+|---|---|---|---|---|
+| Kozolec fed | 82.9 / 4.1 (208.3, 8.9) | 90.2 / 1.4 (226.6, 3.2) | 90.2 / 1.4 | 88.3 / 1.4 (221.8, 3.1) |
+| Home fed | 54.0 / 5.3 (123.1, 6.9) | 51.6 / 7.3 (117.6, 9.3) | 52.6 / 7.4 | 53.7 / 5.7 (122.4, 7.4) |
+| Home circuits | 42.8 / 11.8 (97.5, 13.1) | 43.4 / 10.4 | 41.9 / 12.1 | 44.6 / 9.5 (101.7, 10.7) |
+| hidden, both sites | | unchanged | unchanged | unchanged |
+
+On every meter, Susilna's plug (fan + compressor), the office strip and Blaž's PC lost 6-12 points fed: their
+devices' stops became levels of one run and their starts levels again, every compressor cycle one run. Shipped:
+pond EVSE fed 90.0 -> 97.4, car charger 72.5 -> 80.2 (its strip is not guessed one device: 96.6 with the rule on
+every meter), Home circuits Susilna +3.1, Hidrofor +3.0, Blaž's PC +6.1; Home fed Polnilnica 69.0 -> 66.7 (in its
+band). Found on the way: with the rule on every meter Polnilnica gained 12-14 points in circuits and fed - Hiša's
+channels own legs of the EVBox's three-phase charge (7 Oct 18:16:06, phase C) and its other loads' stops ended
+them. Next to trace.
