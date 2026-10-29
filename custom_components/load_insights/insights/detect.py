@@ -2086,6 +2086,7 @@ class PhaseState:
     step_diffs: List[float] = field(default_factory=list)
     moving_gaps: List[float] = field(default_factory=list)   # the gaps after a move, see CADENCE_GAPS
     _moving_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
+    _gaps_sorted: List[float] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)   # all_gaps, sorted (_classify)
     _moved: bool = field(default=False, repr=False, compare=False)   # the last reading moved past the noise
     last_w: Optional[float] = None
     # The apparent power one current quantum is worth, V x dI, which is what
@@ -2267,8 +2268,12 @@ class PhaseState:
             gap = ts - self.last_ts
             if SAME_UPDATE_S < gap < 120.0:   # one update is not a gap; a restart's is not a sampling rate
                 self.all_gaps.append(gap)
+                if len(self._gaps_sorted) != len(self.all_gaps) - 1:
+                    self._gaps_sorted = sorted(self.all_gaps[:-1])       # restored from a store
+                bisect.insort(self._gaps_sorted, gap)
                 if len(self.all_gaps) > CADENCE_GAPS:
-                    del self.all_gaps[0]
+                    old = self.all_gaps.pop(0)
+                    del self._gaps_sorted[bisect.bisect_left(self._gaps_sorted, old)]
                 if len(self.all_gaps) % 25 == 0:
                     self._classify()
                 if self._moved:          # the meter's CADENCE - see CADENCE_GAPS
@@ -2591,8 +2596,12 @@ class PhaseState:
         n = len(self.all_gaps)
         if n < CHANGE_DRIVEN_MIN_GAPS:
             return
-        short = sorted(self.all_gaps)[int(MOVING_PERCENTILE * (n - 1))]
-        self.change_driven = sum(g > CHANGE_DRIVEN_TAIL * short for g in self.all_gaps) > CHANGE_DRIVEN_SHARE * n
+        # off the gaps kept sorted as they come: once CADENCE_GAPS are held the
+        # length stays a multiple of 25 and this runs at every reading - a sort
+        # and a count of 600 each time was 5 % of a Home replay (2026-10-29)
+        ordered = self._gaps_sorted if len(self._gaps_sorted) == n else sorted(self.all_gaps)
+        short = ordered[int(MOVING_PERCENTILE * (n - 1))]
+        self.change_driven = n - bisect.bisect_right(ordered, CHANGE_DRIVEN_TAIL * short) > CHANGE_DRIVEN_SHARE * n
 
     def latency(self) -> float:
         """How long after a moment this reading's data about it is complete -
@@ -4915,7 +4924,7 @@ class Detector:
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # rise group -> the fall groups counted against it in order (partners_of), and the
     # count of order keys it was built from: keys are only added, or moved by a join
-    _pidx: Optional[Tuple[int, Dict[int, List[int]]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _pidx: Optional[Tuple[int, Dict[int, List[tuple]]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # partner_evidence and partners_of, kept until the order counts move (_order_ver,
     # bumped wherever they do; the stamp also holds the key count and the span)
     _order_ver: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
@@ -6045,12 +6054,16 @@ class Detector:
         key = rise
         rise = self._fin(rise)
         if self._pidx is None or self._pidx[0] != len(self.order):
-            idx: Dict[int, List[int]] = {}
-            for k in self.order:
+            idx: Dict[int, List[tuple]] = {}
+            for k, acc in self.order.items():
                 r, f = k.split(">")
-                idx.setdefault(int(r), []).append(int(f))
+                idx.setdefault(int(r), []).append((int(f), acc))
             self._pidx = (len(self.order), idx)
-        memo[key] = [f for f in self._pidx[1].get(rise, ()) if self.partner_evidence(rise, f) > 0]
+        # a pair counted fewer than PAIR_MIN_RUNS times has no evidence: skipped
+        # before it is worked out (a long-running group is counted against
+        # hundreds of fall groups)
+        memo[key] = [f for f, acc in self._pidx[1].get(rise, ())
+                     if acc[0] >= PAIR_MIN_RUNS and self.partner_evidence(rise, f) > 0]
         return list(memo[key])
 
     def usual_length(self, start: int) -> Optional[float]:
@@ -6958,9 +6971,16 @@ class Detector:
         return -(start * 100003 + stop) if stop is not None else start
 
     def _final(self, gid: int) -> int:
-        """The group ``gid`` ended in after the daily joins (StepGroup.joined)."""
+        """The group ``gid`` ended in after the daily joins (StepGroup.joined).
+        Off the id table as it stands, never rebuilt for an id it lacks
+        (cluster): only the daily pass joins, so a group born since or evicted
+        joined nothing - and evicted fall groups asked after for every pair
+        rebuilt it 19 million times in a six-day Home replay."""
+        by = self._by_id
+        if by is None:
+            by = self._by_id = {x.id: x for x in self.edges}
         for _ in range(64):
-            c = self.cluster(gid)
+            c = by.get(gid)
             if c is None or c.joined is None:
                 return gid
             gid = c.joined
@@ -7544,6 +7564,7 @@ class Fleet:
     _names: List[str] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see phase_map
     _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _through_parent
+    _chans_memo: Dict[tuple, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _chans
     # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process: the voltage
     # the cross-meter edges read beside each step (insights/edges.py); nothing here sizes a step by it.
     volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
@@ -8037,7 +8058,17 @@ class Fleet:
         asking what the meter's own load did reads; netting a meter's change
         out of a grid step needs it placed (_mapped)."""
         mp = self.phase_map(name)
-        return self._mapped(name, ph) + [c for c in self._read_chans(name) if c not in mp]
+        det = self._det(name)
+        # kept while the map is the same object (phase_map hands back its kept
+        # one until the votes move), the meter has the same channels and all
+        # of them have read: 5.8 million calls in a six-day Home replay
+        hit = self._chans_memo.get((name, ph))
+        if hit is not None and hit[0] is mp and hit[1] is det and det is not None and hit[2] == len(det.phases):
+            return list(hit[3])
+        got = self._mapped(name, ph) + [c for c in self._read_chans(name) if c not in mp]
+        if det is not None and all(st.last_ts is not None for st in det.phases.values()):
+            self._chans_memo[(name, ph)] = (mp, det, len(det.phases), got)
+        return list(got)
 
     def _under(self, n: str, anc: str) -> bool:
         """Does meter ``n`` hang under ``anc``, at any depth?"""
