@@ -377,6 +377,7 @@ FALL_AGE_LONG_W = 0.5
 # levels of it, no run of their own. Bench dial (spec open point).
 DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
+METER_LEVEL = "level"           # Fleet._ended_by: a meter's fall that is its run's level change, not its stop
 CLOSED_KEEP = 500              # the closes a phase remembers for second_rise (PhaseState.closed_groups)
 STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
 V_NOMINAL = 230.0              # the voltage a group's sizes are compared at once its k is known
@@ -2217,6 +2218,8 @@ class PhaseState:
             if got is None:
                 break
             o, at = got
+            if isinstance(o, tuple):
+                continue                     # a level of the run, not its stop - see Fleet._ended_by
             out.append(self._end(o, at, o.now or o.watts))
         return out
 
@@ -2947,8 +2950,8 @@ class PhaseState:
         for o in self.open_edges:
             if o is b or self.owned(o) or o.since >= at or self.level_of(o) - w <= tight:
                 continue
-            o.down, was_now = o.down + w, o.now
-            o.now = (o.now or o.watts) - w
+            cur, was_now = self.level_of(o), o.now
+            o.down, o.now = o.down + w, cur - w
             if not any(self._not_carried(x, level) for x in self.open_edges if not self.owned(x)):
                 cands.append(o)
             o.down, o.now = o.down - w, was_now
@@ -2958,8 +2961,11 @@ class PhaseState:
             self._pending_b_stopped()                # one question at a time: the older one as the 0.5 rule had it
         a = max(cands, key=self.level_of)
         self.held_drops.pop()
-        a.down += w
-        a.now = (a.now or a.watts) - w
+        # from what it draws (level_of), the level the test above stepped it
+        # from - not its start, which a learned ratio can put below the fall:
+        # an EVBox leg was stepped to -121 W (Home 7 Oct 18:11, 2026-10-29)
+        cur = self.level_of(a)
+        a.down, a.now = a.down + w, cur - w
         a.levels.append((at, a.now))
         self.step_pending = [at, w, a.since, a.watts, b.since, b.watts]
         return True
@@ -3172,6 +3178,8 @@ class PhaseState:
         if self.lib is not None and self.lib.meter_stop is not None and self.declared:
             e = self.declared[-1]
             o = self.lib.meter_stop(self.name, e[3], e[4], self.open_edges, watts)
+            if isinstance(o, tuple):
+                return []                    # the meter's run changed level - see Fleet._ended_by
             if o is not None:
                 return [self._end(o, at, watts, var, direct=True)]
             if self.lib.meter_read is not None and self.lib.meter_read(self.name, e[0], watts, False, self.last_ts):
@@ -5104,6 +5112,8 @@ class Detector:
     meter_wh: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (phase, since, size, up, t) -> the one-device meter whose readings show that step while a run it owns there is on
     meter_read: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # (meter) -> does it hold one device (Fleet.holds_one_device), set by the Fleet
+    meter_single: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # Every step it grouped, the last STEPS_KEEP_S (run lifecycle, Task 8c): [since,
     # phase pattern, signed W, var, group id, owner, voltage before, voltage after] -
     # what the daily pass may read back. Kept in a store of its own, never in the
@@ -5844,6 +5854,24 @@ class Detector:
                 # every return opened a 2.15 kW run of its own, ~14 kWh booked
                 # beside the charge (09-25, 2026-10-04) - see Fleet._meter_read
                 st.open_edges.remove(m["open"])
+        for m in members if len(members) == 1 else []:
+            # ...and a rise of a meter's whose run there stepped down is that run
+            # coming back up, not a run beside it (Fleet._ended_by: a charge's
+            # current lowered and raised again, 2026-10-29) - on a meter holding
+            # one device: on Susilna's plug the compressor starting again beside
+            # the fan is a run of its own, every cycle merged into one run else
+            st, o = self.phases.get(m["ph"]), m["open"]
+            if (st is None or not o.meter or o not in st.open_edges
+                    or self.meter_single is None or not self.meter_single(o.meter)):
+                continue
+            back = next((x for x in st.open_edges if x is not o and x.meter == o.meter and x.since < o.since
+                         and len(x.levels) > 1 and x.watts - x.levels[-1][1] > st._tol(x.watts, x.levels[-1][1])
+                         and m["watts"] <= x.watts - x.levels[-1][1] + st._tol(x.watts, m["watts"])), None)
+            if back is not None:
+                lvl = back.levels[-1][1] + m["watts"]
+                back.levels.append((m["since"], lvl))
+                back.now = lvl
+                st.open_edges.remove(o)
         return cluster, members
 
     def mix_daily(self) -> Tuple[int, int]:
@@ -7473,7 +7501,7 @@ class Detector:
 
 # what a fleet's main detector asks it - each Fleet._<hook> - see Fleet._bind
 _HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_stop", "meter_on", "meter_started",
-          "meter_level", "meter_ended", "meter_wh", "meter_read")
+          "meter_level", "meter_ended", "meter_wh", "meter_read", "meter_single")
 
 
 def _lag_of(lags, q: float = LAG_PERCENTILE) -> float:
@@ -8655,6 +8683,9 @@ class Fleet:
                     sig.locations[where] = sig.locations.get(where, 0) + 1
         return sig
 
+    def _meter_single(self, name: str) -> bool:
+        return self.holds_one_device(name)
+
     def holds_one_device(self, name: str) -> bool:
         """Does this meter hold ONE device, as the user answered - or, where
         nobody has, as guess_one_device says? This is what hides a meter's
@@ -9004,12 +9035,13 @@ class Fleet:
                         # minutes at 257 W (Kozolec 09-28 13:53, 2026-10-02).
                         # Home's pump (-731 W for a plug fall of 818) passes.
                         continue
-                    o = self._ended_by(name, c, ph, e, opens)
+                    o = self._ended_by(name, c, ph, e, opens, grid_fall=fall)
                     if o is not None:
                         return o
         return None
 
-    def _ended_by(self, name: str, c: str, ph: str, e: tuple, opens: list, still: Optional[float] = None):
+    def _ended_by(self, name: str, c: str, ph: str, e: tuple, opens: list, still: Optional[float] = None,
+                  grid_fall: Optional[float] = None):
         """The open run on ``ph`` that meter ``name``'s fall ``e`` on channel
         ``c`` ends by _meter_stop's rule - and, asked ``still``, the channel
         still that far below where it stood then - marked used; None."""
@@ -9034,6 +9066,36 @@ class Fleet:
         size = o.watts                      # what it settled at, not a starting surge
         left = self._change_since(name, ph, c, o.since, e[4]) * gain
         tol = grid._tol(size, max(left, 0.0))
+        if o.meter == name and self.holds_one_device(name):
+            # the meter that owns the run, holding one device (the owner,
+            # 2026-10-29): its fall ends
+            # the run where the meter is back where it stood before the run
+            # started, or the fall is the run's size now (its last level) - a
+            # strip's other load can hold the reading up; any other fall is the
+            # load changing level. Ending it there - the run "cannot still be
+            # running on less than it started with" - closed Kozolec's pond
+            # EVSE lowering its charge 3,600 -> 2,868 W 25 min before it stopped
+            # (5 Oct), and the car charger's taper booked 148 min at 317 W, 786
+            # Wh of 5,737 (3 Oct). A charge can go from 16 A to 6 A and on.
+            fall_g, cur = -e[1] * gain, o.levels[-1][1] if o.levels else size
+            read = self._reading(name, c, e[4])
+            ctol = grid._tol(cur, fall_g)
+            if abs(fall_g - cur) <= ctol or (read is not None and read * gain < cur - ctol and left <= tol):
+                if still is None or self._change_since(name, ph, c, o.since, still) * gain <= left + tol:
+                    self._stops_used[(name, e[0])] = e[0]
+                    return o
+                return None
+            if fall_g >= cur - ctol or grid_fall is None or abs(abs(grid_fall) - fall_g) > grid._tol(fall_g, abs(grid_fall)):
+                # bigger than the run: another of its loads; or a fall the grid
+                # showed no step of its size for - a plug's 23 W wobble, beside
+                # another load's stop or none, would lower its run for good, its
+                # return never a grid step either
+                return None
+            new = cur - fall_g
+            o.levels.append((e[0], new))
+            o.now = new
+            self._stops_used[(name, e[0])] = e[0]
+            return (METER_LEVEL, o)
         # ...and the fall is of the run's size, or the channel reads too
         # little after it to carry the run at all: a circuit's other load
         # stopping took it below where it stood before the run started, the
@@ -9613,9 +9675,18 @@ class Fleet:
             # silence) covered a rise 12 s earlier was netted into the rise
             # while the grid's own fall for it was six seconds from being
             # read; the rise grew to 3980 W (Home 09-24 00:54, 2026-10-02)
+            # ...and one the step's way that the grid took as another step of its
+            # own is that step's, not a share of this one: Kozolec's boiler rose
+            # 16 s before a car charge (3 Oct 12:21:52 / 12:22:08), its meter's
+            # +1,888 W reached into the charge's span and was carved out of it
+            # again - a phantom boiler run, the 2.2 kW charge left at 377 W, the
+            # charger's own rise never asked (_split_rise; the same guard as
+            # Fleet._meter_started's, 2026-10-29)
             read = grid.last_ts if grid.last_ts is not None else float("inf")
+            mine_at = mine[0] if mine else since
             own = [e for e in ms if e[3] <= g_span[1] and e[4] >= g_span[0]
-                   and (up is None or (e[1] > 0) == up
+                   and ((up is None or (e[1] > 0) == up)
+                        and not self._grid_took(grid, e, gain, noise_g, noise, cap, besides=mine_at, alike=True)
                         or (e[3] < g_span[1] and e[4] > g_span[0] and e[4] <= read
                             and not self._grid_took(grid, e, gain, noise_g, noise, cap)))]
             if not own:
@@ -9635,13 +9706,16 @@ class Fleet:
         return out
 
     def _grid_took(self, grid: "PhaseState", e: tuple, gain: float, noise_g: float, noise_m: float,
-                   reach: float) -> bool:
+                   reach: float, besides: Optional[float] = None, alike: bool = False) -> bool:
         """Did the grid declare a step of its own the way of the meter's step
         ``e``, over its span and big enough to hold it - within both meters'
-        noise and METER_CAL_SLACK?"""
+        noise and METER_CAL_SLACK? ``alike``: of its size, not merely holding
+        it (a kiln pulse beside a pump's rise is the kiln's); its step at
+        ``besides`` not counted."""
         size = abs(e[1]) * gain
         tol = math.hypot(noise_g, noise_m) + METER_CAL_SLACK * size
-        return any((g[1] > 0) == (e[1] > 0) and abs(g[1]) >= size - tol for g in self._near(grid, e[3], e[4], reach))
+        return any((g[1] > 0) == (e[1] > 0) and abs(g[1]) >= size - tol and (not alike or abs(g[1]) <= size + tol)
+                   and (besides is None or abs(g[0] - besides) > 0.01) for g in self._near(grid, e[3], e[4], reach))
 
     def _vote_phases(self, closed_sub: Dict[str, List[Run]], main_iv: float,
                      pool: List[Run]) -> None:
