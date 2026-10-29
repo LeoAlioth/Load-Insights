@@ -209,3 +209,20 @@ held drops) had Home hidden at 32.9 / 10.7 and Kozolec at 78.1 / 8.3: the Kozole
 to trace. Kozolec's earlier loss was the age vote vetoing a 537 W run 21 s old (its fall then shrank an EVSE
 charge), boiler + a 1 kW load falling together taken for one run, and a mid-charge drop held but not consulted
 (the charge booked at its stop's 2,604 W for 3.4 h). Default left at legacy until the owner decides.
+
+Then (the owner, 2026-10-29) two rules for the probability score: a leg of a run that rose on several phases is
+ended only by a fall spanning all of them (Home's EVBox lost its A leg to a 1,751 W load's fall on A, its B leg to
+a 1,372 W one), and a second rise of a running group never ends the first without a fall or the readings showing
+it fell under half (the EVBox ramping 3.4 then 5.7 kW in one group lost its first part for the whole charge).
+Card fall-legs-units, capture / impurity, legacy -> probability:
+
+| | hidden | circuits | fed |
+|---|---|---|---|
+| Home devices (227.9 kWh) | 34.2 / 12.7 -> 36.1 / 13.3 (78.0 -> 82.3 kWh caught, 11.3 -> 12.6 wrong) | 37.2 / 13.3 -> 41.9 / 11.5 (84.8 -> 95.5, 13.0 -> 12.4) | 52.2 / 6.2 -> 54.0 / 5.6 (119.0 -> 123.1, 7.9 -> 7.3) |
+| Home partition (604.6 kWh) | 44.8 / 10.9 -> 49.7 / 11.0 (270.9 -> 300.5, 33.1 -> 37.1) | 51.5 / 8.7 -> 54.9 / 9.2 | 56.7 / 6.5 -> 58.9 / 6.0 |
+| Kozolec devices (251.2 kWh) | 82.5 / 3.9 -> 81.8 / 4.0 (207.3 -> 205.5, 8.4 -> 8.6) | - | 83.5 / 3.4 -> 82.9 / 4.1 |
+
+Polnilnica hidden 70.1 / 7.0 -> 64.8 / 7.4 (47.4 before these two rules), the office plug 13.5 -> 22.7, Blaževa
+Soba 18.8 -> 26.7, Susilna 24.0 / 14.3 -> 25.5 / 14.9 hidden and 44.8 -> 46.3 fed; Kozolec's boiler impurity
+8.2 -> 15.0 hidden (3.1 -> 5.6 kWh wrong). The owner: "the results are good" - the probability score becomes the
+only one.

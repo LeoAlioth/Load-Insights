@@ -2945,6 +2945,9 @@ class PhaseState:
         before = e[6] - e[1] if e is not None and len(e) > 6 else None
         for o in [o for o in self.open_edges if o.cluster == cid and o is not keep
                   and o.since < keep.since and not self.owned(o)]:
+            if FALL_SCORE != "legacy":
+                out += self._second_rise_seen(o, keep, before)
+                continue
             others = sum(x.watts for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
             noise = self.noise_at(o.watts)
             group = self.lib.cluster(cid) if self.lib is not None else None
@@ -2963,6 +2966,31 @@ class PhaseState:
             at = fall[0] if fall is not None else (min(keep.since, o.since + usual) if usual else keep.since)
             out.append(self._end(o, at, o.now or o.watts))
         return out
+
+    def _second_rise_seen(self, o: _Open, keep: _Open, before: Optional[float]) -> List[Run]:
+        """second_rise under the probability score (the owner, 2026-10-29: never
+        closed without a fall seen or the readings showing it fell): the
+        reading the new rise stepped from, less the other runs and the floor,
+        still carries at least half of ``o`` - both stay on (Home's EVBox
+        ramping 3.4 then 5.7 kW in one group lost its first part for the whole
+        charge), the overlap recorded as two units where it carried all of it;
+        under half - it fell unseen, closed at the seen fall of its size between
+        the two, else the newest fall between, else the new rise."""
+        if before is None or self.baseline is None:
+            return []
+        others = sum(self.level_of(x) for x in self.open_edges if x is not o and x is not keep and x.since < keep.since)
+        left = before - self.baseline - others
+        noise = self.noise_at(o.watts)
+        if left >= 0.5 * self.level_of(o):
+            group = self.lib.cluster(o.cluster) if self.lib is not None else None
+            if group is not None and o.watts > 2.0 * noise and left >= o.watts - noise:
+                group.cannot.append((o.watts, _angle(o.watts, o.var), keep.watts, _angle(keep.watts, keep.var)))
+                del group.cannot[:-CANNOT_KEEP]
+            return []
+        tight = PAIR_TIGHT_NOISES * math.sqrt(2.0) * noise
+        between = [d for d in reversed(self.declared) if o.since < d[0] < keep.since and d[1] < 0]
+        fall = next((d for d in between if abs(-d[1] - o.watts) <= tight), between[0] if between else None)
+        return [self._end(o, fall[0] if fall is not None else keep.since, o.now or o.watts)]
 
     def _remember_close(self, o, at: float) -> None:
         self.recent_closed.append((o.since, o.watts, at))
@@ -3124,7 +3152,7 @@ class PhaseState:
         # several loads going together - the oven and its fan, a programme
         # ending - leave one step too big for any of them alone. Take them
         # largest first while the step still covers them, or nothing.
-        order = sorted((i for i, o in enumerate(self.open_edges) if not self.owned(o)),
+        order = sorted((i for i, o in enumerate(self.open_edges) if not self.owned(o) and self._fall_covers(o)),
                        key=lambda i: -self.open_edges[i].watts)
         taken, left = [], watts
         for i in order:
@@ -3154,7 +3182,7 @@ class PhaseState:
         here their levels' sum (level_of) - times FALL_NO_PAIR (no fall group
         is a sum's partner) and their age votes' geometric mean; only where the
         sum without any one of them is less alike."""
-        pool = [(i, o) for i, o in enumerate(self.open_edges) if not self.owned(o)]
+        pool = [(i, o) for i, o in enumerate(self.open_edges) if not self.owned(o) and self._fall_covers(o)]
         if len(pool) < 2:
             return None
         lv = {i: self.level_of(o) for i, o in pool}
@@ -3181,7 +3209,7 @@ class PhaseState:
         of that rise a meter took, ends here (see _pair)."""
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
-            if self.owned(o) or at - o.since > MERGE_TOLERANCE_S:
+            if self.owned(o) or at - o.since > MERGE_TOLERANCE_S or not self._fall_covers(o):
                 continue
             e = self.declared_at(o.since)
             rose = e[1] if e is not None else 0.0
@@ -3195,7 +3223,7 @@ class PhaseState:
         HELD_DROPS."""
         for i in range(len(self.open_edges) - 1, -1, -1):
             o = self.open_edges[i]
-            if self.owned(o):
+            if self.owned(o) or not self._fall_covers(o):
                 continue
             size = o.now or o.watts
             need = size - watts
@@ -3258,6 +3286,22 @@ class PhaseState:
         z = self._age_z(o, at)
         return 1.0 if z is None else 1.0 - _phi(z)
 
+    def _fall_covers(self, o: _Open) -> bool:
+        """Can the fall being paired end run ``o``? Not a leg of a run that
+        rose on several phases unless the fall's event spans all of them (the
+        owner, 2026-10-29: a three-phase load stops on all its phases at once).
+        Kozolec's and Home's chargers lost legs to other loads' single-phase
+        falls - the EVBox's A leg to a 1,751 W fall on A at 11 Oct 08:12, its
+        charge running on 46 minutes. The legacy score (FALL_SCORE) asks not."""
+        lib = self.lib
+        if FALL_SCORE == "legacy" or lib is None or o.cluster is None:
+            return True
+        g = lib.cluster(o.cluster)
+        if g is None or len(g.phase) < 2:
+            return True
+        f = lib.cluster(self.stop_cluster) if self.stop_cluster is not None else None
+        return set(g.phase) <= set(f.phase if f is not None else self.name)
+
     def _score(self, o: _Open, watts: float, at: float, new_level: Optional[float] = None) -> Optional[float]:
         return self._score_held(o, watts, at, new_level)[0]
 
@@ -3281,6 +3325,8 @@ class PhaseState:
         levels (2026-10-29)."""
         if FALL_SCORE == "legacy":
             return self._score_legacy(o, watts, at, new_level), None
+        if not self._fall_covers(o):
+            return None, None
         lib, fall = self.lib, self.stop_cluster
         ev = lib.partner_evidence(o.cluster, fall) if lib is not None and o.cluster is not None and fall is not None else 0.0
         sigma = math.sqrt(2.0) * self.noise_at(max(o.watts, watts))
