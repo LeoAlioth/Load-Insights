@@ -172,3 +172,15 @@ At Home the mixture merges too much: groups take unmetered loads' steps, which t
 cannot see. Hidrofor fixes afterwards (fresh, above-chance co-runs; joins across every pair in reach; rise groups
 sharing a partner fall joined): its rises 46.4 -> 76.2 % in one group at step time, 93.0 % once the daily joins
 apply; falls 85.6 %.
+
+Filing by pair (Detector.device_of: start group + stop group), mixture, MIX_JOIN_WIDTHS 2 (card pair-join2):
+
+| | valleys | mixture join 2 + pair filing |
+|---|---|---|
+| Home devices hidden / circuits / fed | 32.0 / 13.0, 41.1 / 13.6, 53.0 / 6.5 | 34.2 / 12.7, 37.2 / 13.3, 52.2 / 6.2 |
+| Home partition hidden | 48.6 / 14.6 | 44.8 / 10.9 |
+| Susilna hidden / fed | 24.4 / 14.6, 58.4 / 8.5 | 24.0 / 14.3 (21.8 kWh caught, 3.6 wrong), 44.8 / 2.5 (40.8, 1.0) |
+| Hidrofor hidden / fed | 68.7 / 19.8, 68.9 / 28.6 | 63.9 / 19.2, 70.4 / 8.1 (15.6 kWh caught, 1.4 wrong) |
+| Kozolec devices hidden / fed | 81.3 / 3.2, 84.5 / 3.1 | 82.5 / 3.9, 83.5 / 3.4 |
+
+The owner, 2026-10-29: "that is absolutely great". The default is still valleys until he says to switch.
