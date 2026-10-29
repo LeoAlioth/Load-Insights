@@ -40,7 +40,6 @@ from _load import load  # noqa: E402
 
 D = B.D
 E = load("insights.edges")
-VOLTS = {"home": {p: f"sensor.solaredge_se17k_m1_ac_voltage_{p}n" for p in "abc"}}
 LATENCY_S, SIZE_REL, SIZE_W, V_WIN_S = 20.0, 0.12, 15.0, 30.0
 
 
@@ -59,8 +58,7 @@ def _side(rows: list, t: float, before: bool):
 def replay(site: str, mode: str, dials: list) -> dict:
     out = next((d[4:] for d in dials if d.startswith("OUT=")), None)
     dials = [d for d in dials if not d.startswith(("OUT=", "LABEL="))]
-    volts = [f"VOLTS={p}:{e}" for p, e in VOLTS.get(site, {}).items()] if mode == "hidden" else []
-    B._apply([f"SUBS={'none' if mode == 'hidden' else 'prod'}", "SLICE=6"] + EB._site_dials(site) + volts + dials)
+    B._apply([f"SUBS={'none' if mode == 'hidden' else 'prod'}", "SLICE=6"] + EB._site_dials(site) + dials)   # the grid's volts with them
     rec, ref = [], {}
     proc0, cls0 = D.Fleet.process, D.Detector._classify_step
 

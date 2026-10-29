@@ -1011,8 +1011,19 @@ def _parallel(jobs: list, n: int = PARALLEL) -> list:
             return list(pool.map(one, range(len(jobs))))
 
 
+# The grid meter's voltage per phase, as production feeds it (detection.py,
+# Fleet.volts): the steps store reads it either side of each step, and mixture
+# grouping fits each group's voltage exponent from it. Every card reads it - the
+# owner, 2026-10-29: the hidden card is everything the grid and solar sensors give.
+SITE_VOLTS = {
+    "home": {p: f"sensor.solaredge_se17k_m1_ac_voltage_{p}n" for p in "abc"},
+    "kozolec": {"a": "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1"},
+}
+
+
 def _site_dials(site: str) -> list:
-    return ["HOUSE=prod"] if site in B.PROD_HOUSE else []   # always at Home, and the third site has no other house - see bench.py
+    return ((["HOUSE=prod"] if site in B.PROD_HOUSE else [])   # always at Home, and the third site has no other house - see bench.py
+            + [f"VOLTS={p}:{e}" for p, e in SITE_VOLTS.get(site, {}).items()])
 
 
 def _fig(vals: list, signed: bool = False) -> str:
