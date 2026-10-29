@@ -6622,9 +6622,21 @@ class Detector:
         self._touch(sid)
 
     def device_of(self, s: "Run") -> Optional[int]:
-        """The start cluster of the run, or of its first leg: its device."""
-        return next((pair[0] for pair in ([s.pair] if s.pair else []) + list(s.legs)
-                     if pair and pair[0] is not None), None)
+        """The start cluster of the run, or of its first leg: its device - or,
+        where that start group ends in several partner fall groups by order
+        evidence and this run was closed by one of them, the pair: its stop is
+        the reliable signature (the owner, 2026-10-29: the hidrofor's wide rise
+        group also holds other loads' 850-1,000 W starts, its falls sit at 808
+        +- 17 W). A pair's device id is negative, never a group's."""
+        pair = next((p for p in ([s.pair] if s.pair else []) + list(s.legs) if p and p[0] is not None), None)
+        if pair is None:
+            return None
+        start, stop = pair[0], (pair[1] if len(pair) > 1 else None)
+        if GROUPING == "mixture" and stop is not None:
+            partners = self.partners_of(start)
+            if len(partners) >= 2 and stop in partners:
+                return -(start * 100003 + stop)
+        return start
 
     def window(self, name: str) -> Optional[Tuple[float, float]]:
         """This input's learned lag window (see lag_window), kept until its histogram changes."""
