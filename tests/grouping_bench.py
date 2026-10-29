@@ -91,6 +91,8 @@ def replay(site: str, mode: str, dials: list) -> dict:
         D.Fleet.process, D.Detector._classify_step = proc0, cls0
     f = ref["f"]
     res = {"site": site, "mode": mode, "steps": rec,
+           # mixture grouping joins groups in the daily pass (StepGroup.joined): steps are scored in the group they end in
+           "joined": {str(c.id): c.joined for c in f.main.edges if getattr(c, "joined", None) is not None} if mode == "hidden" else {},
            "maps": {n: f.phase_map(n) for n in _plugs(site)} if mode == "fed" else {}}
     if out:
         Path(out).write_text(json.dumps(res), encoding="utf-8")
@@ -131,7 +133,15 @@ def _width(xs: list) -> tuple:
 
 
 def score(hidden: dict, fed: dict) -> dict:
-    steps = hidden["steps"]
+    joined = {int(k): v for k, v in (hidden.get("joined") or {}).items()}
+
+    def final(g):
+        for _ in range(64):
+            if g not in joined:
+                return g
+            g = joined[g]
+        return g
+    steps = [{**s, "g": final(s["g"])} for s in hidden["steps"]]
     lab = label(hidden, fed)
     by_group = collections.defaultdict(collections.Counter)
     for i, s in enumerate(steps):
