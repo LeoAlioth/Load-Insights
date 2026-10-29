@@ -210,18 +210,6 @@ def _evidence(det, rise, fall, secs, ratio=1.0, n=20):
     det.fall_n[fall], det.run_time[rise], det.order_span = n, 0.1 * 86400.0, 86400.0
 
 
-def _probability(fn):
-    """Run a test with FALL_SCORE = "probability" (a bench dial, default legacy)."""
-    def run():
-        old, D.FALL_SCORE = D.FALL_SCORE, "probability"
-        try:
-            fn()
-        finally:
-            D.FALL_SCORE = old
-    run.__name__ = fn.__name__
-    return run
-
-
 def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
     """Susilna's compressor runs two hours; an unrelated 190 W load started
     three minutes ago. The compressor's partner fall closes the compressor's
@@ -234,22 +222,10 @@ def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
     assert [o.since for o in st.open_edges] == [T0 + 7020.0]
 
 
-@_probability
-def test_a_drifting_load_is_closed_once_its_ratio_is_learned():
+def test_a_drifting_load_is_closed_by_a_fall_a_fifth_under_its_rise():
     """Rise 390 W, fall 300 W: the 2026-10-28 score's tight test held it open
     until the pair had evidence; the probability score (2026-10-29) takes a
     fall a fifth under its rise at once - a load settles after its start."""
-    det, st = _scoring_phase((0.0, 390.0, 1))
-    st.stop_cluster = 9
-    old, D.FALL_SCORE = D.FALL_SCORE, "legacy"
-    try:
-        assert st._pair(T0 + 1800.0, 300.0, None, 600.0) == [] and len(st.open_edges) == 1
-        st.held_drops = []
-        _evidence(det, 1, 9, 1800.0, ratio=300.0 / 390.0)
-        closed = st._pair(T0 + 1800.0, 300.0, None, 600.0)
-        assert len(closed) == 1 and st.open_edges == [], closed
-    finally:
-        D.FALL_SCORE = old
     det, st = _scoring_phase((0.0, 390.0, 1))
     st.stop_cluster = 9
     assert len(st._pair(T0 + 1800.0, 300.0, None, 600.0)) == 1 and st.open_edges == []
@@ -283,7 +259,6 @@ def test_fall_similarity_follows_the_owners_curve():
     assert sim(100.0, 115.0, 0.0) < sim(100.0, 85.0, 0.0)                  # above its rise: less alike
 
 
-@_probability
 def test_a_fall_ends_the_run_at_its_usual_length_not_the_one_far_younger():
     """Two 100 W runs, a 100 W fall of a group neither has a pair with: the
     one three hours into its usual three ends, not the one half an hour into
@@ -299,7 +274,6 @@ def test_a_fall_ends_the_run_at_its_usual_length_not_the_one_far_younger():
     assert abs(st._age_fit(st.open_edges[0], T0 + 3 * 3600.0) - (1.0 - D.FALL_AGE_SHORT_W)) < 0.01
 
 
-@_probability
 def test_a_run_far_younger_than_usual_still_takes_its_own_fall():
     """Kozolec 14 Oct 18:17: a 537 W load ran 21 s against a usual 20 min. Its
     -528 W is its stop - the age votes, never vetoes (the owner, 2026-10-29) -
@@ -312,7 +286,6 @@ def test_a_run_far_younger_than_usual_still_takes_its_own_fall():
     assert [round(o.watts) for o in st.open_edges] == [3604]
 
 
-@_probability
 def test_a_fall_is_scored_against_what_the_run_draws_after_its_held_drops():
     """Kozolec 4 Oct: the EVSE rose 3,568 W, lowered its charge mid-run (-802 W,
     matching nothing, held) and stopped -2,604 W. Scored against its rise less
@@ -326,7 +299,6 @@ def test_a_fall_is_scored_against_what_the_run_draws_after_its_held_drops():
     assert st.held_drops == [] and st.open_edges == []
 
 
-@_probability
 def test_a_single_phase_fall_never_ends_a_leg_of_a_three_phase_run():
     """Home's EVBox (11 Oct 08:12): its A leg of 1,671 W open, a 1,751 W load
     on A for 29 s - the fall on A alone ends that load, never the charger's leg;
@@ -357,7 +329,6 @@ def _second_rise_phase(declared):
     return det, st, keep
 
 
-@_probability
 def test_a_second_rise_never_ends_the_first_without_a_fall_or_the_readings():
     """The EVBox ramping 3.4 then 5.7 kW in one group (Home, 7 Oct): the reading
     still carries the first - both stay on, with no history of two units. Not
@@ -376,7 +347,6 @@ def test_a_second_rise_never_ends_the_first_without_a_fall_or_the_readings():
     assert [(x.start, x.end) for x in st.second_rise(1, keep)] == [(T0, T0 + 70.0)]   # no fall seen: the new rise
 
 
-@_probability
 def test_two_runs_stopping_in_one_reading_are_one_candidate():
     """Kozolec 14 Oct 19:15: the boiler (1,829 W) and a 1 kW load fell together,
     2,827 W, beside a 3,604 W charge: the two close, the charge goes on (the
@@ -392,7 +362,6 @@ def test_two_runs_stopping_in_one_reading_are_one_candidate():
     assert st._combination(T0 + 600.0, 1000.0) is None
 
 
-@_probability
 def test_the_reading_short_of_its_runs_ends_the_least_likely_still_running():
     """The reading carries one of two 500 W runs: the one past its usual ten
     minutes ends, not the older one an hour into its usual eight (the owner,
@@ -405,7 +374,6 @@ def test_the_reading_short_of_its_runs_ends_the_least_likely_still_running():
     assert [o.since for o in st.open_edges] == [T0]
 
 
-@_probability
 def test_a_join_keeps_what_the_joined_group_learned_of_order():
     """Group 5 joins group 4 in the daily pass: its pairs, running time, falls
     and co-runs add to 4's, and a run still open in 5 is scored as 4's (the
@@ -451,10 +419,12 @@ def test_a_late_return_is_a_new_run():
 def test_two_fridges_overlapping_count_two():
     """Kozolec's fridges, 83 W and 75 W, in one group: the second rises while
     the first still runs - a second unit, both open, a cannot-link pair; each
-    ends by its own fall (run lifecycle, 2026-10-28)."""
+    ends by its own fall (run lifecycle, 2026-10-28). With no overlap seen
+    before too: the reading carries the first, so it is no missed fall (the
+    owner, 2026-10-29)."""
     det, st = _scoring_phase((0.0, 83.0, 1))
     det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]
-    det.edges[0].cannot = [(84.0, None, 74.0, None)] * D.PAIR_MIN_RUNS     # overlaps seen before (UNITS_NEED_HISTORY)
+    det.edges[0].cannot = [(84.0, None, 74.0, None)] * D.PAIR_MIN_RUNS     # overlaps seen before
     st.noise = 5.0
     keep = D._Open(T0 + 600.0, 75.0, None, [(T0 + 600.0, 75.0)], cluster=1)
     st.declared = [(T0 + 600.0, 75.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 300.0 + 83.0 + 75.0)]
@@ -462,12 +432,12 @@ def test_two_fridges_overlapping_count_two():
     st.open_edges.append(keep)
     assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
     assert det.edges[0].cannot[-1] == (83.0, None, 75.0, None)
-    fresh, st2 = _scoring_phase((0.0, 83.0, 1))                           # no overlaps before: a missed fall,
-    fresh.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]      # the overlap still counted
+    fresh, st2 = _scoring_phase((0.0, 83.0, 1))                           # no overlaps before: still two units
+    fresh.edges = [D.StepGroup(id=1, phase="a", up=True, watts=80.0)]
     st2.noise, st2.declared, st2.declared_t = 5.0, list(st.declared), list(st.declared_t)
     keep2 = D._Open(T0 + 600.0, 75.0, None, [(T0 + 600.0, 75.0)], cluster=1)
     st2.open_edges.append(keep2)
-    assert len(st2.second_rise(1, keep2)) == 1 and len(fresh.edges[0].cannot) == 1
+    assert st2.second_rise(1, keep2) == [] and len(st2.open_edges) == 2 and len(fresh.edges[0].cannot) == 1
 
 
 def test_a_second_rise_without_the_first_carried_ends_the_first_at_its_missed_fall():
@@ -669,14 +639,18 @@ def test_identical_units_are_not_split():
     assert det.split_groups() == 0 and len(g.cannot) == 10
 
 
-def test_a_second_rise_under_the_noise_is_a_missed_fall():
+def test_a_second_rise_under_the_noise_keeps_the_first_but_counts_no_second_unit():
+    """A 20 W run under 15 W of noise: the reading cannot tell it fell, so it
+    is not closed (the owner, 2026-10-29: never without a fall or the readings),
+    and no overlap is recorded - the noise hides whether it was a second unit."""
     det, st = _scoring_phase((0.0, 20.0, 1))
+    det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=20.0)]
     st.noise = 15.0
     keep = D._Open(T0 + 600.0, 20.0, None, [(T0 + 600.0, 20.0)], cluster=1)
     st.declared = [(T0 + 600.0, 20.0, None, T0 + 595.0, T0 + 600.0, T0 + 605.0, 340.0)]
     st.declared_t = [T0 + 600.0]
     st.open_edges.append(keep)
-    assert len(st.second_rise(1, keep)) == 1 and st.open_edges == [keep]
+    assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2 and det.edges[0].cannot == []
 
 
 def test_a_lone_open_start_does_not_take_the_phases_other_loads():

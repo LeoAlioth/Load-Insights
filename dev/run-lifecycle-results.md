@@ -225,4 +225,5 @@ Card fall-legs-units, capture / impurity, legacy -> probability:
 Polnilnica hidden 70.1 / 7.0 -> 64.8 / 7.4 (47.4 before these two rules), the office plug 13.5 -> 22.7, Blaževa
 Soba 18.8 -> 26.7, Susilna 24.0 / 14.3 -> 25.5 / 14.9 hidden and 44.8 -> 46.3 fed; Kozolec's boiler impurity
 8.2 -> 15.0 hidden (3.1 -> 5.6 kWh wrong). The owner: "the results are good" - the probability score becomes the
-only one.
+only one: the legacy score, FALL_SCORE, PAIR_SCORE_MIN and UNITS_NEED_HISTORY are removed (2026-10-29); the
+dials named above for earlier runs no longer exist.
