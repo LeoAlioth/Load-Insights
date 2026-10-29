@@ -327,6 +327,56 @@ def test_a_fall_is_scored_against_what_the_run_draws_after_its_held_drops():
 
 
 @_probability
+def test_a_single_phase_fall_never_ends_a_leg_of_a_three_phase_run():
+    """Home's EVBox (11 Oct 08:12): its A leg of 1,671 W open, a 1,751 W load
+    on A for 29 s - the fall on A alone ends that load, never the charger's leg;
+    a fall on all three phases ends it (the owner, 2026-10-29)."""
+    det, st = _scoring_phase((0.0, 1671.0, 5), (630.0, 1782.0, 6))
+    det.edges = [D.StepGroup(id=5, phase="abc", up=True, watts=5300.0), D.StepGroup(id=6, phase="a", up=True, watts=1780.0),
+                 D.StepGroup(id=9, phase="a", up=False, watts=1750.0), D.StepGroup(id=10, phase="abc", up=False, watts=5300.0)]
+    _evidence(det, 5, 9, 600.0)                       # a partner by order, as the charger's long runs made it
+    st.stop_cluster = 9
+    closed = st._pair(T0 + 660.0, 1751.0, None, 300.0 + 1671.0)
+    assert [x.start for x in closed] == [T0 + 630.0], closed
+    det, st = _scoring_phase((0.0, 1671.0, 5))
+    det.edges = [D.StepGroup(id=5, phase="abc", up=True, watts=5300.0), D.StepGroup(id=9, phase="a", up=False, watts=1750.0),
+                 D.StepGroup(id=10, phase="abc", up=False, watts=5300.0)]
+    st.stop_cluster = 9
+    assert st._pair(T0 + 3000.0, 1671.0, None, 300.0) == [] and len(st.open_edges) == 1
+    st.held_drops, st.stop_cluster = [], 10
+    assert len(st._pair(T0 + 3000.0, 1671.0, None, 300.0)) == 1 and st.open_edges == []
+
+
+def _second_rise_phase(declared):
+    det, st = _scoring_phase((0.0, 3400.0, 1))
+    det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=4000.0)]
+    keep = D._Open(T0 + 70.0, 5700.0, None, [(T0 + 70.0, 5700.0)], cluster=1)
+    st.declared = declared
+    st.declared_t = [d[0] for d in declared]
+    st.open_edges.append(keep)
+    return det, st, keep
+
+
+@_probability
+def test_a_second_rise_never_ends_the_first_without_a_fall_or_the_readings():
+    """The EVBox ramping 3.4 then 5.7 kW in one group (Home, 7 Oct): the reading
+    still carries the first - both stay on, with no history of two units. Not
+    carried: closed at the fall that brought the reading down, never at its
+    usual length (the owner, 2026-10-29)."""
+    det, st, keep = _second_rise_phase([(T0 + 70.0, 5700.0, None, T0 + 65.0, T0 + 70.0, T0 + 75.0, 300.0 + 3400.0 + 5700.0)])
+    assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2
+    assert len(det.edges[0].cannot) == 1                                   # carried in full: two units' overlap
+    det, st, keep = _second_rise_phase([(T0 + 40.0, -900.0, None, T0 + 35.0, T0 + 40.0, T0 + 45.0, 300.0 + 2500.0),
+                                        (T0 + 70.0, 5700.0, None, T0 + 65.0, T0 + 70.0, T0 + 75.0, 300.0 + 2500.0 + 5700.0)])
+    assert st.second_rise(1, keep) == [] and len(st.open_edges) == 2       # 2,500 of 3,400 left: still on
+    det, st, keep = _second_rise_phase([(T0 + 40.0, -3000.0, None, T0 + 35.0, T0 + 40.0, T0 + 45.0, 700.0),
+                                        (T0 + 70.0, 5700.0, None, T0 + 65.0, T0 + 70.0, T0 + 75.0, 700.0 + 5700.0)])
+    assert [(x.start, x.end) for x in st.second_rise(1, keep)] == [(T0, T0 + 40.0)]   # fell unseen at -3,000
+    det, st, keep = _second_rise_phase([(T0 + 70.0, 5700.0, None, T0 + 65.0, T0 + 70.0, T0 + 75.0, 300.0 + 5700.0)])
+    assert [(x.start, x.end) for x in st.second_rise(1, keep)] == [(T0, T0 + 70.0)]   # no fall seen: the new rise
+
+
+@_probability
 def test_two_runs_stopping_in_one_reading_are_one_candidate():
     """Kozolec 14 Oct 19:15: the boiler (1,829 W) and a 1 kW load fell together,
     2,827 W, beside a 3,604 W charge: the two close, the charge goes on (the
