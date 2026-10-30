@@ -1,5 +1,19 @@
 # Overnight 29-30 Oct 2026: memory and performance
 
+**For the morning, in short:**
+- Home's Load Insights pass 8.3 -> 3.3 s a minute (read 2.5 -> 1.6, detect 5.6 -> 1.4); Core idles at 1-3 % CPU
+  between passes (was 25-30 %). Its start-up burst is smaller (compressed recorder rows) and its stores no
+  longer grow for ever (order and co-runs pruned, the day's readings as arrays, steps as tuples).
+- Generation 23 deployed and rebuilt on both sites; all of Home's names re-attached. Kozolec's "Pond EVSE"
+  name still waits (why, and a proposed fix, below - your call).
+- Home's Core memory is ~1.0-1.3 GB with everything on; ~900 MiB without Load Insights; 25 other
+  integrations together ~50-100 MiB. The CM5 remains the fix for the rest.
+- Incident: my 6424001 broke Load Insights' import on both sites 05:50-06:12; fixed in 13c58e1, no data lost.
+- Not built, for you to decide: re-attaching a waiting name to its one-device meter's signature; the idle
+  floor absorbing long-running loads (Pond 14.6 kWh, Susilna's compressor). Tried and ruled out: splitting a
+  multi-phase leg a meter's coincident rise is most of.
+- Every integration disabled for measuring is enabled again; the Profiler integration stays installed, idle.
+
 The owner's brief (29 Oct, 23:59): memory and CPU first - Load Insights, Load Juggler and Home's HA
 install; HA may be restarted and integrations disabled temporarily (all re-enabled after); commit and
 push allowed; stop at 85 % plan usage. Once at a floor, detection quality; code clean-up along the way.
