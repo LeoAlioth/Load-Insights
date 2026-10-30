@@ -116,6 +116,7 @@ def _detection(runner) -> dict:
         "caught_up": runner.caught_up,
         "samples_read": runner.samples_read,
         "last_pass": dict(runner.last_pass),
+        "footprint": runner.fleet.footprint(),        # what the memory goes to, by count
         "reactive_from": dict(runner.reactive_from),
         # each one-figure inverter's phases on the grid meter's, learned from
         # its voltages (Fleet.inverter_map): Home's SE17K reads a <-> b

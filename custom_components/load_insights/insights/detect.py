@@ -5093,7 +5093,7 @@ class Detector:
     edge_hist_at: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_unit: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     # "a,b" group ids -> times one rose while the other ran
-    co_run: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
+    co_run: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
     edge_hist_keys: Dict[str, Dict[str, Dict[int, float]]] = field(default_factory=dict, repr=False, compare=False)
     # (phase, since, window) -> [(meter, its step then)], set by the Fleet - see SPLIT_BY_METERS
     meter_steps: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -5774,7 +5774,7 @@ class Detector:
                 continue                           # a run left open long past its usual length: no witness
             if other != cluster.id:                # two groups running at once: never one device (mix_daily, _co_evidence)
                 key = f"{min(other, cluster.id)},{max(other, cluster.id)}"
-                self.co_run[key] = self.co_run.get(key, 0) + 1
+                self.co_run[key] = self.co_run.get(key, 0.0) + 1.0
         for m in members:
             st = self.phases.get(m["ph"])
             if st is not None:
@@ -5995,7 +5995,7 @@ class Detector:
             n = self.co_run.pop(k)
             if a != b:
                 nk = f"{min(a, b)},{max(a, b)}"
-                self.co_run[nk] = self.co_run.get(nk, 0) + n
+                self.co_run[nk] = self.co_run.get(nk, 0.0) + n
 
     def _fin(self, gid: Optional[int]) -> Optional[int]:
         """``gid`` followed through its joins (_final)."""
@@ -6058,6 +6058,10 @@ class Detector:
             # kept for ever was a store that only grew (Home: 72,313 pairs in ten
             # days, ~24 MiB live; 2026-10-30)
             self.order = {k: acc for k, acc in self.order.items() if acc[0] >= ORDER_PRUNE}
+            # co-runs fade with them: counted whole against the faded running
+            # time (_co_evidence's chance), old overlaps weighed ever more, and
+            # 46,852 pairs in ten days at Home were never let go
+            self.co_run = {k: n * fade for k, n in self.co_run.items() if n * fade >= ORDER_PRUNE}
             self.order_span *= fade
             self.order_faded = t
             self._elig = None                     # counts fell: some under PAIR_MIN_RUNS
@@ -6458,7 +6462,7 @@ class Detector:
         for before in (True, False):
             vs = [v for v in (self.volts_at(p, since, before) if self.volts_at is not None else None for p in ph) if v]
             sides.append(round(sum(vs) / len(vs), 2) if vs else None)
-        self.steps.append([round(since, 2), ph, round(watts, 1), None if var is None else round(var, 1), gid, where, *sides])
+        self.steps.append((round(since, 2), ph, round(watts, 1), None if var is None else round(var, 1), gid, where, *sides))
         if len(self.steps) % 512 == 0:
             cut = since - STEPS_KEEP_S
             self.steps = [x for x in self.steps if x[0] >= cut]
@@ -7417,7 +7421,7 @@ class Detector:
                 "pair_home": {k: {str(i): n for i, n in v.items()} for k, v in self.pair_home.items()},
                 "lag_hist": {n: [_trim(x, 2) for x in h] for n, h in self.lag_hist.items()},
                 "order": {k: [_trim(x, 4) for x in v] for k, v in self.order.items()},
-                "co_run": dict(self.co_run),
+                "co_run": {k: _trim(v, 3) for k, v in self.co_run.items()},
                 "run_time": {str(k): _trim(v, 1) for k, v in self.run_time.items()},
                 "fall_n": {str(k): _trim(v, 3) for k, v in self.fall_n.items()},
                 "order_span": self.order_span, "order_clock": self.order_clock, "order_faded": self.order_faded,
@@ -7477,7 +7481,7 @@ class Detector:
         det.next_edge_id = d.get("next_edge_id", 1)
         det.lag_hist = {n: [float(x) for x in h] for n, h in (d.get("lag_hist") or {}).items()}
         det.order = {k: [float(x) for x in v] for k, v in (d.get("order") or {}).items()}
-        det.co_run = {k: int(v) for k, v in (d.get("co_run") or {}).items()}
+        det.co_run = {k: float(v) for k, v in (d.get("co_run") or {}).items()}
         det.run_time = {int(k): float(v) for k, v in (d.get("run_time") or {}).items()}
         det.fall_n = {int(k): float(v) for k, v in (d.get("fall_n") or {}).items()}
         det.order_span = float(d.get("order_span") or 0.0)
@@ -9907,7 +9911,21 @@ class Fleet:
 
     def load_steps(self, d: Optional[dict]) -> None:
         for name, det in self.detectors():
-            det.steps = [list(x) for x in (d or {}).get(name) or []]
+            det.steps = [tuple(x) for x in (d or {}).get(name) or []]
+
+    def footprint(self) -> dict:
+        """How big each detector's long-lived stores are, by count - what its
+        memory goes to (2026-10-30, Home's Core on 1.98 GB): for diagnostics."""
+        out = {}
+        for name, det in self.detectors():
+            out[name or "grid"] = {
+                "steps": len(det.steps), "signatures": len(det.signatures), "step_groups": len(det.edges),
+                "order_pairs": len(det.order), "co_runs": len(det.co_run),
+                "day_readings": sum(len(c[0]) for c in det._day_rows.values()),
+                "declared": sum(len(st.declared) for st in det.phases.values()),
+                "open_runs": sum(len(st.open_edges) for st in det.phases.values())}
+        out["meter_readings"] = {n: sum(len(r) for r in chans.values()) for n, chans in self.sub_rows.items()}
+        return out
 
     def detectors(self) -> List[Tuple[str, "Detector"]]:
         """Every meter's detector, the grid's under "" first, then by name."""
