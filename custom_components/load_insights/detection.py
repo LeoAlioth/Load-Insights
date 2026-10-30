@@ -397,7 +397,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
         # every grouped step of the last ten days, with its voltages (run lifecycle, Task 8c):
         # several MB at Home, so a store of its own, written as rarely as the older hours
-        self._steps: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.steps")
+        self._steps: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.steps")   # only to remove it
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
@@ -1067,11 +1067,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # have been carried, never carries one twice (a carry forces a write)
         if force or self._history_saved_at is None or now - self._history_saved_at >= HISTORY_SAVE_INTERVAL_S:
             await self._history.async_save(self._older())
-            await self._steps.async_save(self._step_rows())
             self._history_saved_at = now
         else:
             self._history.async_delay_save(self._older, HISTORY_SAVE_INTERVAL_S)
-            self._steps.async_delay_save(self._step_rows, HISTORY_SAVE_INTERVAL_S)
         if force or due:
             await self._store.async_save(self._snapshot())
             self._saved_at = now
@@ -1087,9 +1085,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     def _older(self) -> dict:
         return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
-
-    def _step_rows(self) -> dict:
-        return {"steps": self.fleet.steps_to_dict(), "generation": DETECTOR_GENERATION}
 
     @property
     def behind_s(self) -> Optional[float]:
@@ -1158,9 +1153,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             older = await self._history.async_load() or {}
             if older.get("generation") == DETECTOR_GENERATION:
                 self.fleet.load_older(older.get("older"))
-            steps = await self._steps.async_load() or {}
-            if steps.get("generation") == DETECTOR_GENERATION:
-                self.fleet.load_steps(steps.get("steps"))
+            # the steps store of its own is gone: a step group keeps its steps
+            # (StepGroup.recent, 2026-10-30) - the old file removed
+            await self._steps.async_remove()
         if not self.enabled:
             return
         self.entry.async_on_unload(
