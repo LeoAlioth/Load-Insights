@@ -15,7 +15,7 @@ from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import COMPRESSED_STATE_LAST_UPDATED, COMPRESSED_STATE_STATE, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -1459,8 +1459,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             rows = []
             for st in states.get(eid, []):
                 try:
-                    rows.append((st.last_updated.timestamp(), float(st.state) * scale))
-                except (TypeError, ValueError):
+                    rows.append((float(st[COMPRESSED_STATE_LAST_UPDATED]), float(st[COMPRESSED_STATE_STATE]) * scale))
+                except (TypeError, ValueError, KeyError):
                     continue
             rows.sort()
             series[key] = rows
@@ -1552,8 +1552,11 @@ def _fetch(hass, start, end, entity_ids):
     runs more often (2026-09-18). get_significant_states takes the whole
     list; significant_changes_only=False is what keeps it every change rather
     than the dashboard's thinned-out view, and minimal_response=False keeps
-    State objects rather than the compressed dicts, which is what the callers
-    read.
+    every row. Rows come as the recorder's compressed dicts - the state and a
+    float timestamp - not State objects: a six-hour backfill slice is ~100,000
+    grid readings at Home, and as State objects (datetimes, a context each)
+    they were Core's startup burst, ~300 MiB kept by Python after it (Home on
+    the CM4, 2026-10-30).
     """
     if not entity_ids:
         return {}
@@ -1563,4 +1566,5 @@ def _fetch(hass, start, end, entity_ids):
         significant_changes_only=False,
         minimal_response=False,
         no_attributes=True,
+        compressed_state_format=True,
     )
