@@ -379,3 +379,20 @@ Kozolec 251.2):
 No clear win anywhere; Pond 0 % in every variant. Ruled out (AGENTS.md). Found on the way, Susilna fed: 91.0 kWh
 truth, 43.6 kWh credited to any run at all (41.0 to its own signatures) - half its energy is in no run that started
 with its meter; its ~320 W compressor signatures run ~10 min where its meter shows 40-50 min cycles. Next to trace.
+
+## A run its meter shows on is never another load's close hint (2026-10-30, shipped)
+
+Traced by a delegated agent (Susilna fed: 91.0 kWh truth, 43.6 credited to any run). Nearly all of the missing energy
+is the dehumidifier's long base stretches (~300-540 W, 16-22 h), not the compressor (its ~10 min hourly cycles are
+real) or the heater. Five nights' base runs (~12.5 kWh) were closed as "observed" by `PhaseState._corroborated_stop`'s
+close hint - another load's fall the other legs corroborated - which `_pair` used without asking `owned()`, while the
+plug read flat (320 -> 319 W, 527 -> 525 W). Now (`PhaseState._meter_holds`) a run its meter shows on and that did
+not fall by half across the fall is never the hint, where the hint is picked and where `_pair` takes it.
+
+Cards against base1030, devices kWh right / wrong: Home fed 124.7 / 9.1 -> 137.1 / 9.6 (Susilna 41.0 -> 53.3, 45 ->
+59 %), circuits 104.6 / 9.5 -> 104.0 / 11.2; Home hidden and Kozolec hidden / fed identical. Plain `owned()` (no
+"fell by half" test): fed 136.2 / 9.1, circuits 100.5 / 10.9. Not taken: splitting a meter-owned run whose meter's
+fall leaves the rest of it drawn (fed +1.3 / -1.7 more, circuits -2.4 right). Invariance, Home fed: 0~6 and 6~LIVE
+identical, 6~1 one session (0.00 kWh), restarts 24 / 18 sessions relabelled (0.12 kWh). Still open: a meter holding
+several loads losing ownership when another of its loads stops (10-09, ~7 kWh); long owned runs booked under the
+meter's draw (~5 kWh); a slow plug's late report not matched to its start (10-08, ~4.5 kWh).

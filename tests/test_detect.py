@@ -6821,5 +6821,22 @@ def test_the_floor_energy_is_the_floor_times_the_time_and_is_stored():
     assert abs(D.PhaseState.from_dict(st.to_dict()).floor_wh - st.floor_wh) < 1e-3
 
 
+def test_a_run_its_meter_shows_on_is_never_another_loads_close_hint():
+    """Susilna's dehumidifier run, its plug flat at 320 W, was closed as
+    "observed" by another load's fall the other legs corroborated (the close
+    hint): a run its meter shows on is the meter's to end (_meter_holds); one
+    whose meter fell by half across the fall is the hint's (2026-10-30)."""
+    for plug in (320.0, 0.0):
+        det, st = _scoring_phase((0.0, 320.0, 1))
+        o = st.open_edges[0]
+        o.meter = "Susilna"
+        at = T0 + 3600.0
+        det.meter_on = lambda name, ph, since, watts, ts, plug=plug: plug > 160.0
+        det.meter_level = lambda name, ph, ts, since, plug=plug: 320.0 if ts < at - 5.0 else plug
+        st.last_ts, st.close_hint = at, o
+        closed = st._pair(at, 320.0, None, 300.0)
+        assert [x.start for x in closed] == ([] if plug else [T0]), (plug, closed)
+
+
 if __name__ == "__main__":
     run_main(globals())
