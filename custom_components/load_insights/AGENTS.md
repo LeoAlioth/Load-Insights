@@ -936,8 +936,14 @@ level against just before its rise, in the grid's terms by the meter's gain
 (8637651; it was the run's start scaled by that level against the rise).
 Declared levels (each `declared` step carries the
 level it stepped to), not readings: a spike never became a level (exp2's raw
-integral booked an 88 W, 13 s run at 1,040 W). A circuit's change is every
-load in it, so one-device meters only. Where the run ends does not change (a
+integral booked an 88 W, 13 s run at 1,040 W). Every meter since 2026-10-30
+(one-device meters only until then, "a circuit's change is every load in it"):
+the runs open on a meter holding several loads share what it draws, as on a
+one-device meter - Susilna's dehumidifier base was booked at its start while
+the plug crept 286 -> ~500 W over 22 h. Home fed 137.1 / 9.6 -> 146.0 / 10.4
+kWh right / wrong, circuits 104.0 / 11.2 -> 105.8 / 11.7, Kozolec fed 221.7 /
+3.2 -> 227.1 / 3.2 (the car charger 24.1 -> 29.4), hidden identical both
+sites. Where the run ends does not change (a
 taper below its size less the pairing tolerance still ends it, `_ended_by`).
 Card against d707840 - only fed moves, hidden and circuits identical; the
 same moves in two paired NOOP replicates: Home fed devices 70.9 / 6.6 ->

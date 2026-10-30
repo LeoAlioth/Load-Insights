@@ -396,3 +396,20 @@ fall leaves the rest of it drawn (fed +1.3 / -1.7 more, circuits -2.4 right). In
 identical, 6~1 one session (0.00 kWh), restarts 24 / 18 sessions relabelled (0.12 kWh). Still open: a meter holding
 several loads losing ownership when another of its loads stops (10-09, ~7 kWh); long owned runs booked under the
 meter's draw (~5 kWh); a slow plug's late report not matched to its start (10-08, ~4.5 kWh).
+
+## A meter holding several loads books its runs at what it drew (2026-10-30, shipped)
+
+The second of the Susilna trace's findings (the same agent). `Fleet._meter_wh` booked an owned run at the meter's
+declared level only on a meter holding one device (`holds_one_device`), because "a circuit's change is every load in
+it"; a run on a plug or strip with several loads stayed at its start. Susilna's dehumidifier base started at 286 W
+and crept to ~500 W over 22 h, booked at 286; Kozolec's car charger's strip the same. Now every meter: the runs open
+on it at once share what it draws, as the one-device rule always did (exp9). The washer-dryer ramp test checks the
+summed booking per ramp instead of one run per plateau.
+
+Cards against the hint fix above (58624a0), devices kWh right / wrong: Home fed 137.1 / 9.6 -> 146.0 / 10.4 (Susilna
+53.3 -> 58.3, 59 -> 64 %; the office strip 22.7 -> 26.6), circuits 104.0 / 11.2 -> 105.8 / 11.7, Kozolec fed 221.7 /
+3.2 -> 227.1 / 3.2 (Car charger 24.1 -> 29.4, 80 -> 98 %); Home hidden and Kozolec hidden identical. Against base1030
+the two fixes together: Home fed 124.7 / 9.1 -> 146.0 / 10.4. Invariance, Home fed: 0~6 and 6~LIVE identical, 6~1 one
+session (0.00 kWh), restarts 24 / 18 sessions relabelled (0.09 kWh). Still open from the trace: a meter holding
+several loads losing ownership when another of its loads stops (10-09, ~7 kWh); a slow plug's late report not
+matched to its start (10-08, ~4.5 kWh).
