@@ -115,6 +115,16 @@ class AutoNamer:
         if changed:
             await self._save()
 
+    async def async_dashboard(self) -> None:
+        """After every pass: a load named a minute ago, or a base load whose entity was just made, is on the
+        Energy dashboard at the next pass, not at the hour (the owner, 2026-10-30: an hour's wait reads as
+        broken). Cheap when nothing changed - plan_dashboard writes nothing."""
+        r = self._runner
+        if not r.enabled or r.refiling or not r.caught_up:
+            return
+        if await self._dashboard():
+            await self._save()
+
     def _owner_names(self) -> List[Tuple[str, Tuple[str, int], object]]:
         """(name, ref, signature) of every named signature."""
         r = self._runner

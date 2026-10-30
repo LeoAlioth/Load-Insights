@@ -1327,6 +1327,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 if not self.caught_up:
                     # keep slicing without waiting the minute
                     self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
+                try:
+                    await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
+                except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
+                    _LOGGER.exception("Energy dashboard list failed")
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection run failed")
 
