@@ -481,3 +481,21 @@ and 6~LIVE identical, 6~1 two sessions (0.00 kWh), restarts 60 / 31 sessions rel
 circuits 105.8 -> 102.9 (Hidrofor -1.1), a trade. Still missing: the 8 Oct solar-following single-phase charge
 (~5 kWh fed) - ownership lapses whenever the charger modulates below half of a run's size and the meter would have
 to keep the whole level through its modulation, not per-rise pieces.
+
+## The fall-score dials that gained in fed, re-tested on the three fixes (2026-10-30, late; nothing shipped)
+
+The four settings of the sweep above that gained in fed mode, each on the head with the hint, booking and
+ownership-by-rise fixes (`rose2head` = head), devices kWh right / wrong, on this Mac:
+
+| | Home hidden | Home circuits | Home fed | Kozolec hidden | Kozolec fed |
+|---|---|---|---|---|---|
+| head | 90.9 / 10.1 | 105.8 / 11.7 | 153.3 / 11.7 | 212.8 / 7.3 | 227.1 / 3.2 |
+| `FALL_AGE_LONG_W` 0 | 89.5 / 9.1 | 101.9 / 11.9 | 153.2 / 10.5 | 211.7 / 8.1 | 227.0 / 3.2 |
+| `FALL_PLATEAU_NOISES` 0.7 | 94.9 / 10.6 | 102.3 / 11.0 | 152.8 / 9.4 | 210.3 / 5.9 | 225.5 / 3.0 |
+| `FALL_PLATEAU_NOISES` 1.5 | 85.8 / 11.4 | 100.2 / 9.9 | 153.4 / 9.7 | 209.7 / 7.2 | 227.1 / 3.2 |
+| `FALL_NO_PAIR` 0.5 | 91.4 / 8.3 | 107.0 / 10.6 | 153.2 / 10.0 | 211.6 / 7.8 | 227.1 / 3.2 |
+
+The fed gains the sweep saw are gone on the head (the fixes took what they were finding); the age and plateau
+dials still lose circuits. `FALL_NO_PAIR` 0.5 is the one even trade worth a look: Home's wrong energy down 4.6 kWh
+over the three modes (1.1 + 1.7 + 1.8) for +1.6 right, Kozolec hidden -1.2 right / +0.5 wrong - small, consistent,
+within what the bench's spread could be; its invariance check was started and not read. The owner decides.
