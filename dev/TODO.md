@@ -38,9 +38,9 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 5. [ ] **[BUG] Sub-meter libraries fragment one load into dozens of signatures.** Hiša: Talno gretje 49 signatures,
    Likalnik 16 (cleared 2026-10-30, "bad"); no Hiša signature at all for its 70 W / 30 min fridge, whose grid
    signature (#2591, named Hladilnik Hiša) reads 46 W. Trace why Hiša's 10 W noise does not give one clean group.
-6. [ ] **[BUG] Release workflow: the HA webhook fires before HACS can see the GitHub release** - build 1901 was
-   installed on neither site (the automation ran 3 s before the release's `created_at`); installed by hand. Check the
-   GitHub asset is served before notifying, or let the automation retry.
+6. [x] Release workflow: the webhook waits until GitHub lists the release with its asset (up to two minutes)
+   before notifying the sites (build 1901 had been installed on neither; fixed 2026-10-30). Load Juggler's copy of
+   the workflow needs the same lines - offer it.
 7. [ ] **[BUG] Polnilnica: nothing owns the three-phase charge in fed mode; the open-run cap evicts it.** Delegated
    trace 2026-10-30 (tree `scratchpad/bench51`, patch `polnilnica-rose-evict.patch`): 12.4 of 14.0 missing fed kWh
    is in no run. An event on several phases is placed under a meter only when every leg is the meter's own declared
