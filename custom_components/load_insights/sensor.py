@@ -205,8 +205,11 @@ class ForecastPowerSensor(_PowerW, _Base):
 
     # ~10 KB of attributes changing every quarter hour on every forecast
     # sensor would go into the recorder with each state - for nothing, since
-    # nothing reads them back from history. They stay live and on cards.
-    _unrecorded_attributes = frozenset({"detailedForecast", "history"})
+    # nothing reads them back from history. They stay live and on cards. All of
+    # them: signals, score, the temperature response and the rest were ~6 KiB
+    # a state on ~40 sensors at Home, ~20 MB of rows a day on a box short of
+    # memory and flagged for I/O pressure (2026-10-30)
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
     @property
