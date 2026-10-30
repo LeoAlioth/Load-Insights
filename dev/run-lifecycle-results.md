@@ -413,3 +413,30 @@ the two fixes together: Home fed 124.7 / 9.1 -> 146.0 / 10.4. Invariance, Home f
 session (0.00 kWh), restarts 24 / 18 sessions relabelled (0.09 kWh). Still open from the trace: a meter holding
 several loads losing ownership when another of its loads stops (10-09, ~7 kWh); a slow plug's late report not
 matched to its start (10-08, ~4.5 kWh).
+
+## The fall score's weights, swept either side (2026-10-30, nothing shipped)
+
+Six of `_score`'s weights, each at a value below and above its default, on the bench PC against base1030 (the
+pre-fix tree; every card in one run, `BENCH_PARALLEL=12`). Devices, kWh right / wrong (truth Home 227.9, Kozolec
+251.2); the default in brackets.
+
+| | Home hidden | Home circuits | Home fed | Kozolec hidden | Kozolec fed |
+|---|---|---|---|---|---|
+| base1030 | 90.9 / 10.1 | 104.6 / 9.5 | 124.7 / 9.1 | 212.8 / 7.3 | 221.7 / 3.2 |
+| `FALL_AGE_LONG_W` 0 (0.5) | 89.5 / 9.1 | 96.3 / 10.0 | 130.7 / 8.7 | 211.7 / 8.1 | 221.7 / 3.1 |
+| `FALL_AGE_LONG_W` 0.25 | 92.6 / 9.1 | 102.0 / 13.3 | 122.2 / 8.9 | 209.1 / 8.1 | 221.7 / 3.2 |
+| `FALL_AGE_SHORT_W` 0.15 (0.3) | 94.8 / 11.4 | 96.0 / 10.2 | 125.5 / 8.7 | 209.7 / 7.2 | 221.7 / 3.2 |
+| `FALL_AGE_SHORT_W` 0.5 | 89.6 / 9.8 | 101.3 / 11.3 | 127.7 / 8.7 | 212.8 / 7.3 | 221.7 / 3.2 |
+| `FALL_NOTHING_MIN` 0.1 (0.2) | 86.2 / 9.8 | 90.0 / 8.8 | 122.6 / 8.6 | 215.3 / 9.7 | 221.8 / 3.1 |
+| `FALL_NOTHING_MIN` 0.3 | 93.0 / 10.7 | 99.0 / 10.3 | 126.9 / 9.3 | 214.1 / 5.7 | 221.8 / 3.2 |
+| `FALL_NO_PAIR` 0.5 (0.7) | 91.4 / 8.3 | 98.3 / 10.4 | 128.1 / 8.1 | 211.6 / 7.8 | 221.7 / 3.2 |
+| `FALL_NO_PAIR` 0.85 | 89.2 / 10.7 | 97.5 / 8.7 | 122.3 / 8.5 | 215.4 / 9.6 | 221.7 / 3.2 |
+| `FALL_OTHER_PAIR` 0.25 (0.4) | 95.0 / 9.8 | 96.8 / 11.2 | 124.2 / 8.6 | 214.4 / 5.6 | 221.7 / 3.2 |
+| `FALL_OTHER_PAIR` 0.55 | 97.7 / 9.6 | 100.9 / 9.1 | 121.7 / 7.7 | 212.8 / 7.3 | 221.7 / 3.2 |
+| `FALL_PLATEAU_NOISES` 0.7 (1.0) | 94.9 / 10.6 | 103.1 / 11.2 | 129.3 / 9.1 | 210.3 / 5.9 | 220.2 / 3.0 |
+| `FALL_PLATEAU_NOISES` 1.5 | 85.8 / 11.4 | 98.1 / 11.3 | 130.4 / 9.7 | 209.7 / 7.2 | 221.8 / 3.2 |
+
+Every setting loses Home circuits (1.5 to 14.6 kWh right); the fed gains (`FALL_AGE_LONG_W` 0 +6.0, the plateau
+dials +4.6 / +5.7) come with circuits losses as large or larger, and Kozolec fed does not move. The defaults sit on a
+flat optimum within the bench's spread; the circuits mode is the one most sensitive to the age and plateau weights.
+Not retested on the two fixes above (the sweep ran on the pre-fix tree). Ruled out (AGENTS.md).
