@@ -583,7 +583,12 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # a run or two. The odds do not matter - 10, 100 and 1000 bench identically:
 # a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
-ORDER_PRUNE = 0.05             # a pair's faded count under which it is dropped (Detector._order_tick)
+# a pair's faded count under which it is dropped (Detector._order_tick), order and
+# co-runs alike: 0.5 - a pair seen once goes ~7 days after (EDGE_TAU_S ten days),
+# one recurring weekly settles near 2 and stays; under 1 would drop every new pair
+# at its first hourly fade (2026-10-30, the owner: prune harder; 0.05 kept a pair
+# 30 days)
+ORDER_PRUNE = 0.5
 ABOVE_CHANCE_ODDS = 100.0
 # How often, on the readings' clock, the fleet works out again how far behind
 # its meters the grid is read, from the lags learned so far (Fleet._horizon):
