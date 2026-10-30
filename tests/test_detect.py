@@ -4069,7 +4069,11 @@ def test_a_named_loads_live_power_never_reads_far_above_its_signatures():
     for _ in range(4):
         st.open_edges.append(copy.copy(st.open_edges[0]))   # four more starts that never ended
     top = max(s.watts for s in fleet.main.signatures if s.name == "Kettle")
-    assert sum(w for _, _, w in fleet.main.live_runs(t2)) > 3.0 * top           # stacked, before the ceiling
+    # the five stacked starts divide what the phase carries above its base load between them (live_level,
+    # 2026-10-30: conservation); before, each read the phase and they summed past three kettles
+    excess = st.level - st.base_load_at(t2)
+    assert sum(w for _, _, w in fleet.main.live_runs(t2)) <= excess + 1e-6
+    assert all(w < top for _, _, w in fleet.main.live_runs(t2))
     live = fleet.live_power(t2, t2 - t, marks, shown)["Kettle"]
     assert 0.9 * top < live <= D.LIVE_CAP_FACTOR * top + 1e-6, (live, top)
 
@@ -6826,6 +6830,59 @@ def test_the_floor_energy_is_the_floor_times_the_time_and_is_stored():
     st.process(T0 + 3600.0 + 7200.0, 50.0)
     assert abs(st.floor_wh - (50.0 + 50.0 * D.FLOOR_GAP_S / 3600.0)) < 1e-6
     assert abs(D.PhaseState.from_dict(st.to_dict()).floor_wh - st.floor_wh) < 1e-3
+
+
+def test_the_base_load_is_the_hour_of_days_minimum_not_the_idle_floor():
+    """The owner, 2026-10-30: the idle floor climbs over every long load lost at a
+    close, so the base load is the minimum of the reading in each hour of the
+    day over the last days - under the real loads at all times - a 0 reading
+    (an outage) left out, kept across a store, the oldest day dropped."""
+    st = D.PhaseState()
+    st.baseline, st.noise, st.level = 100.0, 5.0, 100.0
+    day0 = (int(T0 // 86400) + 1) * 86400.0            # from a midnight, so the hours are known
+    for d in range(3):
+        for k in range(24 * 6):                         # every 10 min: 100 W at night, a 400 W load all day
+            ts = day0 + d * 86400.0 + k * 600.0
+            hour = k // 6
+            st.process(ts, 100.0 if hour < 6 or hour >= 22 else 500.0)
+    st.process(day0 + 3 * 86400.0 + 3600.0 * 2, 0.0)   # an outage reads 0: not a draw
+    night = st.base_load_at(day0 + 3 * 86400.0 + 3600.0 * 2.5)
+    day = st.base_load_at(day0 + 3 * 86400.0 + 3600.0 * 12.5)
+    assert abs(night - 100.0) < 1e-6, night
+    assert abs(day - 500.0) < 1e-6, day
+    # the smoothing bridges the edge of the day: 7:30 reads between the two levels
+    edge = st.base_load_at(day0 + 3 * 86400.0 + 3600.0 * 6.5)
+    assert 100.0 < edge < 500.0, edge
+    assert D.PhaseState.from_dict(st.to_dict()).base_load_at(day0 + 3 * 86400.0 + 3600.0 * 2.5) == night
+    # ten days kept: the first day's lower night falls out of the table after BASE_LOAD_DAYS more
+    for d in range(3, 3 + D.BASE_LOAD_DAYS):
+        for k in range(24 * 6):
+            st.process(day0 + d * 86400.0 + k * 600.0, 150.0)
+    assert len(st.floor_days) == D.BASE_LOAD_DAYS
+    assert abs(st.base_load_at(day0 + 14 * 86400.0 + 3600.0 * 2.5) - 150.0) < 1e-6
+
+
+def test_a_named_loads_live_watts_are_its_model_pulled_toward_the_phase_by_its_share_squared():
+    """The owner, 2026-10-30: a run's shown watts come from its step groups,
+    not the phase level; the phase's carry above its base load corrects them
+    only by the square of the share the run is of it."""
+    st = D.PhaseState()
+    day = int(T0 // 86400)
+    st.floor_days = [[day, [100.0] * 24]]                 # a 100 W base load all day
+    st.baseline, st.noise, st.last_ts = 100.0, 5.0, T0
+    mat = D._Open(T0 - 60.0, 600.0, None, [(T0 - 60.0, 600.0)])
+    st.open_edges = [mat]
+    assert abs(st.model_level(mat, T0) - 600.0) < 1e-6         # no partner yet: its start, flat
+    st.level = 1000.0                                           # 300 W of something unknown beside it
+    # share 600 / 900 -> the carry (900) pulls it by (2/3)^2: 600 + 0.444 x 300
+    assert abs(st.live_level(mat, T0) - (600.0 + (600.0 / 900.0) ** 2 * 300.0)) < 1e-6, st.live_level(mat, T0)
+    st.level = 3000.0                                           # a small run on a busy phase stays at its model
+    small = D._Open(T0 - 60.0, 50.0, None, [(T0 - 60.0, 50.0)])
+    st.open_edges = [small]
+    assert 50.0 <= st.live_level(small, T0) < 52.0, st.live_level(small, T0)
+    st.level = 650.0                                            # alone and read short: follows the reading
+    st.open_edges = [mat]
+    assert abs(st.live_level(mat, T0) - 550.0) < 1e-6, st.live_level(mat, T0)
 
 
 def test_a_run_its_meter_shows_on_is_never_another_loads_close_hint():
