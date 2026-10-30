@@ -38,6 +38,16 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 5. [ ] **[BUG] Sub-meter libraries fragment one load into dozens of signatures.** Hiša: Talno gretje 49 signatures,
    Likalnik 16 (cleared 2026-10-30, "bad"); no Hiša signature at all for its 70 W / 30 min fridge, whose grid
    signature (#2591, named Hladilnik Hiša) reads 46 W. Trace why Hiša's 10 W noise does not give one clean group.
+   First look (2026-10-30, the library's 214 Talno gretje sightings on Hiša): 172 sit in 560-659 W yet in four
+   signatures (560-579: 49, 580-599: 58, 620-639: 36, 640-659: 20) - the grouping cuts at every density minimum,
+   the finest the data allows, which the run-lifecycle draft already replaces with a generous ceiling (1.5-10x) and
+   splits only on evidence of two devices; the other 42 sightings (400-540 and 700-719 W) are the mat's step read
+   with the incubator (60 W, toggling every ~50 s) or a compressor switching inside the step's window. So two
+   causes: the group width rule, and a step size contaminated by a concurrent small load - the brainstorm's "size
+   check compares the fall with the very rise that started the run" does not help the rise itself.
+   Also: Home's live horizon reads 180 s, set by the Server UPS (its lag never learned: twice its 90 s latency),
+   and Hiša's own declaring lag is 146 s, so horizon-skipping the Server gains 34 s - the start lag needs item 3's
+   structural fix, not the skip list.
 6. [x] Release workflow: the webhook waits until GitHub lists the release with its asset (up to two minutes)
    before notifying the sites (build 1901 had been installed on neither; fixed 2026-10-30). Load Juggler's copy of
    the workflow needs the same lines - offer it.
