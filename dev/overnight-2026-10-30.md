@@ -75,6 +75,18 @@ Kozolec's 7-10 W noise. A load that runs for hours is taken into the idle floor,
 out; the same root as Susilna's 20 h compressor (the emptied-run closes). Proposal for the owner: the floor
 may not absorb a load whose start step was seen and whose stop was not.
 
+Live pass at Home after the rebuild (build 0026, 05:40): read 2.6 s, detect 3.3 s (5.6 before tonight), Core
+CPU 1-3 % between passes (25-30 % at 22:28), Core memory 1,170-1,330 MiB. All 12 names re-attached at Home.
+Footprint (all detectors): 133,227 steps, 30,359 order pairs, 16,792 co-runs, 317,344 day readings.
+
+One query a pass (6424001): every meter's readings of a live pass in one recorder query instead of ~37.
+**Incident, my fault:** 6424001 imported PREFETCH_MAX_MIN from the wrong module; Load Insights failed to set
+up on both sites from 05:50 to 06:12 (fixed in 13c58e1; the gap is re-read from the recorder on start, no
+data lost). The relative import lists are now checked against their modules before a push.
+
+After the fix (build 0506, 06:20): Home's minute pass read 1.6 s + detect 1.4 s (22:28: 2.5 + 5.6 - the pass
+8.3 -> 3.3 s, -60 %); Kozolec 0.1 s. Core between passes 1-3 % CPU.
+
 ## Load Juggler
 
 One coordinator per site at a configurable interval, no recorder reads; light - not profiled yet.
