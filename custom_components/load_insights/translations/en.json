@@ -236,6 +236,17 @@
                             "change_meters": "Tick a meter that sends a reading only when its value changes, with a heartbeat now and then - a Shelly. A short pulse on it is only a few readings, so it is confirmed in fewer of its own cadences. Left unticked in both lists, detection works it out from the meter's own gaps.",
                             "periodic_meters": "Tick a meter that sends a reading on a fixed timer - the grid meter, a Victron, a polled plug. A meter in neither list is classified automatically."
                         }
+                    },
+                    "base_load": {
+                        "name": "Base load",
+                        "data": {
+                            "base_load_meters": "Meters that show a base load",
+                            "base_load_phases": "Base load split by phase"
+                        },
+                        "data_description": {
+                            "base_load_meters": "What a ticked meter draws with nothing detected on - its idle floor - shown as a load of its own, \"Base load\", with its power and energy: the always-on part of the house (routers, standby, a pump that never stops). A floor under 2 W is not shown. Until this is saved, every meter is ticked.",
+                            "base_load_phases": "Tick a meter whose base load should be one load per phase (Base load X, Y, Z) instead of one for the whole meter."
+                        }
                     }
                 }
             },

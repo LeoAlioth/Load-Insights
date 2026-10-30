@@ -54,6 +54,7 @@ _DETECTION = [
     ("meters", ("single_device", "ignore_meters"), False),
     ("cadence", ("change_meters", "periodic_meters"), False),
     ("naming", ("autoname", "autoname_dashboard"), False),
+    ("base_load", ("base_load_meters", "base_load_phases"), False),
 ]
 
 OPTIONS = {"plan": _PLAN, "grid": _GRID, "inverters": _INVERTERS, "heat": _HEAT,

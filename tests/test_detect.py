@@ -6808,5 +6808,18 @@ def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loadi
     assert back.to_dict()["fragments_retaken"] is True
 
 
+def test_the_floor_energy_is_the_floor_times_the_time_and_is_stored():
+    """The base load as a load of its own: the floor's Wh, reading to reading,
+    a gap past FLOOR_GAP_S counted that long, kept across a store."""
+    st = D.PhaseState()
+    st.baseline, st.noise, st.level = 50.0, 5.0, 50.0
+    for k in range(61):
+        st.process(T0 + 60.0 * k, 50.0)
+    assert abs(st.floor_wh - 50.0) < 1e-6, st.floor_wh
+    st.process(T0 + 3600.0 + 7200.0, 50.0)
+    assert abs(st.floor_wh - (50.0 + 50.0 * D.FLOOR_GAP_S / 3600.0)) < 1e-6
+    assert abs(D.PhaseState.from_dict(st.to_dict()).floor_wh - st.floor_wh) < 1e-3
+
+
 if __name__ == "__main__":
     run_main(globals())
