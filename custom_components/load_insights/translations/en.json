@@ -725,7 +725,11 @@
             "fields": {
                 "load_id": {
                     "name": "Load",
-                    "description": "The detected load's family id - the \"family\" each signature carries in the diagnostics. The name goes to every signature of the family."
+                    "description": "The detected load's family id - the \"family\" each signature carries in the diagnostics. The name goes to every signature of the family. Either this or the signature id."
+                },
+                "signature_id": {
+                    "name": "Signature",
+                    "description": "One of the load's signature ids instead - the # the detected loads sensor and the cards show. Its whole family takes the name."
                 },
                 "meter": {
                     "name": "Meter",

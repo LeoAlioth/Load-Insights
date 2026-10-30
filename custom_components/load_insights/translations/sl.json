@@ -725,7 +725,11 @@
             "fields": {
                 "load_id": {
                     "name": "Breme",
-                    "description": "Oznaka družine zaznanega bremena - \"family\", ki jo ima vsak podpis v diagnostiki. Ime dobijo vsi podpisi družine."
+                    "description": "Oznaka družine zaznanega bremena - \"family\", ki jo ima vsak podpis v diagnostiki. Ime dobijo vsi podpisi družine. Ali ta ali oznaka podpisa."
+                },
+                "signature_id": {
+                    "name": "Podpis",
+                    "description": "Namesto tega oznaka enega od podpisov bremena - # iz senzorja zaznanih bremen in kartic. Ime dobi vsa njegova družina."
                 },
                 "meter": {
                     "name": "Števec",

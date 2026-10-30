@@ -52,22 +52,30 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         """Name a load by its family id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
         the page's bar (2026-09-28). An empty name clears it. The name goes to every
-        signature of the family (2026-10-26)."""
+        signature of the family (2026-10-26) - given as the family id (load_id) or as any
+        of its signatures' ids (signature_id, the # the sensor and the cards show; the
+        two id spaces overlap, so the field says which, 2026-10-30)."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
-        ref = ((call.data.get("meter") or "").strip(), int(call.data["load_id"]))
+        meter = (call.data.get("meter") or "").strip()
+        family = call.data.get("signature_id") is None
+        if family and call.data.get("load_id") is None:
+            raise ServiceValidationError("Give the load's family id (load_id) or one of its signature ids (signature_id)")
+        ref = (meter, int(call.data["load_id"] if family else call.data["signature_id"]))
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
         runner = runner_of(entry)
         if runner is None:
             # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        sig = runner.fleet.family_head(ref)
+        sig = runner.fleet.family_head(ref) if family else runner.fleet.signature(ref)
         was = sig.name if sig is not None else None
         names_before = set(runner.fleet.names())
-        if not await runner.async_rename(ref, name, family=True):
+        if not await runner.async_rename(ref, name, family=family):
             raise ServiceValidationError(
-                f"No detected load has family id {ref[1]}" + (f" on {ref[0]}" if ref[0] else " under no meter")
-                + ". A family the detector has since joined into another no longer has its id")
+                f"No detected load has {'family' if family else 'signature'} id {ref[1]}"
+                + (f" on {ref[0]}" if ref[0] else " under no meter")
+                + (". A family the detector has since joined into another no longer has its id" if family
+                   else ". A signature merged into another is named as what it became; one forgotten is gone"))
         if set(runner.fleet.names()) == names_before:
             return      # the same names, so the same entities and links: no reload (2026-10-23)
         # what the naming page's Done does: the entities follow the names,
