@@ -20,11 +20,11 @@ import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.helpers import translation
+from homeassistant.helpers import entity_registry as er, translation
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_AUTONAME, CONF_AUTONAME_DASHBOARD, DOMAIN
+from .const import CONF_AUTONAME, CONF_AUTONAME_DASHBOARD, CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES, DOMAIN
 from .insights import autoname as A
 from .insights.classify import FRIDGE, appliance_from_name
 from .insights.model import SiteModel
@@ -184,12 +184,14 @@ class AutoNamer:
         return SiteModel.from_prefs(manager.data or {}).devices
 
     async def _dashboard(self) -> bool:
-        """Put every named load's energy on the Energy dashboard - or take ours off. Only entries in ``added`` are
-        ever removed, so a rename (a new energy sensor) moves the entry and an entry the owner made stays his."""
+        """Put every named load's energy on the Energy dashboard, and each sub-meter's base load under its meter
+        (the owner, 2026-10-30) - or take ours off. Only entries in ``added`` are ever removed, so a rename (a new
+        energy sensor) moves the entry and an entry the owner made stays his."""
         r = self._runner
         manager = await async_get_manager(r.hass)
         wanted: Dict[str, str] = {}
         rates: Dict[str, str] = {}
+        parents: Dict[str, str] = {}
         if self.dashboard:
             for name in sorted(r.fleet.names()):
                 if not r.metered_device(name):
@@ -199,10 +201,34 @@ class AutoNamer:
                     wanted[entity] = name
                     if rate := r.power_entity(name):
                         rates[entity] = rate
-        written, added, declined = await A.write_dashboard(manager, wanted, self.added, self.declined, rates)
+            for entity, name, rate, parent in self._base_loads():
+                wanted[entity], parents[entity] = name, parent
+                if rate:
+                    rates[entity] = rate
+        written, added, declined = await A.write_dashboard(manager, wanted, self.added, self.declined, rates, parents)
         moved = (added, declined) != (self.added, self.declined)
         self.added, self.declined = added, declined
         if written:
             _LOGGER.info("Energy dashboard device list written (auto-named loads: %s)",
                          ", ".join(sorted(wanted.values())) or "none")
         return written or moved
+
+    def _base_loads(self) -> List[Tuple[str, str, Optional[str], str]]:
+        """(energy entity, name, power entity, the meter's statistic) of each sub-meter's base load - the
+        entities sensor._base_loads made, so a meter unticked or with a floor under BASE_LOAD_MIN_W has none.
+        Never the grid's: the meters' floors are inside it (the owner, 2026-10-30)."""
+        from .detection import base_load_label, base_load_uid      # detection imports this module
+        r = self._runner
+        registry = er.async_get(r.hass)
+        chosen, split = r.config.get(CONF_BASE_LOAD), set(r.config.get(CONF_BASE_LOAD_PHASES) or [])
+        out = []
+        for meter, det in r.fleet.detectors():
+            key = (r.submeters.get(meter) or {}).get("energy") if meter else None
+            if not key or (chosen is not None and key not in chosen):
+                continue
+            for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
+                energy = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, key, p, "energy"))
+                if energy:
+                    power = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, key, p, "power"))
+                    out.append((energy, base_load_label(r.fleet, meter, p), power, key))
+        return out

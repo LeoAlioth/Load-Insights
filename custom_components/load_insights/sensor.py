@@ -26,7 +26,7 @@ from .insights.heatnudge import parse_devices
 from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner, device_uid, load_uid, loaded
+from .detection import DetectionRunner, base_load_label, base_load_uid, device_uid, load_uid, loaded
 from .insights.detect import (PF_MIN_QUANTA, PHASES, SYSTEM_PHASES, display_phase, ref_label, running_markdown,
                               signature_rows, suggest_levels)
 from .insights.model import SiteModel
@@ -1002,7 +1002,7 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
 
 
 def _base_uid(entry: ConfigEntry, key: str, phase: Optional[str], kind: str) -> str:
-    return f"{entry.entry_id}_baseload_{kind}_{key.replace('.', '_')}_{phase or 'all'}"
+    return base_load_uid(entry.entry_id, key, phase, kind)
 
 
 class _BaseLoad(_DetectionBase):
@@ -1013,10 +1013,7 @@ class _BaseLoad(_DetectionBase):
         super().__init__(runner, entry, f"named_load_{kind}")
         self._meter, self._phase = meter, phase
         self._attr_unique_id = _base_uid(entry, key, phase, kind)
-        label = "Base load" if not meter else f"{meter} base load"
-        if phase is not None:
-            house = runner.fleet.phase_map(meter).get(phase, phase) if meter else phase
-            label += f" {SYSTEM_PHASES.get(house, phase.upper())}"
+        label = base_load_label(runner.fleet, meter, phase)
         self._attr_device_info = _child_device(entry, f"baseload_{key}_{phase or 'all'}", label, "Base load")
 
 

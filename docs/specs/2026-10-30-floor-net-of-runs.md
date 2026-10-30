@@ -99,3 +99,9 @@ and `base_load_phases` (none until saved) on the detection page; `BASE_LOAD_MIN_
 (the card with it in place equals 51427c4's digit for digit). The forecast side's `BaseLoadSensor` is left as
 it was. Adoption (`FLOOR_ADOPT`) and the contradiction check were not built: they only mattered for the floor
 change, which was ruled out.
+
+Energy dashboard (the owner, 2026-10-30, evening): the Sankeys draw the Energy dashboard's device list, so
+each sub-meter's base load (energy, with its power as the rate) goes on it under its meter (`included_in_stat`)
+through the same writer that puts a named load there (`AutoNamer._dashboard`, the dashboard option), and
+leaves it when the meter is unticked or the option goes off. The grid's base load is skipped: the meters'
+floors are inside it, and a top-level entry would count them twice.
