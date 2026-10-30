@@ -36,6 +36,85 @@ def test_a_steady_weekly_pattern_is_reproduced_exactly():
     assert fc.sample_count == 8 * 168 and fc.span_weeks > 7.9
 
 
+def test_a_load_left_out_stops_shaping_the_history_and_the_level():
+    """The coordinator takes an owner-chosen device off the site series
+    (series.subtract_all) before fitting it: an EV that charged all of
+    yesterday would otherwise lift the level correction and its hours the
+    slots."""
+    S = load("insights.series")
+    base = weeks_of(NOW, 8)
+    ev = {t.timestamp(): (3.0 if (NOW - t) < timedelta(hours=24) else 0.0) for t, _ in base}
+    total = [(t, v + ev[t.timestamp()]) for t, v in base]
+    assert P.forecast(total, NOW).level > 1.3
+    left = S.subtract_all(total, {"ev": [(t, ev[t.timestamp()]) for t, _ in base]}, ["ev"])
+    fc = P.forecast(left, NOW)
+    assert math.isclose(fc.level, 1.0)
+    assert all(math.isclose(v, pattern(t), abs_tol=1e-9) for t, v in fc.hourly)
+
+
+def _parts_world(weeks_c=8):
+    """The site's 1.0 kWh/h is B's 0.8 (C's 0.3 inside it) and 0.2 of its own."""
+    flat = lambda v, weeks: [(t, v) for t, _ in weeks_of(NOW, weeks)]  # noqa: E731
+    return {None: flat(1.0, 8), "b": flat(0.8, 8), "c": flat(0.3, weeks_c)}
+
+
+def _walk(rows, kids, excluded=()):
+    fit = lambda stat, ser, signed=False: P.forecast(ser, NOW, 24, signed=signed)  # noqa: E731
+    fitted = {k: fit(k, v) for k, v in rows.items()}
+    return P.assemble(rows, kids, list(excluded), fitted, fit, NOW)
+
+
+def test_assemble_sums_own_parts_means_and_keeps_the_whole_band():
+    """Site 1.0 = own 0.2 + B 0.8 (= own 0.5 + C 0.3): the built house is the
+    sum, the nesting adds up on B too, and the band holds the centre."""
+    rows = _parts_world()
+    built, own, house = _walk(rows, {None: ("b",), "b": ("c",)})
+    assert all(math.isclose(v, 1.0, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(math.isclose(v, 0.8, abs_tol=1e-9) for _, v in built["b"].hourly)
+    assert all(math.isclose(v, 0.2, abs_tol=1e-9) for _, v in own[None][1].hourly)
+    assert house.parts == ("b",) and built["b"].parts == ("c",)
+    assert all(lo <= v <= hi for (_, v), (lo, hi) in zip(house.hourly, house.bands))
+    assert math.isclose(house.today_kwh, 24.0, abs_tol=1e-6)
+
+
+def test_assemble_leaves_a_young_part_inside_its_parent():
+    """A part under PART_MIN_WEEKS is not summed; its energy stays in the own
+    part's rows, so nothing is counted twice or dropped."""
+    rows = _parts_world(weeks_c=1)
+    built, own, house = _walk(rows, {None: ("b",), "b": ("c",)})
+    assert "b" not in built                          # nothing mature inside B: it keeps its own fit
+    assert all(math.isclose(v, 1.0, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(math.isclose(v, 0.8, abs_tol=1e-9) for _, v in own["b"][1].hourly)
+
+
+def test_a_negative_own_part_keeps_the_sum_exact():
+    """Meters that disagree: the site reads 0.9 where its one part reads 1.0.
+    The own part is -0.1, kept signed so the built house is the site's 0.9;
+    clamped at zero it would read 1.0 (Home: -99 W became +117 W). The
+    remainder as it is shown stays clamped."""
+    flat = lambda v: [(t, v) for t, _ in weeks_of(NOW, 8)]  # noqa: E731
+    built, own, house = _walk({None: flat(0.9), "b": flat(1.0)}, {None: ("b",)})
+    assert all(math.isclose(v, 0.9, abs_tol=1e-9) for _, v in house.hourly)
+    assert all(v == 0.0 for _, v in own[None][1].hourly)
+    assert all(v < 0 for _, v in P.forecast(flat(-0.1), NOW, 24, signed=True).hourly)
+    assert all(v == 0 for _, v in P.forecast(flat(-0.1), NOW, 24).hourly)
+
+
+def test_an_excluded_load_never_comes_back_even_while_young():
+    """C (one week old, inside B) is left out of the house forecast: it comes
+    out of B's own part although it is no mature part, and is not added back.
+    B ran 0.5 kWh/h before C was metered and 0.8 with it."""
+    rows = _parts_world(weeks_c=1)
+    c_start = rows["c"][0][0].timestamp()
+    rows["b"] = [(t, 0.8 if t.timestamp() >= c_start else 0.5) for t, _ in rows["b"]]
+    rows[None] = [(t, v + 0.2) for t, v in rows["b"]]
+    kids = {None: ("b",), "b": ("c",)}
+    built, own, house = _walk(rows, kids, excluded=("c",))
+    assert all(math.isclose(v, 0.7, abs_tol=1e-9) for _, v in house.hourly)
+    # not excluded, the same young C stays inside B's own part: the house reads more
+    assert min(v for _, v in _walk(rows, kids)[2].hourly) > 0.75
+
+
 def test_the_current_hour_is_not_fitted():
     """Its statistic is still accumulating: a partial hour must not drag the slot."""
     samples = weeks_of(NOW, 4) + [(P.floor_hour(NOW), 0.01)]
@@ -48,7 +127,7 @@ def test_recency_weighting_prefers_the_last_weeks():
     between, and nearer the recent level than a flat average would put it."""
     cut = P.floor_hour(NOW) - timedelta(weeks=2)
     samples = [(t, v * (2.0 if t >= cut else 1.0)) for t, v in weeks_of(NOW, 8)]
-    prof = P.fit_profile(samples, NOW, half_life_weeks=3.0)
+    prof = P.fit_profile(samples, NOW)                     # HALF_LIFE_WEEKS, 3
     t = P.floor_hour(NOW) + timedelta(hours=1)
     flat = (6 * 1.0 + 2 * 2.0) / 8 * pattern(t)          # 1.25 x
     assert prof.slot_kwh(t) > flat
@@ -116,6 +195,44 @@ def test_today_is_actual_so_far_plus_forecast_for_the_rest():
     assert fc2.today_kwh > expect_today + morning * 0.9
 
 
+def test_no_hour_is_forecast_above_the_most_the_series_has_done():
+    """The last day ran at 1.1 kWh every hour: the level correction lifts
+    the weekend evenings (1.2 kWh, the most this series has drawn) to ~1.5.
+    Every hour and both ends of its band stop at 1.2, and tomorrow's total
+    is the capped hours' sum (Home's car charger: 76 kWh an hour, its most
+    10.7)."""
+    now = datetime(2026, 9, 18, 10, 30, tzinfo=TZ)        # a Friday
+    cut = P.floor_hour(now) - timedelta(hours=24)
+    samples = [(t, 1.1 if t >= cut else v) for t, v in weeks_of(now, 6)]
+    peak = max(v for _, v in samples)
+    fc = P.forecast(samples, now)
+    assert fc.level > 1.2, fc.level
+    assert all(v <= peak and lo <= peak and hi <= peak for (_, v), (lo, hi) in zip(fc.hourly, fc.bands))
+    saturday = (P.floor_hour(now) + timedelta(days=1)).date()
+    evening = [v for t, v in fc.hourly if t.date() == saturday and 17 <= t.hour < 22]
+    assert evening == [peak] * 5, evening
+    day = [v for t, v in fc.hourly if t.date() == saturday and t.hour == 10][0]
+    assert math.isclose(day, 0.8 * fc.level, rel_tol=1e-9), (day, fc.level)    # under the cap: untouched
+    assert math.isclose(fc.tomorrow_kwh, sum(v for t, v in fc.hourly if t.date() == saturday), abs_tol=1e-9)
+
+
+def test_the_band_holds_the_forecast_when_one_big_hour_lifts_the_mean():
+    """Blaz's PC on Saturdays at 23:00: idle at 7 Wh but for one 215 Wh hour
+    long ago, weighing under a tenth. The forecast is the slot's mean, above
+    its 90th percentile; the band's top is now the forecast, its bottom the
+    10th percentile, and the forecast stays the mean."""
+    def pc(t):
+        return 0.215 if (t.weekday(), t.hour) == (5, 23) and t < NOW - timedelta(weeks=7) else 0.007
+    samples = weeks_of(NOW, 8, pc)
+    fc = P.forecast(samples, NOW)
+    t, v, (lo, hi) = [(t, v, b) for (t, v), b in zip(fc.hourly, fc.bands) if (t.weekday(), t.hour) == (5, 23)][0]
+    prof = P.fit_profile(samples, NOW)
+    assert math.isclose(fc.level, 1.0) and math.isclose(v, prof.slot_kwh(t), rel_tol=1e-12), (fc.level, v)
+    assert prof.slot_band(t)[1] < v, (prof.slot_band(t), v)       # the slot: mean above its p90
+    assert hi == v and math.isclose(lo, 0.007), (lo, v, hi)
+    assert all(b[0] <= x <= b[1] for (_, x), b in zip(fc.hourly, fc.bands))
+
+
 def test_weighted_quantile_is_the_inverted_cdf():
     pairs = [(1.0, 10.0), (1.0, 20.0), (1.0, 30.0), (1.0, 40.0)]
     assert P.weighted_quantile(pairs, 0.10) == 10.0
@@ -145,9 +262,11 @@ def test_a_steady_slot_has_no_spread_and_a_bimodal_one_shows_it():
     t, v, (lo, hi) = ten
     assert lo < v < hi, (lo, v, hi)
     # the band is level-scaled like the value (yesterday's 10:00 was itself a
-    # car week or not, so the level is not 1 here)
+    # car week or not, so the level is not 1 here) - up to the most the
+    # series has drawn in an hour, the car week's 3.8, where it stops
+    peak = max(v for _, v in weeks_of(NOW, 8, car))
     assert math.isclose(lo, pattern(t) * fc2.level, rel_tol=1e-9), (lo, fc2.level)
-    assert math.isclose(hi, (pattern(t) + 3.0) * fc2.level, rel_tol=1e-9), (hi, fc2.level)
+    assert math.isclose(hi, min(peak, (pattern(t) + 3.0) * fc2.level), rel_tol=1e-9), (hi, fc2.level)
 
 
 def test_the_band_scales_with_the_level_correction():

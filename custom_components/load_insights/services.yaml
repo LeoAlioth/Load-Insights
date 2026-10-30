@@ -1,21 +1,38 @@
-refresh:
-  name: Refresh
-  description: >-
-    Recompute every forecast now instead of waiting for the top of the hour.
-    Useful straight after changing an input, to see whether it engaged.
-  target:
-    entity:
-      integration: load_insights
-
+# names and descriptions are the translations' (translations/*.json)
 reset_detection:
-  name: Reset load detection
-  description: >-
-    Forget every detected signature and start the meter's backfill again.
-    For when the meter changed, or a phase was rewired, and the library
-    describes a site that no longer exists. Names you have given are kept
-    and handed back to whatever the backfill finds that looks like them -
-    so where the site really has changed, and nothing matches, a name
-    simply does not return.
-  target:
-    entity:
-      integration: load_insights
+  fields:
+    forget_names:
+      required: false
+      default: false
+      selector:
+        boolean:
+
+name_load:
+  fields:
+    load_id:
+      required: false
+      selector:
+        number:
+          min: 0
+          mode: box
+    signature_id:
+      required: false
+      selector:
+        number:
+          min: 0
+          mode: box
+    meter:
+      required: false
+      selector:
+        text:
+    name:
+      required: false
+      selector:
+        text:
+
+backfill_statistics:
+  fields:
+    name:
+      required: false
+      selector:
+        text:

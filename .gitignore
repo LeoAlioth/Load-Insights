@@ -24,3 +24,4 @@ dist/
 .idea/
 .vscode/
 .claude/settings.local.json
+CLAUDE.md

@@ -5,24 +5,42 @@
                 "title": "Load Insights",
                 "description": "Reads what your Energy dashboard already knows and forecasts consumption from it. Nothing is re-entered here.\n\nFound in the Energy dashboard: {grid} grid, {solar} PV, {battery} battery, {devices} individual devices, {forecasts} PV forecast entries.",
                 "data": {
-                    "name": "Name",
-                    "weather_entity": "Weather entity",
-                    "outdoor_temperature_entity": "Outdoor temperature sensor",
-                    "calendar_entities": "Calendars",
-                    "input_entities": "Other inputs"
+                    "name": "Name"
                 },
                 "data_description": {
-                    "name": "Shown as the device that groups the forecast sensors.",
-                    "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
-                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
-                    "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average.",
-                    "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands."
+                    "name": "Shown as the device that groups the forecast sensors."
+                },
+                "sections": {
+                    "weather": {
+                        "name": "Weather",
+                        "data": {
+                            "weather_entity": "Weather entity",
+                            "outdoor_temperature_entity": "Outdoor temperature sensor"
+                        },
+                        "data_description": {
+                            "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
+                            "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
+                        }
+                    },
+                    "other": {
+                        "name": "Calendars and other inputs",
+                        "data": {
+                            "calendar_entities": "Calendars",
+                            "input_entities": "Other inputs",
+                            "battery_capacity_entity": "Battery capacity sensor"
+                        },
+                        "data_description": {
+                            "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average.",
+                            "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands.",
+                            "battery_capacity_entity": "Optional. A sensor (Wh or kWh) with the battery's usable capacity - for example installed Ah x state of health x nominal voltage from the BMS, so the size follows the pack's ageing. While it reads, it replaces the capacity entered on the Energy dashboard; when it is unavailable, its last reading is kept."
+                        }
+                    }
                 }
             }
         },
         "abort": {
             "no_energy_dashboard": "The Energy dashboard has no grid source configured. Set up at least the grid there first; PV, battery and individual devices improve the forecast.",
-            "already_configured": "Load Insights is already set up."
+            "single_instance_allowed": "Load Insights is already set up."
         }
     },
     "entity": {
@@ -39,6 +57,9 @@
             "detected_loads": {
                 "name": "Detected loads"
             },
+            "signature_library": {
+                "name": "Signature library"
+            },
             "unknown_load_power": {
                 "name": "Unknown load power"
             },
@@ -51,16 +72,55 @@
             "base_load": {
                 "name": "Base load"
             },
+            "named_load_room": {
+                "name": "Room to absorb today"
+            },
             "named_load_power": {
-                "name": "Average power"
+                "name": "Power"
             },
             "named_load_energy": {
                 "name": "Energy"
+            },
+            "soc_target": {
+                "name": "SOC target"
+            },
+            "soc_minimum": {
+                "name": "SOC minimum"
+            },
+            "daily_excess": {
+                "name": "Daily excess"
+            },
+            "production_starts": {
+                "name": "Production starts"
+            },
+            "production_ends": {
+                "name": "Production ends"
+            },
+            "next_full_charge": {
+                "name": "Next full charge"
+            },
+            "device_rate": {
+                "name": "Absorption rate"
+            },
+            "named_load_rate": {
+                "name": "Absorption rate"
+            },
+            "base_consumption": {
+                "name": "Base consumption"
+            },
+            "heat_index": {
+                "name": "COP index"
+            },
+            "heat_scorecard": {
+                "name": "Heat nudge scorecard"
             }
         },
         "binary_sensor": {
             "named_load_running": {
                 "name": "Running"
+            },
+            "heat_nudge_now": {
+                "name": "Would nudge now"
             }
         },
         "button": {
@@ -80,50 +140,154 @@
                 "menu_options": {
                     "overview": "Overview",
                     "inputs": "Explanatory inputs",
-                    "device_state": "A device's own state sensor",
+                    "input_links": "Link an input to what it explains",
+                    "suggested_inputs": "Suggested inputs",
+                    "plan": "SOC planning",
                     "detection": "Load detection",
                     "naming": "Name a detected load",
                     "grid": "Grid connection",
-                    "inverters": "Inverters"
+                    "inverters": "Inverters",
+                    "heat": "Heat devices"
                 }
             },
             "inputs": {
                 "title": "Explanatory inputs",
                 "description": "Inputs the forecast may learn from. Each is kept only if it actually explains consumption.",
-                "data": {
-                    "weather_entity": "Weather entity",
-                    "outdoor_temperature_entity": "Outdoor temperature sensor",
-                    "calendar_entities": "Calendars",
-                    "input_entities": "Other inputs"
-                },
-                "data_description": {
-                    "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
-                    "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically.",
-                    "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average.",
-                    "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands."
-                }
-            },
-            "device_state": {
-                "title": "Device state sensor",
-                "description": "Pick a device from the Energy dashboard and the sensor that says what it is about to do - a boiler's tank temperature, a pump's tank level. Its recent value then sharpens that device's forecast for the next six hours. One device per visit; leave the sensor empty to clear it.",
-                "data": {
-                    "device": "Device",
-                    "state_entity": "State sensor"
+                "sections": {
+                    "weather": {
+                        "name": "Weather",
+                        "data": {
+                            "weather_entity": "Weather entity",
+                            "outdoor_temperature_entity": "Outdoor temperature sensor"
+                        },
+                        "data_description": {
+                            "weather_entity": "Supplies the coming week's temperatures. Pre-filled when the instance has exactly one weather entity.",
+                            "outdoor_temperature_entity": "Supplies the past weeks' temperatures from its statistics. Together with the weather entity it lets the forecast respond to cold and hot spells; a sensor whose temperature turns out not to matter for consumption is ignored automatically."
+                        }
+                    },
+                    "other": {
+                        "name": "Calendars and other inputs",
+                        "data": {
+                            "calendar_entities": "Calendars",
+                            "input_entities": "Other inputs",
+                            "battery_capacity_entity": "Battery capacity sensor"
+                        },
+                        "data_description": {
+                            "calendar_entities": "Link any calendars. Load Insights works out from past events what each one means for consumption - an away calendar, a bookings calendar - and ignores one that turns out to mean nothing. Event titles are learned separately where they differ from the calendar's average.",
+                            "input_entities": "Any entity worth trying as an explanation - a tariff block, an electricity price, irradiance, an occupancy sensor, a thermostat. Load Insights works out from its recorded history whether it explains consumption, and ignores it if not. A sensor with few values is used as it is; a numeric one is cut into bands. Load detection reads them too: a switch, a thermostat's heating or anything else that goes on and off says when a load runs.",
+                            "battery_capacity_entity": "Optional. A sensor (Wh or kWh) with the battery's usable capacity - for example installed Ah x state of health x nominal voltage from the BMS, so the size follows the pack's ageing. While it reads, it replaces the capacity entered on the Energy dashboard; when it is unavailable, its last reading is kept."
+                        }
+                    },
+                    "forecast": {
+                        "name": "House forecast",
+                        "data": {
+                            "forecast_exclude": "Not in the house forecast"
+                        },
+                        "data_description": {
+                            "forecast_exclude": "Dashboard devices to leave out of the house forecast - a car charger, a pump run on demand. The house forecast is built from its parts and these are never added to it: their energy always comes out of the part that holds them, even while they are too young to count as a part. Their own forecasts are unchanged."
+                        }
+                    }
                 }
             },
             "detection": {
                 "title": "Detection settings",
                 "description": "How load detection behaves. What it watches is no longer asked here: given the grid connection and the inverters, what the house draws is worked out rather than chosen.\n\n{found}",
-                "data": {
-                    "interval_minutes": "How often to look"
-                },
-                "data_description": {
-                    "interval_minutes": "The same recorded steps are found either way - this buys how soon a load appears, not how well it is measured. Slow it down on a large site or slow storage."
+                "sections": {
+                    "waiting": {
+                        "name": "Waiting for meters",
+                        "data": {
+                            "meter_wait_s": "Wait for slower meters, at most",
+                            "horizon_skip": "Meters not to wait for"
+                        },
+                        "data_description": {
+                            "meter_wait_s": "Detection judges each step at the grid connection once the meters below it have had time to report it - as long as the slowest of them takes to show a step it shares with the grid, learned from those steps - so a step is placed under the meter that took it, never under one that did not change, and the same whether the history is read at once or a minute at a time. Never longer than this: a meter slower than it is judged with what it has said by then. The named loads' live readings lag by the wait, their energy does not; 0 judges every step at once.",
+                            "horizon_skip": "Detection judges each step at the grid connection once every meter below it has had time to show it. Tick a meter that shows the house's steps slowly - a plug read every half minute, say: it is still read and still places loads, with what it has said by then, but how long it takes no longer holds every other step back. A meter that never shows a step the house's meter shows sets no wait by itself."
+                        }
+                    },
+                    "meters": {
+                        "name": "Meter roles",
+                        "data": {
+                            "single_device": "Meters that hold one device",
+                            "ignore_meters": "Meters to leave out of detection"
+                        },
+                        "data_description": {
+                            "single_device": "Tick a meter whose readings are one appliance - a plug with only the pump on it, a boiler's own meter. Its readings are that device, so nothing inside it is offered for naming, and it only takes loads on the phases that device uses. Leave circuit meters unticked - a 3EM on a sub-panel, a house circuit: loads are detected inside those. Until this is saved, the meters whose loads are nearly all one are ticked.",
+                            "ignore_meters": "Tick a meter detection should not read at all, as if it were not on the Energy dashboard: its readings neither place loads nor split steps, and nothing waits for it."
+                        }
+                    },
+                    "naming": {
+                        "name": "Auto-naming",
+                        "data": {
+                            "autoname": "Auto-name confident loads",
+                            "autoname_dashboard": "Add named loads to the Energy dashboard"
+                        },
+                        "data_description": {
+                            "autoname": "A fridge or freezer (a compressor cycling) and a heating element that detection is very sure of and has seen on several days are named by themselves - Fridge 1, Heater 1 - and show as detected loads like any you name. A name you give, change or forget always wins and is never made again for a load like it. Off: nothing is named automatically.",
+                            "autoname_dashboard": "Puts the energy and power of every named load, the ones you named and the ones named automatically, on the Energy dashboard's device list. A renamed load's entry follows the new name. Only the entries added here are ever removed again (when the name goes, or this is turned off); entries you made are never touched, and one you take out is not put back."
+                        }
+                    },
+                    "cadence": {
+                        "name": "Meter reporting",
+                        "data": {
+                            "change_meters": "Meters that report on change",
+                            "periodic_meters": "Meters that report on a timer"
+                        },
+                        "data_description": {
+                            "change_meters": "Tick a meter that sends a reading only when its value changes, with a heartbeat now and then - a Shelly. A short pulse on it is only a few readings, so it is confirmed in fewer of its own cadences. Left unticked in both lists, detection works it out from the meter's own gaps.",
+                            "periodic_meters": "Tick a meter that sends a reading on a fixed timer - the grid meter, a Victron, a polled plug. A meter in neither list is classified automatically."
+                        }
+                    },
+                    "base_load": {
+                        "name": "Base load",
+                        "data": {
+                            "base_load_meters": "Meters that show a base load",
+                            "base_load_phases": "Base load split by phase"
+                        },
+                        "data_description": {
+                            "base_load_meters": "What a ticked meter draws with nothing detected on - its idle floor - shown as a load of its own, \"Base load\", with its power and energy: the always-on part of the house (routers, standby, a pump that never stops). A floor under 2 W is not shown. Until this is saved, the grid meter and the meters holding several loads are ticked; an end device's floor is its own standby, not a base load.",
+                            "base_load_phases": "Tick a meter whose base load should be one load per phase (Base load X, Y, Z) instead of one for the whole meter."
+                        }
+                    }
                 }
             },
             "naming": {
                 "title": "Name a detected load",
-                "description": "Loads no device meter accounts for, biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be. Under it: what it uses a week and a run, how many times it ran and over how long, when it last ran, when it usually runs, its week from Monday to Sunday, and - if it may be another setting of the same device - what that other load looks like. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "description": "Detected loads, one page per meter that saw them - the loads under no meter first. Under each: how many loads it has to name, how many more are waiting, and where the meter is. Named loads have a page of their own. Choose *finished* when you are done - that is what rebuilds the entities.",
+                "menu_options": {
+                    "group_0": "{group_0}",
+                    "group_1": "{group_1}",
+                    "group_2": "{group_2}",
+                    "group_3": "{group_3}",
+                    "group_4": "{group_4}",
+                    "group_5": "{group_5}",
+                    "group_6": "{group_6}",
+                    "group_7": "{group_7}",
+                    "group_8": "{group_8}",
+                    "group_9": "{group_9}",
+                    "group_10": "{group_10}",
+                    "group_11": "{group_11}",
+                    "naming_named": "Named loads ({named})",
+                    "naming_done": "— finished, apply —"
+                },
+                "menu_option_descriptions": {
+                    "group_0": "{group_0_detail}",
+                    "group_1": "{group_1_detail}",
+                    "group_2": "{group_2_detail}",
+                    "group_3": "{group_3_detail}",
+                    "group_4": "{group_4_detail}",
+                    "group_5": "{group_5_detail}",
+                    "group_6": "{group_6_detail}",
+                    "group_7": "{group_7_detail}",
+                    "group_8": "{group_8_detail}",
+                    "group_9": "{group_9_detail}",
+                    "group_10": "{group_10_detail}",
+                    "group_11": "{group_11_detail}",
+                    "naming_named": "Rename or forget a load you have named."
+                }
+            },
+            "naming_list": {
+                "title": "{group}",
+                "description": "Biggest first - {count} of them, {hidden} more than fit here. Click one to see it and give it a name; naming brings you back to this list.\n\nEach row says what a load draws and on which phases, how long a run lasts and what it might be. Under it: what it uses a week and a run, how many times it ran and over how long, when it last ran, when it usually runs, its week from Monday to Sunday, and - if it may be another setting of the same device - what that other load looks like. Give two the SAME name to say they are one device on different settings. Choose *finished* when you are done - that is what rebuilds the entities.",
                 "menu_options": {
                     "load_0": "{load_0}",
                     "load_1": "{load_1}",
@@ -149,6 +313,7 @@
                     "load_21": "{load_21}",
                     "load_22": "{load_22}",
                     "load_23": "{load_23}",
+                    "naming": "Back to the meters",
                     "naming_done": "— finished, apply —"
                 },
                 "menu_option_descriptions": {
@@ -198,25 +363,50 @@
             "grid": {
                 "title": "Grid connection",
                 "description": "Where the site meets the utility, per phase. This is a different ROLE from the page above, not a different meter: the same inverter usually publishes both sides, and this page prefers the input, grid and mains readings that the other one pushes away.\n\nIt is here to complete the load signal. Where the inverter feeds the loads in parallel with the grid, the meter carries the house minus what the inverter makes, so neither reading alone is what the house draws and their sum is. Behind a transfer switch, or off grid, everything already comes through the inverter and adding the grid would count the pass-through twice.\n\n{found}",
-                "data": {
-                    "grid_device": "Grid meter device",
-                    "grid_power_a": "Grid power A",
-                    "grid_power_b": "Grid power B",
-                    "grid_power_c": "Grid power C",
-                    "source_kind": "What is connected",
-                    "grid_voltage_a": "Grid voltage A",
-                    "grid_voltage_b": "Grid voltage B",
-                    "grid_voltage_c": "Grid voltage C",
-                    "grid_current_a": "Grid current A",
-                    "grid_current_b": "Grid current B",
-                    "grid_current_c": "Grid current C",
-                    "grid_pf_a": "Grid power factor A",
-                    "grid_pf_b": "Grid power factor B",
-                    "grid_pf_c": "Grid power factor C"
-                },
-                "data_description": {
-                    "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
-                    "source_kind": "Left on automatic this is read off the reading itself: only the utility absorbs a surplus, and a generator is off far more than it is on. Override it for a generator that has not run lately, which reads exactly like nothing connected - and \"you will need the generator\" is not the same warning as \"you will go dark\"."
+                "sections": {
+                    "meter": {
+                        "name": "Meter",
+                        "data": {
+                            "grid_device": "Grid meter device",
+                            "source_kind": "What is connected"
+                        },
+                        "data_description": {
+                            "grid_device": "Pick it and the per-phase readings are filled in below. Leave empty to choose by hand.",
+                            "source_kind": "Says what a shortfall at the grid connection is: energy bought from the utility, a generator someone has to start, or - off grid - a load that goes unserved. The forecast's arithmetic is the same either way; this decides how the overview words it."
+                        }
+                    },
+                    "power": {
+                        "name": "Power",
+                        "data": {
+                            "grid_power_a": "Grid power A",
+                            "grid_power_b": "Grid power B",
+                            "grid_power_c": "Grid power C"
+                        }
+                    },
+                    "voltage": {
+                        "name": "Voltage",
+                        "data": {
+                            "grid_voltage_a": "Grid voltage A",
+                            "grid_voltage_b": "Grid voltage B",
+                            "grid_voltage_c": "Grid voltage C"
+                        }
+                    },
+                    "current": {
+                        "name": "Current",
+                        "data": {
+                            "grid_current_a": "Grid current A",
+                            "grid_current_b": "Grid current B",
+                            "grid_current_c": "Grid current C"
+                        }
+                    },
+                    "pf": {
+                        "name": "Power factor",
+                        "data": {
+                            "grid_pf_a": "Grid power factor A",
+                            "grid_pf_b": "Grid power factor B",
+                            "grid_pf_c": "Grid power factor C"
+                        }
+                    }
                 }
             },
             "naming_detail": {
@@ -226,7 +416,7 @@
                     "naming_name": "Name it",
                     "naming_adopt": "Move the name {was} here",
                     "naming_forget": "Forget the name {name}",
-                    "naming": "Back to the list"
+                    "naming_list": "Back to the list"
                 },
                 "menu_option_descriptions": {
                     "naming_name": "Type a name to give it entities of its own.",
@@ -235,31 +425,79 @@
             },
             "naming_name": {
                 "title": "Name this load",
-                "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything.",
+                "description": "{row}\n\nType a name to give it entities of its own. Give two loads the SAME name to say they are one device on different settings. Leave the box empty to go back without changing anything. Tick an input that helped find it to link it to the load - it keeps counting for the whole site as well; the link is made when you finish naming.",
                 "data": {
-                    "name": "Name"
+                    "name": "Name",
+                    "link_inputs": "Link to this load",
+                    "same_as_meter": "Same device as"
+                },
+                "data_description": {
+                    "same_as_meter": "A device with a meter of its own: pick that meter and the load is named exactly as it is, and is that device - its meter's readings and forecast stand for it, so it gets no detected sensors of its own. Picked, it wins over the name typed above."
                 }
             },
             "inverters": {
                 "title": "Inverters",
                 "description": "One inverter at a time. The house is the sum: the grid meter, plus what each inverter puts OUT less what it takes IN. A PV inverter has no input and contributes its whole output; a hybrid contributes the difference. Nothing needs to be said about how it is wired for this - the sum comes out right either way.\n\nSolar set up here overrides the Energy dashboard's own solar sources, which is what a DC-coupled site needs: arrays charging a battery through MPPTs never appear on the AC side at all.\n\nLeave every power reading empty to remove an inverter.\n\n{found}",
-                "data": {
-                    "device": "Inverter device",
-                    "power": "Output power (total)",
-                    "power_a": "Output power A",
-                    "power_b": "Output power B",
-                    "power_c": "Output power C",
-                    "in_power": "Grid-side power (total)",
-                    "in_power_a": "Grid-side power A",
-                    "in_power_b": "Grid-side power B",
-                    "in_power_c": "Grid-side power C",
-                    "topology": "Wiring"
-                },
-                "data_description": {
-                    "device": "Pick it and its readings can be filled in below.",
-                    "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly.",
-                    "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion.",
-                    "in_power": "What the inverter draws from the grid at its own AC input. A PV string inverter has none - leave it empty and it contributes its whole output. A hybrid has one, and the difference is what it actually adds, so the grid it passes through is not counted twice."
+                "sections": {
+                    "inverter": {
+                        "name": "Inverter",
+                        "data": {
+                            "device": "Inverter device",
+                            "topology": "Wiring"
+                        },
+                        "data_description": {
+                            "device": "Pick it and its readings can be filled in below.",
+                            "topology": "Parallel: it feeds the bus directly, and its battery, if any, charges from AC. Series: everything flows through it, and its battery sits on the DC bus in front of the conversion."
+                        }
+                    },
+                    "output": {
+                        "name": "Output power",
+                        "data": {
+                            "power": "Output power (total)",
+                            "power_a": "Output power A",
+                            "power_b": "Output power B",
+                            "power_c": "Output power C"
+                        },
+                        "data_description": {
+                            "power": "Use this where the inverter publishes only a total. Per-phase is better where it has it: a cloud then cancels exactly."
+                        }
+                    },
+                    "grid_side": {
+                        "name": "Grid-side power",
+                        "data": {
+                            "in_power": "Grid-side power (total)",
+                            "in_power_a": "Grid-side power A",
+                            "in_power_b": "Grid-side power B",
+                            "in_power_c": "Grid-side power C"
+                        },
+                        "data_description": {
+                            "in_power": "What the inverter draws from the grid at its own AC input. A PV string inverter has none - leave it empty and it contributes its whole output. A hybrid has one, and the difference is what it actually adds, so the grid it passes through is not counted twice."
+                        }
+                    },
+                    "voltage": {
+                        "name": "Output voltage",
+                        "data": {
+                            "voltage_a": "Output voltage A",
+                            "voltage_b": "Output voltage B",
+                            "voltage_c": "Output voltage C"
+                        }
+                    },
+                    "current": {
+                        "name": "Output current",
+                        "data": {
+                            "current_a": "Output current A",
+                            "current_b": "Output current B",
+                            "current_c": "Output current C"
+                        }
+                    },
+                    "pf": {
+                        "name": "Output power factor",
+                        "data": {
+                            "pf_a": "Output power factor A",
+                            "pf_b": "Output power factor B",
+                            "pf_c": "Output power factor C"
+                        }
+                    }
                 }
             },
             "naming_waiting": {
@@ -269,12 +507,142 @@
                     "naming": "Refresh",
                     "init": "Back"
                 }
+            },
+            "input_links": {
+                "title": "Link an input",
+                "description": "Every input counts for the whole site. Link one to the devices it is about as well - the room a fridge stands in, a thermostat's floor temperature - and a number among them sharpens those devices' next six hours from its recent value, and every device they sit inside with them. Pick an input, then what it belongs to.",
+                "data": {
+                    "input": "Input"
+                }
+            },
+            "input_links_to": {
+                "title": "What {input} is about",
+                "description": "Tick the devices and detected loads {input} says something about. A device inside another counts for both. Untick all to leave it with the site only.",
+                "data": {
+                    "linked_to": "Linked to"
+                }
+            },
+            "suggested_inputs": {
+                "title": "Suggested inputs",
+                "description": "Sensors in the same area as a device on the Energy dashboard, or as a named load's meter, that are not inputs yet: whether someone is there, and the room's temperature and humidity. Tick the ones worth trying. Each becomes an input for the whole site, linked to that device - and like any input, the forecast keeps it only if it explains something.",
+                "data": {
+                    "suggested": "Add as inputs"
+                }
+            },
+            "plan": {
+                "title": "SOC planning",
+                "description": "Three sensors plan the battery from the house forecast and the Energy dashboard's sun forecast: the target (room for the strongest stretch), the minimum (cover for the weakest) and the daily excess. Each counts a side at full weight for so many hours, then less per hour, so the far days move it less. Values can be negative; the consumer clamps them.",
+                "sections": {
+                    "scope": {
+                        "name": "Horizon and scales",
+                        "data": {
+                            "plan_days": "Horizon (days)",
+                            "plan_production_scale": "Sun forecast scale",
+                            "plan_consumption_scale": "Consumption forecast scale"
+                        },
+                        "data_description": {
+                            "plan_days": "How far ahead the target and the minimum look, and how many days the daily excess lists.",
+                            "plan_production_scale": "Share of the Energy dashboard's sun forecast to count on, for all three sensors.",
+                            "plan_consumption_scale": "Multiplies the house forecast, for all three sensors."
+                        }
+                    },
+                    "battery": {
+                        "name": "Battery levels",
+                        "data": {
+                            "plan_full_soc": "Full SOC (%)",
+                            "plan_full_soc_entity": "Full SOC entity",
+                            "plan_minimum_floor": "Minimum SOC floor (%)"
+                        },
+                        "data_description": {
+                            "plan_full_soc": "The target counts down from here. Used when no entity below is set or it does not read.",
+                            "plan_full_soc_entity": "Optional. A number that holds the full level, for example the SOC limit a load manager uses."
+                        }
+                    },
+                    "target": {
+                        "name": "Target weights",
+                        "data": {
+                            "plan_target_consumption_full_hours": "Consumption, full weight (h)",
+                            "plan_target_consumption_derate": "Consumption, less per hour (%/h)",
+                            "plan_target_production_full_hours": "Sun, full weight (h)",
+                            "plan_target_production_derate": "Sun, less per hour (%/h)"
+                        }
+                    },
+                    "minimum": {
+                        "name": "Minimum weights",
+                        "data": {
+                            "plan_minimum_consumption_full_hours": "Consumption, full weight (h)",
+                            "plan_minimum_consumption_derate": "Consumption, less per hour (%/h)",
+                            "plan_minimum_production_full_hours": "Sun, full weight (h)",
+                            "plan_minimum_production_derate": "Sun, less per hour (%/h)"
+                        }
+                    },
+                    "excess": {
+                        "name": "Daily excess weights",
+                        "data": {
+                            "plan_excess_consumption_full_hours": "Consumption, full weight (h)",
+                            "plan_excess_consumption_derate": "Consumption, less per hour (%/h)",
+                            "plan_excess_production_full_hours": "Sun, full weight (h)",
+                            "plan_excess_production_derate": "Sun, less per hour (%/h)"
+                        }
+                    },
+                    "devices": {
+                        "name": "Devices",
+                        "data": {
+                            "plan_spread_evenly": "Planned with their energy spread evenly"
+                        },
+                        "data_description": {
+                            "plan_spread_evenly": "Devices whose energy the three planning sensors spread evenly over the horizon instead of where it is forecast - a hot water tank or heater whose boost moves to midday while a dull spell needs it round the clock. Only the planning sensors; their forecasts are unchanged."
+                        }
+                    }
+                }
+            },
+            "heat": {
+                "title": "Heat devices",
+                "description": "Shadow mode: for each heat pump, or air conditioner or heat pump used as heating, Load Insights works out in which hours the heat would cost the least electricity, and later scores that against what the device really did. Nothing is written to any device. Add one device at a time, or remove the ticked ones. Now: {devices}",
+                "sections": {
+                    "device": {
+                        "name": "Device",
+                        "data": {
+                            "name": "Name",
+                            "source": "Power or energy sensor",
+                            "kind": "Kind"
+                        },
+                        "data_description": {
+                            "name": "What the device is called. Naming one that exists replaces it.",
+                            "source": "A power sensor (hourly mean) or an energy sensor (hourly change). A counter that only moves once a day, such as MELCloud's, is recognised and its day is spread over the hours - see the plan.",
+                            "kind": "Sets the default target and how far an hour of heat may be moved: a tank a lot, a floor or a house some, a room little."
+                        }
+                    },
+                    "goal": {
+                        "name": "Target and activity",
+                        "data": {
+                            "target": "Target temperature (°C)",
+                            "target_entity": "Target temperature entity",
+                            "activity_entity": "Activity entity"
+                        },
+                        "data_description": {
+                            "target": "Flow, tank or room temperature the device works to. Empty: the kind's default (about 35 for space heating, 50 for hot water, 21 for a room).",
+                            "target_entity": "Optional. An entity that holds the target and takes over from the number while it reads.",
+                            "activity_entity": "Optional. A climate, switch or binary sensor that says when the device heats. Used only to place the hours of a device that reports once a day."
+                        }
+                    },
+                    "removal": {
+                        "name": "Remove",
+                        "data": {
+                            "remove": "Remove"
+                        },
+                        "data_description": {
+                            "remove": "Devices to take off the list."
+                        }
+                    }
+                }
             }
         },
         "abort": {
-            "no_devices": "The Energy dashboard lists no individual devices.",
             "no_detection": "Load detection is not set up: choose the main meter first.",
-            "nothing_to_name": "Nothing to name yet - either no loads have been detected, or every one is already accounted for by a device meter."
+            "nothing_to_name": "Nothing to name yet - no loads have been detected.",
+            "no_inputs": "No inputs yet - add them on the Explanatory inputs page first.",
+            "no_suggestions": "Nothing to suggest: no occupancy, presence, motion, temperature or humidity sensor that is not an input yet shares an area with a device on the Energy dashboard or with a named load's meter. Give the devices and sensors areas in Home Assistant and they are matched here."
         }
     },
     "issues": {
@@ -305,33 +673,91 @@
         "house_reading_negative": {
             "title": "The house reading goes negative",
             "description": "What Load Insights works out the house is drawing settles BELOW ZERO on phase {phases} ({watts}) when nothing is running. A house does not draw less than nothing, so the reading is something other than consumption.\n\nAlmost always one of two things. Either a grid meter is set as the house reading on **Detection settings** when it belongs on **Grid connection** - many meters report import as negative, and only the grid role applies that polarity. Or an inverter is missing from **Inverters**, so what it generates is never added back and the house appears to shrink as the sun rises.\n\nDetection carries on meanwhile, and everything it finds is unreliable."
+        },
+        "energy_dashboard_renamed": {
+            "title": "The Energy dashboard still names renamed entities",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Point the Energy dashboard at the new ids",
+                        "description": "These entities were renamed. Home Assistant moved their history, but the Energy dashboard still names the old ids, so it finds no data for them:\n\n{renames}\n\nSubmit to change the dashboard to the new ids. Load Insights' forecast for each renamed device keeps its entity and its history, and Load Insights reloads. Nothing on the dashboard changes unless you submit."
+                    }
+                }
+            }
         }
     },
     "selector": {
         "layout": {
             "options": {
-                "auto": "Work it out from the data",
                 "parallel": "Parallel - inverter feeds the grid bus directly (AC-coupled solar, no battery)",
                 "series": "Series - all power flows through the inverter (hybrid with DC-coupled battery)"
             }
         },
         "source_kind": {
             "options": {
-                "auto": "Work it out from the data",
                 "utility": "Utility grid",
                 "generator": "Generator",
                 "none": "Nothing - off grid"
             }
         },
-        "interval_minutes": {
+        "heat_kind": {
             "options": {
-                "1": "Every 1 minute",
-                "2": "Every 2 minutes",
-                "5": "Every 5 minutes",
-                "10": "Every 10 minutes",
-                "15": "Every 15 minutes",
-                "30": "Every 30 minutes"
+                "space_heating": "Space heating (floor or radiators, about 35 °C)",
+                "hot_water": "Hot water tank (about 50 °C)",
+                "room": "Direct room heating or air conditioner (room temperature)"
             }
+        }
+    },
+    "services": {
+        "reset_detection": {
+            "name": "Reset load detection",
+            "description": "Forget every detected signature and start the meter's backfill again. For when the meter changed, or a phase was rewired, and the library describes a site that no longer exists. Names you have given are kept and handed back to whatever the backfill finds that looks like them - so where the site really has changed, and nothing matches, a name simply does not return - unless you ask for the names to go too.",
+            "fields": {
+                "forget_names": {
+                    "name": "Forget the names too",
+                    "description": "Drop the names as well as the library, so nothing learned before - not even a name waiting to find its load - carries over. Name the loads anew once the backfill has run."
+                }
+            }
+        },
+        "name_load": {
+            "name": "Name a load",
+            "description": "Give a detected load a name by its id - the one each load carries in the diagnostics - or clear it with an empty name. For a load the naming page does not offer yet: it only lists loads that have repeated tightly enough, and a load whose runs vary a lot can wait a long time.",
+            "fields": {
+                "load_id": {
+                    "name": "Load",
+                    "description": "The detected load's family id - the \"family\" each signature carries in the diagnostics. The name goes to every signature of the family. Either this or the signature id."
+                },
+                "signature_id": {
+                    "name": "Signature",
+                    "description": "One of the load's signature ids instead - the # the detected loads sensor and the cards show. Its whole family takes the name."
+                },
+                "meter": {
+                    "name": "Meter",
+                    "description": "For a load a meter holding several devices saw - its own detector's id, as the detected loads sensor lists it under that meter (Mansarda's #11). Empty for one the grid saw."
+                },
+                "name": {
+                    "name": "Name",
+                    "description": "What to call it. Loads given the same name are one device. Empty clears the name."
+                }
+            }
+        },
+        "backfill_statistics": {
+            "name": "Rewrite a load's energy history",
+            "description": "Write the hours detection saw of a named load - as far back as it has them, about ten days - over its energy sensor's statistics, hourly and five-minute alike, so the Energy dashboard shows its past, and none of what a detection reset or the sensor's first appearance made of it: Home Assistant counts a reading that appears with days in it, or drops, as that hour's energy. Detection does this by itself every hour, wherever a named load's statistics are off what it credits the load with now. The hours before the ten days stay as recorded, except that a name another name was joined into gains that name's older history, and a load named now the hours it kept from before, once. Running it again writes the same.",
+            "fields": {
+                "name": {
+                    "name": "Name",
+                    "description": "The named load to rewrite. Empty rewrites every named load."
+                }
+            }
+        }
+    },
+    "exceptions": {
+        "autoname_fridge": {
+            "message": "Fridge {n}"
+        },
+        "autoname_heater": {
+            "message": "Heater {n}"
         }
     }
 }

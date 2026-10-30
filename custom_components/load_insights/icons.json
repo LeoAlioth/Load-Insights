@@ -22,11 +22,50 @@
             "detected_loads": {
                 "default": "mdi:magnify-scan"
             },
+            "signature_library": {
+                "default": "mdi:fingerprint"
+            },
             "unknown_load_power": {
                 "default": "mdi:help-circle-outline"
             },
+            "named_load_room": {
+                "default": "mdi:battery-charging-medium"
+            },
             "named_load_power": {
                 "default": "mdi:flash"
+            },
+            "soc_target": {
+                "default": "mdi:battery-arrow-up-outline"
+            },
+            "soc_minimum": {
+                "default": "mdi:battery-arrow-down-outline"
+            },
+            "daily_excess": {
+                "default": "mdi:solar-power-variant-outline"
+            },
+            "production_starts": {
+                "default": "mdi:weather-sunset-up"
+            },
+            "production_ends": {
+                "default": "mdi:weather-sunset-down"
+            },
+            "next_full_charge": {
+                "default": "mdi:battery-charging-100"
+            },
+            "device_rate": {
+                "default": "mdi:speedometer"
+            },
+            "named_load_rate": {
+                "default": "mdi:speedometer"
+            },
+            "base_consumption": {
+                "default": "mdi:home-clock-outline"
+            },
+            "heat_index": {
+                "default": "mdi:heat-pump-outline"
+            },
+            "heat_scorecard": {
+                "default": "mdi:scoreboard-outline"
             }
         },
         "binary_sensor": {
@@ -35,6 +74,9 @@
                 "state": {
                     "on": "mdi:power-plug"
                 }
+            },
+            "heat_nudge_now": {
+                "default": "mdi:thermometer-chevron-up"
             }
         },
         "button": {

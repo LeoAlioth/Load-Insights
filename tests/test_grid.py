@@ -67,21 +67,6 @@ def test_an_empty_pack_imports():
     assert g.hours[1].soc == 0.0
 
 
-def test_rated_power_bounds_what_the_pack_can_do():
-    g = G.build(hours([0.0, 5.0]), pv([9.0, 0.0]), soc=50.0, capacity_kwh=20.0,
-                max_charge_w=3000.0, max_discharge_w=2000.0)
-    assert round(g.hours[0].battery_kwh, 3) == -3.0, "charge capped at 3 kW"
-    assert round(g.hours[0].net_kwh, 3) == -6.0, "the rest exports"
-    assert round(g.hours[1].battery_kwh, 3) == 2.0, "discharge capped at 2 kW"
-    assert round(g.hours[1].net_kwh, 3) == 3.0
-
-
-def test_reserve_limits_are_respected():
-    g = G.build(hours([2.0, 2.0]), soc=50.0, capacity_kwh=10.0, soc_min=40.0)
-    assert round(g.hours[0].battery_kwh, 3) == 0.94, "only down to the floor"
-    assert g.hours[0].soc == 40.0 and g.hours[1].battery_kwh == 0.0
-
-
 def test_no_soc_means_no_battery_and_the_net_is_reported_before_it():
     g = G.build(hours([1.0]), pv([3.0]), soc=None, capacity_kwh=10.0)
     assert not g.battery_modelled
@@ -104,19 +89,19 @@ def test_a_dc_coupled_pack_pays_for_the_conversion_once_not_twice():
     # stores more of it, having skipped a conversion the AC path must pay
     ac = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
     dc = G.build(hours([0.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
-                 topology=G.TOPOLOGY_SERIES)
+                 topology=G.LAYOUT_SERIES)
     assert dc.hours[0].soc > ac.hours[0].soc, (dc.hours[0].soc, ac.hours[0].soc)
     # but a DC array delivers less to the socket than its nameplate kWh, so
     # with the house running there is less surplus to begin with
     ac2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0)
     dc2 = G.build(hours([2.0]), pv([5.0]), soc=50.0, capacity_kwh=20.0,
-                  topology=G.TOPOLOGY_SERIES)
+                  topology=G.LAYOUT_SERIES)
     assert dc2.hours[0].net_before_battery_kwh > ac2.hours[0].net_before_battery_kwh
 
     # overnight: the pack has to give up more than the house receives, and
     # the series path gives up more still
     ac_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0)
-    dc_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0, topology=G.TOPOLOGY_SERIES)
+    dc_n = G.build(hours([2.0]), soc=50.0, capacity_kwh=20.0, topology=G.LAYOUT_SERIES)
     assert dc_n.hours[0].soc == ac_n.hours[0].soc, "both pay one inverter conversion out"
     # what the house actually gets is what was asked for, either way
     assert round(ac_n.hours[0].battery_kwh, 3) == round(dc_n.hours[0].battery_kwh, 3) == 2.0

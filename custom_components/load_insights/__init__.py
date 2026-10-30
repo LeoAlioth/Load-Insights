@@ -1,55 +1,153 @@
 """Load Insights - consumption forecasts from what the Energy dashboard knows."""
 from __future__ import annotations
 
+import logging
+
+from homeassistant.components.energy.data import async_get_manager
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
+from homeassistant.helpers.debounce import Debouncer
 
 from .const import (
     CONF_NAME,
+    CONF_SIGNATURE_REVISION,
     DEFAULT_NAME,
     DOMAIN,
-    SERVICE_REFRESH,
+    SERVICE_BACKFILL_STATISTICS,
+    SERVICE_NAME_LOAD,
     SERVICE_RESET_DETECTION,
 )
 from .coordinator import InsightsCoordinator
-from .detection import DetectionRunner
+from .detection import DetectionRunner, RuntimeData, area_id, loaded, runner_of
+from .insights.inputs import migrate_inputs, relink
+from .insights.model import SiteModel
+from .insights.renames import follow_renames
+from .repairs import async_dashboard_renamed
+
+_LOGGER = logging.getLogger(__name__)
+
+# how long renamed entities are gathered before they are followed
+RENAME_SETTLE_S = 5.0
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 
-async def _async_for_each_entry(hass: HomeAssistant, fn) -> None:
-    """Run ``fn`` for every Load Insights entry - these services act on the
-    integration rather than on one entity, and a site has exactly one."""
-    for entry_id, obj in list(hass.data.get(DOMAIN, {}).items()):
-        if isinstance(obj, InsightsCoordinator):
-            await fn(entry_id, obj)
+def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
+    """The loaded entry these services act on - the integration rather than
+    one entity, and a site has exactly one (single_config_entry)."""
+    return next(iter(hass.config_entries.async_loaded_entries(DOMAIN)), None)
 
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Register the services once, whatever entries come and go."""
 
-    async def _refresh(call) -> None:
-        async def go(entry_id, coordinator):
-            await coordinator.async_request_refresh()
-        await _async_for_each_entry(hass, go)
-
     async def _reset_detection(call) -> None:
-        async def go(entry_id, _coordinator):
-            runner: DetectionRunner | None = hass.data[DOMAIN].get(f"{entry_id}_detection")
-            if runner is not None:
-                await runner.async_reset()
-        await _async_for_each_entry(hass, go)
+        if (entry := _loaded(hass)) is not None:
+            await entry.runtime_data.runner.async_reset(forget_names=bool(call.data.get("forget_names", False)))
 
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH, _refresh)
+    async def _name_load(call) -> None:
+        """Name a load by its family id, for one the naming page does not offer yet -
+        Kozolec's fridge, whose runs the detector measures too loosely to clear
+        the page's bar (2026-09-28). An empty name clears it. The name goes to every
+        signature of the family (2026-10-26) - given as the family id (load_id) or as any
+        of its signatures' ids (signature_id, the # the sensor and the cards show; the
+        two id spaces overlap, so the field says which, 2026-10-30)."""
+        # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
+        meter = (call.data.get("meter") or "").strip()
+        family = call.data.get("signature_id") is None
+        if family and call.data.get("load_id") is None:
+            raise ServiceValidationError("Give the load's family id (load_id) or one of its signature ids (signature_id)")
+        ref = (meter, int(call.data["load_id"] if family else call.data["signature_id"]))
+        name = (call.data.get("name") or "").strip() or None
+        entry = _loaded(hass)
+        runner = runner_of(entry)
+        if runner is None:
+            # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
+            raise ServiceValidationError("Load Insights is still loading; try again once it has")
+        sig = runner.fleet.family_head(ref) if family else runner.fleet.signature(ref)
+        was = sig.name if sig is not None else None
+        names_before = set(runner.fleet.names())
+        if not await runner.async_rename(ref, name, family=family):
+            raise ServiceValidationError(
+                f"No detected load has {'family' if family else 'signature'} id {ref[1]}"
+                + (f" on {ref[0]}" if ref[0] else " under no meter")
+                + (". A family the detector has since joined into another no longer has its id" if family
+                   else ". A signature merged into another is named as what it became; one forgotten is gone"))
+        if set(runner.fleet.names()) == names_before:
+            return      # the same names, so the same entities and links: no reload (2026-10-23)
+        # what the naming page's Done does: the entities follow the names,
+        # and so do the inputs linked to the load
+        rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+        hass.config_entries.async_update_entry(
+            entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
+
+    async def _backfill_statistics(call) -> None:
+        """Write the hours detection saw of a named load over its energy
+        meter's statistics - for loads named before naming did it by itself,
+        and after a reset (2026-09-29). Every named load when no name is
+        given; running it again writes the same."""
+        wanted = (call.data.get("name") or "").strip().casefold()
+        entry = _loaded(hass)
+        runner = runner_of(entry)
+        names = [n for n in sorted(runner.fleet.names()) if not wanted or n.casefold() == wanted] if runner else []
+        if wanted and not names:
+            raise ServiceValidationError(f"No load is named {call.data.get('name')}")
+        for name in names:
+            if await runner.async_backfill_statistics(name) is None:
+                _LOGGER.info("Not backfilling %s yet: its energy meter has no hour of its own; "
+                             "it is filled once it has", name)
+
+    # Renamed entities: gathered for a few seconds - a rename tool changes
+    # dozens at once - then followed in one options change per entry, which
+    # reloads it once. Registered here rather than per entry so a rename that
+    # lands while an entry reloads is not missed.
+    pending: dict = {}
+
+    async def _follow() -> None:
+        renames = dict(pending)
+        pending.clear()
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if (rt := loaded(entry)) is not None:
+                await rt.runner.async_follow_renames(renames)
+                await rt.coordinator.async_follow_renames(renames)
+            data, options = follow_renames(dict(entry.data), renames), follow_renames(dict(entry.options), renames)
+            if data != dict(entry.data) or options != dict(entry.options):
+                _LOGGER.info("Following renamed entities in %s: %s", entry.title, renames)
+                hass.config_entries.async_update_entry(entry, data=data, options=options)
+        # The Energy dashboard names them too, and Home Assistant leaves it
+        # on the old ids. It is the user's dashboard, so it is asked in
+        # Repairs rather than changed here (2026-09-29).
+        await async_dashboard_renamed(hass, renames)
+
+    flush = Debouncer(hass, _LOGGER, cooldown=RENAME_SETTLE_S, immediate=False, function=_follow)
+
+    @callback
+    def _renamed(event) -> None:
+        old, new = event.data.get("old_entity_id"), event.data.get("entity_id")
+        if event.data.get("action") != "update" or not old or not new or old == new:
+            return
+        for k, v in list(pending.items()):   # renamed twice before the flush: a to b to c
+            if v == old:
+                pending[k] = new
+        pending[old] = new
+        hass.async_create_task(flush.async_call())
+
+    hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _renamed)
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
+    hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)
+    hass.services.async_register(DOMAIN, SERVICE_BACKFILL_STATISTICS, _backfill_statistics)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    moved = migrate_inputs(dict(entry.options))
+    if moved != dict(entry.options):
+        # before the update listener exists, so this does not reload
+        hass.config_entries.async_update_entry(entry, options=moved)
     coordinator = InsightsCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
     detection = DetectionRunner(hass, entry)
     await detection.async_start()
     # The site device exists before any entity, so the per-device and
@@ -63,41 +161,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manufacturer="Load Insights",
         model="Site",
         # wherever the grid meter lives, rather than floating unassigned
-        suggested_area=_area_of_the_meter(hass, coordinator),
+        suggested_area=_area_of_the_meter(hass, SiteModel.from_prefs((await async_get_manager(hass)).data)),
     )
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    hass.data[DOMAIN][f"{entry.entry_id}_detection"] = detection
-    hass.data[DOMAIN][f"{entry.entry_id}_site_device"] = site_device.id
+    entry.runtime_data = RuntimeData(coordinator, detection, site_device.id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_changed))
     _prune_empty_devices(hass, entry)
+    # The first forecast reads weeks of statistics and fits every device, and
+    # Home Assistant's start waited on it every time ("Waiting for
+    # integrations to complete setup: load_insights"). The entities exist
+    # already and show unavailable until it lands; a background task, so the
+    # start does not wait on it either. A failure is logged and the next
+    # quarter hour tries again, where setup used to be retried (2026-09-29).
+    entry.async_create_background_task(hass, coordinator.async_refresh(), f"{DOMAIN} first forecast")
     return True
 
 
 @callback
-def _area_of_the_meter(hass: HomeAssistant, coordinator: InsightsCoordinator) -> str | None:
+def _area_of_the_meter(hass: HomeAssistant, site: SiteModel) -> str | None:
     """The area the grid import meter sits in, if it has one - the closest
-    thing this integration has to a physical location."""
-    from homeassistant.helpers import area_registry as ar
-
-    data = coordinator.data
-    if data is None or not data.site.grid_import:
-        return None
-    entities = er.async_get(hass)
-    devices = dr.async_get(hass)
+    thing this integration has to a physical location. From the dashboard
+    rather than the first refresh, which setup no longer waits for."""
     areas = ar.async_get(hass)
-    for stat_id in data.site.grid_import:
-        reg = entities.async_get(stat_id)
-        if reg is None:
-            continue
-        area_id = reg.area_id
-        if not area_id and reg.device_id:
-            device = devices.async_get(reg.device_id)
-            area_id = device.area_id if device else None
-        if area_id:
-            area = areas.async_get_area(area_id)
-            if area:
-                return area.name
+    for stat_id in site.grid_import:
+        place = area_id(hass, stat_id)
+        area = areas.async_get_area(place) if place else None
+        if area:
+            return area.name
     return None
 
 
@@ -136,10 +226,6 @@ async def _async_options_changed(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
-        coordinator: InsightsCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        await coordinator.async_shutdown()
-        hass.data[DOMAIN].pop(f"{entry.entry_id}_site_device", None)
-        detection: DetectionRunner = hass.data[DOMAIN].pop(f"{entry.entry_id}_detection", None)
-        if detection:
-            await detection.async_stop()
+        await entry.runtime_data.coordinator.async_shutdown()
+        await entry.runtime_data.runner.async_stop()
     return ok

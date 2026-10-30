@@ -1,15 +1,18 @@
-"""Which of a meter device's sensors are its per-phase readings.
+"""Which of a meter device's sensors are its per-phase readings, and which
+phase each of a meter's channels carries.
 
 The fixtures are the two meters actually in use at home: a SolarEdge SE17K
-meter 1, read over Modbus, and a Shelly Pro 3EM downstream of it.
+meter 1, read over Modbus, and a Shelly Pro 3EM downstream of it - plus the
+grid meters Load Juggler meets, which carries a copy of this module.
 """
+import itertools
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import load, run_main  # noqa: E402
 
-D = load("insights.discovery")
+D = load("insights.phases")
 
 
 def e(entity_id, device_class, name):
@@ -57,6 +60,39 @@ SHELLY = [
 ]
 
 
+def test_voltages_vote_the_inverters_phases_onto_the_meters():
+    """A balanced inverter's steps say nothing about its phases; its voltages
+    do. Three conductors wandering independently, the inverter reading the
+    meter's b as its a and the other way round (Home's SE17K, 2026-10-23): the
+    votes put the matched pairs on top and phase_mapping reads the swap. The
+    total then splits by V x I share onto the METER's phases, and a phase with
+    no amps falls back to thirds."""
+    import math
+    import random
+    rnd = random.Random(7)
+    walk = {p: [] for p in "abc"}
+    v = {"a": 238.0, "b": 240.0, "c": 241.0}
+    for k in range(600):
+        for p in "abc":
+            v[p] += rnd.gauss(0.0, 0.3)
+            walk[p].append((k * 10.0, v[p]))
+    meter = {p: walk[p] for p in "abc"}
+    inverter = {"a": [(t, x - 1.0 + rnd.gauss(0.0, 0.05)) for t, x in walk["b"]],
+                "b": [(t, x - 1.6 + rnd.gauss(0.0, 0.05)) for t, x in walk["a"]],
+                "c": [(t, x - 0.4 + rnd.gauss(0.0, 0.05)) for t, x in walk["c"]]}
+    votes = D.voltage_votes(inverter, meter)
+    assert votes["a"]["b"] > 0.9 > votes["a"]["a"] and votes["b"]["a"] > 0.9 and votes["c"]["c"] > 0.9, votes
+    assert D.phase_mapping(votes) == {"a": "b", "b": "a", "c": "c"}
+    total = [(t, 9000.0) for t, _ in walk["a"]]
+    amps = {"a": [(t, 13.0) for t, _ in walk["a"]], "b": [(t, 12.0) for t, _ in walk["a"]], "c": [(t, 12.5) for t, _ in walk["a"]]}
+    split = D.share_split(total, inverter, amps, {"a": "b", "b": "a", "c": "c"})
+    assert set(split) == {"a", "b", "c"} and all(len(r) == 600 for r in split.values())
+    assert abs(sum(split[p][10][1] for p in "abc") - 9000.0) < 1e-6
+    assert split["b"][10][1] > split["a"][10][1] > split["c"][10][1] - 1e9 and split["b"][10][1] > 3000.0   # the 13 A phase is the meter's b
+    thirds = D.share_split(total, inverter, {"a": amps["a"]}, {"a": "b", "b": "a", "c": "c"})
+    assert all(abs(thirds[p][0][1] - 3000.0) < 1e-9 for p in "abc")
+
+
 def test_line_to_neutral_is_that_phases_own_voltage():
     """The bug: a SolarEdge meter offers no bare "voltage A", only AN/BN/CN,
     so rejecting anything with two letters left the voltages empty."""
@@ -70,6 +106,28 @@ def test_line_to_neutral_is_that_phases_own_voltage():
     # the l1n spelling of the same thing
     assert D.phase_of("meter_l1n_voltage") == "a"
     assert D.phase_of("meter_l3n_voltage") == "c"
+
+
+def test_a_meters_own_reactive_power_is_found_beside_its_power():
+    """V x I gives only the size of the reactive power; the meter's own
+    reading carries its sign (2026-09-30)."""
+    rows = SOLAREDGE + [e(f"sensor.solaredge_se17k_m1_ac_var_{p}", "reactive_power", f"SE17K M1 AC Reactive Power {p.upper()}")
+                        for p in "abc"] + [e("sensor.solaredge_se17k_m1_ac_var", "reactive_power", "SE17K M1 AC Reactive Power")]
+    got = D.match_meter_entities(rows)
+    assert [got.get(f"var_{p}") for p in "abc"] == [f"sensor.solaredge_se17k_m1_ac_var_{p}" for p in "abc"], got
+    assert got.get("power_a", "").endswith("_ac_power_a"), got      # still the watts, not the VAr
+
+
+def test_a_3ems_apparent_power_is_found_beside_its_active_power():
+    """Its 0.1 VA apparent power gives the VAr far finer than its two-decimal
+    power factor (2026-09-30)."""
+    rows = [r for p in "abc" for r in (
+        e(f"sensor.hisa_phase_{p}_active_power", "power", "Phase " + p.upper() + " active power"),
+        e(f"sensor.hisa_phase_{p}_apparent_power", "apparent_power", "Phase " + p.upper() + " apparent power"),
+        e(f"sensor.hisa_phase_{p}_power_factor", "power_factor", "Phase " + p.upper() + " power factor"))]
+    got = D.match_meter_entities(rows)
+    assert [got.get(f"va_{p}") for p in "abc"] == [f"sensor.hisa_phase_{p}_apparent_power" for p in "abc"], got
+    assert [got.get(f"power_{p}") for p in "abc"] == [f"sensor.hisa_phase_{p}_active_power" for p in "abc"], got
 
 
 def test_line_to_line_voltage_belongs_to_no_single_phase():
@@ -128,6 +186,29 @@ def test_energy_counters_and_frequency_are_never_phase_readings():
     assert "sensor.solaredge_se17k_m1_ac_frequency" not in picked
 
 
+def test_a_device_named_energy_meter_keeps_its_readings():
+    """REJECT reads what a reading is called itself, not its device: with
+    has_entity_name the id starts with the device's name, and Victron GX
+    names an ET340 "ET340 Energy Meter" - every one of its readings was
+    turned away as an energy counter (2026-10-02)."""
+    dev = "sensor.et340_energy_meter_id_30_"
+    rows = [e(dev + f"{k}_on_l{n}", dc, f"{label} on L{n}")
+            for n in (1, 2, 3)
+            for k, dc, label in (("power", "power", "Power"),
+                                 ("current", "current", "Current"),
+                                 ("voltage", "voltage", "Voltage"))]
+    rows += [e(dev + "energy_from_net_on_l1", "power", "Energy from net on L1"),
+             e(dev + "total_power", "power", "Total power")]
+    got = D.match_meter_entities(rows, role="grid")
+    assert got["power_a"] == dev + "power_on_l1", got
+    assert got["current_c"] == dev + "current_on_l3", got
+    assert got["voltage_b"] == dev + "voltage_on_l2", got
+    assert dev + "energy_from_net_on_l1" not in got.values()
+    assert dev + "total_power" not in got.values()
+    # a reading with no name of its own is judged by its id, as before
+    assert D.match_meter_entities([e("sensor.m_total_power_a", "power", "")]) == {}
+
+
 def test_describe_match_says_what_was_recognised():
     got = D.match_meter_entities(SOLAREDGE)
     line = D.describe_match(got)
@@ -140,7 +221,7 @@ def test_an_inverter_publishing_both_sides_is_left_to_the_user():
     """A MultiPlus offers input and output power on one device. Preferring
     the load side looks obvious and is wrong at least once: Kozolec has no
     load-side power at all, and its input is where the grid would connect,
-    so that IS its meter (Anze, 2026-09-17). The matcher picks one and the
+    so that IS its meter (2026-09-17). The matcher picks one and the
     form shows it for changing; it does not take sides."""
     rows = [
         e("sensor.multiplus_id_276_input_power_l1", "power", "MultiPlus Input Power L1"),
@@ -229,7 +310,7 @@ def test_a_three_phase_shelly_is_one_device_per_phase():
     statistic lives, and one child per phase pointing at it with
     via_device_id. Reading only the parent's own entities found a single
     total and nothing else, so a three-phase meter was taken for a one-phase
-    one - which is what stopped Anze's attic and grid meters from ever being
+    one - which is what stopped the owner's attic and grid meters from ever being
     subtracted per phase (2026-09-22)."""
     parent = [
         {"entity_id": "sensor.attic_total_active_power", "device_class": "power",
@@ -246,6 +327,91 @@ def test_a_three_phase_shelly_is_one_device_per_phase():
     ]
     got = D.match_meter_entities(parent + children)
     assert got == {f"power_{p}": f"sensor.attic_phase_{p}_active_power" for p in "abc"}, got
+
+
+
+def test_the_grid_role_takes_net_over_gross_consumption():
+    """An Enphase gateway publishes what the house draws (never negative)
+    beside what crosses the grid connection (signed), and the shorter, gross
+    name won the grid role."""
+    gross = [f"sensor.envoy_122233334444_current_power_consumption_l{n}" for n in "123"]
+    net = [f"sensor.envoy_122233334444_current_net_power_consumption_l{n}" for n in "123"]
+    rows = [e(x, "power", "") for x in gross + net]
+    assert D.match_meter_entities(rows, "grid") == {f"power_{p}": x for p, x in zip("abc", net)}
+    # what the house draws is still the gross figure
+    assert D.match_meter_entities(rows, "load") == {f"power_{p}": x for p, x in zip("abc", gross)}
+
+
+def test_the_watts_beside_each_amps_on_the_common_grid_meters():
+    """Load Juggler finds a grid meter's three amps by pattern and takes the
+    watts on the same device where there are any (2026-10-01)."""
+    brands = [  # amps, watts, the brand's names for phases a, b, c
+        ("sensor.smart_meter_ts_65a_3_current_ac_phase_{}", "sensor.smart_meter_ts_65a_3_power_real_phase_{}", "123"),
+        ("sensor.power_meter_phase_{}_current", "sensor.power_meter_phase_{}_active_power", "abc"),
+        ("sensor.victron_grid_l{}_current", "sensor.victron_grid_l{}_power", "123"),
+    ]
+    for amps, watts, labels in brands:
+        rows = [e(amps.format(x), "current", "") for x in labels]
+        rows += [e(watts.format(x), "power", "") for x in labels]
+        rows += [e(amps.replace("current", "voltage").format(x), "voltage", "") for x in labels]
+        for p, x in zip("abc", labels):
+            assert D.beside(rows, amps.format(x), "power", p) == watts.format(x), (amps, p)
+    # Home's own SolarEdge M1, line-to-line voltages, totals and energy counters beside it
+    for p in "abc":
+        got = D.beside(SOLAREDGE, f"sensor.solaredge_se17k_m1_ac_current_{p}", "power", p)
+        assert got == f"sensor.solaredge_se17k_m1_ac_power_{p}", got
+    # a Deye's CTs are numbered, not phased: nothing to say which is which
+    deye = [e(f"sensor.deye_external_ct{n}_{k}", k, "") for n in "123" for k in ("current", "power")]
+    deye.append(e("sensor.deye_external_ct_total_power", "power", ""))
+    for p in "abc":
+        assert D.beside(deye, "sensor.deye_external_ct1_current", "power", p) is None
+
+
+def test_one_line_found_on_another_phase_swaps_with_the_line_that_had_it():
+    """Load Juggler's question about a charger: its lines are configured onto
+    the site's phases, and one line's draw shows on another phase. With the
+    configuration as ``current`` the answer swaps that line with the line
+    holding its phase - never rotates all three - in every configuration,
+    line and phase found."""
+    cases = 0
+    for perm in itertools.permutations("ABC"):
+        cur = dict(zip(("l1", "l2", "l3"), perm))
+        for line in cur:
+            for found in "ABC":
+                want = dict(cur)
+                other = next(k for k, v in cur.items() if v == found)
+                want[other], want[line] = cur[line], found
+                votes = {line: {p: 20.0 if p == found else 2.0 for p in "ABC"}}
+                got = D.phase_mapping(votes, "ABC", current=cur)
+                assert got == want, (cur, line, found, got)
+                cases += 1
+    assert cases == 54
+
+
+def test_a_tie_keeps_what_is_believed_now():
+    cur = {"l1": "B", "l2": "C", "l3": "A"}
+    assert D.phase_mapping({"l1": {"A": 5.0, "B": 5.0}}, "ABC", current=cur) == cur, "tie"
+    assert D.phase_mapping({"l1": {"A": 6.0}}, "ABC", current=cur) == {"l1": "A", "l2": "C", "l3": "B"}
+    # with no prior, each channel's own label is the belief
+    assert D.phase_mapping({"b": {"c": 3}}) == {"b": "c"}
+
+
+def test_support_is_the_share_of_votes_the_answer_agrees_with():
+    row = {"A": 2.0, "B": 7.0, "C": 1.0}
+    found = D.phase_mapping({"l1": row}, "ABC", current={"l1": "A", "l2": "B", "l3": "C"})
+    assert found == {"l1": "B", "l2": "A", "l3": "C"}, found
+    assert D.support({"l1": row}, found) == max(row.values()) / sum(row.values())
+    assert D.support({}, found) == 0.0
+
+
+def test_load_juggler_carries_this_module_verbatim():
+    """Load Juggler copies this module whole and keeps it in sync by hand.
+    Passes without checking where that repository is not checked out beside
+    this one, as in CI."""
+    mine = Path(D.__file__)
+    copy = Path(__file__).resolve().parents[2] / "Dynamic_OCPP_EVSE/custom_components/dynamic_ocpp_evse/phases.py"
+    if copy.exists():
+        assert copy.read_bytes() == mine.read_bytes(), f"{copy} differs from {mine}: copy it over"
 
 
 if __name__ == "__main__":

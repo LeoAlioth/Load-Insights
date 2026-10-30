@@ -3,26 +3,25 @@
 A read-only page, built fresh each time it is shown. Everything here is
 already in the entities and the diagnostics dump; the point is that nobody
 should have to open either to answer "is it working, and how far has it
-got" (Anze, 2026-09-17 - Load Juggler has had this page for a while).
+got" (2026-09-17 - Load Juggler has had this page for a while).
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DETECTION,
     CONF_SOURCE_KIND,
-    DEFAULT_SOURCE_KIND,
-    SOURCE_AUTO,
-    DOMAIN,
     SOURCE_GENERATOR,
     SOURCE_NONE,
-    SOURCE_UTILITY,
 )
+from .detection import loaded
+from .insights.classify import _fmt_w
 from .insights.detect import most_specific
 from .insights.scoring import LEADS_H
 
@@ -30,33 +29,17 @@ from .insights.scoring import LEADS_H
 def _when(value: Optional[datetime]) -> str:
     if value is None:
         return "never"
-    delta = (dt_util.utcnow() - dt_util.as_utc(value)).total_seconds()
-    if delta < 90:
-        return "just now"
-    if delta < 5400:
-        return f"{delta / 60:.0f} min ago"
-    if delta < 172800:
-        return f"{delta / 3600:.0f} h ago"
-    return f"{delta / 86400:.0f} days ago"
+    # get_age refuses a moment in the future, as after the clock is set back
+    return f"{dt_util.get_age(min(dt_util.as_utc(value), dt_util.utcnow()))} ago"
 
 
-def _w(value: Optional[float]) -> str:
-    if value is None:
-        return "-"
-    return f"{value:.0f} W" if abs(value) < 1000 else f"{value / 1000:.1f} kW"
-
-
-def overview_text(hass: HomeAssistant, entry_id: str) -> str:
+def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
     """Markdown for the overview page."""
-    coordinator = (hass.data.get(DOMAIN) or {}).get(entry_id)
-    runner = (hass.data.get(DOMAIN) or {}).get(f"{entry_id}_detection")
-    entry = hass.config_entries.async_get_entry(entry_id)
-    # Set explicitly it is the answer; left on automatic the reading itself
-    # says which, and until detection has looked, the ordinary case.
-    kind = ((entry.options.get(CONF_DETECTION) or {}) if entry else {}).get(
-        CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND)
-    if kind == SOURCE_AUTO:
-        kind = getattr(runner, "source_kind", None) or SOURCE_UTILITY
+    rt = loaded(entry)
+    coordinator = rt.coordinator if rt is not None else None
+    runner = rt.runner if rt is not None else None
+    # what the grid page says is connected; unsaid (or the old "auto"), the utility
+    kind = (entry.options.get(CONF_DETECTION) or {}).get(CONF_SOURCE_KIND)
     lines: list[str] = []
 
     data = getattr(coordinator, "data", None)
@@ -67,7 +50,8 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
         fc = data.consumption
         lines.append(f"**Forecast** - computed {_when(data.computed_at)}, "
                      f"from {fc.span_weeks:.0f} weeks of history.")
-        lines.append(f"- Next hour {_w(fc.next_hour_w)}, today {fc.today_kwh:.1f} kWh, "
+        next_hour = "-" if fc.next_hour_w is None else _fmt_w(fc.next_hour_w)
+        lines.append(f"- Next hour {next_hour}, today {fc.today_kwh:.1f} kWh, "
                      f"tomorrow {fc.tomorrow_kwh:.1f} kWh.")
         if data.grid is not None and data.grid.hours:
             g = data.grid
@@ -88,7 +72,7 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
         ledger = (data.ledgers or {}).get("consumption")
         hour = ledger.metrics(dt_util.now(), LEADS_H[0]) if ledger is not None else None
         if hour and hour.get("n"):
-            lines.append(f"- An hour ahead it has been out by {_w(hour.get('mae_w'))} on average "
+            lines.append(f"- An hour ahead it has been out by {_fmt_w(hour.get('mae_w'))} on average "
                          f"over {hour['n']} settled hours.")
         else:
             lines.append("- Scoring has nothing settled yet; the first figures appear after a day.")
@@ -122,17 +106,13 @@ def overview_text(hass: HomeAssistant, entry_id: str) -> str:
                  f"already accounted for by a device's own meter.")
     running = det.active(dt_util.utcnow().timestamp())
     if running:
-        bits = ", ".join(f"{_w(a['watts'])} on {a['phases'].upper()}" for a in running[:4])
+        bits = ", ".join(f"{_fmt_w(a['watts'])} on {a['phases'].upper()}" for a in running[:4])
         lines.append(f"- On right now: {bits}.")
     else:
         lines.append("- Nothing unexplained is running right now.")
     idle = [st.baseline for st in det.phases.values() if st.baseline is not None]
     if idle:
-        lines.append(f"- Base load {_w(sum(idle))} across {len(idle)} phases.")
-    if runner.layout:
-        modes = set(runner.layout.values())
-        lines.append("- The grid reading is " + ("added to the load one (grid-tied)."
-                     if modes == {"parallel"} else "kept out of the load one (it already comes through the inverter)."))
+        lines.append(f"- Base load {_fmt_w(sum(idle))} across {len(idle)} phases.")
     if runner.solar:
         seen = runner.pv_visible
         verdict = ("it shows in the meter" if any(seen.values())
