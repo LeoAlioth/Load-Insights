@@ -355,3 +355,27 @@ every meter), Home circuits Susilna +3.1, Hidrofor +3.0, Blaž's PC +6.1; Home f
 band). Found on the way: with the rule on every meter Polnilnica gained 12-14 points in circuits and fed - Hiša's
 channels own legs of the EVBox's three-phase charge (7 Oct 18:16:06, phase C) and its other loads' stops ended
 them. Next to trace.
+
+## Long-running loads: the closes, not the floor (2026-10-30, not shipped)
+
+Kozolec hidden trace of the pond pump (46 W, on 84 %): its own run (started within 60 s of its switch-on) ended
+early in 12 stretches (156 h, 7.2 kWh), no run in 26 (97 h, 4.5 kWh), lasted to its end in 36 short ones (3 h). A
+fridge's fall in the pump's ~40 W group closes the pump's run, or the pump starts in a 1-3.5 kW load's reading and
+that load's alike fall ends the run "though a rest is carried"; the idle floor then takes the 46 W. Cards against
+`base1030` (this tree, every dial off = 51427c4 digit for digit), devices, kWh right / wrong (truth Home 227.9,
+Kozolec 251.2):
+
+| | Home hidden | Home circuits | Home fed | Kozolec hidden | Kozolec fed |
+|---|---|---|---|---|---|
+| base1030 | 90.9 / 10.1 | 104.6 / 9.5 | 124.7 / 9.1 | 212.8 / 7.3 | 221.7 / 3.2 |
+| carry (refuse + split) | 95.1 / 13.6 | 96.2 / 11.6 | 128.8 / 9.5 | 210.4 / 9.6 | 221.8 / 3.3 |
+| carry2 (refuse only) | 91.1 / 12.3 | 101.5 / 12.3 | 131.6 / 8.8 | 213.7 / 9.3 | 221.6 / 3.2 |
+| carry3 (split only) | 94.6 / 11.1 | 103.8 / 11.2 | 127.8 / 8.4 | 213.1 / 10.8 | 221.6 / 3.2 |
+| c3ps (split, settled, from the pre-start reading) | 91.6 / 10.1 | 101.8 / 10.7 | 122.7 / 8.7 | 209.4 / 9.0 | 221.6 / 3.2 |
+| tie08 (oldest of a near tie) | 91.4 / 11.1 | 96.0 / 11.0 | 123.1 / 8.6 | 212.2 / 7.2 | 221.8 / 3.1 |
+| seen (second_rise's seen fall only where not carried) | 91.2 / 10.3 | 98.1 / 12.1 | 126.9 / 8.4 | 214.5 / 9.2 | 221.7 / 3.2 |
+| carry3 + seen | 88.7 / 10.1 | 102.3 / 12.1 | 127.4 / 7.7 | 216.9 / 9.6 | 221.6 / 3.2 |
+
+No clear win anywhere; Pond 0 % in every variant. Ruled out (AGENTS.md). Found on the way, Susilna fed: 91.0 kWh
+truth, 43.6 kWh credited to any run at all (41.0 to its own signatures) - half its energy is in no run that started
+with its meter; its ~320 W compressor signatures run ~10 min where its meter shows 40-50 min cycles. Next to trace.
