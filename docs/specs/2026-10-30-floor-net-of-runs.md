@@ -1,6 +1,6 @@
 # The idle floor learns only what the open runs do not explain
 
-Status: design for the owner's review (2026-10-30). Not built.
+Status: agreed 2026-10-30, not built yet.
 
 ## The problem
 
@@ -49,7 +49,8 @@ booked as floor x time, optional per meter and per phase in the configuration. A
 change of that load, a floor drift without a step its slow change, a base load going away its step down;
 nothing is thrown away. Check first whether the forecast side's BaseLoadSensor can carry it.
 
-## Open for the owner
+Decided (the owner, 2026-10-30): on by default for every meter, as the meter's total; split by phase
+off by default (an option per meter); a base load under `BASE_LOAD_MIN_W` (a couple of watts - a
+policy of what to show, not a measurement) is not offered.
 
-1. Base load on by default for every meter, or off until switched on?
-2. Per phase by default on a three-phase meter, or the meter's total?
+Status: design agreed; to build, bench on the cards (targets and risks above) and ship by the usual rule.
