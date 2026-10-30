@@ -6243,10 +6243,10 @@ def test_three_steps_are_one_group():
 
 
 def test_a_group_never_spans_more_than_group_span():
-    segs = D._significant([1.0] * 200 + [0.95] + [1.0] * 200, 10, 1.0, [(10, 210), (211, 410)], 20.0)
+    segs = D._significant([1.0] * 200 + [0.95] + [1.0] * 200, 10, [(10, 210), (211, 410)], 20.0)
     size = lambda b: 20.0 * math.sinh(b * D.EDGE_BIN * D.EDGE_SCALE_REL) / D.EDGE_SCALE_REL   # noqa: E731
     assert size(411) > D.GROUP_SPAN * size(10) and segs == [(10, 210), (211, 410)], segs    # cut for the span
-    joined = D._significant([1.0] * 4 + [0.0] + [0.0] * 4, 200, 1.0, [(200, 204), (205, 208)], 20.0)
+    joined = D._significant([1.0] * 4 + [0.0] + [0.0] * 4, 200, [(200, 204), (205, 208)], 20.0)
     assert joined == [(200, 208)], joined                                   # one side empty: joined
 
 

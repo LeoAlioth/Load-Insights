@@ -4830,7 +4830,7 @@ def valley_segments(hist: Dict[int, float], sd: Optional[float] = None,
         for k, kw in enumerate(kernel):
             dens[base + k] += w * kw
     segs = _valley_cuts(dens, lo, kernel[reach])
-    return segs if unit is None else _significant(dens, lo, kernel[reach], segs, unit)
+    return segs if unit is None else _significant(dens, lo, segs, unit)
 
 
 def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int]]:
@@ -4852,7 +4852,7 @@ def _valley_cuts(dens: List[float], lo: int, peak: float) -> List[Tuple[int, int
     return segs
 
 
-def _significant(dens: List[float], lo: int, peak: float, segs: List[Tuple[int, int]],
+def _significant(dens: List[float], lo: int, segs: List[Tuple[int, int]],
                  unit: float) -> List[Tuple[int, int]]:
     """The segments ``_valley_cuts`` cut, joined again across a valley only
     where one side holds nothing (every valley with steps both sides cuts; the
@@ -6601,7 +6601,7 @@ class Detector:
             st[4] = _valley_cuts(st[3], st[2], kernel[reach])
         else:
             st[4] = _valley_cuts_near(st[3], st[2], kernel[reach], st[4], b - reach, b + reach)
-        return _significant(st[3], st[2], kernel[reach], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
+        return _significant(st[3], st[2], st[4], self.edge_unit.get(g) or MIN_NOISE_W)
 
     def _rescale(self, g: str, unit: float) -> None:
         """Group ``g``'s size histograms re-binned onto a smaller ``unit``, each
