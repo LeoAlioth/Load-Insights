@@ -5290,6 +5290,8 @@ class Detector:
     meter_read: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter) -> does it hold one device (Fleet.holds_one_device), set by the Fleet
     meter_single: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # (phases, since, total) -> the one-device meter whose readings rose by that much then (Fleet._meter_rose)
+    meter_rose: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     volts_at: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
@@ -6032,6 +6034,20 @@ class Detector:
                 # every return opened a 2.15 kW run of its own, ~14 kWh booked
                 # beside the charge (09-25, 2026-10-04) - see Fleet._meter_read
                 st.open_edges.remove(m["open"])
+        if self.meter_rose is not None and not cluster.owner and len(members) > 1:
+            # an event on several phases no meter's declared steps placed is still a one-device meter's
+            # when that meter's READINGS rose by the event's total over its span (Fleet._meter_rose): the
+            # EVBox's total-only meter ramps 0 -> 3,168 -> 4,000 W while the grid declares 1,237 + 1,002
+            # + 1,135 W legs (7 Oct 18:06:55), no leg ever its declared step, so the charge was nobody's
+            # and the open-run cap evicted it on a +20 W rise (Polnilnica trace, 2026-10-30: Home fed
+            # 146.0 / 10.4 -> 153.3 / 11.7 kWh right / wrong, Polnilnica 31.8 -> 38.8; on single-phase
+            # events too it cost Kozolec's pond EVSE 7.5 kWh, so several phases only)
+            live = [m for m in members if not m["open"].meter and m["open"] in self.phases[m["ph"]].open_edges]
+            if len(live) == len(members):
+                got = self.meter_rose([m["ph"] for m in members], since, sum(m["watts"] for m in members))
+                if got is not None:
+                    for m in members:
+                        m["open"].meter = got
         for m in members if len(members) == 1 else []:
             # ...and a rise of a meter's whose run there stepped down is that run
             # coming back up, not a run beside it (Fleet._ended_by: a charge's
@@ -7676,7 +7692,7 @@ class Detector:
 
 # what a fleet's main detector asks it - each Fleet._<hook> - see Fleet._bind
 _HOOKS = ("meter_steps", "step_meter", "meter_held", "meter_stop", "meter_on", "meter_started",
-          "meter_level", "meter_ended", "meter_wh", "meter_read", "meter_single")
+          "meter_level", "meter_ended", "meter_wh", "meter_read", "meter_single", "meter_rose")
 
 
 def _lag_of(lags, q: float = LAG_PERCENTILE) -> float:
@@ -9539,6 +9555,34 @@ class Fleet:
                         d = (y - x if up else x - y) * k
                         if d > 0 and abs(d - size) <= grid._tol(size, d):
                             return name
+        return None
+
+    def _meter_rose(self, phs: List[str], since: float, total: float) -> Optional[str]:
+        """The meter holding one device whose readings rose by ``total`` (in
+        the grid's terms, within the pairing tolerance)
+        over the grid's step span at ``since`` widened by its latency - two of
+        its readings that far apart, the later at most the clock -, on
+        channels that may carry every phase in ``phs``; None. A ramp the
+        meter's detector declared as other steps than the grid's (a
+        total-only meter under a three-phase charge) is still its load."""
+        grid = self.main.phases.get(phs[0])
+        if grid is None:
+            return None
+        g = self._grid_step(phs[0], since)
+        a, b = (g[3], g[4]) if g else (since, since)
+        for name in self.subs:
+            if not self.holds_one_device(name):
+                continue
+            chans = self._chans(name, phs[0])
+            if not chans or any(sorted(self._chans(name, p)) != sorted(chans) for p in phs[1:]):
+                continue
+            lat, k = self._latency(name), self.gain(name, "p")
+            rows = self._sub_total(name, sorted(chans))
+            lo, hi = bisect.bisect_right(rows, (a - lat, math.inf)), bisect.bisect_right(rows, (b + lat, math.inf))
+            vals = [v for tv, v in rows[max(lo - 1, 0):hi] if tv <= self._now]
+            for i, x in enumerate(vals):
+                if any(abs((y - x) * k - total) <= grid._tol(total, (y - x) * k) for y in vals[i + 1:]):
+                    return name
         return None
 
     def _meter_level(self, name: str, ph: str, t: float, since: float) -> Optional[float]:

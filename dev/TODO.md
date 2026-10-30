@@ -41,18 +41,10 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 6. [x] Release workflow: the webhook waits until GitHub lists the release with its asset (up to two minutes)
    before notifying the sites (build 1901 had been installed on neither; fixed 2026-10-30). Load Juggler's copy of
    the workflow needs the same lines - offer it.
-7. [ ] **[BUG] Polnilnica: nothing owns the three-phase charge in fed mode; the open-run cap evicts it.** Delegated
-   trace 2026-10-30 (tree `scratchpad/bench51`, patch `polnilnica-rose-evict.patch`): 12.4 of 14.0 missing fed kWh
-   is in no run. An event on several phases is placed under a meter only when every leg is the meter's own declared
-   step (`Detector._classify_step`, `Fleet._step_meter`); the EVBox's one total ramped 0 -> 3,168 -> 4,000 W against
-   legs of +1,237 / +1,002 / +1,135, so no one owns it, and at `MAX_OPEN_EDGES` the oldest unowned run - the charge -
-   is evicted by a +20 W rise (18 of 27 closes). Candidate `METER_ROSE=2` (a start no meter placed becomes a
-   one-device meter's run when that meter rose by the event's total over the step's span plus its latency, events on
-   several phases only): Home fed 146.0 / 10.4 -> 153.3 / 11.7 kWh right / wrong (Polnilnica 31.8 -> 38.8), every
-   other cell identical; `METER_ROSE=1` (every event) costs Kozolec's pond EVSE 7.5 kWh, out. Needs my card and
-   the invariance check before it ships. `EVICT_SMALLEST` (evict the unowned run drawing least) is a trade (circuits
-   -2.9). Still missing after it: the 8 Oct solar-following single-phase charge (~5 kWh), the meter keeping the whole
-   level through its modulation.
+7. [x] Polnilnica: a one-device meter that rose by a three-phase event's total owns it (`Fleet._meter_rose`,
+   shipped 2026-10-30: Home fed +7.3 kWh right, Polnilnica 31.8 -> 38.8; dev/run-lifecycle-results.md). Left:
+   the 8 Oct solar-following single-phase charge (~5 kWh fed) - ownership lapses whenever the charger modulates
+   below half of a run's size; the meter would have to keep the whole level through its modulation.
 
 ### Planning and early start (Load Juggler reads these)
 

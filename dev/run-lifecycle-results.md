@@ -460,3 +460,24 @@ Doing it right needs the floor's own history (what it rose by while idle), a des
 eviction, 12 -> 24 (card `open24` against `meterbook`): Home fed 146.0 / 10.4 -> 150.2 / 11.0, circuits 105.8 / 11.7
 -> 102.5 / 9.0, hidden 90.9 / 10.1 -> 91.5 / 12.5, Kozolec identical - a trade, not a win; not shipped. Untested:
 evicting the run least likely still on instead of the oldest.
+
+## A total-only meter that rose by a three-phase event's total owns it (2026-10-30, shipped)
+
+Delegated trace of Polnilnica (45.8 kWh truth, fed 31.8 right): 12.4 kWh is in no run at all. An event on several
+phases is placed under a meter only when every leg is the meter's own declared step (`Detector._classify_step`,
+`Fleet._step_meter`); the EVBox's one total ramps 0 -> 3,168 -> 4,000 W while the grid declares legs of 1,237 /
+1,002 / 1,135 W (7 Oct 18:06:55), so no leg ever matches and the charge is nobody's - and at `MAX_OPEN_EDGES` the
+oldest unowned run, the charge, is evicted by a +20-70 W rise (18 of 27 closes; phase A held ten meter-owned runs of
+8-300 W that cannot be evicted). Now `Fleet._meter_rose`: an event on several phases no meter's declared steps
+placed is a one-device meter's when that meter's READINGS rose by the event's total over the grid step's span
+widened by the meter's latency, on channels carrying every leg's phase. Single-phase events too (the agent's
+`METER_ROSE=1`) cost Kozolec's pond EVSE 7.5 kWh fed (97.3 -> 92.4 %), so several phases only.
+
+Cards, devices kWh right / wrong, against the shipped build (meterbook; my card equals the agent's digit for digit):
+Home fed 146.0 / 10.4 -> 153.3 / 11.7 (Polnilnica 31.8 -> 38.8, 69 -> 85 %; the office strip's wrong 2.6 -> 3.8,
+Blaževa Soba 1.1 -> 1.4), Home circuits, Home hidden, Kozolec fed and hidden identical. Invariance, Home fed: 0~6
+and 6~LIVE identical, 6~1 two sessions (0.00 kWh), restarts 60 / 31 sessions relabelled (0.10 / 0.09 kWh, from 24 /
+18 before). Not shipped: `EVICT_SMALLEST` (evict the unowned run drawing least): with it Polnilnica fed 39.1 but
+circuits 105.8 -> 102.9 (Hidrofor -1.1), a trade. Still missing: the 8 Oct solar-following single-phase charge
+(~5 kWh fed) - ownership lapses whenever the charger modulates below half of a run's size and the meter would have
+to keep the whole level through its modulation, not per-rise pieces.
