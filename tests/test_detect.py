@@ -565,7 +565,7 @@ def test_mixture_daily_splits_two_piles_and_joins_one_device():
     det = D.Detector()
     det.phases["a"].noise = 2.83
     g = det._classify_step("a", T0, 1000.0, None, 0.0)
-    g.recent = [(rnd.gauss(970.0, 3.0), None) for _ in range(20)] + [(rnd.gauss(1030.0, 3.0), None) for _ in range(20)]
+    g.recent = [(rnd.gauss(970.0, 3.0), None, None, None) for _ in range(20)] + [(rnd.gauss(1030.0, 3.0), None, None, None) for _ in range(20)]
     g.watts, g.watts_mad, g.count = 1000.0, 30.0, 40.0
     assert det.mix_daily() == (1, 0)
     centres = sorted(round(c.watts) for c in det.edges if c.joined is None)
@@ -576,31 +576,35 @@ def test_mixture_daily_splits_two_piles_and_joins_one_device():
     b = D.StepGroup(id=one.next_edge_id, phase="a", up=True, watts=1006.0, owner="")
     one.next_edge_id += 1
     one.edges.append(b)
-    a.recent = [(rnd.gauss(998.0, 8.0), None) for _ in range(15)]
-    b.recent = [(rnd.gauss(998.0, 8.0), None) for _ in range(15)]
+    a.recent = [(rnd.gauss(998.0, 8.0), None, None, None) for _ in range(15)]
+    b.recent = [(rnd.gauss(998.0, 8.0), None, None, None) for _ in range(15)]
     a.watts_mad = b.watts_mad = 6.0
     a.count, b.count = 15.0, 15.0
     assert one.mix_daily()[1] == 1 and sum(c.joined is None for c in one.edges) == 1
 
 
-def test_a_step_is_stored_with_its_voltage_either_side():
-    """The steps store (run lifecycle, Task 8c): every grouped step with the
-    voltage before and after it - here the grid's, a 2 kW heater pulling its
-    phase from 240 to 236 V - in a store of its own, ten days kept."""
+def test_a_step_is_kept_in_its_group_with_its_on_side_voltage():
+    """Each grouped step is kept in its group (StepGroup.recent, the one store of
+    them, 2026-10-30) with its time and the voltage on its on side - a 2 kW
+    heater pulling its phase from 240 to 236 V: 236 V, after its rise. Every
+    step of the last two days stays, beyond them the newest STEP_MAX, none
+    older than a month; it travels with the library."""
     f = D.Fleet()
     f.volts = {"": {"a": [(T0 + k, 240.0 if k < 0 else 236.0) for k in range(-60, 61, 5)]}}
     f.main.volts_at = lambda ph, t, before: f._volts_at("", ph, t, before)
-    f.main._classify_step("a", T0, 2000.0, None, 0.0)
-    row = f.main.steps[-1]
-    assert row[1] == "a" and row[2] == 2000.0 and row[6:] == (240.0, 236.0), row
-    assert "steps" not in f.main.to_dict()                            # not in the library's store
+    g = f.main._classify_step("a", T0, 2000.0, None, 0.0)
+    assert g.recent[-1][0] == 2000.0 and g.recent[-1][2:] == (T0, 236.0), g.recent
     back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
-    back.load_steps(json.loads(json.dumps(f.steps_to_dict())))
-    assert back.main.steps == f.main.steps
-    f.main.steps = [[T0 - 11 * 86400.0, "a", 100.0, None, 1, "", None, None]] * 511
-    f.main._classify_step("a", T0, 2000.0, None, 0.0)                 # the 512th: older than ten days go
-    assert all(x[0] >= T0 - D.STEPS_KEEP_S for x in f.main.steps) and len(f.main.steps) == 1
-
+    assert [c.recent for c in back.main.edges] == [c.recent for c in f.main.edges]
+    rows = [(1000.0, None, T0 - 40 * 86400.0, None)] + [(1000.0, None, T0 - 5 * 86400.0 + k, None) for k in range(150)] \
+        + [(1000.0, None, T0 - 3600.0 + k, None) for k in range(150)]
+    kept = D._kept_steps(rows)
+    assert all(x[2] >= T0 - D.STEP_AGE_S for x in kept)                         # a month at most
+    assert sum(1 for x in kept if x[2] >= T0 - 3600.0) == 150                     # all of the last two days
+    assert len(kept) == 150, len(kept)                    # over 100 in two days: none older
+    few = rows[:151] + [(1000.0, None, T0 - 3600.0 + k, None) for k in range(30)]
+    kept = D._kept_steps(few)
+    assert len(kept) == D.STEP_MAX and sum(1 for x in kept if x[2] >= T0 - 3600.0) == 30   # 30 recent, 70 older to 100
 
 def test_a_heaters_voltage_exponent_is_fitted_and_its_sizes_compared_at_230_volts():
     """At Home the grid voltage swings with the PV: a 2 kW element reads ~1.91

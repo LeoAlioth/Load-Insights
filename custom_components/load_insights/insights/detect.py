@@ -380,7 +380,12 @@ DIP_INTERVALS = 3.0
 CANNOT_KEEP = 200              # the cannot-link pairs a step group keeps (StepGroup.cannot)
 METER_LEVEL = "level"           # Fleet._ended_by: a meter's fall that is its run's level change, not its stop
 CLOSED_KEEP = 500              # the closes a phase remembers for second_rise (PhaseState.closed_groups)
-STEPS_KEEP_S = 10 * 86400.0    # the steps store's span (Detector.steps; the owner: ten days)
+# A step group's own steps (StepGroup.recent), the one store of them (the owner,
+# 2026-10-30): every step of the last STEP_MIN_S (the daily pass reads the day),
+# beyond that the group's newest STEP_MAX, none older than STEP_AGE_S
+STEP_MIN_S = 2 * 86400.0
+STEP_MAX = 100
+STEP_AGE_S = 30 * 86400.0
 V_NOMINAL = 230.0              # the voltage a group's sizes are compared at once its k is known
 STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages are the medians of
 # The size density's segments - no longer a step's group (that is the
@@ -395,7 +400,6 @@ STEP_VOLT_WIN_S = 30.0         # the readings either side of a step its voltages
 # joining the most likely group within MIX_JOIN_WIDTHS of its centre, else
 # founding one (_by_mixture). 2, as every card since 2026-10-29 benched it.
 MIX_JOIN_WIDTHS = 2.0
-MIX_KEEP = 60                  # recent steps a group keeps for the daily one-or-two test
 MIX_TEST_MIN = 12              # ...and how many before it is tested
 MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
@@ -1539,6 +1543,27 @@ def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
 
 
 _TS = operator.itemgetter(0)
+
+
+def _kept_steps(rows: list) -> list:
+    """A group's steps in time order, kept by STEP_MIN_S / STEP_MAX / STEP_AGE_S,
+    counted back from its newest: all of the last two days, beyond them the newest
+    STEP_MAX, none older than a month. A step stored before its time was (None)
+    is kept by the count alone."""
+    if not rows:
+        return rows
+    now = max((x[2] for x in rows if x[2] is not None), default=None)
+    if now is None:
+        return rows[-STEP_MAX:]
+    out, n = [], len(rows)
+    for i, x in enumerate(rows):
+        t = x[2]
+        if t is not None and t < now - STEP_AGE_S:
+            continue
+        if (t is None or t < now - STEP_MIN_S) and n - i > STEP_MAX:
+            continue
+        out.append(x)
+    return out
 
 
 def _kept_merge(old: Optional[list], rows, keep: float, cast) -> list:
@@ -4558,9 +4583,11 @@ class StepGroup:
     # second_rise): (size, angle) of the first and the second - cannot-link
     # pairs for the daily split (Detector.mix_daily), the last CANNOT_KEEP
     cannot: List[Tuple[float, Optional[float], float, Optional[float]]] = field(default_factory=list)
-    # its last MIX_KEEP steps (size, angle) for the
-    # daily one-or-two test, and the group it was joined into (never chosen again)
-    recent: List[Tuple[float, Optional[float]]] = field(default_factory=list)
+    # its steps (size, angle, time, the voltage on its on side - after a rise,
+    # before a fall), kept by STEP_MIN_S / STEP_MAX / STEP_AGE_S: the daily
+    # one-or-two test and the voltage exponent read them (Detector.mix_daily);
+    # and the group it was joined into (never chosen again)
+    recent: List[tuple] = field(default_factory=list)
     joined: Optional[int] = None
     mix_sd: Optional[float] = None
     # its voltage exponent (P ~ V^k: ~2 a heater, ~1 a current-limited charger, ~0
@@ -4637,7 +4664,8 @@ class StepGroup:
                 "values": {k: [_trim(x, 3) for x in v] for k, v in self.values.items()},
                 "keys": dict(self.keys), "angle": _trim(self.angle, 2), "angle_n": _trim(self.angle_n, 1),
                 "where": self.owner, "cannot": [list(x) for x in self.cannot],
-                "recent": [[_trim(a, 1), _trim(b, 1)] for a, b in self.recent], "joined": self.joined,
+                "recent": [[_trim(x[0], 1), _trim(x[1], 1), *[_trim(v, 2) for v in x[2:]]] for x in self.recent],
+                "joined": self.joined,
                 "mix_sd": _trim(self.mix_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
 
     @classmethod
@@ -4651,7 +4679,8 @@ class StepGroup:
                    values={k: list(v) for k, v in (d.get("values") or {}).items()},
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
                    owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
-                   recent=[tuple(x) for x in d.get("recent") or []], joined=d.get("joined"), mix_sd=d.get("mix_sd"),
+                   recent=[(tuple(x) + (None, None))[:4] for x in d.get("recent") or []], joined=d.get("joined"),
+                   mix_sd=d.get("mix_sd"),
                    k=d.get("k"), c_nom=d.get("c_nom"))
 
 
@@ -5135,11 +5164,6 @@ class Detector:
     meter_read: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # (meter) -> does it hold one device (Fleet.holds_one_device), set by the Fleet
     meter_single: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    # Every step it grouped, the last STEPS_KEEP_S (run lifecycle, Task 8c): [since,
-    # phase pattern, signed W, var, group id, owner, voltage before, voltage after] -
-    # what the daily pass may read back. Kept in a store of its own, never in the
-    # library's (Fleet.steps_to_dict); the voltage from volts_at, set each pass.
-    steps: List[list] = field(default_factory=list, repr=False, compare=False, metadata={"derived": True, "store": "steps"})
     volts_at: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     placement_conf: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the last placement's timing confidence
     # (the grid's change, from, to) when the last placement matched the meter's step over both steps' window
@@ -5913,18 +5937,13 @@ class Detector:
         steps together and joined where one wins: the bigger keeps them, the
         other is never chosen again (StepGroup.joined). Returns (split, joined)."""
         split = joined = 0
-        by: Dict[int, List[Tuple[float, float]]] = {}
-        for row in self.steps:
-            v = row[7] if row[2] > 0 else row[6]                 # the on side: after a rise, before a fall
-            if v:
-                by.setdefault(row[4], []).append((abs(row[2]), v))
         for c in self.edges:
-            got = _volt_k(by.get(c.id) or [])
+            got = _volt_k([(x[0], x[3]) for x in c.recent if x[3]])
             c.k, c.c_nom = (got if got else (None, None))
         for c in [c for c in self.edges if c.joined is None and len(c.recent) >= MIX_TEST_MIN]:
             ph = c.phase
             floor = self._mix_widths(ph, c.watts, StepGroup(id=-1, phase=ph, up=c.up, watts=c.watts, owner=c.owner))[0]
-            xs = [a for a, _ in c.recent]
+            xs = [x[0] for x in c.recent]
             pairs = [(a, b) for a, _, b, _ in c.cannot]
             two = _mix_two(xs, floor, pairs)
             c.mix_sd = max(floor, _robust_sd(xs))     # one curve, until two win
@@ -5976,14 +5995,14 @@ class Detector:
                     # scatters its rises over 860-1,000 W, its falls sit at 808 +- 17 W)
                     if b.watts - a.watts > MIX_JOIN_WIDTHS * max(fa, fb):
                         continue
-                    two = _mix_two([x for x, _ in a.recent + b.recent], floor, [])
+                    two = _mix_two([x[0] for x in a.recent + b.recent], floor, [])
                     if two is None or two[2] > 0:
                         continue
                 keep, gone = (a, b) if a.count >= b.count else (b, a)
                 n = keep.count + gone.count
                 keep.watts = (keep.watts * keep.count + gone.watts * gone.count) / n
-                keep.count, keep.recent = n, (keep.recent + gone.recent)[-MIX_KEEP:]
-                keep.mix_sd = max(floor, _robust_sd([x for x, _ in keep.recent]))
+                keep.count, keep.recent = n, _kept_steps(sorted(keep.recent + gone.recent, key=lambda x: x[2] or 0.0))
+                keep.mix_sd = max(floor, _robust_sd([x[0] for x in keep.recent]))
                 gone.joined = keep.id
                 self._fold_order(gone.id, keep.id)
                 joined += 1
@@ -6414,9 +6433,12 @@ class Detector:
                 self.edges = [c for c in self.edges if c is not gone]
                 self._by_id = None
         cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
-        self._keep_step(ph, since, watts, var, cluster.id, where)
-        cluster.recent.append((size, angle))
-        del cluster.recent[:-MIX_KEEP]
+        vs = [v for v in (self.volts_at(p, since, watts < 0) if self.volts_at is not None else None for p in ph) if v]
+        rows = cluster.recent
+        rows.append((size, angle, round(since, 2), round(sum(vs) / len(vs), 2) if vs else None))
+        while rows and ((rows[0][2] is not None and rows[0][2] < since - STEP_AGE_S)
+                        or ((rows[0][2] is None or rows[0][2] < since - STEP_MIN_S) and len(rows) > STEP_MAX)):
+            del rows[0]                          # in time order: only the oldest can go (_kept_steps)
         return cluster
 
     def _by_density(self, ph: str, up: bool, since: float, size: float, keyed: Dict[str, str],
@@ -6473,18 +6495,6 @@ class Detector:
                 return got, where
         lo, hi = seg if seg is not None else (b, b)
         return (keyed if key and self._keyed_above_chance(hk.get(key, {}), h, lo, hi, keyed) else plain), where
-
-    def _keep_step(self, ph: str, since: float, watts: float, var: Optional[float], gid: int, where: str) -> None:
-        """A grouped step into the steps store, with the voltage either side of
-        it (the mean over its phases where it spans several), ten days kept."""
-        sides = []
-        for before in (True, False):
-            vs = [v for v in (self.volts_at(p, since, before) if self.volts_at is not None else None for p in ph) if v]
-            sides.append(round(sum(vs) / len(vs), 2) if vs else None)
-        self.steps.append((round(since, 2), ph, round(watts, 1), None if var is None else round(var, 1), gid, where, *sides))
-        if len(self.steps) % 512 == 0:
-            cut = since - STEPS_KEEP_S
-            self.steps = [x for x in self.steps if x[0] >= cut]
 
     def _mix_widths(self, ph: str, size: float, c: "StepGroup") -> Tuple[float, float]:
         """(size width W, angle width degrees) of group ``c`` for a step of
@@ -9953,21 +9963,13 @@ class Fleet:
                              else rows[i:bisect.bisect_right(rows, (t + STEP_VOLT_WIN_S, math.inf))])]
         return statistics.median(xs) if xs else None
 
-    def steps_to_dict(self) -> dict:
-        """Every detector's steps store, the last STEPS_KEEP_S - its own store, not the library's."""
-        return {name: det.steps for name, det in self.detectors() if det.steps}
-
-    def load_steps(self, d: Optional[dict]) -> None:
-        for name, det in self.detectors():
-            det.steps = [tuple(x) for x in (d or {}).get(name) or []]
-
     def footprint(self) -> dict:
         """How big each detector's long-lived stores are, by count - what its
         memory goes to (2026-10-30, Home's Core on 1.98 GB): for diagnostics."""
         out = {}
         for name, det in self.detectors():
             out[name or "grid"] = {
-                "steps": len(det.steps), "signatures": len(det.signatures), "step_groups": len(det.edges),
+                "steps": sum(len(c.recent) for c in det.edges), "signatures": len(det.signatures), "step_groups": len(det.edges),
                 "order_pairs": len(det.order), "co_runs": len(det.co_run),
                 "day_readings": sum(len(c[0]) for c in det._day_rows.values()),
                 "declared": sum(len(st.declared) for st in det.phases.values()),
