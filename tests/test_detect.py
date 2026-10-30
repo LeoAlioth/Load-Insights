@@ -6368,7 +6368,7 @@ def test_the_days_repair_runs_once_a_day_on_the_readings_clock():
     days = int(fleet._repaired_to // 86400) - int(T0 // 86400)
     assert days == 3, days       # T0 is 1,600 s into a day: three days' ends and their wait passed, not a fourth
     assert all(s.start >= fleet._repaired_to for s in fleet.main._day_log)
-    assert fleet.main._day_rows["a"][1][0] >= fleet._repaired_to - D.REPAIR_DAY_S      # the day before kept (INS-31)
+    assert fleet.main._day_rows["a"][0][1] >= fleet._repaired_to - D.REPAIR_DAY_S      # the day before kept (INS-31)
 
 
 def test_a_run_across_midnight_is_repaired():
@@ -6380,7 +6380,7 @@ def test_a_run_across_midnight_is_repaired():
     a, b = T0, T0 + D.REPAIR_DAY_S
     late = D.Run(phases="a", start=a - 600.0, end=a + 7200.0, levels={"a": [(a - 600.0, 900.0)]})
     det._day_log = [late]
-    det._day_rows = {"a": [(a - 1200.0 + 10.0 * k, 300.0) for k in range(9000)]}
+    det._day_rows = {"a": (D.array("d", (a - 1200.0 + 10.0 * k for k in range(9000))), D.array("d", [300.0] * 9000))}
     seen = []
     old = D._cap_day
     D._cap_day = lambda d, log, rows, x, y: seen.append(([s.start for s in log], rows["a"][0][0]))

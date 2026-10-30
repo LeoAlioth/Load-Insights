@@ -21,6 +21,7 @@ where it stopped. Timestamps are epoch seconds; powers are watts.
 from __future__ import annotations
 
 import bisect
+from array import array
 import itertools
 import functools
 import math
@@ -578,6 +579,7 @@ EDGE_HELPED_SHARE = 0.3        # the naming page names an input once it came wit
 # a run or two. The odds do not matter - 10, 100 and 1000 bench identically:
 # a real pair is hundreds of times above chance.
 PAIR_MIN_RUNS = 8
+ORDER_PRUNE = 0.05             # a pair's faded count under which it is dropped (Detector._order_tick)
 ABOVE_CHANCE_ODDS = 100.0
 # How often, on the readings' clock, the fleet works out again how far behind
 # its meters the grid is read, from the lags learned so far (Fleet._horizon):
@@ -5141,7 +5143,10 @@ class Detector:
     # first read (_day_from, None: kept by no one); stored, as the fleet's _repaired_to is
     _day_from: Optional[float] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _day_log: List[Run] = field(default_factory=list, repr=False, compare=False)
-    _day_rows: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict, repr=False, compare=False)
+    # per phase (times, watts) of the readings the daily repair still needs, as two
+    # array('d') columns: a tuple a reading was six times the memory (Home's grid
+    # ~370,000 readings in two days, 26 MiB as tuples; 2026-10-30)
+    _day_rows: Dict[str, Tuple[array, array]] = field(default_factory=dict, repr=False, compare=False)
     # the cycles the daily repair found again (_recover_day): the last RECOVER_LOG_KEEP, for the bench and the diagnostics
     recovered_log: List[Run] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
 
@@ -5208,7 +5213,11 @@ class Detector:
         self._clock = ts if self._clock is None else max(self._clock, ts)
         qm, pvm = self._q.get(ph) or {}, self._pv.get(ph) or {}
         if self._day_from is not None:
-            self._day_rows.setdefault(ph, []).append((ts, w))
+            day = self._day_rows.get(ph)
+            if day is None:
+                day = self._day_rows[ph] = (array("d"), array("d"))
+            day[0].append(ts)
+            day[1].append(w)
         self._closed(ph, self.phases[ph].process(ts, w, qm.get(ts), pvm.get(ts)))
 
     def finish(self, samples, latest: float, oldest: Optional[float] = None) -> List[Run]:
@@ -6044,6 +6053,11 @@ class Detector:
             for d in (self.run_time, self.fall_n):
                 for k in list(d):
                     d[k] *= fade
+            # ...and a pair faded under ORDER_PRUNE goes: never evidence again
+            # (PAIR_MIN_RUNS), every pair two groups ever ran beside each other
+            # kept for ever was a store that only grew (Home: 72,313 pairs in ten
+            # days, ~24 MiB live; 2026-10-30)
+            self.order = {k: acc for k, acc in self.order.items() if acc[0] >= ORDER_PRUNE}
             self.order_span *= fade
             self.order_faded = t
             self._elig = None                     # counts fell: some under PAIR_MIN_RUNS
@@ -7421,7 +7435,7 @@ class Detector:
                 # the day's runs and readings, for the day's repair (Fleet._repair): what a restart mid-day must not lose
                 "rejudge": sorted(self._rejudge), "rejudge_all": self._rejudge_all,
                 "day_log": [x.to_dict() for x in self._day_log],
-                "day_rows": {ph: [[_trim(t, 3), _trim(w, 1)] for t, w in rows] for ph, rows in self._day_rows.items()},
+                "day_rows": {ph: [[_trim(t, 3), _trim(w, 1)] for t, w in zip(*cols)] for ph, cols in self._day_rows.items()},
                 # the size density kept between steps, as it stands: worked out afresh it can differ by a float's last
                 # digit, and a valley cut on a plateau then lands elsewhere (see Detector._valleys)
                 "dens": {g: {"order": [k for k, _ in sorted(st[1].items(), key=lambda kv: kv[1])], "lo": st[2], "dens": list(st[3])}
@@ -7485,7 +7499,8 @@ class Detector:
                                 [float(x) for x in st["dens"]], None]
         det._segs = {g: [tuple(x) for x in segs] for g, segs in (d.get("segs") or {}).items()}
         det._day_log = [Run.from_dict(x) for x in d.get("day_log") or []]
-        det._day_rows = {ph: [tuple(r) for r in rows] for ph, rows in (d.get("day_rows") or {}).items()}
+        det._day_rows = {ph: (array("d", (r[0] for r in rows)), array("d", (r[1] for r in rows)))
+                         for ph, rows in (d.get("day_rows") or {}).items()}
         det._clock = d.get("clock")
         det._moved = {int(k): int(v) for k, v in (d.get("moved") or {}).items()}
         det._assign_families()
@@ -7930,9 +7945,11 @@ class Fleet:
             det._day_log = [s for s in det._day_log if s.start >= b]
             frm = min([a] + [s.start for s in log])
             rows = {}
-            for ph, rr in det._day_rows.items():
-                rows[ph] = rr[max(bisect.bisect_left(rr, (frm, -math.inf)) - 1, 0):]
-                det._day_rows[ph] = rr[max(bisect.bisect_left(rr, (b - REPAIR_DAY_S, -math.inf)) - 1, 0):]
+            for ph, (ts, ws) in det._day_rows.items():
+                i = max(bisect.bisect_left(ts, frm) - 1, 0)
+                rows[ph] = list(zip(ts[i:], ws[i:]))        # tuples for the repair, once a day
+                k = max(bisect.bisect_left(ts, b - REPAIR_DAY_S) - 1, 0)
+                det._day_rows[ph] = (ts[k:], ws[k:])
             if log:
                 _cap_day(det, log, rows, a, b)
                 _recover_day(det, log, rows, a, b)
