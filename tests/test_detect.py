@@ -592,7 +592,7 @@ def test_a_step_is_stored_with_its_voltage_either_side():
     f.main.volts_at = lambda ph, t, before: f._volts_at("", ph, t, before)
     f.main._classify_step("a", T0, 2000.0, None, 0.0)
     row = f.main.steps[-1]
-    assert row[1] == "a" and row[2] == 2000.0 and row[6:] == [240.0, 236.0], row
+    assert row[1] == "a" and row[2] == 2000.0 and row[6:] == (240.0, 236.0), row
     assert "steps" not in f.main.to_dict()                            # not in the library's store
     back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
     back.load_steps(json.loads(json.dumps(f.steps_to_dict())))
