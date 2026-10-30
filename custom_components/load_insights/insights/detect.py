@@ -8300,7 +8300,12 @@ class Fleet:
             if not kept and p in last:
                 seed[p] = last[p]                     # carried from before: what it held until it wrote
             new = [(t, v) for t, v in rows]
-            chans[p] = sorted(kept + new) if kept and new[0] <= kept[-1] else kept + new   # a pass that overlapped
+            if kept and new[0] <= kept[-1]:
+                chans[p] = sorted(kept + new)                                      # a pass that overlapped:
+                for k in [k for k in self._sub_totals if k[0] == name]:            # its sums are summed afresh
+                    del self._sub_totals[k]
+            else:
+                chans[p] = kept + new
             last[p] = new[-1][1]
         # Everything this pass brought, plus a tail before it. Trimming to
         # a fixed two hours looked thrifty and silently gutted the
@@ -8309,10 +8314,17 @@ class Fleet:
         # with (2026-09-19). Kept back to the oldest run or session still
         # to be placed, its idle window before it, whatever the slicing.
         cut = min(self._oldest_asked(), stamps[0] - SUB_SAMPLE_TAIL_S) - IDLE_WINDOW_S
+        # with the value in force at the cut: the latest moment any channel wrote
+        # before it, else the first after - by bisection per channel, not a sort
+        # of every moment kept each pass (a fifth of _sub_total's cost)
         frm = self._sub_from.get(name, -math.inf)
-        every = sorted({t for rows in chans.values() for t, _ in rows if t >= frm})
-        i = max(0, bisect.bisect_left(every, cut) - 1)                    # with the value in force at the cut
-        self._sub_from[name] = every[i]
+        before = [kept[j][0] for kept in chans.values()
+                  for j in [bisect.bisect_left(kept, (cut, -math.inf)) - 1] if j >= 0 and kept[j][0] >= frm]
+        if before:
+            self._sub_from[name] = max(before)
+        else:
+            self._sub_from[name] = min(kept[k][0] for kept in chans.values()
+                                       for k in [bisect.bisect_left(kept, (frm, -math.inf))] if k < len(kept))
         for p, kept in chans.items():
             j = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)
             chans[p] = kept[j:]
@@ -8379,9 +8391,31 @@ class Fleet:
         hit = self._sub_totals.get((name, tuple(chans)))
         if hit is not None and hit[0] == key:
             return hit[1]
-        val = {p: v for p, v in (self._sub_seed.get(name) or {}).items() if p in chans}
+        seed = {p: v for p, v in (self._sub_seed.get(name) or {}).items() if p in chans}
         order = [p for p in (self._sub_last.get(name) or {}) if p in chans]   # summed in the order the channels first wrote
-        order += [p for p in list(val) + list(rows_by) if p not in order]
+        order += [p for p in list(seed) + list(rows_by) if p not in order]
+        # ...carried on from the last pass's sum where nothing before its end
+        # changed - the same seed and order, every channel's new readings after
+        # its last moment - its moments before ``frm`` dropped. Summed afresh
+        # each pass it was a third of a live pass's time (Home, 2026-10-30)
+        if hit is not None and len(hit) > 2:
+            _, old, (frm0, last, val0, seed0, order0) = hit
+            new = {p: rows[bisect.bisect_right(rows, (last, math.inf)):] for p, rows in rows_by.items()}
+            if frm >= frm0 and seed == seed0 and order == order0 and old:
+                out = old[bisect.bisect_left(old, (frm, -math.inf)):]
+                val = dict(val0)
+                at = {p: 0 for p in new}
+                for ts in sorted({t for rows in new.values() for t, _ in rows}):
+                    for p, rows in new.items():
+                        k = at[p]
+                        while k < len(rows) and rows[k][0] <= ts:
+                            val[p] = rows[k][1]
+                            k += 1
+                        at[p] = k
+                    out.append((ts, sum(val[p] for p in order if p in val)))
+                self._sub_totals[(name, tuple(chans))] = (key, out, (frm, out[-1][0] if out else last, val, seed, order))
+                return out
+        val = dict(seed)
         at = {p: 0 for p in rows_by}
         out = []
         for ts in sorted({t for rows in rows_by.values() for t, _ in rows if t >= frm}):
@@ -8392,7 +8426,7 @@ class Fleet:
                     k += 1
                 at[p] = k
             out.append((ts, sum(val[p] for p in order if p in val)))
-        self._sub_totals[(name, tuple(chans))] = (key, out)
+        self._sub_totals[(name, tuple(chans))] = (key, out, (frm, out[-1][0] if out else -math.inf, dict(val), seed, order))
         return out
 
     def _on_main(self, m: Run) -> None:
