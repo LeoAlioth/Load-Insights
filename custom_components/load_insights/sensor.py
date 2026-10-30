@@ -996,6 +996,15 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
                 out += [BaseLoadPower(runner, entry, meter, key, p), BaseLoadEnergy(runner, entry, meter, key, p)]
             else:
                 keep -= {_base_uid(entry, key, p, kind) for kind in ("power", "energy")}
+    # the remainder meter's - a meter detection does not read (Delavnica): the grid's less the meters beside it,
+    # under the same unique ids its own had, so its history carries on
+    rem = runner.remainder_meter()
+    if rem is not None and rem[1] in keys:
+        w, _ = runner.remainder_base_load()
+        if w is None or w >= BASE_LOAD_MIN_W:
+            keep |= {_base_uid(entry, rem[1], None, kind) for kind in ("power", "energy")}
+            out += [BaseLoadPower(runner, entry, rem[0], rem[1], None, True),
+                    BaseLoadEnergy(runner, entry, rem[0], rem[1], None, True)]
     registry = er.async_get(hass)
     for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
         if (ent.unique_id or "").startswith(f"{entry.entry_id}_baseload_") and ent.unique_id not in keep:
@@ -1008,24 +1017,31 @@ def _base_uid(entry: ConfigEntry, key: str, phase: Optional[str], kind: str) -> 
 
 
 class _BaseLoad(_DetectionBase):
-    """One meter's base load - its floor - or one phase of it, as a load."""
+    """One meter's base load - its floor - or one phase of it, as a load; or
+    the remainder meter's (``remainder``: a meter detection does not read,
+    worked out as the grid less the others - DetectionRunner.remainder_meter)."""
 
     def __init__(self, runner: DetectionRunner, entry: ConfigEntry, meter: str, key: str,
-                 phase: Optional[str], kind: str) -> None:
+                 phase: Optional[str], kind: str, remainder: bool = False) -> None:
         super().__init__(runner, entry, f"named_load_{kind}")
-        self._meter, self._phase = meter, phase
+        self._meter, self._phase, self._remainder = meter, phase, remainder
         self._attr_unique_id = _base_uid(entry, key, phase, kind)
         label = base_load_label(runner.fleet, meter, phase)
         self._attr_device_info = _child_device(entry, f"baseload_{key}_{phase or 'all'}", label, "Base load")
 
+    def _base(self):
+        if self._remainder:
+            return self._runner.remainder_base_load()
+        return self._runner.fleet.base_load(self._meter, self._phase)
+
 
 class BaseLoadPower(_PowerW, _BaseLoad):
-    def __init__(self, runner, entry, meter, key, phase) -> None:
-        super().__init__(runner, entry, meter, key, phase, "power")
+    def __init__(self, runner, entry, meter, key, phase, remainder: bool = False) -> None:
+        super().__init__(runner, entry, meter, key, phase, "power", remainder)
 
     @property
     def native_value(self) -> Optional[float]:
-        w, _ = self._runner.fleet.base_load(self._meter, self._phase)
+        w, _ = self._base()
         return None if w is None else round(w)
 
 
@@ -1039,8 +1055,8 @@ class BaseLoadEnergy(_BaseLoad, RestoreSensor):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_suggested_display_precision = 2
 
-    def __init__(self, runner, entry, meter, key, phase) -> None:
-        super().__init__(runner, entry, meter, key, phase, "energy")
+    def __init__(self, runner, entry, meter, key, phase, remainder: bool = False) -> None:
+        super().__init__(runner, entry, meter, key, phase, "energy", remainder)
         self._reading: Optional[float] = None
         self._seen: Optional[float] = None
 
@@ -1049,7 +1065,7 @@ class BaseLoadEnergy(_BaseLoad, RestoreSensor):
         return self._reading
 
     def _total(self) -> float:
-        return self._runner.fleet.base_load(self._meter, self._phase)[1] / 1000.0
+        return self._base()[1] / 1000.0
 
     @callback
     def _handle_coordinator_update(self) -> None:
