@@ -54,3 +54,11 @@ skill for quoting and the banner filter). Python 3.14.2 installed per user besid
 - Run a card: `ssh win "cd /d C:\li-bench\<tree> && set PYTHONIOENCODING=utf-8 && py -3.14 tests\energy_bench.py card home kozolec LABEL=x"`;
   the scorecard lands in `C:\li-bench\<tree>\data\scorecard` - scp it back to the Mac's data/scorecard.
 - A new code tree: tar custom_components + tests (COPYFILE_DISABLE=1), scp, untar into a fresh folder, move data over.
+
+**Over the VPN (2026-10-30):** the bench PC is 192.168.1.80; `.local` does not resolve there:
+`ssh -o HostKeyAlias=desktop-anze-n2.local -i ~/.ssh/li_bench anze@192.168.1.80` (rsync `-e` the same). The history as of
+the Mac's 2026-10-03.. fetch is in /home/anze/li-bench/hist1030 (home, kozolec); the older one stays in
+li-bench/Load_Insights/data/history - link a tree's data/history to the one its baseline used before running card.sh.
+**WSL stops when no session holds it (2026-10-30):** a queue started with `setsid -f` and the SSH session closed
+died with the WSL VM some time later (uptime 0 min at the next login; no card had run). Run a queue INSIDE an SSH
+session the Mac keeps open (`ssh ... bash -s <<'EOF' ... EOF` as a background command), or keep one open beside it.

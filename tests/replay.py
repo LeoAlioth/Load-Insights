@@ -110,8 +110,11 @@ def _cached(key, build):
     value = build()
     CACHE.mkdir(parents=True, exist_ok=True)
     for old in CACHE.glob("*.pickle"):
-        if old.stat().st_mtime < datetime.now().timestamp() - 7 * 86400:
-            old.unlink(missing_ok=True)
+        try:
+            if old.stat().st_mtime < datetime.now().timestamp() - 7 * 86400:
+                old.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass                                # another replay cleared it first
     part = path.with_suffix(f".{os.getpid()}.part")    # replays started together each write their own
     with open(part, "wb") as handle:
         pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)

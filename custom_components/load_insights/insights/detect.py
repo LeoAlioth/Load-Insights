@@ -2868,6 +2868,21 @@ class PhaseState:
             k -= 1
         return self.pending[k:] if k else self.pending
 
+    def _meter_holds(self, o: _Open, at: float) -> bool:
+        """Is ``o`` a run its meter still shows on (owned) and that did not
+        fall by half across the fall at ``at``? Then another leg's fall of its
+        size is another load's, never its close hint (_corroborated_stop):
+        Susilna's dehumidifier run - its plug flat at 320 W, 527 W - was closed
+        as "observed" on five nights by another load's corroborated fall, ~12.5
+        kWh of 91 booked to nothing (2026-10-30)."""
+        if not self.owned(o):
+            return False
+        if self.lib.meter_level is None:
+            return True
+        was = self.lib.meter_level(o.meter, self.name, at - MERGE_TOLERANCE_S, o.since) or 0.0
+        now = self.lib.meter_level(o.meter, self.name, self.last_ts, o.since) or 0.0
+        return was - now < 0.5 * o.watts
+
     def _corroborated_stop(self, ts: float) -> bool:
         """...and does another leg of the same load say it is stopping too?
 
@@ -2881,12 +2896,13 @@ class PhaseState:
         drop = self.level - _median([x for _, x, _, _ in self._held()])
         if drop <= self.noise_at(self.level):
             return False
-        for o in reversed(self.open_edges):
+        cands = [o for o in reversed(self.open_edges) if not self._meter_holds(o, ts)]
+        for o in cands:
             if abs(o.watts - drop) <= self._tol(o.watts, drop) and self.corroborate(o.since, o.watts, ts):
                 self.close_hint = o
                 return True
         # a start bigger than the drop, whose partner legs match the DROP
-        for o in reversed(self.open_edges):
+        for o in cands:
             if o.watts - drop > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts, True):
                 self.close_hint = o
                 return True
@@ -2894,7 +2910,7 @@ class PhaseState:
         # the same reading and read short (Home's kiln, 25 Oct 21:50: c rose 2258 for a 2850 step while a 600 W
         # load on c stopped; the a leg closed and the c leg stayed open five minutes - the a-only and c-only
         # fragments). The legs switch together, so the leg the others vouch for is the one that closes.
-        for o in reversed(self.open_edges):
+        for o in cands:
             if drop - o.watts > self._tol(o.watts, drop) and self.corroborate(o.since, drop, ts):
                 self.close_hint = o
                 return True
@@ -2904,7 +2920,7 @@ class PhaseState:
         # (Home, 25 Oct 23:26 - 26 Oct 00:43: a-only runs of 100-500 s beside c-only ones of 40 s).
         instant = getattr(self.corroborate, "instant", None)
         if instant is not None:
-            for o in reversed(self.open_edges):
+            for o in cands:
                 if abs(o.watts - drop) <= self._tol(o.watts, drop) and instant(drop, ts):
                     self.close_hint = o
                     return True
@@ -3246,6 +3262,8 @@ class PhaseState:
                 # device's own dip or taper, its run going on - see Fleet._meter_read
                 return []
         hint, self.close_hint = self.close_hint, None
+        if hint is not None and self._meter_holds(hint, at):
+            hint = None                       # its meter shows it on: the legs' fall is another load's
         if hint is not None:
             for o in self.open_edges:
                 if o is hint and abs(o.watts - watts) <= self._tol(o.watts, watts):
