@@ -69,6 +69,12 @@ Quality item found (not built yet): a leg of a multi-phase grid event goes to a 
 by Hiša's own load starting with it (+689), the EVBox's ~104 W share with it - Hiša's later stop ended it.
 Better: split the leg as _split_rise does a single-phase start.
 
+Next quality lead (found, not built - a design change): Kozolec's Pond (14.6 kWh, caught 0 % in every mode)
+is the pond pump at 46 W for 84 % of the time, off 16 %, 149 switches in 16 days - steps well above
+Kozolec's 7-10 W noise. A load that runs for hours is taken into the idle floor, so its runs never stand
+out; the same root as Susilna's 20 h compressor (the emptied-run closes). Proposal for the owner: the floor
+may not absorb a load whose start step was seen and whose stop was not.
+
 ## Load Juggler
 
 One coordinator per site at a configurable interval, no recorder reads; light - not profiled yet.
