@@ -18,7 +18,7 @@ from homeassistant.helpers.entity import Entity, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (BASE_LOAD_GRID, BASE_LOAD_MIN_W, CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES,
+from .const import (BASE_LOAD_GRID, BASE_LOAD_MIN_W, CONF_BASE_LOAD_PHASES,
                     CONF_BATTERY_CAPACITY_ENTITY, CONF_HEAT_DEVICES, DOMAIN)
 from homeassistant.util import dt as dt_util
 
@@ -980,11 +980,11 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
     or one per phase where it is split. Not a floor known to be under
     BASE_LOAD_MIN_W, and gone when its meter is unticked or split the other
     way; one not learned yet (a rebuild) is kept."""
-    chosen, split = runner.config.get(CONF_BASE_LOAD), set(runner.config.get(CONF_BASE_LOAD_PHASES) or [])
+    keys, split = runner.base_load_keys(), set(runner.config.get(CONF_BASE_LOAD_PHASES) or [])
     out, keep = [], set()
     for meter, det in runner.fleet.detectors():
         key = (runner.submeters.get(meter) or {}).get("energy") if meter else BASE_LOAD_GRID
-        if not key or (chosen is not None and key not in chosen):
+        if not key or key not in keys:
             continue
         for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
             for kind in ("power", "energy"):

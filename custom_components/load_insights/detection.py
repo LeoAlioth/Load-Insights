@@ -25,6 +25,8 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     GRID_PREFIX,
+    BASE_LOAD_GRID,
+    CONF_BASE_LOAD,
     CONF_DETECTION,
     CONF_SINGLE_DEVICE,
     CONF_CHANGE_METERS,
@@ -776,6 +778,17 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if meter.get("single") is not None:
             return meter["single"]
         return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
+
+    def base_load_keys(self) -> set:
+        """The meters whose base load is a load of its own, by energy statistic (BASE_LOAD_GRID the grid):
+        the ticked ones, or until the page is saved the grid and every meter holding several loads - an end
+        device's floor is its own standby, not a base load (the owner, 2026-10-30: Hiša, Mansarda and
+        Delavnica by default, not Blaž PC, the Server or Centralna)."""
+        chosen = self.config.get(CONF_BASE_LOAD)
+        if chosen is not None:
+            return set(chosen)
+        return {BASE_LOAD_GRID} | {m["energy"] for name, m in self.submeters.items()
+                                   if m.get("energy") and not self.holds_one_device(name)}
 
     def metered_device(self, name: str) -> Optional[str]:
         """The meter a named load IS - named after one that holds a single

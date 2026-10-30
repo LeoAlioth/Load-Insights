@@ -880,10 +880,15 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         fields = _meter_wait_field(current)
         fields.update(_autoname_fields(current))
-        # the base load as a load of its own: every meter's until saved, by phase none's
+        # the base load as a load of its own: the grid's and the meters holding several loads until saved
+        # (DetectionRunner.base_load_keys), by phase none's
         every = [(BASE_LOAD_GRID, "Grid meter", False)] + meters
         chosen = current.get(CONF_BASE_LOAD)
-        fields.update(_meters_field(CONF_BASE_LOAD, every, [m[0] for m in every] if chosen is None else chosen))
+        if chosen is None:
+            runner = runner_of(self.config_entry)
+            keys = runner.base_load_keys() if runner is not None else {BASE_LOAD_GRID}
+            chosen = [m[0] for m in every if m[0] in keys]
+        fields.update(_meters_field(CONF_BASE_LOAD, every, chosen))
         fields.update(_meters_field(CONF_BASE_LOAD_PHASES, every, current.get(CONF_BASE_LOAD_PHASES)))
         if meters:
             # which meters hold ONE device: until the page is saved, what the
