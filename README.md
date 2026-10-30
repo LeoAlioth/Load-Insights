@@ -1,7 +1,9 @@
 # Load Insights
 
-Consumption forecasts for a Home Assistant site, from what its **Energy
-dashboard already knows**. Companion to Load Juggler, which controls loads;
+Non-intrusive load monitoring (NILM) and consumption forecasts for a Home
+Assistant site, from what its **Energy dashboard already knows**: it finds the
+individual appliances in your whole-house meter readings (load disaggregation,
+no training phase, no labelling) and forecasts what the site will use. Companion to [Load Juggler](https://github.com/LeoAlioth/Load-Juggler), which controls loads;
 this one understands them. Fully independent - it does not need Load Juggler,
 and Load Juggler does not need it.
 
@@ -56,50 +58,11 @@ day, the day-ahead ones after two, the week-ahead table after eight.
 into a dashboard and it draws one graph per forecast sensor - actual, forecast
 and the likely range - finding them again on every render, so a device added
 to the Energy dashboard just appears. Needs config-template-card beside
-Plotly. The rest of this section is the hand-written version of one card.
+Plotly Graph Card; the file's header says how to paste it.
 
 Every forecast-type sensor carries `history` (the last 48 hours, actual) and
-`detailedForecast` (the next 168, forecast) in the same shape, so a chart card
-that can read attributes draws both from one entity. With
-[Plotly Graph Card](https://github.com/dbuezas/lovelace-plotly-graph-card):
-
-```yaml
-type: custom:plotly-graph
-title: Consumption - actual and forecast
-hours_to_show: 72
-time_offset: 24h
-refresh_interval: 60
-entities:
-  - entity: sensor.kozolec_insights_consumption_forecast
-    name: Actual
-    type: bar
-    filters:
-      - fn: |-
-          ({meta}) => ({
-            xs: meta.attributes.history.map(p => new Date(p.period_start)),
-            ys: meta.attributes.history.map(p => p.kwh),
-          })
-  - entity: sensor.kozolec_insights_consumption_forecast
-    name: Forecast
-    line:
-      width: 2
-      dash: dot
-    filters:
-      - fn: |-
-          ({meta}) => ({
-            xs: meta.attributes.detailedForecast.map(p => new Date(p.period_start)),
-            ys: meta.attributes.detailedForecast.map(p => p.kwh),
-          })
-layout:
-  yaxis:
-    title: kWh / h
-    rangemode: tozero
-```
-
-The same pair works for the unmetered remainder and for any device sensor.
-Note that the forecast drawn over past hours is today's fit, which already
-contains them - a picture of how well the profile explains the week, not a
-test of yesterday's prediction. Scoring stored past forecasts is later work.
+`detailedForecast` (the next 168, forecast) in the same shape, so any chart
+card that reads attributes can draw both from one entity.
 
 The forecast is recomputed once an hour from twelve weeks of hourly
 statistics. The model is a recency-weighted hour-of-week profile (weight
@@ -172,9 +135,11 @@ meter saw it. Two sensors: **Detected loads** (how many are on now, with the sig
 library and every device meter's in its attributes) and **Unknown load
 power**.
 
-What is left over - the loads no device meter accounts for - is named by you,
-once, on the *Name a detected load* page: pick one from the list, described in
-words, and type a name. It then gets a **running** binary sensor and a
+What a load is, you name, once, on the *Name a detected load* page. It opens
+on one row per meter the loads were seen on - the loads under no meter first,
+then each device meter by the deepest one that saw them, with its area and
+floor - and a row for the loads already named. Pick a meter, pick a load,
+described in words, and type a name. It then gets a **running** binary sensor and a
 **power** sensor of its own. Two signatures given the same name are one device
 on different settings, and the page suggests candidates for that: same phases,
 same power factor, about as long a run, within ten times each other's power, and
@@ -246,8 +211,10 @@ power where that is known.
 
 That model does not know your charge policy, tariff arbitrage or reserves, so
 it answers "if the battery simply follows the house", which is what most
-sites do most of the time. Without a state of charge or a capacity on the
-dashboard no battery is simulated, and the net is reported before it -
+sites do most of the time. The capacity is the dashboard's, or a *Battery
+capacity sensor* (Wh or kWh, inputs page) that follows the pack's ageing.
+Without a state of charge or a capacity no battery is simulated, and the net
+is reported before it -
 `battery_modelled` says which. `hours_with_pv_forecast` says how far the PV
 forecast reached; beyond it the hours are treated as sunless, so a two-day PV
 forecast leaves the rest of the week reading as pure consumption.
@@ -276,17 +243,30 @@ question about a number.
 
 ## Services
 
-`load_insights.refresh` recomputes every forecast now rather than at the top
-of the hour - useful straight after changing an input, to see whether it
-engaged. `load_insights.reset_detection` forgets every signature and starts
-the meter's backfill again, for when a meter changed or a phase was rewired;
-names are lost with the signatures.
+The site device's **Refresh forecasts** button recomputes every forecast now
+rather than at the top of the hour - useful straight after changing an input,
+to see whether it engaged; an automation does the same with
+`homeassistant.update_entity` on any forecast sensor.
+`load_insights.reset_detection` forgets every signature and starts the
+meter's backfill again, for when a meter changed or a phase was rewired.
+Names are kept and handed back to the rebuilt load that looks like each one;
+where the site really has changed, nothing matches and the name does not
+return.
+
+## With Load Juggler
+
+Load Insights forecasts and plans; [Load Juggler](https://github.com/LeoAlioth/Load-Juggler)
+switches the loads. Neither needs the other, and they only meet through
+ordinary Home Assistant entities: the SOC planning sensors (SOC target, SOC
+minimum, daily excess) and the sun's production start and end can feed Load
+Juggler's battery thresholds and its forecast-driven settings (pacing a load,
+starting Excess early) on its "Battery and forecast policy" page.
 
 ## Requirements
 
 - Home Assistant with the Energy dashboard configured, at least a grid source.
-  Any supported core works for phase 1; the power-sensor fields that phase 2
-  (load detection) will use arrived in 2025.12 / 2026.3 / 2026.6.
+  Any supported core works for the forecasts; the power-sensor fields that
+  load detection uses arrived in 2025.12 / 2026.3 / 2026.6.
 - Nothing else. No cloud, no extra Python packages.
 
 ## Install
@@ -313,6 +293,5 @@ Home Assistant. Its tests run on bare Python:
 python3 tests/run_all.py
 ```
 
-Phase 2 adds load detection / classification on the unmetered remainder from
-the dashboard's power sensors (per phase where CTs exist), and a test rig for
-the Home Assistant layer.
+Load detection is replayed and scored over exported history, also without
+Home Assistant - `tests/replay.py` and `tests/bench.py`; see AGENTS.md.

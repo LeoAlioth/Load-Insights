@@ -46,7 +46,7 @@ class PowerSpec:
 
         The dashboard already asks this - none, normal, inverted, or a pair
         of sensors - so it is DECLARED here and should never be guessed at
-        (Anze, 2026-09-18, about a SolarEdge M1 that reports export
+        (2026-09-18, about a SolarEdge M1 that reports export
         positive). A pair needs no polarity: each sensor names its own
         direction, so it answers +1 for the import half.
 
@@ -57,11 +57,6 @@ class PowerSpec:
         if self.rate or self.rate_from or self.rate_to:
             return 1
         return None
-
-    @property
-    def rate_entity(self) -> Optional[str]:
-        """The single signed sensor, whichever way up it was declared."""
-        return self.rate or self.rate_inverted or None
 
     @classmethod
     def from_source(cls, src: dict) -> Optional["PowerSpec"]:
@@ -106,8 +101,12 @@ class SiteModel:
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def from_prefs(cls, prefs: Optional[dict]) -> "SiteModel":
-        """Build from ``EnergyManager.data`` (or None when nothing is set up)."""
+    def from_prefs(cls, prefs: Optional[dict], ignore: frozenset = frozenset()) -> "SiteModel":
+        """Build from ``EnergyManager.data`` (or None when nothing is set up).
+
+        ``ignore`` names devices to leave out: this integration's own
+        estimates, which a user may list on the dashboard to see them there,
+        but which must never come back in as meters of what they estimate."""
         if not prefs:
             return cls()
         grid_in, grid_out, grid_pw = [], [], []
@@ -162,7 +161,7 @@ class SiteModel:
                 included_in=d.get("included_in_stat") or None,
             )
             for d in prefs.get("device_consumption") or []
-            if d.get("stat_consumption")
+            if d.get("stat_consumption") and d["stat_consumption"] not in ignore
         )
         return cls(
             grid_import=tuple(grid_in), grid_export=tuple(grid_out), grid_power=tuple(grid_pw),
@@ -191,8 +190,15 @@ class SiteModel:
         device except those whose consumption another LISTED device already
         contains, so a sub-metered heater inside a metered workshop is not
         subtracted twice."""
+        return self.parts_of(None)
+
+    def parts_of(self, parent: Optional[str]) -> tuple:
+        """The listed devices directly inside ``parent`` (None = the site). A
+        device whose ``included_in`` names an unlisted statistic counts as
+        top-level."""
         listed = {d.energy for d in self.devices}
-        return tuple(d for d in self.devices if not (d.included_in and d.included_in in listed))
+        return tuple(d for d in self.devices
+                     if (d.included_in if d.included_in in listed else None) == parent)
 
     def all_statistic_ids(self) -> set:
         ids = {s for s, _ in self.consumption_terms()}

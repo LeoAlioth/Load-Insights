@@ -4,9 +4,9 @@ from __future__ import annotations
 import functools
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.energy.websocket_api import async_get_energy_platforms
@@ -14,20 +14,47 @@ from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from homeassistant.const import UnitOfTemperature
-from homeassistant.util.unit_conversion import TemperatureConverter
+from homeassistant.const import UnitOfEnergy, UnitOfTemperature
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util.unit_conversion import EnergyConverter, TemperatureConverter
 
 from .const import (
+    CONF_BATTERY_CAPACITY_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
-    CONF_DEVICE_STATE_SENSORS,
+    CONF_FORECAST_EXCLUDE,
+    CONF_HEAT_DEVICES,
+    JUGGLER_BOOST_OPTION,
+    JUGGLER_AWAY_OPTION,
+    JUGGLER_AWAY_SUFFIX,
+    JUGGLER_BOOST_SUFFIX,
+    JUGGLER_NORMAL_OPTION,
+    JUGGLER_NORMAL_SUFFIX,
+    JUGGLER_CLIMATE,
+    JUGGLER_DEVICE_TYPE,
+    JUGGLER_DOMAIN,
+    JUGGLER_THERMOSTAT_KINDS,
+    JUGGLER_TANK_POWER,
     CONF_INPUT_ENTITIES,
+    CONF_INPUT_LINKS,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_PLAN_CONSUMPTION_SCALE,
+    CONF_PLAN_DAYS,
+    CONF_PLAN_FULL_SOC,
+    CONF_PLAN_FULL_SOC_ENTITY,
+    CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_PRODUCTION_SCALE,
+    CONF_PLAN_SPREAD,
+    PLAN_DEFAULTS,
+    PLAN_SENSORS,
+    PLAN_WEIGHTS,
+    plan_key,
     CONF_WEATHER_ENTITY,
     DOMAIN,
     HISTORY_WEEKS,
@@ -41,13 +68,18 @@ from .const import (
     REFRESH_SECOND,
 )
 from .insights.calendars import CalendarSignals
-from .insights.inputs import label_history, project, usable
+from .insights.inputs import LOAD_PREFIX, label_history, own_scoped, project, scoped, usable
 from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
+from .insights import heatnudge
 from .insights.grid import GridForecast, build as build_grid
+from .detection import named_load_energy
+from .insights.planning import absorption_rate, base_consumption, plan_all, room_from_series, spread_evenly, sun_window
 from .insights.model import SiteModel
-from .insights.profile import Forecast, floor_hour, forecast, hour_buckets
-from .insights.scoring import BAND_LEAD_H, LEADS_H, Ledger
+from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
+from .insights.scoring import Ledger
+from .insights import roommodel
+from .insights.thermal import KINDS, heating_runs, kwh_per_degree, room_from_thermal
 from .insights.series import combine, coverage, subtract_all
 from .repairs import async_check
 
@@ -56,6 +88,9 @@ SITE_KEY = "consumption"
 REMAINDER_KEY = "remainder"
 
 _LOGGER = logging.getLogger(__name__)
+
+# a planning reading that cannot be refreshed stands for this long, then the sensor goes unavailable
+PLAN_HOLD_MAX = timedelta(hours=12)
 
 
 def holiday_dates(country: Optional[str], years) -> Optional[Set[date]]:
@@ -87,11 +122,15 @@ class InsightsData:
     remainder_complete_since: Optional[datetime] = None
     devices_without_statistics: tuple = ()
     holidays_known: bool = False
+    forecast_left_out: tuple = ()      # labels of the devices never added to the house forecast
+    consumption_fitted: Optional[Forecast] = None   # the house series fitted on its own: supplies the band, kept for comparison
+    own_parts: Dict[str, Forecast] = None  # type: ignore[assignment]   # each meter's own part (its series less its mature parts)
     holidays_in_horizon: tuple = ()
     weather_entity: Optional[str] = None
     temperature_entity: Optional[str] = None
     temperature_history_hours: int = 0
     temperature_forecast_hours: int = 0
+    temperature_basis: Dict[str, object] = field(default_factory=dict)   # where the temperature came from (INS-20)
     calendar_entities: tuple = ()
     input_entities: tuple = ()
     input_kinds: Dict[str, str] = None  # type: ignore[assignment]
@@ -102,10 +141,21 @@ class InsightsData:
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     grid: Optional[GridForecast] = None
+    # SOC planning: sensor (target / minimum / excess) -> {value, attributes, held_since}; None while it has never read
+    plan: Dict[str, Optional[dict]] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
     # A device with no statistics yet has no entry, and its sensor stays
     # unavailable rather than showing a forecast of nothing.
     devices: Dict[str, Forecast] = None  # type: ignore[assignment]
+    # kWh each individually metered device can still take today (planning.room_from_series), by statistic id
+    device_room: Dict[str, Optional[float]] = None  # type: ignore[assignment]
+    # what the thermal reading of a tank or heater (insights/thermal.py) gave, by statistic id: room, kwh_per_degree, spread, runs, kind
+    device_thermal: Dict[str, dict] = None  # type: ignore[assignment]
+    # kW each individually metered device pulls when it runs (planning.absorption_rate), by statistic id
+    device_rate: Dict[str, Optional[float]] = None  # type: ignore[assignment]
+    # heat nudge, shadow mode (insights/heatnudge.publish), by heat device id; {} with none configured
+    heat: Dict[str, dict] = None  # type: ignore[assignment]
+    heat_devices: tuple = ()      # the configured rows (heatnudge.parse_devices): id, name, source, kind, target, ...
 
 
 class InsightsCoordinator(DataUpdateCoordinator):
@@ -122,12 +172,41 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # only scored when its hour arrives, up to a week later.
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.scoring")
         self._ledgers: Optional[Dict[str, Ledger]] = None
+        self._capacity_kwh: Optional[float] = None  # the capacity sensor's last good reading
+        self._plan_last: Dict[str, dict] = {}       # each planning sensor's last complete reading
+        # a room's hourly rows (insights/roommodel.py merge_hours): the recorder keeps a thermostat's
+        # attributes for about ten days, the room model wants a season
+        self._room_store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.roomrows")
+        self._heat_store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.heatnudge")
+        self._thermal_said: Dict[str, str] = {}      # each Load Juggler load's last thermal-room reason, to log changes only
+
+    def _battery_capacity(self) -> Optional[float]:
+        """The capacity sensor's kWh, held at its last good reading while it is
+        unreadable; None (the dashboard's figure stands) before it has read."""
+        eid = self.config_entry.options.get(CONF_BATTERY_CAPACITY_ENTITY)
+        st = self.hass.states.get(eid) if eid else None
+        try:
+            kwh = EnergyConverter.convert(float(st.state), st.attributes.get("unit_of_measurement"),
+                                          UnitOfEnergy.KILO_WATT_HOUR)
+        except (AttributeError, TypeError, ValueError, HomeAssistantError):
+            kwh = None
+        if kwh is not None and kwh > 0:
+            self._capacity_kwh = kwh
+        return self._capacity_kwh
 
     async def _load_ledgers(self) -> Dict[str, Ledger]:
         if self._ledgers is None:
             raw = await self._store.async_load() or {}
             self._ledgers = {k: Ledger.from_dict(v) for k, v in (raw.get("ledgers") or {}).items()}
         return self._ledgers
+
+    async def async_follow_renames(self, renames: Dict[str, str]) -> None:
+        """A device's forecast score follows its statistic when it is renamed."""
+        ledgers = await self._load_ledgers()
+        for old, new in renames.items():
+            if old in ledgers and new not in ledgers:
+                ledgers[new] = ledgers.pop(old)
+        await self._save_ledgers()
 
     async def _save_ledgers(self) -> None:
         if self._ledgers is not None:
@@ -148,6 +227,9 @@ class InsightsCoordinator(DataUpdateCoordinator):
         site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
             raise UpdateFailed("the Energy dashboard has no grid source configured")
+        capacity = self._battery_capacity()
+        if capacity:
+            site = replace(site, battery_capacity_kwh=capacity)
 
         now = dt_util.now()
         start = now - timedelta(weeks=HISTORY_WEEKS)
@@ -171,14 +253,20 @@ class InsightsCoordinator(DataUpdateCoordinator):
         temps_hist: Dict[float, float] = {}
         temps_fc: Dict[float, float] = {}
         if temp_entity and weather_entity:
-            trows = await get_instance(self.hass).async_add_executor_job(
-                rec_stats.statistics_during_period,
-                self.hass, start, None, {temp_entity}, "hour", {"temperature": UnitOfTemperature.CELSIUS}, {"mean"},
-            )
-            for r in trows.get(temp_entity, []):
-                if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                    temps_hist[float(r["start"])] = float(r["mean"])
+            temps_hist = await self._hourly_means(temp_entity, start, {"temperature": UnitOfTemperature.CELSIUS})
             temps_fc = await self._forecast_temperatures(weather_entity, now)
+        # A sun-heated sensor is corrected with the weather entity (heatnudge.corrected_series, INS-20):
+        # the same series feeds the temperature evidence and the heat nudge. Hours older than the
+        # recorder's states and the heat store's own are read from the sensor only where it is trusted.
+        reference: Dict[float, float] = {}
+        t_basis: Dict[float, str] = {}
+        t_bias = None
+        if temps_hist and weather_entity:
+            stored = heatnudge.migrate(await self._heat_store.async_load())["obs"]
+            reference = await self._weather_reference(weather_entity, start, now, stored)
+            temps_hist, temps_fc, t_basis, t_bias = heatnudge.corrected_series(
+                temps_hist, reference, temps_fc, now.timestamp(),
+                heatnudge.night_hours(self.hass.config.latitude, self.hass.config.longitude, now.timestamp()))
 
         # --- calendars: every linked one, over history and horizon ---
         cal_entities = tuple(opts.get(CONF_CALENDAR_ENTITIES) or ())
@@ -191,42 +279,46 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # --- any other attached entity, fitted the same way ---
         input_entities = tuple(opts.get(CONF_INPUT_ENTITIES) or ())
         input_kinds: Dict[str, str] = {}
-        tz_offset = now.utcoffset().total_seconds() if now.utcoffset() else 0.0
         horizon_keys = [b.timestamp() for b in hour_buckets(floor_hour(now), HORIZON_HOURS)]
         for eid in input_entities:
-            raw = await self._input_history(eid, start, now)
-            labels, kind = await self.hass.async_add_executor_job(label_history, raw)
-            input_kinds[eid] = kind
-            if not usable(labels):
-                input_kinds[eid] = f"{kind} (too little history)" if kind in ("categorical", "banded") else kind
-                continue
-            st = self.hass.states.get(eid)
-            current = labels.get(max(labels)) if labels else None
-            if st is not None and st.state not in ("unknown", "unavailable", ""):
-                # the label the CURRENT state falls under, for the hold window
-                current = (await self.hass.async_add_executor_job(
-                    label_history, {max(labels) if labels else 0.0: st.state}
-                ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
-            future = await self.hass.async_add_executor_job(project, labels, horizon_keys, tz_offset, current)
-            merged = dict(labels)
-            merged.update(future)
-            cal_signals.append(CalendarSignals.from_labels(eid, merged))
+            signal, input_kinds[eid] = await self._input_signal(eid, start, now, horizon_keys)
+            if signal is not None:
+                cal_signals.append(signal)
 
         consumption = combine(series, site.consumption_terms())
         if not consumption:
             raise UpdateFailed("no hourly consumption statistics yet")
+        # Loads the owner leaves out ("Not in the house forecast") are never
+        # added to the house forecast; what is scored against is the
+        # consumption without them. (The remainder is already without every
+        # listed device.)
+        left_out = [e for e in (opts.get(CONF_FORECAST_EXCLUDE) or []) if e in series]
+        scored = subtract_all(consumption, series, left_out) if left_out else consumption
         remainder_ids = [d.energy for d in site.remainder_devices()]
-        remainder = subtract_all(consumption, series, remainder_ids) if remainder_ids else []
         complete_since, missing = coverage(series, remainder_ids) if remainder_ids else (None, [])
         labels = {d.energy: d.label for d in site.devices}
 
+        # An input linked to devices acts on those, the meters they sit in
+        # and the site (model.scoped); one linked to nothing, on everything.
+        links = opts.get(CONF_INPUT_LINKS) or {}
+        parent = {d.energy: d.included_in for d in site.devices}
+
+        def within(target: str) -> List[str]:
+            """The device a link names, and every device it sits inside."""
+            cur = (named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
+                   if target.startswith(LOAD_PREFIX) else target)
+            out: List[str] = []
+            while cur and cur not in out:
+                out.append(cur)
+                cur = parent.get(cur)
+            return out
+
         # The fit is pure Python over a few thousand rows - still, never on
         # the event loop.
-        fit = lambda rows: self.hass.async_add_executor_job(  # noqa: E731
-            forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None, cal_signals or None
+        fit = lambda rows, signals: self.hass.async_add_executor_job(  # noqa: E731
+            forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None, signals or None
         )
-        cons_fc = await fit(consumption)
-        rem_fc = await fit(remainder) if remainder else None
+        cons_fit = await fit(consumption, cal_signals)
 
         # --- scoring: settle what has arrived, record what is now predicted ---
         ledgers = await self._load_ledgers()
@@ -236,42 +328,78 @@ class InsightsCoordinator(DataUpdateCoordinator):
             led.settle(now, actual)
             led.record(now, fc.hourly, fc.bands, fc.tomorrow_kwh)
 
-        score(SITE_KEY, cons_fc, consumption)
-        if rem_fc is not None:
-            score(REMAINDER_KEY, rem_fc, remainder)
         # Every listed device, nested ones included - the series are already
         # in hand for the remainder, so this is only the fits. A device with a
         # state sensor also gets its nowcast: the sensor's hourly means over
         # the same window, and its live value now.
-        state_map: Dict[str, str] = dict(opts.get(CONF_DEVICE_STATE_SENSORS) or {})
+        # A number linked to a device nudges its next hours, jointly with any
+        # other linked to it (fit_joint keeps each only if it adds) - and its
+        # parents' too, which the device is part of (2026-09-28: are
+        # they "still taken into account by all of the parent meters?"). The
+        # site takes every input, linked or not, among its signals above; a
+        # device, the unlinked ones and those linked to it or to a device
+        # inside it.
+        linked: Dict[str, List[str]] = {}
+        for eid in input_entities:
+            if eid.split(".", 1)[0] in NUMERIC_STATE_DOMAINS:
+                for target in links.get(eid) or []:
+                    for stat in within(target):
+                        if eid not in linked.setdefault(stat, []):
+                            linked[stat].append(eid)
+        means: Dict[str, Dict[float, float]] = {}
+        state_used: Dict[str, str] = {}
         state_now: Dict[str, Optional[float]] = {}
         device_fc: Dict[str, Forecast] = {}
         for d in site.devices:
             rows = series.get(d.energy) or []
             if not rows:
                 continue
-            st_hist: Dict[float, float] = {}
-            st_now: Optional[float] = None
-            st_entity = state_map.get(d.energy)
-            if st_entity:
-                srows = await get_instance(self.hass).async_add_executor_job(
-                    rec_stats.statistics_during_period,
-                    self.hass, start, None, {st_entity}, "hour", None, {"mean"},
-                )
-                for r in srows.get(st_entity, []):
-                    if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                        st_hist[float(r["start"])] = float(r["mean"])
-                st = self.hass.states.get(st_entity)
-                try:
-                    st_now = float(st.state) if st is not None else None
-                except (TypeError, ValueError):
-                    st_now = None
-                state_now[d.energy] = st_now
-            device_fc[d.energy] = await self.hass.async_add_executor_job(
-                forecast, rows, now, HORIZON_HOURS, 3.0, hols, temps_hist or None, temps_fc or None,
-                cal_signals or None, st_hist or None, st_now,
+            numbers: List[Tuple[str, Dict[float, float], Optional[float]]] = []
+            for st_entity in linked.get(d.energy, []):
+                if st_entity not in means:
+                    means[st_entity] = await self._hourly_means(st_entity, start)
+                if not means[st_entity]:
+                    continue              # no hourly means: a state, among the signals already
+                numbers.append((st_entity, means[st_entity], _read_number(self.hass, [st_entity])))
+            fc = await self.hass.async_add_executor_job(
+                forecast, rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
+                scoped(cal_signals, links, within, d.energy) or None,
+                [h for _, h, _ in numbers] or None, [v for _, _, v in numbers] or None,
             )
-            score(d.energy, device_fc[d.energy], rows)
+            device_fc[d.energy] = fc
+            if numbers:
+                kept = [numbers[i] for i in fc.nowcast.used] if fc.nowcast.used else numbers[:1]
+                state_used[d.energy] = ", ".join(e for e, _, _ in kept)
+                state_now[d.energy] = kept[0][2] if len(kept) == 1 else None
+
+        # --- the house, and every meter with parts, built from them: its own
+        # part (its series less its mature parts) plus each mature part's
+        # forecast, bottom-up (profile.assemble). The independent fit of the
+        # whole supplies only the band.
+        kids_of = {k: tuple(d.energy for d in site.parts_of(k)) for k in [None, *labels]}
+        rows_of: Dict[Optional[str], list] = {None: consumption, **{k: v for k, v in series.items() if k in labels and v}}
+        fitted: Dict[Optional[str], Forecast] = {None: cons_fit, **device_fc}
+        fit_part = lambda stat, rows, signed: forecast(  # noqa: E731
+            rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
+            own_scoped(cal_signals, links, within, stat) or None, signed=signed)
+        fit_whole = lambda stat, rows: forecast(  # noqa: E731
+            rows, now, HORIZON_HOURS, hols, temps_hist or None, temps_fc or None,
+            (cal_signals if stat is None else scoped(cal_signals, links, within, stat)) or None)
+        try:
+            built, own, house = await self.hass.async_add_executor_job(
+                assemble, rows_of, kids_of, left_out, fitted, fit_part, now, labels, fit_whole)
+        except Exception:  # noqa: BLE001 - one bad fit must not take every forecast with it
+            _LOGGER.exception("House forecast from its parts failed; using the independent fits")
+            built, own, house = {}, {}, None
+        device_fc.update({k: v for k, v in built.items() if k})
+        cons_fc = house or cons_fit
+        rem_rows, rem_fc = own.get(None, (None, None))
+
+        score(SITE_KEY, cons_fc, scored)
+        if rem_fc is not None:
+            score(REMAINDER_KEY, rem_fc, rem_rows)
+        for k, fc in device_fc.items():
+            score(k, fc, rows_of[k])
         await self._save_ledgers()
 
         # --- what the meter will do: consumption less the PV the dashboard's
@@ -291,31 +419,307 @@ class InsightsCoordinator(DataUpdateCoordinator):
             functools.partial(build_grid, cons_fc.hourly, pv, soc,
                               site.battery_capacity_kwh, topology=topology),
         )
+        try:
+            plan = self._plan(site, now, cons_fc, device_fc, left_out, pv, soc, opts)
+        except Exception:  # noqa: BLE001 - the last readings stand, the forecasts go on
+            _LOGGER.exception("SOC planning failed; keeping its last readings")
+            plan = dict(self._plan_last)
+        device_room = {d.energy: room_from_series(series.get(d.energy, ()), now) for d in site.devices}
+        try:
+            sun: Dict[float, float] = {}       # the site's measured solar, kW per hour (the energy of an hour is its mean kW)
+            for sid in site.solar:
+                for t, v in series.get(sid, ()):
+                    if v is not None:
+                        sun[t.timestamp()] = sun.get(t.timestamp(), 0.0) + v
+            device_thermal = await self._thermal_rooms(site, series, now, start, opts, temps_hist, temps_fc, sun, pv)
+        except Exception:  # noqa: BLE001 - the history ceilings stand, the forecasts go on
+            _LOGGER.exception("Thermal room reading failed; keeping the history ceilings")
+            device_thermal = {}
+        device_room.update({sid: t["room"] for sid, t in device_thermal.items()})
+        heat_devices = heatnudge.parse_devices(opts.get(CONF_HEAT_DEVICES))
+        try:
+            heat = await self._heat_nudge(heat_devices, now, start, temps_hist, temps_fc, weather_entity, t_basis, t_bias, reference) if heat_devices else {}
+        except Exception:  # noqa: BLE001 - shadow mode must never take the forecasts with it
+            _LOGGER.exception("Heat nudge failed; its sensors keep their last readings")
+            heat = (self.data.heat if self.data is not None else None) or {}
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
+            device_room=device_room,
+            device_thermal=device_thermal,
+            device_rate={d.energy: absorption_rate(series.get(d.energy, ())) for d in site.devices},
+            heat=heat,
+            heat_devices=tuple(heat_devices),
+            forecast_left_out=tuple(labels.get(e, e) for e in left_out),
+            consumption_fitted=cons_fit,
+            own_parts={k: v[1] for k, v in own.items() if k},
             holidays_known=hols is not None,
             holidays_in_horizon=tuple(sorted(d.isoformat() for d in (hols or ()) if now.date() <= d <= end_h.date())),
             weather_entity=weather_entity,
             temperature_entity=temp_entity,
             temperature_history_hours=len(temps_hist),
             temperature_forecast_hours=len(temps_fc),
+            temperature_basis=heatnudge.series_basis(t_bias, t_basis) if t_bias else {},
             ledgers=dict(ledgers),
             grid=grid,
+            plan=plan,
             calendar_entities=cal_entities,
             input_entities=input_entities,
             input_kinds=input_kinds,
             calendar_signals=tuple(cal_signals),
             calendar_on_hours={sig.entity: len(sig.existence) for sig in cal_signals},
-            device_state_sensors=state_map,
+            device_state_sensors=state_used,
             device_state_now=state_now,
         )
         # things that are silently half-done get said out loud
         if self.config_entry is not None:
             async_check(self.hass, self.config_entry, data)
         return data
+
+    async def _heat_nudge(self, devices: List[dict], now: datetime, start: datetime, temps_hist: Dict[float, float],
+                          temps_fc: Dict[float, float], weather_entity: Optional[str], t_basis: Dict[float, str],
+                          bias: Optional[dict], reference: Dict[float, float]) -> Dict[str, dict]:
+        """Heat nudge, SHADOW MODE (insights/heatnudge.py): per configured heat device, the COP
+        index of the coming days, the best hours and the daily scorecard. Reads the device's
+        energy or power statistics, the outdoor temperature the forecast already uses (sensor
+        history, weather forecast) and optionally an activity entity; writes nothing to any
+        device. Stored: the scorecard days and yesterday evening's forecast temperatures."""
+        tz = now.tzinfo
+        state = heatnudge.migrate(await self._heat_store.async_load())
+        # the outdoor temperature arrives corrected (_refresh: heatnudge.corrected_series); without a
+        # weather entity there is no reference and nothing was learned
+        bias = bias or heatnudge.learn_bias({}, {}, now.timestamp(), set())
+        temps = {**temps_hist, **temps_fc}
+        state["obs"] = {k: v for k, v in reference.items() if k >= now.timestamp() - heatnudge.OBS_KEEP_DAYS * 86400}
+        humidity = await self._forecast_humidity(weather_entity, now) if weather_entity else {}
+        today = now.date()
+        out: Dict[str, dict] = {}
+        for dev in devices:
+            target = _read_number(self.hass, [dev["target_entity"]]) if dev["target_entity"] else None
+            target = target if target is not None else dev["target"]
+            card_days = state["days"].setdefault(dev["id"], {})
+            fcs = state["forecasts"].setdefault(dev["id"], {})
+
+            def tbasis(dev=dev):
+                counts: Dict[str, int] = {}
+                for c in state["days"].get(dev["id"], {}).values():
+                    b = c.get("t_basis", "uncorrected") if c.get("basis") != "modelled" else "modelled"
+                    counts[b] = counts.get(b, 0) + 1
+                return heatnudge.temperature_basis(bias, counts)
+
+            def said(why, dev=dev, target=target):
+                return heatnudge.publish(now, None, None, {**heatnudge.summarize(card_days), "last": None}, "none",
+                                         target, dev["kind"], why=why, temperature=tbasis())
+            if not temps_hist or not temps_fc:
+                out[dev["id"]] = said("needs a weather entity and an outdoor temperature sensor (Explanatory inputs)")
+                continue
+            st = self.hass.states.get(dev["source"])
+            dclass = st.attributes.get("device_class") if st is not None else None
+            if dclass not in ("energy", "power"):
+                out[dev["id"]] = said("the source is not an energy or power sensor with a reading")
+                continue
+            by_day: Dict[date, str] = {}       # a daily device: each day's own basis (activity, or modelled where none was seen)
+            if dclass == "power":
+                rows = await get_instance(self.hass).async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, start, None, {dev["source"]}, "hour",
+                    {"power": "W"}, {"mean"})
+                hourly = heatnudge.hourly_from_power(
+                    [(float(r["start"]), float(r["mean"])) for r in rows.get(dev["source"], []) if r.get("mean") is not None])
+                reading, basis = "power", "measured"
+            else:
+                rows = await get_instance(self.hass).async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, start, None, {dev["source"]}, "hour",
+                    {"energy": "kWh"}, {"change"})
+                changes = [(float(r["start"]), float(r["change"])) for r in rows.get(dev["source"], []) if r.get("change") is not None]
+                reading = heatnudge.classify_energy(changes, tz)
+                basis, by_day = "measured", {}
+                if reading == "hourly":
+                    hourly = {k: v for k, v in changes if v > 0}
+                else:
+                    hourly, basis, by_day = await self._spread_days(dev, changes, temps, start, now, tz)
+            if not hourly:
+                out[dev["id"]] = said("no hourly energy history yet")
+                continue
+            shift = heatnudge.kind_defaults(dev["kind"])[2]
+            rate = absorption_rate(list(hourly.items())) if reading != "daily" else None
+            # the finished days, as (clock-hour kWh, kWh, mean outdoor C)
+            past = []
+            for d in sorted({heatnudge.local_day(k, tz) for k in hourly}):
+                if d >= today:
+                    continue
+                keys = heatnudge.day_keys(d, tz)
+                ts = [temps.get(k) for k in keys]
+                known = [t for t in ts if t is not None]
+                tb = heatnudge.day_basis([t_basis.get(k, "unknown") for k in keys])
+                if len(keys) != 24 or len(known) < (8 if tb == "sensor_night" else 18) or not any(k in hourly for k in keys):
+                    continue
+                e = [hourly.get(k, 0.0) for k in keys]
+                tf = fcs.get(d.isoformat())
+                card = heatnudge.scorecard_day(e, ts, target, dev["kind"], shift, rate, by_day.get(d, basis), tf, tb)
+                past.append((e, sum(e), sum(known) / len(known), tb))
+                if card is not None:
+                    card_days[d.isoformat()] = card
+            state["days"][dev["id"]] = card_days = heatnudge.prune(card_days)
+            # days whose sun hours had no reference say little about a day's mean: used only while there is nothing better
+            past = [p for p in past if p[3] == "corrected"] or past
+            history = [(kwh, tm) for _, kwh, tm, _ in past]
+            forecasts = []
+            for n in (0, 1):
+                day = today + timedelta(days=n)
+                keys = heatnudge.day_keys(day, tz)
+                ts = [temps.get(k) for k in keys]
+                known = [t for t in ts if t is not None]
+                if not known:
+                    forecasts.append(None)
+                    continue
+                tm = sum(known) / len(known)
+                need, _ = heatnudge.day_need(history, tm)
+                shape, _ = heatnudge.hour_shape([(e, t) for (e, _, t, _) in past], tm, [datetime.fromtimestamp(k, tz).hour for k in keys])
+                forecasts.append(heatnudge.forecast_day(keys, ts, target, dev["kind"], need, shape, shift, rate,
+                                                        [humidity.get(k) for k in keys] if humidity else None))
+                # yesterday evening's forecast for tomorrow, kept to judge a real schedule against (hindsight is the other)
+                iso = day.isoformat()
+                if n == 1 and now.hour >= 18 and iso not in fcs and len(keys) == 24:
+                    fcs[iso] = ts
+            state["forecasts"][dev["id"]] = {k: fcs[k] for k in sorted(fcs)[-heatnudge.KEEP_FORECASTS:]}
+            last = max(card_days) if card_days else None
+            card = {**heatnudge.summarize(card_days), "last": ({"date": last, **card_days[last]} if last else None),
+                    "recent": [{"date": k, **card_days[k]} for k in sorted(card_days)[-30:]]}
+            out[dev["id"]] = heatnudge.publish(now, forecasts[0], forecasts[1], card, reading, target, dev["kind"],
+                                               why=None if basis == "measured" else f"hours are {basis}: see the plan",
+                                               temperature=tbasis())
+        await self._heat_store.async_save({"generation": heatnudge.HEAT_GENERATION, "days": state["days"],
+                                           "forecasts": state["forecasts"],
+                                           "obs": {str(int(k)): round(v, 2) for k, v in state["obs"].items()}})
+        return out
+
+    async def _weather_reference(self, weather_entity: str, start: datetime, now: datetime,
+                                 stored: Dict[float, float]) -> Dict[float, float]:
+        """Hour key -> the weather entity's own temperature (what it observes now: the attribute of its
+        state), from the recorder's state history (about ten days) over what was stored on earlier
+        refreshes, so the reference outlives the recorder. {} when it cannot be read."""
+        try:
+            states = await get_instance(self.hass).async_add_executor_job(
+                functools.partial(history.get_significant_states, self.hass, start, now, [weather_entity],
+                                  include_start_time_state=True, significant_changes_only=False,
+                                  minimal_response=False, no_attributes=False))
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("weather history of %s unavailable: %s", weather_entity, exc)
+            return dict(stored)
+        points = []
+        for st in states.get(weather_entity, []):
+            t = st.attributes.get("temperature")
+            if t is None:
+                continue
+            try:
+                points.append((st.last_updated.timestamp(), _to_c(t, st.attributes.get("temperature_unit") or UnitOfTemperature.CELSIUS)))
+            except (TypeError, ValueError, HomeAssistantError):
+                continue
+        n = int((floor_hour(now) - floor_hour(start)).total_seconds() // 3600) + 1
+        keys = [b.timestamp() for b in hour_buckets(floor_hour(start), n)]
+        return {**stored, **heatnudge.hourly_from_points(sorted(points), keys)}
+
+    async def _spread_days(self, dev: dict, changes: List[Tuple[float, float]], temps: Dict[float, float],
+                           start: datetime, now: datetime, tz) -> Tuple[Dict[float, float], str, Dict[date, str]]:
+        """A device that reports once a day (heatnudge.classify_energy): each day's total over its
+        hours - by the activity entity's time on when there is one, else by heating demand. The
+        hours are then NOT measured, and the scorecard says so (basis) - per day: a day the activity
+        entity has no history for (its states are kept about ten days) is modelled, whatever the others are."""
+        daily = heatnudge.daily_from_lumps(changes, tz)
+        active = await self._activity_changes(dev["activity_entity"], start, now) if dev["activity_entity"] else []
+        basis = "activity" if active else "modelled"
+        hourly: Dict[float, float] = {}
+        by_day: Dict[date, str] = {}
+        for d, kwh in daily.items():
+            keys = heatnudge.day_keys(d, tz)
+            w = heatnudge.active_fractions(active, keys, now.timestamp()) if active else []
+            by_day[d] = "activity"
+            if sum(w) <= 0:
+                w = heatnudge.demand_weights([temps.get(k) for k in keys])
+                by_day[d] = "modelled"
+            hourly.update(zip(keys, heatnudge.spread_daily(kwh, w)))
+        return hourly, basis, by_day
+
+    async def _activity_changes(self, entity_id: str, start: datetime, end: datetime) -> List[Tuple[float, bool]]:
+        """(epoch s, on) for an activity entity: a climate's hvac_action is heating, else a state of on / heating."""
+        states = await get_instance(self.hass).async_add_executor_job(
+            functools.partial(history.get_significant_states, self.hass, start, end, [entity_id],
+                              include_start_time_state=True, significant_changes_only=False,
+                              minimal_response=False, no_attributes=False))
+        out = []
+        for st in states.get(entity_id, []):
+            action = st.attributes.get("hvac_action")
+            on = action == "heating" if action is not None else st.state in ("on", "heating")
+            out.append((st.last_updated.timestamp(), on))
+        return sorted(out)
+
+    async def _forecast_humidity(self, weather_entity: str, now: datetime) -> Dict[float, float]:
+        """Hour key -> forecast relative humidity %, from the weather entity's hourly forecast
+        when it carries one; {} otherwise (the frost flag is then simply never raised)."""
+        try:
+            resp = await self.hass.services.async_call(
+                "weather", "get_forecasts", {"type": "hourly", "entity_id": weather_entity},
+                blocking=True, return_response=True)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("hourly humidity from %s unavailable: %s", weather_entity, exc)
+            return {}
+        out: Dict[float, float] = {}
+        for it in ((resp or {}).get(weather_entity) or {}).get("forecast") or []:
+            t = it.get("datetime")
+            t = dt_util.parse_datetime(t) if isinstance(t, str) else t
+            if t is not None and it.get("humidity") is not None:
+                out[floor_hour(dt_util.as_local(t)).timestamp()] = float(it["humidity"])
+        return out
+
+    def _plan(self, site: SiteModel, now: datetime, cons_fc: Forecast, device_fc: Dict[str, Forecast],
+              left_out: List[str], pv: Dict[float, float], soc: Optional[float], opts) -> Dict[str, Optional[dict]]:
+        """The three SOC planning readings (insights/planning.py) from the
+        house forecast and the dashboard's sun forecast. One that cannot be
+        read this time - an hour of the horizon is missing - keeps its last
+        reading, and says since when (``held_since``)."""
+        use = {t.timestamp(): v for t, v in cons_fc.hourly}
+        spread = [{t.timestamp(): v for t, v in device_fc[s].hourly}
+                  for s in opts.get(CONF_PLAN_SPREAD) or [] if s in device_fc and s not in left_out]
+        get = lambda key: opts.get(key, PLAN_DEFAULTS[key])  # noqa: E731
+        weights = {}
+        for n in PLAN_SENSORS:
+            full_h, derate = PLAN_WEIGHTS[n]
+            weights[n] = tuple((opts.get(plan_key(n, side, "full_hours"), full_h), opts.get(plan_key(n, side, "derate"), derate))
+                               for side in ("consumption", "production"))
+        full = _read_number(self.hass, [opts.get(CONF_PLAN_FULL_SOC_ENTITY)]) if opts.get(CONF_PLAN_FULL_SOC_ENTITY) else None
+        cfg = {"days": get(CONF_PLAN_DAYS), "production_scale": get(CONF_PLAN_PRODUCTION_SCALE),
+               "consumption_scale": get(CONF_PLAN_CONSUMPTION_SCALE), "floor": get(CONF_PLAN_MINIMUM_FLOOR),
+               "weights": weights}
+        fresh = plan_all(now, spread_evenly(use, spread), pv, site.battery_capacity_kwh, soc,
+                         full if full is not None else get(CONF_PLAN_FULL_SOC), cfg)
+        names = {s: next((d.label for d in site.devices if d.energy == s), s) for s in opts.get(CONF_PLAN_SPREAD) or []}
+        out: Dict[str, Optional[dict]] = {}
+        for n, r in fresh.items():
+            if r is not None:
+                r["attributes"]["inputs"].update({"spread_evenly": [names[s] for s in names if s in device_fc and s not in left_out],
+                                                  "left_out": [d.label for d in site.devices if d.energy in left_out]})
+                self._plan_last[n] = {**r, "held_since": None}
+            elif n in self._plan_last:
+                last = self._plan_last[n]
+                since = last.get("held_since") or now.isoformat()
+                if now - dt_util.parse_datetime(since) > PLAN_HOLD_MAX:
+                    del self._plan_last[n]       # an input broken for good must not serve a value for ever
+                else:
+                    self._plan_last[n] = {**last, "held_since": since}
+            out[n] = self._plan_last.get(n)
+        # when the forecast sun starts and stops: a function of the sun forecast alone,
+        # not of the 120 hours or the pack the three readings above need
+        starts, ends = sun_window(now, pv, get(CONF_PLAN_PRODUCTION_SCALE), now.tzinfo)
+        out["sun"] = {"starts": starts, "ends": ends} if starts else None
+        # the lowest daylight hour of the house forecast, today and tomorrow: from the same two
+        # inputs, but unknown is a valid answer here, so it is never held (no held_since)
+        out["base"] = base_consumption(now, use, pv, now.tzinfo)
+        # when the pack is next full: read off the excess balance (held with it)
+        full_at = ((out.get("excess") or {}).get("attributes") or {}).get("full_at")
+        out["full"] = {"at": full_at} if full_at else None
+        return out
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:
         """Hour key -> forecast PV kWh, from the forecast integrations the
@@ -347,20 +751,34 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 out[k] = out.get(k, 0.0) + float(wh) / 1000.0
         return out
 
+    async def _input_signal(self, eid: str, start: datetime, now: datetime,
+                            horizon_keys: List[float]) -> Tuple[Optional[CalendarSignals], str]:
+        """An attached entity as the fit takes it - its labelled history and
+        the horizon's projected labels - and how it was read. None when it
+        cannot take part yet."""
+        raw = await self._input_history(eid, start, now)
+        labels, kind = await self.hass.async_add_executor_job(label_history, raw)
+        if not usable(labels):
+            return None, (f"{kind} (too little history)" if kind in ("categorical", "banded") else kind)
+        st = self.hass.states.get(eid)
+        current = labels.get(max(labels)) if labels else None
+        if st is not None and st.state not in ("unknown", "unavailable", ""):
+            # the label the CURRENT state falls under, for the hold window
+            current = (await self.hass.async_add_executor_job(
+                label_history, {max(labels) if labels else 0.0: st.state}
+            ))[0].get(max(labels) if labels else 0.0, current) if kind == "categorical" else current
+        future = await self.hass.async_add_executor_job(project, labels, horizon_keys, now.tzinfo, current)
+        merged = dict(labels)
+        merged.update(future)
+        return CalendarSignals.from_labels(eid, merged), kind
+
     async def _input_history(self, entity_id: str, start: datetime, end: datetime) -> Dict[float, object]:
         """hour key -> the entity's value in that hour. Hourly statistics when
         it has them (years of history), otherwise the recorder's raw states,
         taking the state that was in force at the top of each hour - which is
         what a schedule-like input needs and what the recorder can give for a
         sensor with no statistics."""
-        rows = await get_instance(self.hass).async_add_executor_job(
-            rec_stats.statistics_during_period,
-            self.hass, start, None, {entity_id}, "hour", None, {"mean"},
-        )
-        out: Dict[float, object] = {}
-        for r in rows.get(entity_id, []):
-            if r.get("mean") is not None and isinstance(r.get("start"), (int, float)):
-                out[float(r["start"])] = float(r["mean"])
+        out: Dict[float, object] = await self._hourly_means(entity_id, start)
         if out:
             return out
         states = await get_instance(self.hass).async_add_executor_job(
@@ -381,6 +799,193 @@ class InsightsCoordinator(DataUpdateCoordinator):
             if k >= changes[0][0]:
                 out[k] = current
         return out
+
+    def _thermal_note(self, entry, text: str) -> None:
+        """Say why a Load Juggler load has no thermal room - once per change of reason."""
+        key, title = (entry.entry_id, entry.title) if entry is not None else ("", "all loads")
+        if self._thermal_said.get(key) != text:
+            self._thermal_said[key] = text
+            _LOGGER.info("Thermal room for %s: %s", title, text)
+
+    async def _thermal_rooms(self, site: SiteModel, series: Dict[str, list], now: datetime,
+                             start: datetime, opts, outdoor: Dict[float, float],
+                             outdoor_fc: Dict[float, float], sun: Dict[float, float],
+                             sun_fc: Dict[float, float]) -> Dict[str, dict]:
+        """The room of each dashboard device that a Load Juggler tank or heater thermostat
+        runs, from kWh per degree (insights/thermal.py) and the thermostat's temperature
+        now against its boost setpoint. A device gets an entry only when the figure is
+        known; the others keep the history ceiling. The device is matched through the
+        registry: the tank's power sensor (or its thermostat) and the dashboard's energy sensor sit on one
+        device. ponytail: the temperature comes from the recorder's raw states, which keep
+        about ten days, so a heater that runs rarely has few runs; persist the runs if that
+        proves too few."""
+        registry = er.async_get(self.hass)
+        by_device = {}
+        for d in site.devices:
+            ent = registry.async_get(d.energy)
+            if ent is not None and ent.device_id:
+                by_device.setdefault(ent.device_id, d.energy)
+        out: Dict[str, dict] = {}
+        entries = self.hass.config_entries.async_entries(JUGGLER_DOMAIN)
+        self._thermal_note(None, f"{len(entries)} Load Juggler entries, "
+                                 f"{sum(1 for e in entries if e.data.get(JUGGLER_DEVICE_TYPE) in JUGGLER_THERMOSTAT_KINDS)} tanks, "
+                                 f"{len(by_device)} dashboard devices on a registry device")
+        for entry in entries:
+            def conf(key, entry=entry):
+                return entry.options.get(key, entry.data.get(key))
+            kind_name = JUGGLER_THERMOSTAT_KINDS.get(entry.data.get(JUGGLER_DEVICE_TYPE))
+            if kind_name is None:
+                continue
+            climate = conf(JUGGLER_CLIMATE)
+            # the power sensor when the load has one, else the thermostat itself: a generic
+            # thermostat sits on its heater's device
+            sid = None
+            for ref in (conf(JUGGLER_TANK_POWER), climate):
+                ent = registry.async_get(ref) if ref else None
+                sid = by_device.get(ent.device_id) if ent is not None else None
+                if sid:
+                    break
+            state = self.hass.states.get(climate) if climate else None
+            if sid is None or state is None:
+                self._thermal_note(entry, "no dashboard device on the thermostat's or power sensor's device" if sid is None
+                                   else "its thermostat has no state")
+                continue
+            try:
+                current = float(state.attributes["current_temperature"])
+            except (KeyError, TypeError, ValueError):
+                self._thermal_note(entry, "its thermostat reports no current temperature")
+                continue
+            boost = None
+            for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+                if ent.domain == "number" and (ent.unique_id or "").endswith(JUGGLER_BOOST_SUFFIX):
+                    boost = _read_number(self.hass, [ent.entity_id])
+            boost = boost if boost is not None else conf(JUGGLER_BOOST_OPTION)
+            try:
+                boost = float(boost)
+            except (TypeError, ValueError):
+                self._thermal_note(entry, "no boost setpoint")
+                continue
+            temps = await self._hourly_attribute(climate, "current_temperature", start, now)
+            energy = [(t.timestamp(), v) for t, v in series.get(sid, ()) if v is not None]
+            kind = KINDS[kind_name]       # from the load's device type in Load Juggler
+            if kind.name == "room":
+                # a room's heat-loss model first (INS-24); its energy per degree below stays the fallback
+                why: Dict[str, object] = {}
+                targets = await self._hourly_attribute(climate, "temperature", start, now)
+                saved = await self._room_store.async_load() or {}
+                merged, m_temps, m_energy, m_outdoor, m_sun, m_targets = roommodel.merge_hours(
+                    saved.get(sid, {}), temps, energy, outdoor, sun, targets, floor_hour(now).timestamp())
+                await self._room_store.async_save({**saved, sid: merged})
+                model = roommodel.fit(roommodel.hourly_rows(m_temps, m_energy, m_outdoor, m_sun or None),
+                                      roommodel.quantum(m_temps), why)
+                rate = absorption_rate(series.get(sid, ()))
+                known = [k for k in outdoor if k <= now.timestamp()]
+                if model is not None and rate and known:
+                    t_out = outdoor[max(known)]
+                    room = roommodel.room_to_absorb(model, current, boost, t_out, rate * 1000.0,
+                                                    sun.get(floor_hour(now).timestamp()) if model.sun_gain is not None else None)
+                    if room is not None:
+                        modes = self._room_modes(entry, model, boost, rate, outdoor, outdoor_fc, sun, sun_fc,
+                                                 registry, m_targets, now)
+                        self._thermal_note(entry, f"room model: C {model.c_kwh_per_k:.2f} kWh/K, UA {model.ua_w_per_k:.0f} W/K, "
+                                                  f"G {model.g_w:.0f} W from {model.hours} hours")
+                        out[sid] = {"room": room, "source": "room_model", "kind": kind.name,
+                                    "c_kwh_per_k": round(model.c_kwh_per_k, 3), "ua_w_per_k": round(model.ua_w_per_k, 1),
+                                    "g_w": round(model.g_w), "sun_w_per_kw": None if model.sun_gain is None else round(model.sun_gain),
+                                    "coast_hours": round(model.coast_hours, 1), "hours": model.hours,
+                                    "heated_hours": model.heated, "residual_k": round(model.resid_k, 3),
+                                    "temperature": current, "boost": boost, "modes": modes}
+                        continue
+                self._thermal_note(entry, f"no room model ({why.get('reason') or 'no absorption rate or outdoor temperature'}); "
+                                          "energy per degree instead")
+            seen: Dict[str, int] = {}
+            runs = heating_runs(energy, temps, seen, kind.allow_dips)
+            learned = kwh_per_degree(runs, kind)
+            if not learned:
+                self._thermal_note(entry, f"{len(runs)} clean heating runs in {len(temps)} hours of temperature, "
+                                          f"{len(energy)} of energy; not enough or too uneven ({kind.name}); seen {seen}")
+            room = room_from_thermal(learned[0], current, boost) if learned else None
+            if room is not None:
+                self._thermal_note(entry, f"{learned[0]:.3f} kWh/K from {learned[2]} runs ({kind.name})")
+                out[sid] = {"room": room, "kwh_per_degree": round(learned[0], 3),
+                            "spread": round(learned[1], 2), "runs": learned[2], "kind": kind.name,
+                            "temperature": current, "boost": boost}
+        return out
+
+    def _room_modes(self, entry, model, boost, rate, outdoor, outdoor_fc, sun, sun_fc, registry, targets, now) -> Optional[dict]:
+        """The room's energy today and tomorrow at each mode's setpoint (Load Juggler's away, normal
+        and boost temperatures), and the expected figure between normal and boost, weighted by the share
+        of recorded hours the thermostat's target sat at boost (0.5 until there are hours to say).
+        A mode is only a setpoint, so the model needs nothing more (INS-24, spec section 9)."""
+        def number(suffix, option):
+            value = None
+            for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+                if ent.domain == "number" and (ent.unique_id or "").endswith(suffix):
+                    value = _read_number(self.hass, [ent.entity_id])
+            value = value if value is not None else entry.options.get(option, entry.data.get(option))
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        setpoints = {"away": number(JUGGLER_AWAY_SUFFIX, JUGGLER_AWAY_OPTION),
+                     "normal": number(JUGGLER_NORMAL_SUFFIX, JUGGLER_NORMAL_OPTION), "boost": boost}
+        if any(v is None for v in setpoints.values()):
+            return None
+        tz = now.tzinfo
+        today = datetime.combine(now.date(), datetime.min.time(), tzinfo=tz)
+        days = [(today.timestamp(), (today + timedelta(days=1)).timestamp()),
+                ((today + timedelta(days=1)).timestamp(), (today + timedelta(days=2)).timestamp())]
+        # the hours that passed come from the sensor, the rest from the forecast
+        temps_all = {**outdoor_fc, **outdoor}
+        sun_all = {**{k: v / 1000.0 for k, v in sun_fc.items()}, **sun}     # the sun forecast is in Wh
+        per = roommodel.daily_by_mode(model, setpoints, temps_all, rate * 1000.0, days, sun_all)
+        share = roommodel.boost_share(targets, setpoints["normal"], boost)
+        out = {"setpoints": setpoints, "boost_share": round(share, 2), "today_kwh": {}, "tomorrow_kwh": {}}
+        for i, key in enumerate(("today_kwh", "tomorrow_kwh")):
+            for name in setpoints:
+                out[key][name] = per[name][i]
+            lo, hi = per["normal"][i], per["boost"][i]
+            out[key]["expected"] = None if lo is None or hi is None else round(lo + share * (hi - lo), 2)
+        return out
+
+    async def _hourly_attribute(self, entity_id: str, attribute: str, start: datetime,
+                                end: datetime) -> Dict[float, float]:
+        """hour key -> a numeric attribute of the entity as it stood at the top of that hour,
+        from the recorder's raw states."""
+        # every row, attribute-only updates included: state_changes_during_period keeps only the rows
+        # where the state itself changed, and a thermostat's stays "heat" while its temperature moves
+        states = await get_instance(self.hass).async_add_executor_job(
+            functools.partial(history.get_significant_states, self.hass, start, end, [entity_id],
+                              include_start_time_state=True, significant_changes_only=False,
+                              minimal_response=False, no_attributes=False),
+        )
+        changes = []
+        for st in states.get(entity_id, []):
+            try:
+                changes.append((st.last_updated.timestamp(), float(st.attributes[attribute])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        changes.sort()
+        out: Dict[float, float] = {}
+        i, current = 0, None
+        for b in hour_buckets(floor_hour(start), int((end - floor_hour(start)).total_seconds() // 3600) + 1):
+            k = b.timestamp()
+            while i < len(changes) and changes[i][0] <= k:
+                current = changes[i][1]
+                i += 1
+            if current is not None:
+                out[k] = current
+        return out
+
+    async def _hourly_means(self, entity_id: str, start: datetime,
+                            units: Optional[Dict[str, str]] = None) -> Dict[float, float]:
+        """hour key -> the entity's hourly mean statistic since ``start``,
+        in ``units`` where given."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.statistics_during_period,
+            self.hass, start, None, {entity_id}, "hour", units, {"mean"},
+        )
+        return {float(r["start"]): float(r["mean"]) for r in rows.get(entity_id, []) if r.get("mean") is not None}
 
     async def _calendar_events(self, entity_id: str, start: datetime, end: datetime) -> List[tuple]:
         """(start_key, end_key, title) for every event of a calendar between
@@ -472,20 +1077,12 @@ def _to_c(value, unit) -> float:
     return float(TemperatureConverter.convert(float(value), unit, UnitOfTemperature.CELSIUS))
 
 
+# A device state entity in these domains is a NUMBER and nudges its next hours;
+# anything else is a state, fitted like an attached input.
+NUMERIC_STATE_DOMAINS = ("sensor", "input_number", "number")
+
+
 def _rows_to_samples(rows: List[dict], tz) -> List[tuple]:
     """Recorder rows -> (local period start, kWh). ``start`` is an epoch float
-    in current cores; a datetime is accepted too."""
-    out = []
-    for r in rows:
-        v = r.get("change")
-        if v is None:
-            continue
-        s = r.get("start")
-        if isinstance(s, (int, float)):
-            t = datetime.fromtimestamp(s, tz)
-        elif isinstance(s, datetime):
-            t = s.astimezone(tz)
-        else:
-            continue
-        out.append((t, float(v)))
-    return out
+    (StatisticsRow, every core this runs on)."""
+    return [(datetime.fromtimestamp(r["start"], tz), float(r["change"])) for r in rows if r.get("change") is not None]

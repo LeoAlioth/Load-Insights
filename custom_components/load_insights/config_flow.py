@@ -2,7 +2,7 @@
 explanatory inputs. Options: change the inputs later."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import logging
 
@@ -12,47 +12,89 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry as er, selector
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, floor_registry as fr, selector
 
 from .const import (
+    CONF_FORECAST_EXCLUDE,
+    CONF_HEAT_DEVICES,
+    CONF_PLAN_CONSUMPTION_SCALE,
+    CONF_PLAN_DAYS,
+    CONF_PLAN_FULL_SOC,
+    CONF_PLAN_FULL_SOC_ENTITY,
+    CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_PRODUCTION_SCALE,
+    CONF_PLAN_SPREAD,
+    PLAN_DEFAULTS,
+    PLAN_SENSORS,
+    PLAN_WEIGHTS,
+    plan_key,
     CONF_GRID_DEVICE,
     CONF_LAYOUT,
-    ROLE_PREFIX,
+    GRID_PREFIX,
     CONF_INVERTERS,
     CONF_INV_DEVICE,
     CONF_INV_INPUT_PREFIX,
     CONF_INV_TOPOLOGY,
     SOURCE_KINDS,
+    SOURCE_UTILITY,
     CONF_SOURCE_KIND,
-    DEFAULT_SOURCE_KIND,
     LAYOUT_PARALLEL,
     LAYOUT_SERIES,
     CONF_CALENDAR_ENTITIES,
     CONF_DETECTION,
-    CONF_DETECTION_INTERVAL,
+    CONF_AUTONAME,
+    CONF_AUTONAME_DASHBOARD,
+    CONF_BASE_LOAD,
+    CONF_BASE_LOAD_PHASES,
+    BASE_LOAD_GRID,
+    CONF_SINGLE_DEVICE,
+    CONF_CHANGE_METERS,
+    CONF_IGNORE_METERS,
+    CONF_PERIODIC_METERS,
+    CONF_HORIZON_SKIP,
+    CONF_METER_WAIT,
     DETECTION_BACKFILL_DAYS,
     NAMING_MAX_STALE_S,
-    DETECTION_INTERVAL_CHOICES,
-    DETECTION_INTERVAL_MINUTES,
-    CONF_DEVICE_STATE_SENSORS,
     CONF_INPUT_ENTITIES,
+    CONF_INPUT_LINKS,
     CONF_SIGNATURE_REVISION,
-    DETECTION_KINDS,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
+    CONF_BATTERY_CAPACITY_ENTITY,
     DEFAULT_NAME,
     DOMAIN,
 )
 from homeassistant.util import dt as dt_util
 
-from .insights.detect import same_device_phrase, suggest_levels
+from .flowgroups import CONFIG as CONFIG_GROUPS, OPTIONS as OPTIONS_GROUPS
+from .sections import SectionedFlowMixin
+
+from .insights.detect import (EDGE_HELPED_SHARE, METER_WAIT_CAP_S, SWITCH_PREFIX, edge_story, most_specific, same_device_phrase,
+                              input_groups, suggest_levels)
 from .overview import overview_text
 
 _LOGGER = logging.getLogger(__name__)
 NAMING_MAX_ROWS = 24           # the menu's length; the rest wait for the next visit
-from .insights.discovery import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
+NAMING_MAX_GROUPS = 12         # meters on the first page; the translations carry this many rows
+NAMED = "\x00named"            # the named loads' page, which is not a meter's
+from .insights.classify import _fmt_s, _fmt_w
+from .insights.phases import KIND_BY_DEVICE_CLASS, describe_match, match_meter_entities
+from .detection import area_id, device_rows, meter_devices, named_load_energy, runner_of
+from .insights.inputs import LOAD_PREFIX, add_inputs, relink, suggest_inputs
+from .insights.heatnudge import KINDS, parse_devices
 from .insights.model import SiteModel
+from .insights.named import chosen_name
+
+# What a room says about the devices in it: whether someone is there, and its
+# air. Offered on the suggested-inputs page, by device class.
+SUGGESTED_CLASSES = {"binary_sensor": ("occupancy", "presence", "motion"), "sensor": ("temperature", "humidity")}
+
+
+def _entity(key: str, defaults: dict, device_class: str) -> dict:
+    """An optional sensor field of ``device_class``, suggesting what ``defaults`` has for it."""
+    return {vol.Optional(key, description={"suggested_value": defaults.get(key)}):
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class=device_class))}
 
 
 def _grid_fields(defaults: dict) -> dict:
@@ -70,12 +112,11 @@ def _grid_fields(defaults: dict) -> dict:
     for kind, device_class in (("power", "power"), ("voltage", "voltage"),
                                ("current", "current"), ("pf", "power_factor")):
         for p in ("a", "b", "c"):
-            key = f"{ROLE_PREFIX['grid']}{kind}_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class))
+            out.update(_entity(f"{GRID_PREFIX}{kind}_{p}", defaults, device_class))
+    # an "auto" stored before 2026-10-01 was the utility all along
+    kind = defaults.get(CONF_SOURCE_KIND)
     out[vol.Optional(CONF_SOURCE_KIND,
-                     default=defaults.get(CONF_SOURCE_KIND, DEFAULT_SOURCE_KIND))] = selector.SelectSelector(
+                     default=kind if kind in SOURCE_KINDS else SOURCE_UTILITY)] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=list(SOURCE_KINDS), translation_key=CONF_SOURCE_KIND,
                                       mode=selector.SelectSelectorMode.DROPDOWN))
     return out
@@ -93,23 +134,16 @@ def _inverter_fields(defaults: dict) -> dict:
            selector.DeviceSelector(selector.DeviceSelectorConfig(
                entity=[selector.EntityFilterSelectorConfig(domain="sensor", device_class="power")]))}
     for prefix in ("", CONF_INV_INPUT_PREFIX):
-        out[vol.Optional(f"{prefix}power",
-                         description={"suggested_value": defaults.get(f"{prefix}power")})] = \
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+        out.update(_entity(f"{prefix}power", defaults, "power"))
         for p in ("a", "b", "c"):
-            key = f"{prefix}power_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
+            out.update(_entity(f"{prefix}power_{p}", defaults, "power"))
     # The OUTPUT side's volts and amps. Where the loads hang off an inverter -
     # Kozolec, where the MultiPlus output IS the house - this is the circuit
     # they are in, so it is the only place a power factor for them can come
     # from. The grid side's own readings live on the Grid connection page.
     for kind, device_class in (("voltage", "voltage"), ("current", "current"), ("pf", "power_factor")):
         for p in ("a", "b", "c"):
-            key = f"{kind}_{p}"
-            out[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = \
-                selector.EntitySelector(selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class))
+            out.update(_entity(f"{kind}_{p}", defaults, device_class))
     out[vol.Optional(CONF_INV_TOPOLOGY, default=defaults.get(CONF_INV_TOPOLOGY, LAYOUT_PARALLEL))] = \
         selector.SelectSelector(selector.SelectSelectorConfig(
             options=[LAYOUT_PARALLEL, LAYOUT_SERIES], translation_key=CONF_LAYOUT,
@@ -137,7 +171,7 @@ def _load_line(hass, entry) -> str:
     if own:
         return (f"Using the reading you set by hand on {'+'.join(own)}. Clear those fields and it "
                 "is worked out from the grid connection and the inverters instead.")
-    grid = any(cfg.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in ("a", "b", "c"))
+    grid = any(cfg.get(f"{GRID_PREFIX}power_{p}") for p in ("a", "b", "c"))
     inverters = entry.options.get(CONF_INVERTERS) or []
     if not grid and not inverters:
         return ("Nothing to work with yet - set up the grid connection, the inverters, or both. "
@@ -151,24 +185,88 @@ def _load_line(hass, entry) -> str:
     return "House consumption is worked out from " + " and ".join(parts) + "."
 
 
+def _friendly(hass, entity_id: str) -> str:
+    """An entity's friendly name, else its id."""
+    st = hass.states.get(entity_id)
+    return (st.attributes.get("friendly_name") if st is not None else None) or entity_id
+
+
+def _group_title(where: str, hass=None) -> str:
+    """A naming group's row: the meter's name, or where there is none - and
+    for a switch, what switches it: the one device it turns on, unmetered."""
+    if where == "main":
+        return "Under no meter"
+    if where.startswith(SWITCH_PREFIX):
+        entity_id = where[len(SWITCH_PREFIX):]
+        return f"Switched by {_friendly(hass, entity_id) if hass is not None else entity_id}"
+    return where
+
+
+def _helpers(hass, sig, edges=()) -> list:
+    """(input, what it says about this load) for each input that helped find
+    it - so an input added for the whole site can be linked to the load it
+    turned out to explain once it is named (2026-09-28)."""
+    out = []
+    story = edge_story(edges, sig)
+    said = {}
+    for role, verb in (("start", "Starts"), ("stop", "Stops")):
+        for eid, seen in ((story.get(role) or {}).get("signals") or {}).items():
+            if seen["share"] < EDGE_HELPED_SHARE:
+                continue
+            was, _, now = seen["kind"].partition("→")
+            what = {"off→on": "turning on", "on→off": "turning off"}.get(seen["kind"], f"going from {was} to {now}")
+            when = ("" if seen["lag_s"] is None else
+                    f", {abs(seen['lag_s']):.0f} s {'before' if seen['lag_s'] < 0 else 'after'} the meter sees it")
+            said.setdefault(eid, []).append(f"{verb} with {_friendly(hass, eid)} {what}{when}: {seen['share']:.0%} of its "
+                                            f"{role}s")
+    for eid, lines in said.items():
+        out.append((eid, "; ".join(lines)))
+    tied = sig.strongest_input()
+    if tied is not None:
+        eid, value, share, lift = tied
+        out.append((eid, f"Runs while {_friendly(hass, eid)} is {value}: {share:.0%} of its runs, "
+                         f"{lift:.0f} times what chance would give"))
+    return out
+
+
+def _meter_entity(runner, where: str) -> Optional[str]:
+    """An entity behind a meter's readings - for a switch, the switch."""
+    if where.startswith(SWITCH_PREFIX):
+        return where[len(SWITCH_PREFIX):]
+    fields = (runner.submeters.get(where) or {}).get("fields") or {}
+    return next(iter(fields.values()), None)
+
+
+def _meter_place(hass, runner, where: str) -> str:
+    """The area and floor of the device behind a meter's readings - the
+    entity's own area where it has one, else its device's."""
+    place = area_id(hass, _meter_entity(runner, where))
+    area = ar.async_get(hass).async_get_area(place) if place else None
+    if area is None:
+        return ""
+    floor = None
+    if area.floor_id:
+        found = fr.async_get(hass).async_get_floor(area.floor_id)
+        floor = found.name if found else None
+    return f"{area.name}, {floor}" if floor else area.name
+
+
+def _group_detail(hass, runner, where: str, shown: int, waiting: int) -> str:
+    """Under a group's row: how many loads it offers, how many wait behind
+    them, and where the meter is."""
+    parts = [f"{shown} load{'s' if shown != 1 else ''} to name"]
+    if waiting:
+        parts.append(f"{waiting} more waiting")
+    place = "no meter saw these" if where == "main" else _meter_place(hass, runner, where)
+    if place:
+        parts.append(place)
+    return " · ".join(parts)
+
+
 def _behind(seconds: Optional[float]) -> str:
     if seconds is None:
         return "it has not read anything yet"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f} minutes behind"
-    if seconds < 172800:
-        return f"{seconds / 3600:.0f} hours behind"
-    return f"{seconds / 86400:.1f} days behind"
-
-
-def _w(value: float) -> str:
-    return f"{value:.0f} W" if abs(value) < 1000 else f"{value / 1000:.1f} kW"
-
-
-def _secs(value: float) -> str:
-    if value < 90:
-        return f"{value:.0f} s"
-    return f"{value / 60:.0f} min" if value < 5400 else f"{value / 3600:.1f} h"
+    return f"{dt_util.get_age(dt_util.utcnow() - timedelta(seconds=max(0.0, seconds)))} behind"
 
 
 def _since(when: float) -> str:
@@ -178,27 +276,36 @@ def _since(when: float) -> str:
     return f"for {days:.0f} days" if days < 60 else f"since {datetime.fromtimestamp(when, dt_util.DEFAULT_TIME_ZONE):%-d %b %Y}"
 
 
-def _interval_field(defaults: dict) -> dict:
-    """How often the recorder is re-read. Its cost no longer scales with it -
-    one query per pass rather than one per entity, and the state written
-    hourly rather than every pass - so the default is a minute and slowing it
-    down is for a large site or slow storage, not for a quiet one.
+def _autoname_fields(current: dict) -> dict:
+    """The two auto-naming switches (INS-21), both on when never saved."""
+    return {vol.Optional(key, default=bool(current.get(key, True))): selector.BooleanSelector()
+            for key in (CONF_AUTONAME, CONF_AUTONAME_DASHBOARD)}
 
-    It is the only thing left here. "How sure before offering a load" and
-    "smallest change to notice" were removed (Anze, 2026-09-23): the first
-    only filtered the naming page, which already lengthens as loads are named
-    and never runs dry, and nobody can say what an evidence of 0.7 should be;
-    the second is a floor under each phase's MEASURED noise that 1 to 10 W
-    left the scored loads alone at both sites. Both are fixed values now -
-    DEFAULT_MIN_EVIDENCE and MIN_NOISE_W - and a stored choice is ignored."""
-    out = {}
-    out.update({vol.Optional(CONF_DETECTION_INTERVAL,
-                         default=defaults.get(CONF_DETECTION_INTERVAL, DETECTION_INTERVAL_MINUTES)):
-            selector.SelectSelector(selector.SelectSelectorConfig(
-                options=[str(n) for n in DETECTION_INTERVAL_CHOICES],
-                translation_key=CONF_DETECTION_INTERVAL,
-                mode=selector.SelectSelectorMode.DROPDOWN))})
-    return out
+
+def _meter_wait_field(defaults: dict) -> dict:
+    """How long the grid's steps wait for the meters below it - see
+    METER_WAIT_CAP_S.
+
+    The rest of what was here is fixed now, and a stored choice is ignored.
+    "How sure before offering a load" and "smallest change to notice" went
+    first (2026-09-23): the first only filtered the naming page, which
+    already lengthens as loads are named and never runs dry, and nobody can
+    say what an evidence of 0.7 should be; the second is a floor under each
+    phase's MEASURED noise that 1 to 10 W left the scored loads alone at both
+    sites - DEFAULT_MIN_EVIDENCE and MIN_NOISE_W. How often the recorder is
+    re-read followed (2026-10-01): DETECTION_INTERVAL_MINUTES."""
+    return {vol.Optional(CONF_METER_WAIT, default=defaults.get(CONF_METER_WAIT, METER_WAIT_CAP_S)):
+            selector.NumberSelector(selector.NumberSelectorConfig(
+                min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))}
+
+
+def _meters_field(key: str, meters: list, chosen) -> dict:
+    """A multi-select of the meters detection could read, by statistic id -
+    ``chosen`` ticked, none until the page is saved."""
+    return {vol.Optional(key, default=list(chosen or [])): selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[selector.SelectOptionDict(value=stat, label=name) for stat, name, _ in meters],
+            multiple=True, mode=selector.SelectSelectorMode.LIST))}
 
 
 def _disabled_readings(hass, device_id: str) -> int:
@@ -207,11 +314,12 @@ def _disabled_readings(hass, device_id: str) -> int:
     A disabled entity has no state and no history, so discovery cannot use
     it and the device page hides it behind "+N entities not shown". That is
     how a meter can appear to publish nothing useful while the reading you
-    want is one click from existing (Anze, 2026-09-17)."""
+    want is one click from existing (2026-09-17)."""
     registry = er.async_get(hass)
     wanted = set(KIND_BY_DEVICE_CLASS)
     return len([
-        e for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=True)
+        e for d in meter_devices(hass, device_id)
+        for e in er.async_entries_for_device(registry, d, include_disabled_entities=True)
         if e.disabled and e.domain == "sensor"
         and (e.device_class or e.original_device_class) in wanted
     ])
@@ -229,23 +337,12 @@ def _found_line(hass, cfg: dict) -> str:
     return line
 
 
-def _discover(hass, device_id: str, role: str = "load") -> dict:
-    """The device's sensors, matched to per-phase fields."""
-    registry = er.async_get(hass)
-    rows = []
-    for e in er.async_entries_for_device(registry, device_id, include_disabled_entities=False):
-        if e.domain != "sensor":
-            continue
-        state = hass.states.get(e.entity_id)
-        device_class = (
-            e.device_class
-            or e.original_device_class
-            or (state.attributes.get("device_class") if state else None)
-        )
-        name = e.name or e.original_name or (state.attributes.get("friendly_name") if state else "") or ""
-        rows.append({"entity_id": e.entity_id, "device_class": device_class, "name": name,
-                     "device_id": e.device_id})
-    return match_meter_entities(rows, role)
+def _grid_found(hass, cfg: dict) -> dict:
+    """The grid page's placeholders: what ``cfg``'s grid readings were matched to."""
+    prefix = GRID_PREFIX
+    return {"found": _found_line(hass, {
+        **{k[len(prefix):]: v for k, v in cfg.items() if k.startswith(prefix) and k != CONF_GRID_DEVICE},
+        "device": cfg.get(CONF_GRID_DEVICE)})}
 
 
 def _single_weather_entity(hass) -> str | None:
@@ -255,21 +352,74 @@ def _single_weather_entity(hass) -> str | None:
     return ids[0] if len(ids) == 1 else None
 
 
-def _inputs_schema(defaults: dict) -> dict:
-    return {
+# What the inputs page (and the first form) owns.
+_INPUT_KEYS = (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES,
+               CONF_INPUT_ENTITIES, CONF_BATTERY_CAPACITY_ENTITY, CONF_FORECAST_EXCLUDE)
+
+
+def _inputs_schema(defaults: dict, devices: Optional[dict] = None) -> dict:
+    """``devices`` (statistic id -> label) adds the pick of loads to leave out
+    of the consumption forecast - only on the options page, where the
+    dashboard's devices are at hand."""
+    out = {
         vol.Optional(CONF_WEATHER_ENTITY, description={"suggested_value": defaults.get(CONF_WEATHER_ENTITY)}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="weather")),
-        vol.Optional(CONF_OUTDOOR_TEMPERATURE_ENTITY, description={"suggested_value": defaults.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)}):
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature")),
+        **_entity(CONF_OUTDOOR_TEMPERATURE_ENTITY, defaults, "temperature"),
         vol.Optional(CONF_CALENDAR_ENTITIES, description={"suggested_value": defaults.get(CONF_CALENDAR_ENTITIES) or []}):
             selector.EntitySelector(selector.EntitySelectorConfig(domain="calendar", multiple=True)),
         vol.Optional(CONF_INPUT_ENTITIES, description={"suggested_value": defaults.get(CONF_INPUT_ENTITIES) or []}):
             selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
+        **_entity(CONF_BATTERY_CAPACITY_ENTITY, defaults, "energy_storage"),
     }
+    if devices:
+        out[vol.Optional(CONF_FORECAST_EXCLUDE, description={"suggested_value": [
+            e for e in defaults.get(CONF_FORECAST_EXCLUDE) or [] if e in devices]})] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
+                multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+    return out
 
 
-class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+def _num(minimum: float, maximum: float, step: float, unit: Optional[str] = None):
+    # unit_of_measurement must be a string: a None fails the selector's schema
+    # (and with it the whole page), so a unitless number leaves it out
+    cfg = {"min": minimum, "max": maximum, "step": step, "mode": selector.NumberSelectorMode.BOX}
+    if unit:
+        cfg["unit_of_measurement"] = unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**cfg))
+
+
+# Every number the SOC planning page owns, as (key, default, selector).
+def _plan_fields() -> list:
+    fields = [(CONF_PLAN_DAYS, PLAN_DEFAULTS[CONF_PLAN_DAYS], _num(1, 7, 1, "d")),
+              (CONF_PLAN_PRODUCTION_SCALE, PLAN_DEFAULTS[CONF_PLAN_PRODUCTION_SCALE], _num(0.1, 2, 0.05)),
+              (CONF_PLAN_CONSUMPTION_SCALE, PLAN_DEFAULTS[CONF_PLAN_CONSUMPTION_SCALE], _num(0.1, 2, 0.05)),
+              (CONF_PLAN_FULL_SOC, PLAN_DEFAULTS[CONF_PLAN_FULL_SOC], _num(50, 100, 1, "%")),
+              (CONF_PLAN_MINIMUM_FLOOR, PLAN_DEFAULTS[CONF_PLAN_MINIMUM_FLOOR], _num(0, 100, 1, "%"))]
+    for sensor in PLAN_SENSORS:
+        full_h, derate = PLAN_WEIGHTS[sensor]
+        for side in ("consumption", "production"):
+            fields.append((plan_key(sensor, side, "full_hours"), full_h, _num(0, 168, 1, "h")))
+            fields.append((plan_key(sensor, side, "derate"), derate, _num(0, 20, 0.1, "%/h")))
+    return fields
+
+
+def _plan_schema(current: dict, devices: dict) -> dict:
+    out = {vol.Optional(k, default=current.get(k, default)): sel for k, default, sel in _plan_fields()}
+    out[vol.Optional(CONF_PLAN_FULL_SOC_ENTITY, description={"suggested_value": current.get(CONF_PLAN_FULL_SOC_ENTITY)})] = \
+        selector.EntitySelector(selector.EntitySelectorConfig(domain=["number", "input_number"]))
+    if devices:
+        out[vol.Optional(CONF_PLAN_SPREAD, description={"suggested_value": [
+            e for e in current.get(CONF_PLAN_SPREAD) or [] if e in devices]})] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=k, label=v) for k, v in devices.items()],
+                multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+    return out
+
+
+class LoadInsightsConfigFlow(SectionedFlowMixin, config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    GROUPS = CONFIG_GROUPS
 
     @staticmethod
     @callback
@@ -277,9 +427,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return LoadInsightsOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
-
+        # a second entry is turned away before this runs: single_config_entry
         manager = await async_get_manager(self.hass)
         site = SiteModel.from_prefs(manager.data)
         if not site.has_sources:
@@ -287,7 +435,7 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             data = {CONF_NAME: user_input[CONF_NAME]}
-            options = {k: v for k, v in user_input.items() if k in (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMPERATURE_ENTITY, CONF_CALENDAR_ENTITIES, CONF_INPUT_ENTITIES) and v}
+            options = {k: v for k, v in user_input.items() if k in _INPUT_KEYS and v}
             return self.async_create_entry(title=data[CONF_NAME], data=data, options=options)
 
         s = site.summary()
@@ -303,19 +451,24 @@ class LoadInsightsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
+class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
     """The site-level inputs, a device's own state sensor, and the meters."""
 
+    GROUPS = OPTIONS_GROUPS
+
     def __init__(self) -> None:
-        self._pending_detection: dict | None = None
-        self._naming_selected: int | None = None
+        self._naming_selected: tuple | None = None
         self._pending_grid: dict | None = None
-        self._naming_rows: list[int] = []      # menu position -> signature id
+        self._naming_rows: list[tuple] = []    # menu position -> (meter, signature id), the grid's under ""
+        self._naming_group: str | None = None
+        self._naming_groups: list[str] = []
+        self._pending_links: dict | None = None   # what Done relinks and links - see _links
+        self._linking: str | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["overview", "inputs", "device_state", "detection", "grid",
+            menu_options=["overview", "inputs", "input_links", "suggested_inputs", "plan", "heat", "detection", "grid",
                           "inverters", "naming"],
         )
 
@@ -327,11 +480,11 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         menu options are real labelled buttons - Refresh re-enters this step
         and rebuilds the text, Reset asks before forgetting anything."""
         try:
-            text = overview_text(self.hass, self.config_entry.entry_id)
+            text = overview_text(self.hass, self.config_entry)
         except Exception:  # noqa: BLE001 - a display page must never break
             _LOGGER.exception("Could not build the overview page")
             text = "Could not read the live data - see the Home Assistant log."
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         options = ["overview"]
         if runner is not None and runner.enabled:
             options.append("reset_detection")
@@ -353,21 +506,19 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             if device and pending is None:
                 # every kind, not just watts: the meter's own volts and amps
                 # are what make its reactive power meaningful
-                found = {f"{ROLE_PREFIX['grid']}{k}": v
-                         for k, v in _discover(self.hass, device, role="grid").items()}
+                found = {f"{GRID_PREFIX}{k}": v
+                         for k, v in match_meter_entities(device_rows(self.hass, device), "grid").items()}
                 typed = {k: v for k, v in user_input.items() if v}
                 merged = {**found, **typed}
                 if device != detection.get(CONF_GRID_DEVICE) or merged != typed:
                     self._pending_grid = merged
+                    # merged holds the device: it is in what was typed
                     return self.async_show_form(
                         step_id="grid", data_schema=vol.Schema(_grid_fields(merged)),
-                        description_placeholders={"found": _found_line(self.hass, {
-                            **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in merged.items()
-                               if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
-                            "device": device})},
+                        description_placeholders=_grid_found(self.hass, merged),
                     )
             keep = {k: v for k, v in detection.items()
-                    if not k.startswith(ROLE_PREFIX["grid"])
+                    if not k.startswith(GRID_PREFIX)
                     and k not in (CONF_LAYOUT, CONF_SOURCE_KIND)}
             cfg = {**keep, **{k: v for k, v in user_input.items() if v}}
             return self.async_create_entry(
@@ -375,10 +526,7 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         current = dict(self._pending_grid or detection)
         return self.async_show_form(
             step_id="grid", data_schema=vol.Schema(_grid_fields(current)),
-            description_placeholders={"found": _found_line(self.hass, {
-                **{k[len(ROLE_PREFIX["grid"]):]: v for k, v in current.items()
-                   if k.startswith(ROLE_PREFIX["grid"]) and k != CONF_GRID_DEVICE},
-                "device": current.get(CONF_GRID_DEVICE)})},
+            description_placeholders=_grid_found(self.hass, current),
         )
 
     async def async_step_inverters(self, user_input: dict[str, Any] | None = None):
@@ -406,31 +554,20 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             step_id="inverters", data_schema=vol.Schema(_inverter_fields({})),
             description_placeholders={"found": _inverter_line(current)})
 
-    async def async_step_inverter_found(self, user_input: dict[str, Any] | None = None):
-        """Confirm what picking a device found, before it is saved."""
-        offer = dict(self._pending_inverter or {})
-        if user_input is not None:
-            self._pending_inverter = None
-            return await self.async_step_inverters(user_input)
-        return self.async_show_form(
-            step_id="inverters", data_schema=vol.Schema(_inverter_fields(offer)),
-            description_placeholders={"found": _found_line(self.hass, {
-                **{k: v for k, v in offer.items() if k not in (CONF_INV_DEVICE, CONF_INV_TOPOLOGY)},
-                "device": offer.get(CONF_INV_DEVICE)})})
-
     async def async_step_reset_detection(self, user_input: dict[str, Any] | None = None):
         """Ask before forgetting: the library and every name in it go."""
         return self.async_show_menu(step_id="reset_detection",
                                     menu_options=["reset_confirmed", "overview"])
 
     async def async_step_reset_confirmed(self, user_input: dict[str, Any] | None = None):
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is not None:
             await runner.async_reset()
         return await self.async_step_overview()
 
     async def async_step_naming(self, user_input: dict[str, Any] | None = None):
-        """The detected loads, biggest first, one clickable row each.
+        """The meters the detected loads were seen on, one row each, and the
+        named loads; each opens its own list (async_step_naming_list).
 
         A MENU rather than a form: its rows are real buttons, so choosing one
         goes straight to it with no submit, which is what a dropdown could
@@ -438,9 +575,9 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         ``menu_options.<key>``, and the frontend passes this step's
         description_placeholders into that lookup - so a fixed key whose
         template is nothing but a placeholder carries whatever we put there,
-        which is how each row shows its own numbers and its own day (Anze,
+        which is how each row shows its own numbers and its own day (the owner,
         2026-09-18)."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        runner = runner_of(self.config_entry)
         if runner is None or not runner.enabled:
             return self.async_abort(reason="no_detection")
         # Nothing is worth naming from a library that is still being built:
@@ -460,45 +597,91 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
                 description_placeholders={
                     "progress": done or "0",
                     "behind": _behind(behind)})
-        candidates = runner.unlocated()
-        if not candidates:
+        groups = runner.naming_groups()
+        named = runner.named()
+        if not groups and not named:
             return self.async_abort(reason="nothing_to_name")
+        groups = groups[:NAMING_MAX_GROUPS]
+        self._naming_groups = [g[0] for g in groups]
+        if len(groups) == 1 and not named:
+            # one page of one list is the list
+            self._naming_group = groups[0][0]
+            return await self.async_step_naming_list()
+        placeholders, options = {"named": str(len(named))}, []
+        for index, (where, shown, waiting) in enumerate(groups):
+            placeholders[f"group_{index}"] = _group_title(where, self.hass)
+            placeholders[f"group_{index}_detail"] = _group_detail(
+                self.hass, runner, where, len(shown), waiting)
+            options.append(f"group_{index}")
+        if named:
+            options.append("naming_named")
+        options.append("naming_done")
+        return self.async_show_menu(step_id="naming", menu_options=options,
+                                    description_placeholders=placeholders)
+
+    async def async_step_naming_named(self, user_input: dict[str, Any] | None = None):
+        self._naming_group = NAMED
+        return await self.async_step_naming_list()
+
+    async def async_step_naming_list(self, user_input: dict[str, Any] | None = None):
+        """One meter's loads, biggest first, one clickable row each - or,
+        for NAMED, every named load wherever it was seen."""
+        runner = runner_of(self.config_entry)
+        if runner is None or not runner.enabled:
+            return self.async_abort(reason="no_detection")
+        where = self._naming_group
+        if where == NAMED:
+            candidates, waiting = runner.named(), 0
+        else:
+            group = next((g for g in runner.naming_groups() if g[0] == where), None)
+            if group is None:
+                return await self.async_step_naming()
+            _, candidates, waiting = group
+        if not candidates:
+            return await self.async_step_naming()
         shown = candidates[:NAMING_MAX_ROWS]
-        self._naming_rows = [s.id for s in shown]
+        self._naming_rows = [ref for ref, _ in shown]
 
         tz = dt_util.DEFAULT_TIME_ZONE
         now_ts = dt_util.utcnow().timestamp()
-        running = runner.detector.running_now(now_ts)
-        # the other settings each load may be of the same device as
-        partners = {i: [g for g in group if g != i]
-                    for group in suggest_levels(runner.detector.signatures, runner.detector.recent)
-                    for i in group}
-        by_id = {s.id: s for s in runner.detector.signatures}
+        running = runner.fleet.running_refs(now_ts)
+        partners, by_ref = {}, {}
+        for meter in dict.fromkeys(m for (m, _), _ in shown):
+            det = runner.fleet._det(meter)
+            by_ref.update(((meter, x.id), x) for x in det.signatures)
+            # the other settings each load may be of the same device as
+            for group in suggest_levels(det.signatures, det.recent) + input_groups(det.signatures):
+                for i in group:
+                    partners[(meter, i)] = list(dict.fromkeys(partners.get((meter, i), [])
+                                                              + [(meter, g) for g in group if g != i]))
         # What is WAITING, not what was cut off this menu. The two are not the
         # same: the list arrives already shortened to the length the user has
         # earned, so subtracting the menu from it said "0 more" to everyone -
         # and a page whose whole promise is that it lengthens as you name
-        # things then read as "this is all there is" (Anze, 2026-09-22).
-        placeholders = {"count": str(len(shown)),
-                        "hidden": str(runner.unlocated_waiting()
-                                      + max(0, len(candidates) - len(shown)))}
+        # things then read as "this is all there is" (2026-09-22).
+        placeholders = {"group": "Named loads" if where == NAMED else _group_title(where, self.hass),
+                        "count": str(len(shown)),
+                        "hidden": str(waiting + max(0, len(candidates) - len(shown)))}
         options = []
-        for index, sig in enumerate(shown):
+        for index, (ref, sig) in enumerate(shown):
             # Two lines: a menu row's own label is cut at the dialog's width,
             # so it carries only what tells one load from another, and the rest
-            # goes in the row's description, which wraps (Anze, 2026-09-23: the
+            # goes in the row's description, which wraps (2026-09-23: the
             # page "does not fit all the text").
-            label, rest = sig.menu_row(tz, now_ts, sig.id in running)
+            label, rest = sig.menu_row(tz, now_ts, ref in running)
             if sig.name:
                 label = f"{sig.name} — {label}"
-            maybe = same_device_phrase([by_id[i] for i in partners.get(sig.id, []) if i in by_id])
+            maybe = same_device_phrase([by_ref[r] for r in partners.get(ref, []) if r in by_ref])
             if maybe:
                 rest += f" · {maybe}"
+            rest += f" · #{ref[1]}"       # what the dashboard's running list links by
             placeholders[f"load_{index}"] = label
             placeholders[f"load_{index}_detail"] = rest
             options.append(f"load_{index}")
+        if len(self._naming_groups) > 1 or where == NAMED or runner.named():
+            options.append("naming")              # back to the meters
         options.append("naming_done")
-        return self.async_show_menu(step_id="naming", menu_options=options,
+        return self.async_show_menu(step_id="naming_list", menu_options=options,
                                     description_placeholders=placeholders)
 
     def __getattr__(self, name: str):
@@ -507,60 +690,95 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
             index = int(name[16:])
 
             async def _chosen(user_input: dict[str, Any] | None = None):
-                rows = self.__dict__.get("_naming_rows") or []
+                rows = self._naming_rows
                 if index >= len(rows):
-                    return await self.async_step_naming()
+                    return await self.async_step_naming_list()
                 self._naming_selected = rows[index]
                 return await self.async_step_naming_detail()
 
             return _chosen
+        if name.startswith("async_step_group_") and name[17:].isdigit():
+            index = int(name[17:])
+
+            async def _opened(user_input: dict[str, Any] | None = None):
+                groups = self._naming_groups
+                if index >= len(groups):
+                    return await self.async_step_naming()
+                self._naming_group = groups[index]
+                return await self.async_step_naming_list()
+
+            return _opened
         raise AttributeError(name)
 
     async def async_step_naming_done(self, user_input: dict[str, Any] | None = None):
         """Apply: the names were written as they were given, and this is what
         rebuilds the entities behind them."""
         rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-        return self.async_create_entry(
-            data={**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev})
+        options = {**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
+        # the inputs linked to a load follow its name, and the ones ticked
+        # when it was named are linked to it now
+        pending = self._pending_links or {}
+        for was, name in pending.get("relink") or []:
+            options = relink(options, was, name)
+        if pending.get("link"):
+            targets = await self._link_targets()
+            links = dict(options.get(CONF_INPUT_LINKS) or {})
+            for eid, name in pending["link"]:
+                links[eid] = list(dict.fromkeys(list(links.get(eid) or []) + [self._as_target(LOAD_PREFIX + name, targets)]))
+            options[CONF_INPUT_LINKS] = links
+        return self.async_create_entry(data=options)
+
+    def _links(self) -> dict:
+        """What Done relinks and links, started on the first name given."""
+        if self._pending_links is None:
+            self._pending_links = {"relink": [], "link": []}
+        return self._pending_links
 
     def _picked(self):
-        """The runner, and the load chosen from the list - or None for either."""
-        runner = self.hass.data.get(DOMAIN, {}).get(f"{self.config_entry.entry_id}_detection")
+        """The runner, the load chosen from the list as (meter, id), and its
+        signature - None for the runner, or the load and its signature."""
+        runner = runner_of(self.config_entry)
         if runner is None:
-            return None, None
-        sid = self.__dict__.get("_naming_selected")
-        return runner, next((s for s in runner.detector.signatures if s.id == sid), None)
+            return None, None, None
+        ref = self._naming_selected
+        sig = runner.fleet.signature(ref) if ref is not None else None
+        return runner, (ref if sig is not None else None), sig
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
         """The load that was picked, and what can be done with it.
 
         A MENU, not a form: a form's only control is Submit, so going back to
         the list used to mean submitting an empty name box. As a menu, back is
-        a row like any other (Anze, 2026-09-23: "when i click on an entry i
+        a row like any other (2026-09-23: "when i click on an entry i
         would like a back button"), and naming is one click further in."""
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is None:
             return self.async_abort(reason="no_detection")
         if sig is None:
-            return await self.async_step_naming()
-        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents)
+            return await self.async_step_naming_list()
+        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents, ref[0] or None)
+        helped = _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
+        if helped:
+            detail += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
         if sig.name:
-            detail = f"Named **{sig.name}**.\n\n{detail}"
+            auto = " It was named automatically; naming it yourself or forgetting it ends that." \
+                if sig.name in runner.autonamer.marks else ""
+            detail = f"Named **{sig.name}**.{auto}\n\n{detail}"
         options = ["naming_name"]
         # A named load whose behaviour changed leaves its name on a
         # fingerprint nothing matches, while what replaced it sits here
         # unnamed. Offer the move where the user is already standing.
-        was = runner.detector.predecessor_of(sig.id)
+        was = runner.fleet.predecessor_of(ref)
         if was is not None and not sig.name:
             options.append("naming_adopt")
             quiet = _since(was.last_seen)
             detail = (f"**{was.name}** has not run {quiet}, and this looks like what it became "
-                      f"- it was {_w(was.watts)} over {_secs(was.duration_s)}, this is "
-                      f"{_w(sig.watts)} over {_secs(sig.duration_s)}, on the same phases.\n\n"
+                      f"- it was {_fmt_w(was.watts)} over {_fmt_s(was.duration_s)}, this is "
+                      f"{_fmt_w(sig.watts)} over {_fmt_s(sig.duration_s)}, on the same phases.\n\n"
                       f"{detail}")
         if sig.name:
             options.append("naming_forget")
-        options.append("naming")                  # back to the list
+        options.append("naming_list")             # back to the list
         return self.async_show_menu(
             step_id="naming_detail", menu_options=options,
             description_placeholders={"detail": detail, "name": sig.name or "",
@@ -568,48 +786,73 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_naming_name(self, user_input: dict[str, Any] | None = None):
         """The name itself. An empty box changes nothing and goes back to the
-        load, where Back is."""
-        runner, sig = self._picked()
+        load, where Back is. Or the device it is, picked from the meters that
+        hold one: the load is named exactly as that meter, which makes it
+        that device (see insights.named) without a typo in the way (the owner,
+        2026-09-29)."""
+        runner, ref, sig = self._picked()
         if runner is None or sig is None:
-            return await self.async_step_naming()
+            return await self.async_step_naming_list()
+        inputs = set(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
+        helped = [(eid, text) for eid, text in _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
+                  if eid in inputs]
         if user_input is not None:
-            name = (user_input.get("name") or "").strip()
+            name = chosen_name(user_input.get("name"), user_input.get("same_as_meter"))
             if not name:
                 return await self.async_step_naming_detail()
-            await runner.async_rename(sig.id, name)
+            was = sig.name
+            await runner.async_rename(ref, name)
+            # the options are written by Done, which rebuilds the entities too
+            pending = self._links()
+            pending["relink"].append((was, name))
+            pending["link"] += [(eid, name) for eid in user_input.get("link_inputs") or []]
             self._naming_selected = None
-            return await self.async_step_naming()
+            return await self.async_step_naming_list()
         head, rest = sig.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
+        fields = {vol.Optional("name", description={"suggested_value": sig.name or ""}): selector.TextSelector()}
+        meters = runner.device_meters()
+        if meters:
+            fields[vol.Optional("same_as_meter")] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=meters, mode=selector.SelectSelectorMode.DROPDOWN))
+        row = f"{head}\n\n{rest}"
+        if helped:
+            # offered, not ticked: linking changes the load's forecast
+            fields[vol.Optional("link_inputs", default=[])] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=eid, label=_friendly(self.hass, eid))
+                         for eid in dict.fromkeys(eid for eid, _ in helped)],
+                multiple=True, mode=selector.SelectSelectorMode.LIST))
+            row += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
         return self.async_show_form(
             step_id="naming_name",
-            data_schema=vol.Schema({vol.Optional("name", description={"suggested_value": sig.name or ""}):
-                                    selector.TextSelector()}),
-            description_placeholders={"row": f"{head}\n\n{rest}"},
+            data_schema=vol.Schema(fields),
+            description_placeholders={"row": row},
             last_step=False,
         )
 
     async def async_step_naming_forget(self, user_input: dict[str, Any] | None = None):
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is not None and sig is not None:
-            await runner.async_rename(sig.id, None)
+            was = sig.name
+            await runner.async_rename(ref, None)
+            self._links()["relink"].append((was, None))
         self._naming_selected = None
-        return await self.async_step_naming()
+        return await self.async_step_naming_list()
 
     async def async_step_naming_adopt(self, user_input: dict[str, Any] | None = None):
         # the name moves here and leaves the old fingerprint, which keeps its
         # history but stops answering to a name nothing matches any more
-        runner, sig = self._picked()
+        runner, ref, sig = self._picked()
         if runner is not None and sig is not None:
-            await runner.async_adopt(sig.id)
+            await runner.async_adopt(ref)
         self._naming_selected = None
-        return await self.async_step_naming()
+        return await self.async_step_naming_list()
 
     async def async_step_detection(self, user_input: dict[str, Any] | None = None):
         """How detection behaves - not what it watches.
 
         It used to ask for the meter as well, and that was asking for the
         answer: given the grid connection and the inverters, what the house
-        draws is determined, not chosen (Anze, 2026-09-18). So the readings
+        draws is determined, not chosen (2026-09-18). So the readings
         live on those two pages and this one keeps the two things that are
         genuinely preferences.
 
@@ -618,54 +861,255 @@ class LoadInsightsOptionsFlow(config_entries.OptionsFlow):
         by hand. Nothing removes it; it simply is not offered any more.
         """
         current = dict(self.config_entry.options.get(CONF_DETECTION) or {})
+        meters = await self._device_meters()
         if user_input is not None:
-            cfg = {**current, **{k: v for k, v in user_input.items() if v}}
+            # a wait of 0 is an answer - judge every step at once - not an empty field
+            lists = (CONF_SINGLE_DEVICE, CONF_IGNORE_METERS, CONF_HORIZON_SKIP, CONF_CHANGE_METERS, CONF_PERIODIC_METERS)
+            cfg = {**current, **{k: v for k, v in user_input.items()
+                                 if (v or (k == CONF_METER_WAIT and v is not None)) and k not in lists}}
+            if meters:
+                # kept even when empty: none ticked is an answer - every meter
+                # holds several, is read, sets the horizon
+                for key in lists:
+                    cfg[key] = list(user_input.get(key) or [])
+            # switches are answers whichever way they sit: False must be stored, not dropped as empty
+            for key in (CONF_AUTONAME, CONF_AUTONAME_DASHBOARD):
+                cfg[key] = bool(user_input.get(key, True))
+            for key in (CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES):
+                cfg[key] = list(user_input.get(key) or [])     # none ticked is an answer too
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
+        fields = _meter_wait_field(current)
+        fields.update(_autoname_fields(current))
+        # the base load as a load of its own: the grid's and the meters holding several loads until saved
+        # (DetectionRunner.base_load_keys), by phase none's
+        every = [(BASE_LOAD_GRID, "Grid meter", False)] + meters
+        chosen = current.get(CONF_BASE_LOAD)
+        if chosen is None:
+            runner = runner_of(self.config_entry)
+            keys = runner.base_load_keys() if runner is not None else {BASE_LOAD_GRID}
+            chosen = [m[0] for m in every if m[0] in keys]
+        fields.update(_meters_field(CONF_BASE_LOAD, every, chosen))
+        fields.update(_meters_field(CONF_BASE_LOAD_PHASES, every, current.get(CONF_BASE_LOAD_PHASES)))
+        if meters:
+            # which meters hold ONE device: until the page is saved, what the
+            # library's shape suggests (the Hidrofor plug: 99 % of its
+            # sightings are one load); saved, the answer is the user's
+            declared = current.get(CONF_SINGLE_DEVICE)
+            fields.update(_meters_field(CONF_SINGLE_DEVICE, meters, declared if declared is not None
+                                        else [stat for stat, _, guess in meters if guess]))
+            fields.update(_meters_field(CONF_HORIZON_SKIP, meters, current.get(CONF_HORIZON_SKIP)))
+            fields.update(_meters_field(CONF_IGNORE_METERS, meters, current.get(CONF_IGNORE_METERS)))
+            fields.update(_meters_field(CONF_CHANGE_METERS, meters, current.get(CONF_CHANGE_METERS)))
+            fields.update(_meters_field(CONF_PERIODIC_METERS, meters, current.get(CONF_PERIODIC_METERS)))
         return self.async_show_form(
             step_id="detection",
-            data_schema=vol.Schema(_interval_field(current)),
+            data_schema=vol.Schema(fields),
             description_placeholders={"found": _load_line(self.hass, self.config_entry)},
         )
+
+    async def _device_meters(self) -> list:
+        """(statistic id, name, guessed to hold one device) for every meter
+        detection reads besides the house - the devices of the Energy
+        dashboard it could resolve a power reading for."""
+        runner = runner_of(self.config_entry)
+        if runner is None or not runner.enabled:
+            return []
+        return [(m["energy"], name, runner.fleet.guess_one_device(name))
+                for name, m in runner.all_submeters.items() if m.get("energy")]
 
     async def async_step_inputs(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             # An emptied selector clears the input; only set keys are kept.
-            # The per-device map lives on another page and is carried over.
-            keep = {CONF_DEVICE_STATE_SENSORS: self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS, {}),
-                    CONF_DETECTION: self.config_entry.options.get(CONF_DETECTION, {})}
-            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v}})
+            # Everything else is another page's and is carried over whole - it
+            # kept only the device map and detection, so saving this page
+            # erased the inverters and the naming revision (2026-09-28).
+            keep = {k: v for k, v in self.config_entry.options.items() if k not in _INPUT_KEYS}
+            kept = set(user_input.get(CONF_INPUT_ENTITIES) or [])
+            keep[CONF_INPUT_LINKS] = {k: v for k, v in (keep.get(CONF_INPUT_LINKS) or {}).items() if k in kept}
+            return self.async_create_entry(data={**keep, **{k: v for k, v in user_input.items() if v and k in _INPUT_KEYS}})
         current = dict(self.config_entry.options)
         if not current.get(CONF_WEATHER_ENTITY):
             current[CONF_WEATHER_ENTITY] = _single_weather_entity(self.hass)
-        return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current)))
-
-    async def async_step_device_state(self, user_input: dict[str, Any] | None = None):
-        """Pick a device the Energy dashboard lists, then the sensor that says
-        what it will do next. One device per visit; an emptied sensor clears
-        that device's mapping."""
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
-        labels = {d.energy: d.label for d in site.devices}
-        current = dict(self.config_entry.options.get(CONF_DEVICE_STATE_SENSORS) or {})
+        devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
+        return self.async_show_form(step_id="inputs", data_schema=vol.Schema(_inputs_schema(current, devices)))
+
+    async def async_step_plan(self, user_input: dict[str, Any] | None = None):
+        """SOC planning: the horizon, the scales and each planning sensor's
+        weights (insights/planning.py). Every other page's options are
+        carried over whole."""
         if user_input is not None:
-            device = user_input.get("device")
-            sensor_id = user_input.get("state_entity")
-            if device:
-                if sensor_id:
-                    current[device] = sensor_id
-                else:
-                    current.pop(device, None)
-            options = {**dict(self.config_entry.options), CONF_DEVICE_STATE_SENSORS: current}
-            return self.async_create_entry(data=options)
-        if not labels:
-            return self.async_abort(reason="no_devices")
+            own = {k for k, _, _ in _plan_fields()} | {CONF_PLAN_FULL_SOC_ENTITY, CONF_PLAN_SPREAD}
+            keep = {k: v for k, v in self.config_entry.options.items() if k not in own}
+            # a 0 is an answer (no derate, no floor), an emptied selector clears
+            return self.async_create_entry(data={**keep, **{
+                k: v for k, v in user_input.items() if k in own and v or v == 0}})
+        manager = await async_get_manager(self.hass)
+        devices = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
         return self.async_show_form(
-            step_id="device_state",
-            data_schema=vol.Schema({
-                vol.Required("device"): selector.SelectSelector(selector.SelectSelectorConfig(
-                    options=[selector.SelectOptionDict(value=k, label=f"{v}  ({current.get(k) or '-'})") for k, v in labels.items()],
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )),
-                vol.Optional("state_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor", "input_number", "number"])),
-            }),
+            step_id="plan", data_schema=vol.Schema(_plan_schema(dict(self.config_entry.options), devices)))
+
+    async def async_step_heat(self, user_input: dict[str, Any] | None = None):
+        """Heat devices (insights/heatnudge.py), SHADOW MODE: add one device (a name, its power or
+        energy sensor, its kind, and optionally the target temperature as a number or an
+        entity and an activity entity) or remove some. Nothing is written to any device. Every
+        other page's options are carried over whole."""
+        rows = list(self.config_entry.options.get(CONF_HEAT_DEVICES) or [])
+        if user_input is not None:
+            gone = set(user_input.get("remove") or [])
+            rows = [r for r in rows if r.get("name") not in gone]
+            name = str(user_input.get("name") or "").strip()
+            if name and user_input.get("source"):
+                rows = [r for r in rows if r.get("name") != name]
+                rows.append({k: v for k, v in {
+                    "name": name, "source": user_input["source"],
+                    "kind": user_input.get("kind") if user_input.get("kind") in KINDS else None,
+                    "target": user_input.get("target"), "target_entity": user_input.get("target_entity"),
+                    "activity_entity": user_input.get("activity_entity")}.items() if v not in (None, "")})
+            keep = {k: v for k, v in self.config_entry.options.items() if k != CONF_HEAT_DEVICES}
+            return self.async_create_entry(data={**keep, **({CONF_HEAT_DEVICES: rows} if rows else {})})
+        schema = {
+            vol.Optional("name"): str,
+            vol.Optional("source"): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class=["power", "energy"])),
+            vol.Optional("kind", default="space_heating"): selector.SelectSelector(selector.SelectSelectorConfig(
+                options=list(KINDS), translation_key="heat_kind", mode=selector.SelectSelectorMode.DROPDOWN)),
+            vol.Optional("target"): _num(10, 70, 0.5, "\u00b0C"),
+            vol.Optional("target_entity"): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["number", "input_number", "sensor"])),
+            vol.Optional("activity_entity"): selector.EntitySelector(selector.EntitySelectorConfig()),
+        }
+        if rows:
+            schema[vol.Optional("remove")] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[r["name"] for r in rows if r.get("name")], multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+        have = parse_devices(rows)
+        listing = "; ".join(f"{d['name']} ({d['kind']}, {d['target_entity'] or str(d['target']) + ' C'})" for d in have) or "-"
+        return self.async_show_form(step_id="heat", data_schema=vol.Schema(schema),
+                                    description_placeholders={"devices": listing})
+
+    async def _link_targets(self) -> dict:
+        """What an input can be linked to: every device of the Energy
+        dashboard, and every named load not on it (yet) - value -> label."""
+        manager = await async_get_manager(self.hass)
+        targets = {d.energy: d.label for d in SiteModel.from_prefs(manager.data).devices}
+        runner = runner_of(self.config_entry)
+        for name in sorted(runner.fleet.names() if runner is not None else ()):
+            if named_load_energy(self.hass, self.config_entry, name) not in targets:
+                targets[LOAD_PREFIX + name] = f"{name} (detected load)"
+        return targets
+
+    def _as_target(self, target: str, targets: dict) -> str:
+        """A link to a named load that has since been put on the dashboard
+        is a link to that device."""
+        if target.startswith(LOAD_PREFIX):
+            energy = named_load_energy(self.hass, self.config_entry, target[len(LOAD_PREFIX):])
+            if energy in targets:
+                return energy
+        return target
+
+    async def async_step_input_links(self, user_input: dict[str, Any] | None = None):
+        """Pick an input, then what it belongs to. Every input counts for the
+        whole site; a link adds a device - and every device it sits inside -
+        whose next hours a number then nudges (2026-09-28)."""
+        inputs = list(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
+        if not inputs:
+            return self.async_abort(reason="no_inputs")
+        if user_input is not None:
+            self._linking = user_input["input"]
+            return await self.async_step_input_links_to()
+        targets = await self._link_targets()
+        links = self.config_entry.options.get(CONF_INPUT_LINKS) or {}
+
+        def label(eid):
+            linked = [targets.get(self._as_target(t, targets)) for t in links.get(eid) or []]
+            return f"{_friendly(self.hass, eid)}  ({', '.join(x for x in linked if x) or 'the site only'})"
+        return self.async_show_form(
+            step_id="input_links",
+            data_schema=vol.Schema({vol.Required("input"): selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=e, label=label(e)) for e in inputs],
+                mode=selector.SelectSelectorMode.DROPDOWN))}),
+        )
+
+    async def async_step_input_links_to(self, user_input: dict[str, Any] | None = None):
+        eid = self._linking
+        targets = await self._link_targets()
+        links = dict(self.config_entry.options.get(CONF_INPUT_LINKS) or {})
+        if user_input is not None:
+            chosen = list(user_input.get("linked_to") or [])
+            if chosen:
+                links[eid] = chosen
+            else:
+                links.pop(eid, None)
+            return self.async_create_entry(data={**dict(self.config_entry.options), CONF_INPUT_LINKS: links})
+        current = [t for t in (self._as_target(t, targets) for t in links.get(eid) or []) if t in targets]
+        return self.async_show_form(
+            step_id="input_links_to",
+            data_schema=vol.Schema({vol.Optional("linked_to", default=current): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=k, label=v) for k, v in targets.items()],
+                    multiple=True, mode=selector.SelectSelectorMode.LIST))}),
+            description_placeholders={"input": _friendly(self.hass, eid)},
+        )
+
+    async def async_step_suggested_inputs(self, user_input: dict[str, Any] | None = None):
+        """Sensors in the same area as a dashboard device or a named load that
+        are not inputs yet, each offered linked to it - unticked, since a
+        room's temperature need not say anything about its fridge
+        (2026-09-29). A named load's area is its meter's; under none, it has
+        none."""
+        options = dict(self.config_entry.options)
+        if user_input is not None:
+            picks = [v.split(" ", 1) for v in user_input.get("suggested") or []]
+            return self.async_create_entry(data=add_inputs(options, picks))
+        targets = await self._link_targets()
+        runner = runner_of(self.config_entry)
+        meter = {}
+        for (where, _), sig in runner.named() if runner is not None else ():      # biggest first
+            at = most_specific(sig.locations, sig.count, runner.parents)
+            meter.setdefault(sig.name, where if at == "main" and where else at)   # a meter's own: that meter
+        places = {}
+        for t in targets:
+            if not t.startswith(LOAD_PREFIX):
+                places[t] = area_id(self.hass, t)
+            elif meter.get(t[len(LOAD_PREFIX):], "main") != "main":
+                places[t] = area_id(self.hass, _meter_entity(runner, meter[t[len(LOAD_PREFIX):]]))
+        # not a diagnostic one: a Shelly's own temperature is its relay's, not
+        # the room's. And one from a device that meters power is that device's
+        # own - a battery's cells, an inverter's heat sink, a car's cabin, a
+        # boiler's tank: offered to that device only. A battery's cells were
+        # offered as Kozolec's PV room temperature (2026-09-29).
+        registry = er.async_get(self.hass)
+        metering = {e.device_id for e in registry.entities.values() if e.device_id
+                    and (e.device_class or e.original_device_class) in ("power", "energy")}
+        chosen = [e for e in registry.entities.values()
+                  if not e.disabled_by and not e.entity_category
+                  and (e.device_class or e.original_device_class) in SUGGESTED_CLASSES.get(e.domain, ())]
+        candidates = {e.entity_id: area_id(self.hass, e.entity_id) for e in chosen}
+        # a device by its name, so the two halves of one appliance meet: Home's
+        # boiler is a plug metering it and a controller reading its tank, both
+        # called Workshop Boiler (2026-09-29)
+        devices = dr.async_get(self.hass)
+
+        def appliance(device_id):
+            device = devices.async_get(device_id) if device_id else None
+            return ((device.name_by_user or device.name or device_id).strip().lower()) if device else None
+        own = {e.entity_id: appliance(e.device_id) for e in chosen if e.device_id in metering}
+        target_devices = {t: appliance(registry.async_get(t).device_id if registry.async_get(t) else None)
+                          for t in places if not t.startswith(LOAD_PREFIX)}
+        found = suggest_inputs(places, candidates, options.get(CONF_INPUT_ENTITIES), own, target_devices)
+        if not found:
+            return self.async_abort(reason="no_suggestions")
+        areas = ar.async_get(self.hass)
+
+        def row(eid, t):
+            what = t[len(LOAD_PREFIX):] if t.startswith(LOAD_PREFIX) else targets[t]
+            area = areas.async_get_area(places[t])
+            return f"{_friendly(self.hass, eid)} → {what} ({area.name if area else places[t]})"
+        rows = sorted((row(e, t), f"{e} {t}") for e, t in found)
+        return self.async_show_form(
+            step_id="suggested_inputs",
+            data_schema=vol.Schema({vol.Optional("suggested", default=[]): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=v, label=label) for label, v in rows],
+                    multiple=True, mode=selector.SelectSelectorMode.LIST))}),
         )

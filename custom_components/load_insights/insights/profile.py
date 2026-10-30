@@ -3,7 +3,7 @@
 The model is deliberately the simplest thing that is honest about a household:
 consumption repeats weekly. Each of the 168 (weekday, hour) slots holds a
 recency-weighted mean of every hour ever seen in that slot - weight halves
-every HALF_LIFE weeks, so a habit that changed three weeks ago has already
+every HALF_LIFE_WEEKS, so a habit that changed three weeks ago has already
 mostly replaced the old one. A slot never seen falls back to the hour-of-day
 mean across the week, then to the overall mean.
 
@@ -19,36 +19,34 @@ generated in UTC and converted, so they are 168 real consecutive hours.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .calendars import CalendarModel, CalendarSignals, fit_calendar
-from .covariates import NONE as NO_RESPONSE, TemperatureResponse, fit_temperature_response
-from .nowcast import LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows, fit_nowcast
+from .covariates import NONE as NO_RESPONSE, Centre, TemperatureResponse, cdh, fit_temperature_response, hdh
+from .nowcast import LEADS as NOWCAST_LEADS, NONE as NO_NOWCAST, Nowcast, build_rows_joint, fit_joint
+from .series import subtract_all
 
 Sample = Tuple[datetime, float]
 
 HOURS_PER_WEEK = 168
-DEFAULT_HALF_LIFE_WEEKS = 3.0
+HALF_LIFE_WEEKS = 3.0
 LEVEL_CLAMP = (0.5, 2.0)
 LEVEL_DAMPING = 0.5      # adj = 1 + damping * (ratio - 1)
 LEVEL_MIN_HOURS = 12     # fewer completed hours than this: no correction
 HISTORY_HOURS = 48       # actual hourly kWh carried beside the forecast, for actual-vs-forecast cards
 BAND = (0.10, 0.90)      # the spread: weighted 10th and 90th percentiles of each slot's samples
 WEEK_SECONDS = 7 * 86400.0
+PART_MIN_WEEKS = 6.0     # a part joins its parent's sum once its own fit has this many weeks (swept 0-12: 6 starts the plateau)
 
 
 def floor_hour(dt: datetime) -> datetime:
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
-def _key(t: datetime) -> float:
-    """The instant. Aware datetimes sharing a tzinfo compare by naive wall
-    clock (PEP 495), so the DST-end repeated hour would collide on the
-    datetime itself; see series._key."""
-    return t.timestamp()
-
+# Hours are keyed and compared by the instant, t.timestamp(), never by the
+# aware datetime: see series.py.
 
 SUNDAY = 6
 
@@ -98,6 +96,33 @@ class Profile:
     overall_band: Optional[tuple] = None
 
     holidays: Optional[frozenset] = None   # the dates filed under Sunday, fit and predict alike
+    # the weighted sums behind the means, so one hour can be taken out (LOO)
+    sw: tuple = ()
+    swx: tuple = ()
+    hw: tuple = ()
+    hwx: tuple = ()
+    tw: float = 0.0
+    twx: float = 0.0
+    excluded: Optional[frozenset] = None   # hour keys left out of the sums
+
+    def loo_kwh(self, dt: datetime, w: float, v: float) -> Optional[float]:
+        """The expectation for this hour WITHOUT this hour in it: the slot's
+        mean less (w, v), falling to hour of day and then overall when the
+        slot has nothing left. An hour left out of the fit is not in the sums
+        and its expectation stands."""
+        if self.excluded and dt.timestamp() in self.excluded:
+            return self.slot_kwh(dt)
+        s = slot_of(dt, self.holidays)
+        d = self.sw[s] - w
+        if d > 1e-9:
+            return (self.swx[s] - w * v) / d
+        d = self.hw[dt.hour] - w
+        if d > 1e-9:
+            return (self.hwx[dt.hour] - w * v) / d
+        d = self.tw - w
+        if d > 1e-9:
+            return (self.twx - w * v) / d
+        return None
 
     def slot_kwh(self, dt: datetime) -> Optional[float]:
         v = self.slots[slot_of(dt, self.holidays)]
@@ -116,24 +141,37 @@ class Profile:
             return self.hod_bands[dt.hour]
         return self.overall_band
 
-    def predict(self, start: datetime, hours: int, level: float = 1.0) -> List[Sample]:
+    def predict(self, start: datetime, hours: int) -> List[Sample]:
         out = []
         for t in hour_buckets(floor_hour(start), hours):
             v = self.slot_kwh(t)
-            out.append((t, (v if v is not None else 0.0) * level))
+            out.append((t, v if v is not None else 0.0))
         return out
 
-    def predict_bands(self, start: datetime, hours: int, level: float = 1.0) -> List[tuple]:
-        """(p10, p90) per horizon hour, level-scaled like the point value."""
-        out = []
-        for t in hour_buckets(floor_hour(start), hours):
-            b = self.slot_band(t)
-            out.append((0.0, 0.0) if b is None else (b[0] * level, b[1] * level))
-        return out
+
+def _weight(now: datetime, k: float) -> float:
+    """How much the hour starting at ``k`` counts: halving every HALF_LIFE_WEEKS."""
+    return 0.5 ** ((now.timestamp() - k) / WEEK_SECONDS / HALF_LIFE_WEEKS)
+
+
+def _settled(samples: Sequence[Sample], now: datetime, profile: "Profile"):
+    """(start, key, kWh, what ``profile`` expected, recency weight, and what it
+    expected WITHOUT this hour in it) for every completed hour before ``now``
+    the profile has an expectation for. The last is None when nothing else
+    is left. A covariate is fitted on the leave-one-out residual: in-sample,
+    a slot seen once has residual exactly zero."""
+    cutoff_k = floor_hour(now).timestamp()
+    for t, v in samples:
+        k = t.timestamp()
+        if v is None or k >= cutoff_k:
+            continue
+        e = profile.slot_kwh(t)
+        if e is not None:
+            w = _weight(now, k)
+            yield t, k, v, e, w, profile.loo_kwh(t, w, v)
 
 
 def fit_profile(samples: Sequence[Sample], now: datetime,
-                half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
                 holidays: Optional[Set[date]] = None,
                 exclude: Optional[Set[float]] = None) -> Profile:
     """Recency-weighted slot means. The hour containing ``now`` is excluded:
@@ -142,8 +180,7 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
     of the fit - the on-hours of engaged calendars, so the BASELINE profile
     carries no mixture of away days and ordinary ones."""
     hol = frozenset(holidays) if holidays else None
-    cutoff = floor_hour(now)
-    cutoff_k = _key(cutoff)
+    cutoff_k = floor_hour(now).timestamp()
     sw = [0.0] * HOURS_PER_WEEK
     swx = [0.0] * HOURS_PER_WEEK
     hw = [0.0] * 24
@@ -156,10 +193,9 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
     hod_pairs = [[] for _ in range(24)]
     all_pairs = []
     for t, v in samples:
-        if v is None or _key(t) >= cutoff_k or (exclude and _key(t) in exclude):
+        if v is None or t.timestamp() >= cutoff_k or (exclude and t.timestamp() in exclude):
             continue
-        age_weeks = (_key(now) - _key(t)) / WEEK_SECONDS
-        w = 0.5 ** (age_weeks / half_life_weeks) if half_life_weeks > 0 else 1.0
+        w = _weight(now, t.timestamp())
         s = slot_of(t, hol)
         sw[s] += w
         swx[s] += w * v
@@ -171,12 +207,12 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
         slot_pairs[s].append((w, v))
         hod_pairs[t.hour].append((w, v))
         all_pairs.append((w, v))
-        if oldest is None or _key(t) < _key(oldest):
+        if oldest is None or t.timestamp() < oldest.timestamp():
             oldest = t
     slots = tuple((swx[i] / sw[i]) if sw[i] > 0 else None for i in range(HOURS_PER_WEEK))
     hod = tuple((hwx[i] / hw[i]) if hw[i] > 0 else None for i in range(24))
     overall = (twx / tw) if tw > 0 else None
-    span = ((cutoff_k - _key(oldest)) / WEEK_SECONDS) if oldest else 0.0
+    span = ((cutoff_k - oldest.timestamp()) / WEEK_SECONDS) if oldest else 0.0
 
     def band(pairs):
         if not pairs:
@@ -189,29 +225,55 @@ def fit_profile(samples: Sequence[Sample], now: datetime,
         hod_bands=tuple(band(p) for p in hod_pairs),
         overall_band=band(all_pairs),
         holidays=hol,
+        sw=tuple(sw), swx=tuple(swx), hw=tuple(hw), hwx=tuple(hwx), tw=tw, twx=twx,
+        excluded=frozenset(exclude) if exclude else None,
     )
+
+
+def _fit_temperature(samples, now, profile, temps) -> TemperatureResponse:
+    """The temperature response: features centred on the same hour of day's
+    weather (``Centre``, over the hours that have a temperature), the residual
+    against what the profile expected WITHOUT that hour - in-sample, a slot
+    seen once has residual exactly zero - both with that hour taken out."""
+    cutoff_k = floor_hour(now).timestamp()
+    items = []
+    for t, v in samples:
+        k = t.timestamp()
+        T = temps.get(k)
+        if v is None or k >= cutoff_k or T is None:
+            continue
+        items.append((t.hour, _weight(now, k), hdh(T), cdh(T)))
+    centre = Centre.build(items)
+    rows = []
+    for t, k, v, e, w, e_loo in _settled(samples, now, profile):
+        T = temps.get(k)
+        if T is None or e_loo is None:
+            continue
+        xh, xc = hdh(T), cdh(T)
+        ch, cc = centre.loo(t.hour, w, xh, xc)
+        rows.append((k, w, v - e_loo, xh - ch, xc - cc))
+    return fit_temperature_response(rows, centre)
 
 
 def level_correction(profile: Profile, samples: Sequence[Sample], now: datetime,
                      response: TemperatureResponse = NO_RESPONSE,
                      temps: Optional[Dict[float, float]] = None,
-                     multipliers: Optional[Dict[float, float]] = None) -> float:
+                     multipliers: Optional[Dict[float, float]] = None,
+                     signed: bool = False) -> float:
     """Last 24 completed hours, actual over the fully adjusted expectation
     (temperature, calendars), clamped then damped. Adjusting first is what
     stops a cold snap or an away week being counted twice - once by its
     input, once as a level."""
-    end = _key(floor_hour(now))
+    end = floor_hour(now).timestamp()
     start = end - 24 * 3600.0
     actual = 0.0
     expected = 0.0
     hours = 0
-    for t, v in samples:
-        if v is None or not (start <= _key(t) < end):
+    for t, k, v, e, _, _ in _settled(samples, now, profile):
+        if k < start:
             continue
-        e = profile.slot_kwh(t)
-        if e is None:
-            continue
-        e = max(0.0, e + response.delta((temps or {}).get(_key(t)))) * (multipliers or {}).get(_key(t), 1.0)
+        e = e + response.delta((temps or {}).get(t.timestamp()), t.hour)
+        e = (e if signed else max(0.0, e)) * (multipliers or {}).get(t.timestamp(), 1.0)
         actual += v
         expected += e
         hours += 1
@@ -227,13 +289,13 @@ def next_hour_watts(predicted: Sequence[Sample], now: datetime) -> Optional[floa
     if not predicted:
         return None
     cur = floor_hour(now)
-    by_start = {_key(t): v for t, v in predicted}
-    if _key(cur) not in by_start:
+    by_start = {t.timestamp(): v for t, v in predicted}
+    if cur.timestamp() not in by_start:
         return None
     nxt = hour_buckets(cur, 2)[1]
-    f = (_key(now) - _key(cur)) / 3600.0
-    a = by_start[_key(cur)]
-    b = by_start.get(_key(nxt), a)
+    f = (now.timestamp() - cur.timestamp()) / 3600.0
+    a = by_start[cur.timestamp()]
+    b = by_start.get(nxt.timestamp(), a)
     return ((1.0 - f) * a + f * b) * 1000.0
 
 
@@ -241,16 +303,16 @@ def day_total_kwh(actual: Sequence[Sample], predicted: Sequence[Sample],
                   day: datetime, now: datetime) -> float:
     """One local calendar day: actual for its completed hours before ``now``,
     the forecast for the hour in progress and the rest."""
-    cutoff = _key(floor_hour(now))
+    cutoff = floor_hour(now).timestamp()
     d = day.date()
     total = 0.0
     seen = set()
     for t, v in actual:
-        if v is not None and t.date() == d and _key(t) < cutoff:
+        if v is not None and t.date() == d and t.timestamp() < cutoff:
             total += v
-            seen.add(_key(t))
+            seen.add(t.timestamp())
     for t, v in predicted:
-        if t.date() == d and _key(t) >= cutoff and _key(t) not in seen:
+        if t.date() == d and t.timestamp() >= cutoff and t.timestamp() not in seen:
             total += v
     return total
 
@@ -271,53 +333,51 @@ class Forecast:
     calendars: tuple = ()        # CalendarModel per linked signal - calendars and attached sensors alike
     nowcast: Nowcast = NO_NOWCAST
     nowcast_deltas: tuple = ()   # kWh added to the first NOWCAST_LEADS rows
+    parts: tuple = ()            # labels summed into ``hourly`` (built forecasts only)
 
 
 def recent_history(samples: Sequence[Sample], now: datetime, hours: int = HISTORY_HOURS) -> tuple:
     """The completed hours before ``now``, oldest first, same shape as the
     forecast so a card can draw actual and forecast off one entity."""
-    end = _key(floor_hour(now))
+    end = floor_hour(now).timestamp()
     start = end - hours * 3600.0
-    return tuple(sorted(((t, v) for t, v in samples if v is not None and start <= _key(t) < end), key=lambda s: _key(s[0])))
+    return tuple(sorted(((t, v) for t, v in samples if v is not None and start <= t.timestamp() < end),
+                        key=lambda s: s[0].timestamp()))
 
 
 def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOURS_PER_WEEK,
-             half_life_weeks: float = DEFAULT_HALF_LIFE_WEEKS,
              holidays: Optional[Set[date]] = None,
              temps_history: Optional[Dict[float, float]] = None,
              temps_forecast: Optional[Dict[float, float]] = None,
              calendars: Optional[Sequence[CalendarSignals]] = None,
-             state_history: Optional[Dict[float, float]] = None,
-             state_now: Optional[float] = None) -> Forecast:
+             state_history: Optional[Sequence[Dict[float, float]]] = None,
+             state_now: Optional[Sequence[Optional[float]]] = None,
+             signed: bool = False) -> Forecast:
     """``temps_history`` / ``temps_forecast`` map hour keys (epoch seconds of
     the period start) to outdoor temperature in C. Absent, the profile stands
     alone; present, a temperature response is fitted on the residuals and
     applied to the horizon hours that have a forecast temperature.
     ``calendars`` carry each linked calendar's on-hours over history and
-    horizon; each is fitted on this series and applied where it engaged.
-    ``state_history`` / ``state_now`` are a device's own state sensor (hour
-    key -> hourly mean, and the live value): a nowcast is fitted on the
-    residuals and shifts the first few horizon hours.
+    horizon; each is fitted on this series - the strongest first, each on
+    what those before it left - and applied where it engaged.
+    ``state_history`` / ``state_now`` are a device's own state sensors, in
+    one order (each hour key -> hourly mean, and each live value): a nowcast
+    is fitted on the residuals (``fit_joint``) and shifts the first few
+    horizon hours.
 
     Order, fit and predict alike: slot -> + temperature -> x calendars ->
-    x level. The level is judged against the fully adjusted expectation."""
-    profile = fit_profile(samples, now, half_life_weeks, holidays)
+    x level. The level is judged against the fully adjusted expectation.
+
+    ``signed``: the series may go below zero and so may its forecast - the
+    own part of a meter, its series less its parts, which meters that
+    disagree make negative on average (Home's grid-derived consumption sits
+    99 W under its top-level meters). Clamped at zero it would add what it
+    never was; only the sum of the parts is clamped (``from_parts``)."""
+    profile = fit_profile(samples, now, holidays)
 
     response = NO_RESPONSE
     if temps_history:
-        cutoff_k = _key(floor_hour(now))
-        rows = []
-        for t, v in samples:
-            k = _key(t)
-            if v is None or k >= cutoff_k:
-                continue
-            temp = temps_history.get(k)
-            e = profile.slot_kwh(t)
-            if temp is None or e is None:
-                continue
-            w = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
-            rows.append((w, v - e, temp))
-        response = fit_temperature_response(rows)
+        response = _fit_temperature(samples, now, profile, temps_history)
 
     # calendars, in two passes. DETECT against the mixture profile: which
     # calendars mean anything for this series. Then, if any does, refit the
@@ -327,68 +387,82 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
     cal_models: List[CalendarModel] = []
     hist_mult: Dict[float, float] = {}
     if calendars:
-        cutoff_k = _key(floor_hour(now))
-
         def residual_rows(prof):
-            out = []
-            for t, v in samples:
-                k = _key(t)
-                if v is None or k >= cutoff_k:
-                    continue
-                e = prof.slot_kwh(t)
-                if e is None:
-                    continue
-                e = max(0.0, e + response.delta((temps_history or {}).get(k)))
-                w = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
-                out.append((k, t.hour, w, v, e))
-            return out
+            return [(k, t.hour, w, v, max(0.0, e_loo + response.delta((temps_history or {}).get(k), t.hour)))
+                    for t, k, v, e, w, e_loo in _settled(samples, now, prof) if e_loo is not None]
 
+        mixture = profile
         detected = [fit_calendar(residual_rows(profile), sig, scale_off=True) for sig in calendars]
         engaged = [sig for sig, m in zip(calendars, detected) if m.engaged]
         if engaged:
             exclude = set().union(*(sig.existence for sig in engaged))
-            baseline = fit_profile(samples, now, half_life_weeks, holidays, exclude)
+            baseline = fit_profile(samples, now, holidays, exclude)
             if baseline.sample_count >= HOURS_PER_WEEK:      # a week of ordinary hours, or the baseline is too thin to trust
                 profile = baseline
         rows = residual_rows(profile)
-        for sig, det in zip(calendars, detected):
-            m = fit_calendar(rows, sig, scale_off=False) if det.engaged else det
-            cal_models.append(m)
+
+        def left_alone(i: int) -> float:
+            """The squared residual signal ``i`` leaves, fitted alone."""
+            m = fit_calendar(rows, calendars[i], scale_off=False)
+            return sum(w * (a - e * m.multiplier(k, h, calendars[i])) ** 2 for k, h, w, a, e in rows)
+
+        # Each signal is fitted on what the ones before it left - the
+        # expectation already carries their factors - since the factors
+        # MULTIPLY; the one that explains the most alone goes first, as in
+        # nowcast.fit_joint, so the order inputs were attached in decides
+        # nothing. Fitted side by side, signals telling one story each
+        # learned all of it (2026-10-03): Home's inputs whose history is the
+        # recorder's ten days each read those days as a x2.1 evening, and
+        # ten factors together (x880 at 21:00) forecast Blaz's PC at
+        # 70.7 kWh for an hour it spent idling at 7 Wh.
+        cal_models = list(detected)
+        for i in sorted((i for i, det in enumerate(detected) if det.engaged), key=left_alone):
+            sig = calendars[i]
+            m = cal_models[i] = fit_calendar([(k, h, w, a, e * hist_mult.get(k, 1.0)) for k, h, w, a, e in rows],
+                                             sig, scale_off=False)
             if m.engaged:
                 for k, h, _, _, _ in rows:
                     hist_mult[k] = hist_mult.get(k, 1.0) * m.multiplier(k, h, sig)
+        if not any(m.engaged for m in cal_models):
+            profile = mixture      # detection said yes, every effect fit said no: the baseline was for nothing
 
-    level = level_correction(profile, samples, now, response, temps_history, hist_mult)
+    level = level_correction(profile, samples, now, response, temps_history, hist_mult, signed)
 
     # the device's own state, if it has one: residuals against the fully
     # adjusted expectation, lined up with the state a few hours earlier
     nowcast = NO_NOWCAST
     if state_history:
-        cutoff_k = _key(floor_hour(now))
         resid: Dict[float, float] = {}
         weights: Dict[float, float] = {}
-        for t, v in samples:
-            k = _key(t)
-            if v is None or k >= cutoff_k:
-                continue
-            e = profile.slot_kwh(t)
-            if e is None:
-                continue
-            e = max(0.0, e + response.delta((temps_history or {}).get(k))) * hist_mult.get(k, 1.0) * level
+        for t, k, v, e, w, e_loo in _settled(samples, now, profile):
+            if e_loo is None:
+                continue                   # the residual is against what the profile expected without this hour
+            e = max(0.0, e_loo + response.delta((temps_history or {}).get(k), t.hour)) * hist_mult.get(k, 1.0) * level
             resid[k] = v - e
-            weights[k] = 0.5 ** (((_key(now) - k) / WEEK_SECONDS) / half_life_weeks) if half_life_weeks > 0 else 1.0
-        nowcast = fit_nowcast(build_rows(state_history, resid, weights))
+            weights[k] = w
+        nowcast = fit_joint(build_rows_joint(state_history, resid, weights))
     deltas = nowcast.deltas(state_now)
 
-    base = profile.predict(now, horizon_hours, 1.0)
-    base_bands = profile.predict_bands(now, horizon_hours, 1.0)
+    # No hour of the forecast - nor either end of its band - above the most
+    # this series has done in an hour over the hours the fit reads. Its own
+    # history alone: a parent meter is never capped by its children's caps
+    # or their sum, only by what it has itself drawn, which held them too.
+    # Every product of factors can overshoot what a meter has ever done;
+    # with 50fdacb Home's car charger still read 14.4 kWh at p90 (its most
+    # 10.7) and Kozolec's pond EVSE 4.2 (3.58). The day totals and the grid
+    # forecast are built from these hours, so they carry the cap too.
+    cut = floor_hour(now).timestamp()
+    cap = max((max(0.0, v) for t, v in samples if v is not None and t.timestamp() < cut), default=float("inf"))
+    base = profile.predict(now, horizon_hours)
+    base_bands = [(0.0, 0.0) if b is None else (b[0], b[1])         # (p10, p90) per horizon hour
+                  for b in (profile.slot_band(t) for t in hour_buckets(floor_hour(now), horizon_hours))]
     hourly = []
     bands = []
     with_temp = 0
     for i, ((t, v), (lo, hi)) in enumerate(zip(base, base_bands)):
-        k = _key(t)
+        k = t.timestamp()
         temp = (temps_forecast or {}).get(k)
-        d = response.delta(temp)
+        d = response.delta(temp, t.hour)
         if temp is not None and response.engaged:
             with_temp += 1
         mult = 1.0
@@ -405,8 +479,14 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
             half_hi = (hi_v - centre) * shrink
             centre += shift
             lo_v, hi_v = centre - half_lo, centre + half_hi
-        hourly.append((t, max(0.0, centre)))
-        bands.append((max(0.0, lo_v), max(0.0, hi_v)))
+        centre = centre if signed else max(0.0, centre)
+        # The band holds the forecast. The forecast is the slot's weighted
+        # MEAN, so days add up; a rare big hour lifts a mean above the 90th
+        # percentile (Blaz's PC, Saturday 23:00: ten of twelve weeks at
+        # 7-9 Wh, one 215 Wh hour weighing 4 % - mean 17.6 Wh, p90 8.5).
+        lo_v, hi_v = min(lo_v, centre), max(hi_v, centre)
+        hourly.append((t, min(cap, centre)))
+        bands.append((min(cap, lo_v if signed else max(0.0, lo_v)), min(cap, hi_v)))
     today = floor_hour(now).replace(hour=0)
     tomorrow = hour_buckets(today, 25)[24]
     return Forecast(
@@ -425,3 +505,118 @@ def forecast(samples: Sequence[Sample], now: datetime, horizon_hours: int = HOUR
         nowcast=nowcast,
         nowcast_deltas=tuple(deltas) if nowcast.engaged else (),
     )
+
+
+def from_parts(whole: Forecast, own: Forecast, parts: Sequence[Forecast], actual: Sequence[Sample],
+               now: datetime, labels: tuple = ()) -> Forecast:
+    """A forecast built as ``own`` plus every part's. Means add, so the day
+    totals stay exact; the centre is capped at the most ``actual`` (the
+    whole's own series) has done in an hour, as ``forecast`` caps it. The
+    band is the whole's own fitted spread moved onto the new centre: the
+    parts are correlated (occupancy, or LJ moving heater, boiler and EVSE
+    together), and the whole's band is the measured spread of their sum.
+    All forecasts share ``now`` and horizon, so rows line up by index."""
+    cut = floor_hour(now).timestamp()
+    cap = max((max(0.0, v) for t, v in actual if v is not None and t.timestamp() < cut), default=float("inf"))
+    hourly, bands = [], []
+    for i, (t, w) in enumerate(whole.hourly):
+        c = min(cap, max(0.0, own.hourly[i][1] + sum(p.hourly[i][1] for p in parts)))
+        lo, hi = whole.bands[i] if i < len(whole.bands) else (w, w)
+        lo, hi = c - (w - lo), c + (hi - w)
+        hourly.append((t, c))
+        bands.append((min(c, min(cap, max(0.0, lo))), max(c, min(cap, hi))))
+    today = floor_hour(now).replace(hour=0)
+    tomorrow = hour_buckets(today, 25)[24]
+    return replace(
+        whole, hourly=tuple(hourly), bands=tuple(bands), next_hour_w=next_hour_watts(hourly, now),
+        today_kwh=day_total_kwh(actual, hourly, today, now), tomorrow_kwh=day_total_kwh(actual, hourly, tomorrow, now),
+        history=recent_history(actual, now), parts=tuple(labels),
+    )
+
+
+def assemble(rows: Dict[Optional[str], Sequence[Sample]], kids_of: Dict[Optional[str], Sequence[str]],
+             excluded: Sequence[str], fitted: Dict[Optional[str], Forecast], fit_own, now: datetime,
+             labels: Optional[Dict[str, str]] = None, fit_whole=None):
+    """Every meter's forecast as its own part plus its mature parts', bottom-up.
+
+    ``rows``: statistic id -> hourly series, ``rows[None]`` the site's;
+    ``kids_of``: id (None = the site) -> the listed devices directly inside it;
+    ``fitted``: each device's (and ``fitted[None]`` the site's) independent fit;
+    ``fit_own(stat, series, signed)`` fits a series as the part of ``stat`` that has
+    no mature part in it (the coordinator and the backtest pass the same
+    walk the same callable: one measure for every meter). ``fit_whole``
+    (default ``fit_own``) fits a meter's series with only the excluded loads
+    out, the fit that supplies the band.
+
+    A part is mature once its own fit spans PART_MIN_WEEKS; before that its
+    energy stays in its parent's own part. ``excluded`` devices ("not in the
+    house forecast") are never added back, and always come out of the own
+    part of whatever holds them, mature or not.
+
+    -> (built, own, house): ``built[stat]`` for every meter with a mature
+    part (the others keep their fit), ``own[stat] = (series, fit)`` for every
+    meter with parts, and ``house`` the site's forecast with the excluded
+    loads out (``built[None]`` when none are excluded; None when the site
+    has nothing to build from)."""
+    labels = labels or {}
+    cache: Dict[tuple, tuple] = {}
+    fits = {"own": (None, lambda stat, ser: fit_own(stat, ser, True)),      # signed: the sum of parts is what is clamped
+            "rem": (0.0, lambda stat, ser: fit_own(stat, ser, False)),      # the unmetered remainder, as it reads
+            "whole": (0.0, fit_whole or (lambda stat, ser: fit_own(stat, ser, False)))}
+
+    def fit_cached(stat, drop, kind):
+        key = (stat, tuple(sorted(drop)), kind)
+        if key not in cache:
+            floor, fit = fits[kind]
+            ser = subtract_all(rows[stat], rows, drop, floor=floor) if drop else rows[stat]
+            cache[key] = (ser, fit(stat, ser))
+        return cache[key]
+
+    def sort_parts(x, excl, direct=True):
+        """x's parts: mature, left out, and (direct only) young. A young part stays in the own part,
+        so what is inside it is sorted too: its left-out loads come out, its mature ones go on."""
+        mature, left, young = [], [], []
+        for c in kids_of.get(x, ()):
+            if c in excl:
+                left.append(c)
+            elif c in fitted and fitted[c].span_weeks >= PART_MIN_WEEKS:
+                mature.append(c)
+            else:
+                if direct:
+                    young.append(c)
+                m, l, _ = sort_parts(c, excl, False)
+                mature += m
+                left += l
+        return mature, left, young
+
+    def walk(excl):
+        built, own = {}, {}
+
+        def go(x):
+            kids = tuple(kids_of.get(x, ())) if x in rows else ()
+            if not kids:
+                return
+            for c in kids:
+                if c not in excl:
+                    go(c)
+            mature, left, young = sort_parts(x, excl)
+            ser, own_fc = fit_cached(x, mature + left, "own")
+            own[x] = fit_cached(x, mature + left, "rem") if x is None else (ser, own_fc)
+            if not mature and not left:
+                return
+            w_ser, whole = fit_cached(x, left, "whole") if left else (rows[x], fitted[x])
+            if not mature:
+                built[x] = whole
+                return
+            tags = ([labels.get(c, c) for c in mature] + [f"{labels.get(c, c)} (in own part)" for c in young]
+                    + [f"{labels.get(c, c)} (left out)" for c in kids if c in excl])
+            built[x] = from_parts(whole, own_fc, [built.get(c, fitted[c]) for c in mature], w_ser, now, tuple(tags))
+
+        go(None)
+        return built, own
+
+    built, own = walk(())
+    if not excluded:
+        return built, own, built.get(None, fitted.get(None))
+    house = walk(set(excluded))[0]
+    return built, own, house.get(None, fitted.get(None))

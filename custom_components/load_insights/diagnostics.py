@@ -34,10 +34,9 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
 from .coordinator import InsightsCoordinator, InsightsData
-from .detection import DetectionRunner
-from .insights.detect import describe_location, location_confidence, most_specific
+from .detection import DetectionRunner, loaded
+from .insights.detect import describe_location, edge_story, lag_window, location_confidence, most_specific
 
 HORIZON_SAMPLE = 24        # hours of the horizon worth dumping; the rest is more of the same
 _MAX_DEPTH = 6
@@ -101,18 +100,81 @@ def _power_specs(specs) -> list:
         for s in specs
     ]
 
+def _detection(runner) -> dict:
+    """Detection's side of the picture - independent of the forecast."""
+    det = runner.detector
+    parents = runner.parents
+    return {
+        "enabled": runner.enabled,
+        "config": _jsonable(runner.config),
+        "meters": _jsonable(runner.submeters),
+        "solar": _jsonable(runner.solar),     # what a cloud is checked against
+        # false where the reading does not include the array at all, so
+        # no step of it is ever put down to the sun
+        "solar_shows_in_meter": dict(runner.pv_visible),
+        "processed_until": _jsonable(runner.last_processed),
+        "caught_up": runner.caught_up,
+        "samples_read": runner.samples_read,
+        "last_pass": dict(runner.last_pass),
+        "footprint": runner.fleet.footprint(),        # what the memory goes to, by count
+        "reactive_from": dict(runner.reactive_from),
+        # each one-figure inverter's phases on the grid meter's, learned from
+        # its voltages (Fleet.inverter_map): Home's SE17K reads a <-> b
+        "inverter_phases": {n: dict(m) for n, m in runner.fleet.inverter_phases.items()},
+        "inverter_votes": {n: {c: {p: round(r, 2) for p, r in row.items()} for c, row in v.items()}
+                           for n, v in runner.fleet.inverter_votes.items()},
+        "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
+                       # the loads believed to be running, and what each
+                       # is still drawing: an edge that never pairs off
+                       # is the thing to look at when a load goes missing
+                       "running": [{"since": _jsonable(o.since), "watts": round(o.watts),
+                                    "levels": len(o.levels)} for o in st.open_edges]}
+                   for p, st in det.phases.items()},
+        "signatures": [
+            {**_jsonable(sig.to_dict()),
+             "location": most_specific(sig.locations, sig.count, parents),
+             "where": describe_location(sig.locations, sig.count, parents, sig.phases),
+             "where_confidence": location_confidence(sig.locations, sig.count, parents),
+             "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict(),
+             "edge_story": edge_story(det.edges, sig)}
+            for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
+        ],
+        "recent_sessions": det.recent[-60:],
+        # the edge library: every kind of step the house meter takes, and
+        # where each input's changes fall against them
+        "edges": [e.to_dict() for e in det.edges],
+        "lag_windows": {n: lag_window(h) for n, h in det.lag_hist.items()},
+        # how each meter reports (PhaseState.on_change): the gaps it has been judged on, the class, and the
+        # settings page's answer where there is one ("forced": true on change, false polled, null auto)
+        "reporting": {name: {p: {"gaps": len(st.all_gaps), "change_driven": st.change_driven, "forced": st.forced,
+                                 "on_change": st.on_change, "interval_s": st.interval, "latency_s": round(st.latency(), 1)}
+                             for p, st in d.phases.items()}
+                      for name, d in [("", det), *sorted(runner.fleet.subs.items())]},
+        "submeter_signatures": {
+            name: [_jsonable(s.to_dict()) for s in d.signatures]
+            for name, d in runner.fleet.subs.items()
+        },
+    }
+
+
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """The whole picture, for a bug report or a question about a number."""
-    coordinator: InsightsCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    runner: DetectionRunner | None = hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_detection")
+    rt = loaded(entry)
+    coordinator: InsightsCoordinator | None = rt.coordinator if rt is not None else None
+    runner: DetectionRunner | None = rt.runner if rt is not None else None
     data: InsightsData | None = coordinator.data if coordinator else None
 
     out: dict[str, Any] = {
         "config": {"data": dict(entry.data), "options": _jsonable(dict(entry.options)),
-                   "version": entry.version, "minor_version": getattr(entry, "minor_version", None)},
+                   "version": entry.version, "minor_version": entry.minor_version},
     }
     if data is None:
+        # Setup no longer waits for the first forecast (2026-09-29), so this
+        # is the first minute after every reload; detection has its own state
+        # and is dumped regardless.
         out["state"] = "no data yet - the first refresh has not completed"
+        if runner is not None:
+            out["detection"] = _detection(runner)
         return out
 
     site = data.site
@@ -121,7 +183,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
         # The POWER config too, polarity included: whether a meter reports
         # export as positive decides whether the house is the grid reading
         # plus the inverter or minus it, and a dump that leaves it out
-        # cannot answer the question (Anze, 2026-09-18).
+        # cannot answer the question (2026-09-18).
         "grid_power": _power_specs(site.grid_power),
         "solar": list(site.solar), "solar_power": list(site.solar_power),
         "solar_forecast_entries": list(site.solar_forecast_entries),
@@ -143,6 +205,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
         "temperature_entity": data.temperature_entity,
         "temperature_history_hours": data.temperature_history_hours,
         "temperature_forecast_hours": data.temperature_forecast_hours,
+        "temperature_basis": data.temperature_basis,
         "calendars": list(data.calendar_entities),
         "attached_entities": list(data.input_entities),
         "how_each_was_read": _jsonable(data.input_kinds),
@@ -151,6 +214,10 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     if data.remainder is not None:
         out["forecasts"].append(_forecast(data.remainder, "remainder"))
     out["forecasts"] += [_forecast(fc, sid) for sid, fc in (data.devices or {}).items()]
+    # the house series fitted on its own, and each meter's own part: compare them with the built forecasts above
+    if data.consumption_fitted is not None:
+        out["forecasts"].append(_forecast(data.consumption_fitted, "consumption_fitted"))
+    out["forecasts"] += [_forecast(fc, f"own:{sid}") for sid, fc in (data.own_parts or {}).items()]
     out["grid"] = _jsonable(data.grid) if data.grid else None
     out["scoring"] = {
         key: {"errors": {str(lead): len(rows) for lead, rows in led.errors.items()},
@@ -162,40 +229,5 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     }
 
     if runner is not None:
-        det = runner.detector
-        parents = runner.parents
-        out["detection"] = {
-            "enabled": runner.enabled,
-            "config": _jsonable(runner.config),
-            "meters": _jsonable(runner.submeters),
-            "solar": _jsonable(runner.solar),     # what a cloud is checked against
-            # false where the reading does not include the array at all, so
-            # no step of it is ever put down to the sun
-            "solar_shows_in_meter": dict(runner.pv_visible),
-            "processed_until": _jsonable(runner.last_processed),
-            "caught_up": runner.caught_up,
-            "samples_read": runner.samples_read,
-            # per phase: whether the grid reading was added to the load one
-            "layout": dict(runner.layout),
-            "phases": {p: {"baseline": st.baseline, "noise": st.noise, "level": st.level,
-                           # the loads believed to be running, and what each
-                           # is still drawing: an edge that never pairs off
-                           # is the thing to look at when a load goes missing
-                           "running": [{"since": _jsonable(o.since), "watts": round(o.watts),
-                                        "levels": len(o.levels)} for o in st.open_edges]}
-                       for p, st in det.phases.items()},
-            "signatures": [
-                {**_jsonable(sig.to_dict()),
-                 "location": most_specific(sig.locations, sig.count, parents),
-                 "where": describe_location(sig.locations, sig.count, parents, sig.phases),
-                 "where_confidence": location_confidence(sig.locations, sig.count, parents),
-                 "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict()}
-                for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
-            ],
-            "recent_sessions": det.recent[-60:],
-            "submeter_signatures": {
-                name: [_jsonable(s.to_dict()) for s in d.signatures]
-                for name, d in runner.fleet.subs.items()
-            },
-        }
+        out["detection"] = _detection(runner)
     return out

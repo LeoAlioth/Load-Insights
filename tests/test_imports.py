@@ -5,7 +5,7 @@ Assistant layer, so a NameError in a page nobody opens during a test ships
 happily. It shipped twice in one afternoon: a coordinator reading self.entry
 when its attribute is config_entry, and the Inverters page using
 LAYOUT_PARALLEL after an edit took that import out with a neighbouring one
-(Anze, 2026-09-18: "the inverters setup page just shows an error").
+(2026-09-18: "the inverters setup page just shows an error").
 
 This reads the source rather than importing it, so it needs no Home
 Assistant installed - which is the whole premise of the pure tier.
@@ -22,9 +22,10 @@ from _load import run_main  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
 # what a Home Assistant base class provides that a subclass may read
 INHERITED = {
-    "hass", "config_entry", "data", "async_write_ha_state", "coordinator", "entity_id",
+    "hass", "config_entry", "data", "schema", "async_write_ha_state", "coordinator", "entity_id",
     "async_on_remove", "platform", "logger", "name", "available", "async_request_refresh",
     "last_update_success", "update_interval", "async_set_updated_data", "async_added_to_hass",
+    "async_refresh", "async_shutdown", "async_update_listeners",
     "async_update_ha_state", "registry_entry", "device_entry", "should_poll",
     "async_abort", "async_create_entry", "async_show_form", "async_show_menu",
     "async_set_unique_id", "_abort_if_unique_id_configured",
@@ -112,7 +113,7 @@ def test_every_way_the_library_is_thrown_away_carries_the_names():
     their meter readings across. A third path added later would take a user's
     named devices, their energy sensors and their place on the Energy
     dashboard with it, silently, on every installation at once. This fails
-    when one appears (Anze, 2026-09-22)."""
+    when one appears (2026-09-22)."""
     root = pathlib.Path(__file__).resolve().parents[1] / "custom_components" / "load_insights"
     tree = ast.parse((root / "detection.py").read_text(encoding="utf-8"))
     bad = []

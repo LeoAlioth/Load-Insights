@@ -18,13 +18,11 @@ of day has too few on-hours to stand alone. Same guard as every covariate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-MIN_ON_HOURS = 24          # a calendar (or title) on for less than a day in the window: no fit
-MIN_OFF_HOURS = 24
+from . import covariates as _cov
+
 MIN_PER_HOUR_OF_DAY = 5    # on-hours at one hour of day, else the single factor stands in
-MIN_EXPLAINED = 0.03
 # The residual must be REAL before any share of it means anything. Where the
 # profile already explains an input exactly - a tariff is a function of
 # weekday and hour, which is what the 168 slots are - the residual is
@@ -99,6 +97,8 @@ class Factors:
     explained: float = 0.0
     on_hours: int = 0
     engaged: bool = False
+    t: float = 0.0                     # t of the on-vs-off contrast, day-clustered (covariates.day_block_t)
+    days: int = 0                      # the day blocks the test had
 
     def at(self, hour_of_day: int, is_on: bool) -> float:
         if not self.engaged:
@@ -127,6 +127,27 @@ def _ratio(sub):
     return (num / den) if den > 0 else None
 
 
+def _contrast_t(on_rows, off_rows):
+    """t of the on-vs-off contrast and the day blocks behind it. The existence
+    fit is the weighted least squares of ``a = e * (c1 + c2 * on)`` with row
+    weights w / e: c1 = r_off and c1 + c2 = r_on, exactly the ratios used
+    below. (t, G); (0, 0) when singular."""
+    data = []
+    for on, group in ((1.0, on_rows), (0.0, off_rows)):
+        for k, _, w, a, e in group:
+            data.append((int(k // 86400), w / e, [e, e * on], a))
+    n = 2
+    A = [[sum(w * x[p] * x[q] for _, w, x, _ in data) for q in range(n)] for p in range(n)]
+    b = [sum(w * x[p] * a for _, w, x, a in data) for p in range(n)]
+    inv = _cov.inverse(A)
+    if inv is None:
+        return 0.0, 0
+    beta = [sum(inv[p][q] * b[q] for q in range(n)) for p in range(n)]
+    u_rows = [(d, w, x, a - beta[0] * x[0] - beta[1] * x[1]) for d, w, x, a in data]
+    ts, G = _cov.day_block_t(u_rows, beta, inv)
+    return ts[1], G
+
+
 def fit_factors(rows: Sequence[Tuple[float, int, float, float, float]], on: Set[float], off: Set[float],
                 scale_off: bool = True) -> Factors:
     """``rows`` are (hour_key, hour_of_day, weight, actual, expected) for the
@@ -136,7 +157,13 @@ def fit_factors(rows: Sequence[Tuple[float, int, float, float, float]], on: Set[
     worth fitting (titles, whose off-set is the calendar's other on-hours)."""
     on_rows = [r for r in rows if r[0] in on and r[4] > 0]
     off_rows = [r for r in rows if r[0] in off and r[4] > 0]
-    if len(on_rows) < MIN_ON_HOURS or len(off_rows) < MIN_OFF_HOURS:
+    # the evidence rule of every covariate (covariates.py): a calendar on, and off, on fewer than MIN_DAYS days
+    # says nothing, and its contrast must clear the day-clustered t the temperature term clears
+    if (len({int(r[0] // 86400) for r in on_rows}) < _cov.MIN_DAYS
+            or len({int(r[0] // 86400) for r in off_rows}) < _cov.MIN_DAYS):
+        return NO_FACTORS
+    t_on, days = _contrast_t(on_rows, off_rows)
+    if days < _cov.MIN_DAYS or abs(t_on) < _cov.t_crit(days - 1, _cov.ALPHA):
         return NO_FACTORS
     r_on, r_off = _ratio(on_rows), _ratio(off_rows)
     if not r_on or not r_off:
@@ -166,10 +193,10 @@ def fit_factors(rows: Sequence[Tuple[float, int, float, float, float]], on: Set[
     if before <= 0 or before < MIN_RESIDUAL_SHARE * scale:
         return NO_FACTORS
     explained = 1.0 - after / before
-    if explained < MIN_EXPLAINED:
+    if explained < 0.0:
         return NO_FACTORS
     return Factors(on=on_single, off=off_single, on_by_hour=tuple(on_bh), off_by_hour=tuple(off_bh),
-                   explained=explained, on_hours=len(on_rows), engaged=True)
+                   explained=explained, on_hours=len(on_rows), engaged=True, t=t_on, days=days)
 
 
 def _clamp(f: float) -> float:

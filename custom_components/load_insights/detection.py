@@ -1,69 +1,155 @@
 """Runs the detector on the recorder's raw states, incrementally."""
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
-import math
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, get_instance, history
+from homeassistant.components.recorder import statistics as rec_stats
+from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
+from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import COMPRESSED_STATE_LAST_UPDATED, COMPRESSED_STATE_STATE, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_GRID_PREFIX,
-    CONF_LAYOUT,
-    LAYOUT_ALIASES,
-    ROLE_PREFIX,
-    SOURCE_NONE,
+    GRID_PREFIX,
+    BASE_LOAD_GRID,
+    CONF_BASE_LOAD,
     CONF_DETECTION,
+    CONF_SINGLE_DEVICE,
+    CONF_CHANGE_METERS,
+    CONF_IGNORE_METERS,
+    CONF_PERIODIC_METERS,
+    CONF_HORIZON_SKIP,
+    CONF_INPUT_ENTITIES,
     CONF_INVERTERS,
+    CONF_INV_DEVICE,
     CONF_INV_INPUT_PREFIX,
     DEFAULT_MIN_EVIDENCE,
     NAMING_MIN_ROWS,
     NAMING_ROWS_PER_NAME,
     NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
-    CONF_DETECTION_INTERVAL,
+    CONF_METER_WAIT,
     DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
+    PREFETCH_MAX_MIN,
+    HISTORY_SAVE_INTERVAL_S,
     SAVE_MAX_INTERVAL_S,
     DOMAIN,
 )
 from .insights.detect import (
+    HOURLY_KEEP_S,
+    input_rows,
+    METER_WAIT_CAP_S,
+    SWITCH_MEMORY_S,
     combine,
     COMBINE_SETTLE_S,
     PHASES,
+    SYSTEM_PHASES,
     Detector,
     Fleet,
     carries_generation,
-    MIN_NOISE_W,
+    _align,
+    _reactive,
+    SIGNED_VAR_SLACK_S,
+    _median,
     _sum_series,
     without_window_start,
     names_in_store,
     carries_load,
-    classify_source,
-    site_topology,
     unit_scale,
     exports_positive,
     drop_stale_load_override,
-    mean_power,
-    most_specific,
-    measure_quantum,
     quantum_of_steps,
     clears_for_naming,
     offer_for_naming,
 )
-from .insights.discovery import closest_by_name, match_meter_entities
+from .insights.phases import beside, match_meter_entities, share_split, voltage_votes
 from .insights.model import SiteModel
+from .insights.solar import array_rows
+from .autonaming import AutoNamer
+from .insights.named import (first_change, metered_device, plan_carry, plan_rewrite,
+                             vanished_into)
+
+if TYPE_CHECKING:
+    from .coordinator import InsightsCoordinator   # which imports this module
 
 _LOGGER = logging.getLogger(__name__)
+
+# the inputs detection reads: what says when a load runs, and what a load's
+# runs may follow
+SWITCH_DOMAINS = ("binary_sensor", "switch", "input_boolean", "fan", "light", "climate")
+NUMBER_DOMAINS = ("sensor", "number", "input_number")
+# ...and what reports a device's setting: a select, a fan's speed, and any
+# sensor whose states are words (a washer's cycle phase)
+STATE_DOMAINS = ("select", "input_select", "fan")
+
+
+def load_uid(entry_id: str, kind: str, name: str) -> str:
+    """A named load's entity's unique id - ``kind`` "power" or "energy"."""
+    return f"{entry_id}_load_{kind}_{name.lower().replace(' ', '_')}"
+
+
+def device_uid(entry_id: str, energy: str) -> str:
+    """A dashboard device's forecast sensor's unique id, from its statistic id."""
+    return f"{entry_id}_device_{energy.replace('.', '_')}"
+
+
+def base_load_uid(entry_id: str, key: str, phase: Optional[str], kind: str) -> str:
+    """A meter's base load entity's unique id: ``key`` its energy statistic (BASE_LOAD_GRID for the grid),
+    ``phase`` its phase or None for the whole, ``kind`` "power" or "energy"."""
+    return f"{entry_id}_baseload_{kind}_{key.replace('.', '_')}_{phase or 'all'}"
+
+
+def base_load_label(fleet, meter: str, phase: Optional[str]) -> str:
+    """What a meter's base load is called - its device and its dashboard entry."""
+    label = "Base load" if not meter else f"{meter} base load"
+    if phase is not None:
+        house = fleet.phase_map(meter).get(phase, phase) if meter else phase
+        label += f" {SYSTEM_PHASES.get(house, phase.upper())}"
+    return label
+
+
+@dataclass
+class RuntimeData:
+    """What a loaded entry runs - its ConfigEntry.runtime_data."""
+    coordinator: "InsightsCoordinator"
+    runner: "DetectionRunner"
+    site_device_id: str
+
+
+def loaded(entry: Optional[ConfigEntry]) -> Optional[RuntimeData]:
+    """The entry's runtime data, or None while it is not loaded."""
+    return getattr(entry, "runtime_data", None)
+
+
+def runner_of(entry: Optional[ConfigEntry]) -> Optional["DetectionRunner"]:
+    """The entry's detection runner, or None while it is not loaded."""
+    data = loaded(entry)
+    return data.runner if data is not None else None
+
+
+def named_load_energy(hass: HomeAssistant, entry: ConfigEntry, name: str) -> Optional[str]:
+    """The entity - and so the statistic - a named load's energy is under: a
+    load that IS a metered device is under that device's own meter."""
+    runner = runner_of(entry)
+    meter = runner.metered_device(name) if runner is not None else None
+    if meter:
+        return runner.submeters[meter]["energy"]
+    return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, load_uid(entry.entry_id, "energy", name))
 STORAGE_VERSION = 1
 # The DETECTOR's generation, separate from the store's format version: when
 # the algorithm changes shape, what it learned before is not comparable with
@@ -108,7 +194,44 @@ STORAGE_VERSION = 1
 #     connection's phases from the data, and a one-device meter decides which
 #     signature a matched session joins - so which sessions share a signature,
 #     and where signatures are placed, both change.
-DETECTOR_GENERATION = 14
+# 15 = edges are clustered by where their sizes pile up, pairs and links are
+#     accepted above chance, and runs are filed by device rather than by how
+#     alike their power looks: every cluster, pair and signature differs.
+# 16 = a start is an all-phase event: rises on several phases within the
+#     window are one cluster carrying a phase pattern, a device is its start
+#     cluster (the link table is gone), and a run is filed on its own phases
+#     only - every start cluster, device and signature differs.
+# 17 = a step's place is part of its kind (the innermost meter that saw all
+#     of it), a house step its meters stepped with is booked as their shares,
+#     a run bigger than the whole reading is closed, and noise is learned from
+#     how the reading moves - every cluster, run and signature differs.
+# 18 = a meter's step is its own detector's, weighed against the grid's over
+#     both spans; a level is confirmed, a silence held and a span started over
+#     three of the meter's cadence (how often it writes while its value
+#     moves); only a start is placed; a step no meter placed never joins a
+#     meter that held its value - which steps are declared, and where every
+#     start cluster sits, differ.
+# 19 = one gap measure for every meter (its interval is its moving gaps'
+#     tenth percentile, persisted), an unseen stop fitted only to what fell
+#     short since a run started, a meter's step the other way split out of
+#     a grid step that netted it, a held meter's signatures avoided when
+#     filing, and the level left on the reading after a multi-close - which
+#     steps are declared, and how runs close and file, differ.
+# 20 = a pass is only a pause: every meter read on one clock, the grid its
+#     meters' learned lag behind them; every decision on that clock and each
+#     session filed when it becomes decidable, not at a pass's end; a meter's
+#     latency learned from the steps it shares with the grid; device merges
+#     after every filing, never into a signature a run was kept out of - the
+#     same history read at any slicing files the same library, which differs
+#     from one built in passes.
+# 23 = the run lifecycle (2026-10-28/29): a fall closes the run it most
+#     likely ends (size likeness x pair evidence x age, a probability; legs
+#     of a multi-phase run only on a fall across them; a second rise never
+#     ends the first without a fall or the readings), steps grouped by the
+#     mixture only (joins at 2 widths), runs filed and merged by their start
+#     and stop groups' pair (pair_home) - groups, devices and signatures all
+#     differ from 22's.
+DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # signature worth 30 Wh over ten days is noise with a shape, and a list full
@@ -118,54 +241,194 @@ NAMING_MIN_WH = 50.0
 # what it can resolve. A pass covers one minute, so the evidence has to be
 # gathered across them or it is never gathered at all.
 AMP_STEP_MEMORY = 600
+# How soon the next pass follows one that is not caught up - a backfill slice
+CATCH_UP_PASS_S = 2.0
+# A pass reads the recorder up to `now`; a reading stamped before `now` but
+# committed after the read is never read, because the next pass starts at the
+# end of this one. So a pass waits for the recorder's queue to drain first. A
+# pass that cannot get it in this long reads nothing and tries again at the
+# same start a minute later.
+RECORDER_FLUSH_S = 30.0
 
 
-class DetectionRunner:
-    """Every interval_minutes, read what the meter has recorded since
+def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
+    """The Energy dashboard's site AS DETECTION READS IT: less anything this
+    integration publishes.
+
+    A detected load's energy sensor can be listed there - the kiln, under
+    the meter it sits in - and the forecasts welcome it like any device. But
+    detection takes every listed device as a meter, and read back as one the
+    kiln's estimate would be fed in as a measurement, with the kiln then
+    detected inside it (2026-09-28: "make sure that the generated
+    detected entities do not back feed to any detection as if they were
+    actual measurements"). Read back as a sub-meter a load's estimate became
+    its own truth - and naming a load after it made the load "that metered
+    device", so it got no sensors at all (Home and Kozolec, 2026-09-30, after
+    the full reset left Peč za Glino, Kompresor, Fridges... on the dashboard)."""
+    own = frozenset(e.entity_id for e in er.async_get(hass).entities.values() if e.platform == DOMAIN)
+    return SiteModel.from_prefs(prefs, ignore=own)
+
+
+def meter_devices(hass: HomeAssistant, device_id: str) -> List[str]:
+    """The device and the devices that hang off it (via_device_id) - see
+    device_rows.
+
+    Looked for among the devices of the meter's own config entries:
+    `registry.devices` used as a mapping (`.values()` too) is deprecated from
+    Home Assistant 2026.9 and breaks in 2027.9, and iterating it yields device
+    ids rather than entries before 2026.9 - this helper reads the same on both.
+    A device's `config_entries` (a set) is deprecated for its single
+    `config_entry_id` and breaks in 2027.10; older versions have only the set."""
+    ids = [device_id]
+    try:
+        devices = dr.async_get(hass)
+        meter = devices.async_get(device_id)
+        if meter is None:
+            entry_ids = ()
+        elif hasattr(type(meter), "config_entry_id"):   # checked on the class: no deprecation warning
+            entry_ids = (meter.config_entry_id,) if meter.config_entry_id else ()
+        else:
+            entry_ids = meter.config_entries
+        ids += dict.fromkeys(d.id for entry_id in entry_ids
+                             for d in dr.async_entries_for_config_entry(devices, entry_id)
+                             if d.via_device_id == device_id)
+    except Exception:                        # a registry we cannot read is not fatal
+        pass
+    return ids
+
+
+def area_id(hass: HomeAssistant, entity_id: Optional[str]) -> Optional[str]:
+    """An entity's own area where it has one, else its device's."""
+    entity = er.async_get(hass).async_get(entity_id) if entity_id else None
+    if entity is None or entity.area_id or not entity.device_id:
+        return entity.area_id if entity is not None else None
+    device = dr.async_get(hass).async_get(entity.device_id)
+    return device.area_id if device else None
+
+
+def device_rows(hass: HomeAssistant, device_id: str) -> list:
+    """A device's sensors in the shape the meter matcher reads, INCLUDING
+    those of the devices that hang off it.
+
+    A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
+    totals, each phase pointing at the parent with via_device_id. The
+    Energy dashboard names the parent - that is where the energy
+    statistic lives - so reading only the parent's own entities found a
+    single total and nothing else, and a three-phase meter was taken for
+    a one-phase one. It is the commonest three-phase meter there is
+    (the owner's attic and grid meters are both this, 2026-09-22). The grid
+    page reads a device through this too."""
+    registry = er.async_get(hass)
+    rows = []
+    for e in [x for i in meter_devices(hass, device_id)
+              for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
+        if e.domain != "sensor":
+            continue
+        st = hass.states.get(e.entity_id)
+        rows.append({
+            "entity_id": e.entity_id,
+            "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
+            "name": e.name or e.original_name or "",
+        })
+    return rows
+
+
+def _sum_phases(readings) -> Dict[str, list]:
+    """Per phase, every reading's series summed (_sum_series), in order."""
+    out: Dict[str, list] = {}
+    for rows in readings:
+        for p, series in rows.items():
+            out[p] = _sum_series(out.get(p, []), series)
+    return out
+
+
+class DetectionRunner(DataUpdateCoordinator[None]):
+    """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and signatures persist in
-    .storage so a restart resumes where it stopped."""
+    .storage so a restart resumes where it stopped.
+
+    A coordinator for its schedule and its listeners, never for data: a pass
+    tells the entities itself (async_update_listeners) at the moment it has
+    something to say - before a finished re-read stops being one, which the
+    named loads' energy reads - and always_update=False keeps the
+    coordinator from telling them again after every refresh."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        self.hass = hass
+        super().__init__(hass, _LOGGER, config_entry=entry, name=f"{DOMAIN} detection",
+                         update_method=self._run, always_update=False)
         self.entry = entry
-        self.submeters = {}
+        # Meters below the main one come from the Energy dashboard, resolved once
+        # per run: {name: {"fields": {...}, "parent": name|None, ...}}
+        self.submeters: Dict[str, dict] = {}
+        # ...and every meter the dashboard has, those left out of detection
+        # on the settings page too (see CONF_IGNORE_METERS)
+        self.all_submeters: Dict[str, dict] = {}
         self.fleet: Fleet = Fleet()
         # V x dI per phase: the apparent power one quantum of the amps
         # behind this role's power factor is worth. Measured, never set.
         self.q_quantum: Dict[str, float] = {}
-        self._amp_steps: Dict[str, List[float]] = {}
+        self._amp_steps: Dict[object, List[float]] = {}
+        # ...and each meter's channel's, from its own amps, the same way
         self.sub_q_quantum: Dict[str, Dict[str, float]] = {}
         self.solar: List[Dict[str, str]] = []   # each array's power per phase
         # whether the configured reading actually includes the array, read
         # off the data per phase and remembered once it is conclusive
         self.pv_visible: Dict[str, bool] = {}
+        # whether the grid meter reads export positive, as the last pass that could tell found (_grid_sign)
+        self._exports_positive: Optional[bool] = None
+        # what the inverters added to each phase of a house built from them
+        # (_derive_load), as of each of its readings: the array IN the reading
+        self.array_in_house: Dict[str, Dict[float, float]] = {}
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
-        # how the grid reading relates to the load one, per phase, worked out
-        # from the data unless the user says otherwise
-        self.layout: Dict[str, str] = {}
-        # What the AC input turned out to be, kept at the most
-        # informative verdict seen: a generator that has not run this
-        # window reads exactly like nothing connected, and falling back
-        # to that every quiet day would flap the wording for no reason.
-        self.source_kind: Optional[str] = None
-        # Mean watts per NAMED load over the last stretch of data processed,
-        # from the energy that stretch added. See _update_average_power.
-        self.average_power: Dict[str, float] = {}
-        self._energy_mark: Dict[str, float] = {}
+        # Watts per NAMED load as of the data processed - see _update_live_power
+        self.live_power: Dict[str, float] = {}
+        self._live_marks: Dict[str, int] = {}
+        self._live_shown: Dict[str, List[float]] = {}
         self._mark_ts: Optional[float] = None
         self._saved_at: Optional[float] = None
+        self._history_saved_at: Optional[float] = None
+        self._inputs_primed = False       # see _read_inputs
         self.last_processed: Optional[datetime] = None
         self.caught_up = False
+        # re-reading history from scratch - after a reset, or with nothing
+        # stored: what the library gains is old, not new energy
+        self.refiling = False
+        # name -> the statistic ids of the names that vanished into it
+        # (_carry_vanished), whose history its meter is owed before the
+        # window - once, as soon as it has an hour (async_backfill_statistics).
+        # Stored, so a restart before then still carries it
+        self.carries: Dict[str, List[str]] = {}
         self.last_run: Optional[datetime] = None
-        self.sessions_today = 0
+        # seconds the last pass spent reading the recorder and detecting, and
+        # the hours it covered: where a backfill's time goes
+        self.last_pass: Dict[str, float] = {}
+        # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
+        self._pass_rows: Optional[tuple] = None
+        self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
-        self._unsub = None
-        self._listeners: List = []
-        self._running = False
+        # the hours confident unnamed loads keep past the window
+        # (Signature.older), apart from the library they would swell
+        self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
+        # every grouped step of the last ten days, with its voltages (run lifecycle, Task 8c):
+        # several MB at Home, so a store of its own, written as rarely as the older hours
+        self._steps: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.steps")   # only to remove it
+        # held by a pass, and by whatever must not run under one: a reset, a
+        # rename, a statistics rewrite - each waits for the pass to finish
+        self._lock = asyncio.Lock()
+        # what detection named by itself and put on the Energy dashboard (INS-21)
+        self.autonamer = AutoNamer(self)
+
+    def energy_entity(self, name: str) -> Optional[str]:
+        """The entity id of a named load's own energy sensor (None until it exists)."""
+        return er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
+
+    def power_entity(self, name: str) -> Optional[str]:
+        """The entity id of a named load's own power sensor (None until it exists)."""
+        return er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, load_uid(self.entry.entry_id, "power", name))
 
     @property
     def config(self) -> dict:
@@ -174,10 +437,6 @@ class DetectionRunner:
         # by an older version that nobody re-saves. See
         # drop_stale_load_override for what it removes and why.
         return drop_stale_load_override(dict(self.entry.options.get(CONF_DETECTION) or {}))
-
-    # Meters below the main one come from the Energy dashboard, resolved once
-    # per run: {name: {"fields": {...}, "agnostic": bool, "parent": name|None}}
-    submeters: Dict[str, dict] = {}
 
     async def _resolve_submeters(self) -> Dict[str, dict]:
         """Every individually metered device the Energy dashboard lists, with
@@ -190,59 +449,48 @@ class DetectionRunner:
         whose hardware publishes no power at all cannot take part: hourly
         energy is far too coarse to line up with a session."""
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         registry = er.async_get(self.hass)
         by_stat = {d.energy: d for d in site.devices}
+        declared = self.config.get(CONF_SINGLE_DEVICE)
+        declared = None if declared is None else set(declared)
+        ignored = set(self.config.get(CONF_IGNORE_METERS) or [])
+        unwaited = set(self.config.get(CONF_HORIZON_SKIP) or [])
+        forced = {**dict.fromkeys(self.config.get(CONF_PERIODIC_METERS) or [], False),
+                  **dict.fromkeys(self.config.get(CONF_CHANGE_METERS) or [], True)}
         out: Dict[str, dict] = {}
         for dev in site.devices:
             entry = registry.async_get(dev.energy)          # a recorder statistic id IS the entity id
+            # Not an entity that no longer exists: its recorded history is only
+            # what it was. (Not one of our own named-load sensors either - see
+            # energy_site, which has already left those out.)
+            if entry is None and self.hass.states.get(dev.energy) is None:
+                continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
-                fields = match_meter_entities(self._device_rows(registry, entry.device_id))
-            phases = [p for p in PHASES if fields.get(f"power_{p}")]
-            agnostic = False
-            if len(phases) < 2:
-                # no per-phase breakdown: the dashboard's own power sensor (or
-                # the single one found) stands in, and matching ignores phases
-                total = dev.power or (fields.get(f"power_{phases[0]}") if phases else None)
-                if not total:
+                fields = match_meter_entities(device_rows(self.hass, entry.device_id))
+            if not any(fields.get(f"power_{p}") for p in PHASES):
+                # no per-phase reading: the dashboard's own power sensor, one
+                # channel whose label means nothing - the votes find its
+                # phase (Fleet.phase_map). A lone per-phase reading is fed
+                # under its own label, with its own reactive power
+                if not dev.power:
                     continue
-                fields = {"power_a": total}
-                agnostic = True
+                fields = {"power_a": dev.power}
             parent = by_stat.get(dev.included_in or "")
-            out[dev.label] = {"fields": fields, "agnostic": agnostic,
-                              "parent": parent.label if parent else None}
+            out[dev.label] = {"fields": fields,
+                              "parent": parent.label if parent else None, "energy": dev.energy,
+                              # None: not declared, the library's shape decides
+                              "single": None if declared is None else dev.energy in declared,
+                              "ignored": dev.energy in ignored, "horizon_skip": dev.energy in unwaited,
+                              "cadence": forced.get(dev.energy)}
         return out
 
-    def _device_rows(self, registry, device_id: str) -> list:
-        """A device's sensors in the shape the meter matcher reads, INCLUDING
-        those of the devices that hang off it.
-
-        A Shelly Pro 3EM is one device per PHASE plus a parent carrying the
-        totals, each phase pointing at the parent with via_device_id. The
-        Energy dashboard names the parent - that is where the energy
-        statistic lives - so reading only the parent's own entities found a
-        single total and nothing else, and a three-phase meter was taken for
-        a one-phase one. It is the commonest three-phase meter there is
-        (Anze's attic and grid meters are both this, 2026-09-22)."""
-        ids = [device_id]
-        try:
-            dev_reg = dr.async_get(self.hass)
-            ids += [d.id for d in dev_reg.devices.values() if d.via_device_id == device_id]
-        except Exception:                        # a registry we cannot read is not fatal
-            pass
-        rows = []
-        for e in [x for i in ids
-                  for x in er.async_entries_for_device(registry, i, include_disabled_entities=False)]:
-            if e.domain != "sensor":
-                continue
-            st = self.hass.states.get(e.entity_id)
-            rows.append({
-                "entity_id": e.entity_id,
-                "device_class": e.device_class or e.original_device_class or (st.attributes.get("device_class") if st else None),
-                "name": e.name or e.original_name or "",
-            })
-        return rows
+    async def _refresh_submeters(self) -> None:
+        """Every meter the dashboard has (the settings page lists them all),
+        and the ones detection reads: all but those left out of it."""
+        self.all_submeters = await self._resolve_submeters()
+        self.submeters = {n: m for n, m in self.all_submeters.items() if not m.get("ignored")}
 
     async def _inverter_terms(self, start: datetime, end: datetime) -> List[tuple]:
         """Each inverter as (rows, sign) per phase: its output, less its input.
@@ -253,14 +501,18 @@ class DetectionRunner:
         on is not counted a second time. Nothing here consults a wiring flag,
         because the sum telescopes either way."""
         out: List[tuple] = []
-        for inv in self.entry.options.get(CONF_INVERTERS) or []:
+        for k, inv in enumerate(self.entry.options.get(CONF_INVERTERS) or []):
             for prefix, sign in (("", 1.0), (CONF_INV_INPUT_PREFIX, -1.0)):
                 cfg = {f"power_{p}": inv.get(f"{prefix}power_{p}") for p in PHASES}
                 total = inv.get(f"{prefix}power")
                 if total and not any(cfg.values()):
-                    # a machine that publishes one figure: a three-phase
-                    # inverter is symmetric, so its legs are its total in
-                    # thirds - which reproduced Anze's own templates exactly
+                    split = await self._inverter_split(start, end, inv, total, prefix or f"inv{k}")
+                    if split is not None:
+                        out.append((split, sign))
+                        continue
+                    # a machine that publishes one figure and no volts or amps: a
+                    # three-phase inverter is symmetric, so its legs are its total in
+                    # thirds - which reproduced the owner's own templates exactly
                     cfg = {f"power_{p}": total for p in PHASES}
                     share = 1.0 / len(PHASES)
                 else:
@@ -272,6 +524,35 @@ class DetectionRunner:
                 out.append((rows, sign * share))
         return out
 
+    async def _inverter_split(self, start: datetime, end: datetime, inv: dict, total: str,
+                              name: str) -> Optional[Dict[str, list]]:
+        """A one-figure inverter's output on each GRID phase by its phases' V x I
+        share, through the map its voltages vote against the grid meter's
+        (phases.voltage_votes, Fleet.inverter_map); None without its per-phase
+        volts and amps (the inverter page's fields, else the device's own
+        sensors) or the grid meter's volts, or while the map is not yet clear.
+        Home's SE17K is wired a <-> b against its M1 (2026-10-23): a third on
+        each phase hid that, a share through the wrong map would not."""
+        fields = {f"{kind}_{p}": inv.get(f"{kind}_{p}") for kind in ("voltage", "current") for p in PHASES}
+        if not all(fields.values()) and inv.get(CONF_INV_DEVICE):
+            matched = match_meter_entities(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            fields = {key: fields[key] or matched.get(key) for key in fields}
+        grid_v = {f"voltage_{p}": self.config.get(f"{GRID_PREFIX}voltage_{p}") for p in PHASES}
+        if not all(fields.values()) or not all(grid_v.values()):
+            return None
+        own = await self._read_raw(start, end, {**fields, "power_a": total})
+        grid = await self._read_raw(start, end, grid_v)
+        volts = {p: own.get(("voltage", p)) or [] for p in PHASES}
+        amps = {p: own.get(("current", p)) or [] for p in PHASES}
+        rows = own.get(("power", "a")) or []
+        gv = {p: grid.get(("voltage", p)) or [] for p in PHASES}
+        if not rows or not all(volts.values()) or not all(amps.values()) or not all(gv.values()):
+            return None
+        mapping = self.fleet.inverter_map(name, voltage_votes(volts, gv))
+        if len(mapping) < len(PHASES):
+            return None
+        return share_split(rows, volts, amps, mapping, PHASES)
+
     async def _derive_load(self, start: datetime, end: datetime) -> Dict[str, list]:
         """What the house drew, per phase, from the grid and the inverters.
 
@@ -279,33 +560,29 @@ class DetectionRunner:
 
         There is no load reading to configure because there is nothing to
         configure: given the grid and the inverters, the house is determined
-        (Anze, 2026-09-18 - "just have each inverter entry have both inputs
+        (2026-09-18 - "just have each inverter entry have both inputs
         and outputs configurable"). Whatever sits between the utility meter
         and an inverter's own AC input falls out of the same sum, because a
         hybrid measures that input itself.
 
         An explicit reading still wins where someone has one that already IS
-        the house - a dedicated CT, or the template sensors Anze built before
+        the house - a dedicated CT, or the template sensors the owner built before
         this existed."""
+        self.array_in_house = {}
         override = {f"power_{p}": self.config.get(f"power_{p}") for p in PHASES}
         if any(override.values()):
             samples, _ = await self._read(start, end, {k: v for k, v in override.items() if v})
             return samples
 
         terms: List[tuple] = []
-        grid_cfg = {f"power_{p}": self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES}
+        grid_cfg = {f"power_{p}": self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES}
         grid_cfg = {k: v for k, v in grid_cfg.items() if v}
         grid_rows: Dict[str, list] = {}
         if grid_cfg:
             grid_rows, _ = await self._read(start, end, grid_cfg)
         inverters = await self._inverter_terms(start, end)
         if grid_rows:
-            generation = {}
-            for rows, sign in inverters:
-                if sign <= 0:
-                    continue
-                for p, series in rows.items():
-                    generation[p] = _sum_series(generation.get(p, []), series)
+            generation = _sum_phases(rows for rows, sign in inverters if sign > 0)
             sign = await self._grid_sign(grid_rows, generation)
             terms.append((grid_rows, sign))
         terms.extend(inverters)
@@ -317,13 +594,17 @@ class DetectionRunner:
             per_phase = [(rows[p], sign) for rows, sign in terms if rows.get(p)]
             if per_phase:
                 out[p] = combine(per_phase, settle_s=COMBINE_SETTLE_S)
+            added = [(rows[p], sign) for rows, sign in inverters if rows.get(p)]
+            if grid_rows and added and out.get(p):
+                # the detector learns its idle noise and floor only while this holds still
+                self.array_in_house[p] = _align(combine(added), out[p])
         return {p: rows for p, rows in out.items() if rows}
 
     async def _grid_sign(self, grid_rows: Dict[str, list],
                          generation: Optional[Dict[str, list]]) -> float:
         """+1 where the grid meter reads import positive, -1 where it does
         not - because "the house is the meter plus the inverter" is true only
-        in the first convention, and Anze's SolarEdge M1 is the second.
+        in the first convention, and the owner's SolarEdge M1 is the second.
 
         Declared beats derived: the Energy dashboard's grid source asks this
         outright (none, normal, inverted, or a pair of sensors), so where it
@@ -339,13 +620,15 @@ class DetectionRunner:
             for phase, rows in grid_rows.items():
                 verdict = exports_positive(rows, generation.get(phase) or [])
                 if verdict is not None:
-                    return -1.0 if verdict else 1.0
-        return 1.0
+                    self._exports_positive = verdict
+                    break
+        # the last pass that could tell, where this one is too short to
+        return -1.0 if self._exports_positive else 1.0
 
     async def _site_grid_power(self) -> list:
         try:
             manager = await async_get_manager(self.hass)
-            return list(SiteModel.from_prefs(manager.data).grid_power)
+            return list(energy_site(self.hass, manager.data).grid_power)
         except Exception:  # noqa: BLE001 - a missing dashboard is not an error
             return []
 
@@ -365,7 +648,7 @@ class DetectionRunner:
         # lists what produces energy, not where it is wired, and a DC-coupled
         # array charging the battery through an MPPT never shows on the AC
         # side at all - so at Kozolec there is nothing for the dashboard's
-        # view to find (Anze, 2026-09-18).
+        # view to find (2026-09-18).
         configured = self.entry.options.get(CONF_INVERTERS) or []
         if configured:
             out: List[Dict[str, str]] = []
@@ -384,17 +667,19 @@ class DetectionRunner:
             if out:
                 return out
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = energy_site(self.hass, manager.data)
         if not site.solar:
             return []
         registry = er.async_get(self.hass)
         spare = list(site.solar_power)
+        grid_power = [self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES]
         out: List[Dict[str, str]] = []
         for stat in site.solar:
             found: Dict[str, str] = {}
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
-                matched = match_meter_entities(self._device_rows(registry, entry.device_id))
+                # the inverter's device may carry the grid meter too (SolarEdge Modbus Multi's M1)
+                matched = match_meter_entities(array_rows(device_rows(self.hass, entry.device_id), grid_power))
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
@@ -414,77 +699,404 @@ class DetectionRunner:
         """Meter -> the meter it sits inside, from included_in_stat."""
         return {name: m["parent"] for name, m in self.submeters.items()}
 
-    def unlocated(self) -> list:
-        """Signatures no device meter accounts for AND seen more than once -
-        the ones worth naming.
+    async def _read_inputs(self, start: datetime, end: datetime):
+        """The pass's inputs, with SWITCH_MEMORY_S before it so a run that
+        started a slice ago still has its start. A switch as its on-periods,
+        [(on, off or None while still on)]: a climate entity is on while its
+        hvac_action says it is doing something (a thermostat's heating),
+        anything else while its state is "on", and a period only open because
+        the window starts there is not a switch-on. A number as its readings,
+        [(ts, value)], and a setting as its values, [(ts, "Wash")] - a fan's
+        by its speed - each with the one in force at the window's start."""
+        switches: Dict[str, list] = {}
+        numbers: Dict[str, list] = {}
+        inputs: Dict[str, list] = {}
+        since = start - timedelta(seconds=SWITCH_MEMORY_S)
+        if not self._inputs_primed and self.fleet._now:
+            # the first pass of a run: what a restart cannot get back from the store is read again, as far back as the
+            # oldest run or session still to be placed asks (never past the recorder's ten days)
+            oldest = dt_util.utc_from_timestamp(self.fleet._oldest_asked())
+            since = max(min(since, oldest - timedelta(seconds=SWITCH_MEMORY_S)), start - timedelta(days=DETECTION_BACKFILL_DAYS))
+        self._inputs_primed = True
+        # every input the forecast is given, whatever it is linked to (the owner,
+        # 2026-09-28: add the thermostat to the inputs first, and move it to
+        # the device once the load it helped find is named)
+        for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
+            domain = eid.split(".", 1)[0]
+            if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
+                continue
+            if domain in ("climate", "fan"):
+                # Read by an ATTRIBUTE - a thermostat's hvac_action, a fan's
+                # speed - which changes while the state does not: a thermostat
+                # stays "heat" all winter. state_changes_during_period returns
+                # state changes only, and so gave the floor mat's thermostat
+                # not one switch-on in production (2026-09-28).
+                states = await get_instance(self.hass).async_add_executor_job(functools.partial(
+                    history.get_significant_states, self.hass, since, end, [eid],
+                    include_start_time_state=True, significant_changes_only=False))
+            else:
+                states = await get_instance(self.hass).async_add_executor_job(
+                    history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
+                )
+            rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
+            if domain in NUMBER_DOMAINS:
+                values = []
+                for st in rows:
+                    try:
+                        values.append((st.last_updated.timestamp(), float(st.state)))
+                    except ValueError:
+                        pass
+                if values:
+                    numbers[eid] = values
+                elif domain == "sensor" and rows:
+                    inputs[eid] = input_rows(states.get(eid, []), domain)
+                continue
+            if domain in STATE_DOMAINS:
+                inputs[eid] = input_rows(states.get(eid, []), domain)
+            if domain not in SWITCH_DOMAINS:
+                continue
+            spans, on = [], None
+            for st in rows:
+                is_on = (st.attributes.get("hvac_action") not in (None, "idle", "off")) if domain == "climate" else st.state == "on"
+                t = st.last_updated.timestamp()
+                if is_on and on is None:
+                    on = t
+                elif not is_on and on is not None:
+                    spans.append((on, t))
+                    on = None
+            if on is not None:
+                spans.append((on, None))
+            switches[eid] = [(a, b) for a, b in spans if a > since.timestamp() + 1.0]
+        return switches, numbers, inputs
 
-        A load seen a single time may not be a load at all, and naming it
-        teaches the library nothing (Anze, 2026-09-17: "as for signatures only
-        seen once, dont show them"). It keeps its place in the library and
-        appears here as soon as it happens again."""
-        return self._by_evidence(self._worth())
+    def holds_one_device(self, name: str) -> bool:
+        """The user's answer for this meter, or else the default the settings
+        page shows: a meter with others nested inside it on the Energy
+        dashboard holds several by definition (Home's Delavnica, Kozolec's
+        Inverter), anything else as its library suggests."""
+        meter = self.submeters.get(name) or {}
+        if meter.get("single") is not None:
+            return meter["single"]
+        return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
 
-    def _worth(self) -> list:
-        """Signatures a person could name: on the main meter, seen more than
-        once, and having used enough to be worth the trouble."""
-        parents = self.parents
-        # biggest first, by energy: what a load COSTS is the reason to name
-        # it, and it puts the ones worth the trouble at the top
-        # Energy alone put an anonymous 600 W something above a machine that
-        # runs every Saturday at noon. Rank by what a person can actually act
-        # on: what it costs, weighted by whether the row says enough to
-        # recognise it (Anze, 2026-09-18).
-        def rank(s):
-            return -(s.energy_wh * (0.45 + 0.55 * s.recognisable))
-        worth = [s for s in sorted(self.detector.signatures, key=lambda x: (rank(x), -x.evidence))
-                 if (s.count >= MIN_COUNT_TO_NAME and s.energy_wh >= NAMING_MIN_WH
-                     and most_specific(s.locations, s.count, parents) == "main")
-                 # a load that may be what a NAMED one became belongs on the
-                 # list whatever its size: the offer to move the name is the
-                 # whole reason to open it
-                 or self.detector.predecessor_of(s.id) is not None]
-        return worth
-
-    def unlocated_waiting(self) -> int:
-        """How many more cleared the bar than the page's earned length fits.
-
-        The page promises it will lengthen as loads are named; this is the
-        number that makes the promise concrete."""
-        return max(0, len(self._clearing()) - len(self.unlocated()))
-
-    def _clearing(self) -> list:
-        """Everything worth naming, before the page's length is applied."""
-        return clears_for_naming(
-            self._worth(), DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
-            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
-
-    def _by_evidence(self, worth: list) -> list:
-        """See offer_for_naming, which is where this lives so it can be tested."""
-        return offer_for_naming(
-            worth, len(self.detector.names()), DEFAULT_MIN_EVIDENCE,
-            NAMING_MIN_ROWS, NAMING_START_ROWS, NAMING_ROWS_PER_NAME,
-            is_heir=lambda i: self.detector.predecessor_of(i) is not None)
-
-
-    async def async_adopt(self, signature_id: int) -> Optional[str]:
-        """Move a predecessor's name onto this signature, and persist."""
-        name = self.detector.adopt(signature_id)
-        if name is None:
+    def remainder_meter(self) -> Optional[Tuple[str, str, List[str]]]:
+        """(name, energy statistic, the read meters beside it) of the one top-level Energy dashboard meter that
+        detection does not read (ignore_meters): a meter worked out as the grid less the others - Home's
+        Delavnica, grid + PV - Hiša - Mansarda - the EVBox, its timing spikes no measurement (the owner,
+        2026-10-30). Its base load is the grid's less those meters' (remainder_base_load). None unless
+        exactly one such meter."""
+        top = [(n, m) for n, m in self.all_submeters.items()
+               if m.get("ignored") and not m.get("parent") and m.get("energy")]
+        if len(top) != 1:
             return None
-        await self._persist(force=True)
-        for cb in self._listeners:
-            cb()
+        name, meter = top[0]
+        return name, meter["energy"], sorted(n for n, m in self.submeters.items() if not m.get("parent"))
+
+    def remainder_base_load(self) -> Tuple[Optional[float], float]:
+        """(W, Wh) of the remainder meter's base load: the grid's less the read top-level meters' beside it
+        (Fleet.base_load) - W None while the grid's is not learned, never below 0."""
+        rem = self.remainder_meter()
+        w, wh = self.fleet.base_load("")
+        if rem is None:
+            return None, 0.0
+        for name in rem[2]:
+            mw, mwh = self.fleet.base_load(name)
+            w = None if w is None else w - (mw or 0.0)
+            wh -= mwh
+        return (None if w is None else max(w, 0.0)), wh
+
+    def base_load_keys(self) -> set:
+        """The meters whose base load is a load of its own, by energy statistic (BASE_LOAD_GRID the grid):
+        the ticked ones, or until the page is saved the grid and every meter holding several loads - an end
+        device's floor is its own standby, not a base load (the owner, 2026-10-30: Hiša, Mansarda and
+        Delavnica by default, not Blaž PC, the Server or Centralna)."""
+        chosen = self.config.get(CONF_BASE_LOAD)
+        if chosen is not None:
+            return set(chosen)
+        rem = self.remainder_meter()
+        return ({BASE_LOAD_GRID} | ({rem[1]} if rem is not None else set())
+                | {m["energy"] for name, m in self.submeters.items() if m.get("energy") and not self.holds_one_device(name)})
+
+    def metered_device(self, name: str) -> Optional[str]:
+        """The meter a named load IS - named after one that holds a single
+        device - or None. See insights.named."""
+        return metered_device(name, self.device_meters())
+
+    def device_meters(self) -> List[str]:
+        """The meters detection reads that hold one device, by name."""
+        return sorted(m for m in self.submeters if self.holds_one_device(m))
+
+    async def async_first_statistic(self, statistic_id: str) -> Optional[float]:
+        """When a statistic's first long-term row starts (epoch s), or None
+        while it has none. Every row is read to find it: a named load's meter
+        is weeks old, not years."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            rec_stats.statistics_during_period, self.hass, datetime.fromtimestamp(0, timezone.utc), None,
+            {statistic_id}, "hour", None, {"sum"})
+        rows = rows.get(statistic_id)
+        return float(rows[0]["start"]) if rows else None
+
+    async def async_backfill_statistics(self, name: str, force: bool = True) -> Optional[Tuple[int, float]]:
+        """Write what detection saw of a named load, hour by hour, over its
+        energy meter's statistics - long-term and five-minute alike - for the
+        hours detection watched, about ten days: the days before it was named
+        show on the Energy dashboard, and a reset or the reading's first
+        appearance no longer shows as a day's worth in one hour (the owner,
+        2026-09-29: "rewrite the long term and short term statistics for
+        detected entities for the time it has the data for"). See
+        plan_rewrite.
+
+        Before that window, first, what the meter is owed from elsewhere,
+        once: the history of the names that vanished into this one
+        (``carries``) and the hours its signatures kept from before they were
+        named (Signature.older) - see plan_carry.
+
+        Not ``force``d - the hourly check, a named load's sensor added - it
+        writes only where the meter is off what detection saw, from the first
+        hour that is (first_change), and nothing while history is re-read:
+        the re-read's end rewrites every name.
+
+        Returns (hours written, kWh they differ from what was recorded) -
+        (0, 0.0) when there is nothing to do - or None while the meter has no
+        hour of its own yet, or not forced while history is re-read. Running
+        it again writes the same."""
+        meter = self.metered_device(name)
+        if meter:
+            _LOGGER.info("Not backfilling %s: it is the metered device %s, whose own readings are its history",
+                         name, meter)
+            return 0, 0.0
+        if self.refiling and not force:
+            return None
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, load_uid(self.entry.entry_id, "energy", name))
+        if entity_id is None:
+            return 0, 0.0
+        async with self._lock:                # the library, between passes: a pass changes it
+            recorder = get_instance(self.hass)
+
+            def recorded(period, since, statistic_id=entity_id):
+                return recorder.async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, dt_util.utc_from_timestamp(since), None,
+                    {statistic_id}, period, None, {"state", "sum"})
+
+            async def window():
+                # the row before the window and every one since - one read an
+                # hour; from the meter's first where it has none there:
+                # younger than the window, or a gap in its rows
+                rows = (await recorded("hour", covered - 3600)).get(entity_id) or []
+                if rows and rows[0]["start"] < covered:
+                    return rows
+                return (await recorded("hour", 0)).get(entity_id) or []
+            covered = self._covered_from()
+            if covered is None:
+                return None if await self.async_first_statistic(entity_id) is None else (0, 0.0)
+            hours = await window()
+            if not hours:
+                return None
+            meta = await recorder.async_add_executor_job(
+                functools.partial(rec_stats.get_metadata, self.hass, statistic_ids={entity_id}))
+            unit = meta[entity_id][1]["unit_of_measurement"] if entity_id in meta else None
+            if unit != UnitOfEnergy.KILO_WATT_HOUR:
+                _LOGGER.warning("Not backfilling %s: %s keeps its statistics in %s, not kWh", name, entity_id, unit)
+                return 0, 0.0
+            owed = self.carries.get(name) or []
+            extra: Dict[int, float] = {}
+            for statistic_id in owed:
+                last = 0.0                    # a meter's sum starts at 0 before its first row
+                for r in (await recorded("hour", 0, statistic_id)).get(statistic_id) or []:
+                    if r["start"] >= covered:
+                        break
+                    extra[r["start"]] = extra.get(r["start"], 0.0) + r["sum"] - last
+                    last = r["sum"]
+            older = self.fleet.take_older(name)
+            for hour, wh in older.items():
+                extra[hour] = extra.get(hour, 0.0) + wh / 1000.0
+            if owed or older:
+                self.carries.pop(name, None)
+                # taken before it is written: a restart in between loses it
+                # rather than carrying it twice
+                await self._persist(force=True)
+            if extra:
+                every = (await recorded("hour", 0)).get(entity_id) or []
+                fives = (await recorded("5minute", min(extra))).get(entity_id) or []
+                hour_rows, five_rows, shift = plan_carry(extra, covered, every, fives)
+                await self._write_statistics(entity_id, unit, hour_rows, five_rows, covered, shift)
+                _LOGGER.info("Carried %.2f kWh onto %s (%s) from before %s: %s", shift, name, entity_id,
+                             dt_util.utc_from_timestamp(covered).isoformat(),
+                             ", ".join(owed + ([f"{len(older)} hours kept from before it was named"] if older else [])))
+                hours = await window()
+            hourly = self.fleet.hourly_by_name(name)
+            hour_rows, _, shift = plan_rewrite(hourly, covered, hours, [])
+            start = hour_rows[0]["start"] if force and hour_rows else first_change(hour_rows, hours)
+            if start is None:
+                return 0, 0.0
+            # five-minute rows from the first hour written: those before it
+            # agree with their hours already
+            fives = (await recorded("5minute", start)).get(entity_id) or []
+            _, five_rows, _ = plan_rewrite(hourly, covered, hours, fives)
+            hour_rows = [r for r in hour_rows if r["start"] >= start]
+            # ...and the hour being recorded, and any compiled since the rows were read
+            await self._write_statistics(entity_id, unit, hour_rows, five_rows, hour_rows[-1]["start"] + 3600, shift)
+        _LOGGER.log(logging.INFO if force else logging.DEBUG,
+                    "Rewrote %s (%s): %d hours and %d five-minute rows from %s, %.2f kWh %s than recorded",
+                    name, entity_id, len(hour_rows), len(five_rows),
+                    dt_util.utc_from_timestamp(hour_rows[0]["start"]).isoformat(), abs(shift),
+                    "more" if shift >= 0 else "less")
+        return len(hour_rows), shift
+
+    def _covered_from(self) -> Optional[int]:
+        """The first whole hour of the statistics' window: the first hour the
+        library read, never further back than HOURLY_KEEP_S - before it some
+        signatures' hours have aged out (Signature.age) and others not, and
+        a name's meter would be written short of them, every hour. None
+        before anything is filed."""
+        seen = min((h for _, det in self.fleet.detectors() for sig in det.signatures for h in sig.hourly),
+                   default=None)
+        if seen is None:
+            return None
+        since = max(seen, dt_util.utcnow().timestamp() - HOURLY_KEEP_S)
+        return int(since // 3600 * 3600) + 3600     # the first hour read is a part of one
+
+    async def _write_statistics(self, entity_id: str, unit: str, hour_rows: List[dict], five_rows: List[dict],
+                                shift_from: float, shift: float) -> None:
+        """Write rows over a named load's meter's statistics, and raise every
+        row from ``shift_from`` on by ``shift``: async_adjust_statistics moves
+        the five-minute rows as well as the hours (recorder's
+        adjust_statistics), so the two tables keep agreeing."""
+        recorder = get_instance(self.hass)
+        # exactly what the sensor's own statistics carry, so importing
+        # changes nothing about them but the rows
+        metadata = {"has_sum": True, "mean_type": StatisticMeanType.NONE, "name": None, "source": "recorder",
+                    "statistic_id": entity_id, "unit_class": "energy", "unit_of_measurement": unit}
+        for table, rows in ((Statistics, hour_rows), (StatisticsShortTerm, five_rows)):
+            recorder.async_import_statistics(metadata, [
+                {"start": dt_util.utc_from_timestamp(r["start"]), "state": r["state"], "sum": r["sum"]}
+                for r in rows], table)
+        recorder.async_adjust_statistics(entity_id, dt_util.utc_from_timestamp(shift_from), shift, unit)
+        await recorder.async_block_till_done()   # written before another run reads
+
+    async def _rewrite_named(self) -> None:
+        for name in sorted(self.fleet.names()):
+            await self.async_backfill_statistics(name)
+
+    @callback
+    def _hour_compiled(self, _event) -> None:
+        self.entry.async_create_background_task(self.hass, self._check_named(), f"{DOMAIN} check statistics")
+
+    async def _check_named(self) -> None:
+        """Each hour Home Assistant has compiled, every named load's meter is
+        held against what detection credits it with now, and rewritten where
+        it is off (async_backfill_statistics, unforced): a name moved, joined,
+        adopted or forgotten, detection merging a load into a named one, a run
+        filed into the hours it ran in rather than the one it closed in - one
+        check for them all, instead of a hook in each.
+
+        Its window ends at the hour just compiled, read once the compile is in
+        (the event fires before it commits). No margin is left before it: a
+        run still open is in neither the meter's reading - which counts runs
+        as they close - nor in hourly, so it never makes them differ. What
+        can is a run counted after the window's end but filed inside it, and
+        right after the hour there is next to none. A margin would make that
+        the rule: every run across its edge, counted after it and filed
+        before, would be written into the hours before and counted again
+        after - then taken back an hour later, every hour. A check at another
+        moment - a sensor added at a start or a reload, the service - counts
+        twice what was counted since the hour began but filed before it,
+        until this check the hour after."""
+        await get_instance(self.hass).async_block_till_done()
+        try:
+            await self.autonamer.async_check()
+        except Exception:  # noqa: BLE001 - a fault in auto-naming must not stop the statistics check
+            _LOGGER.exception("Auto-naming failed")
+        for name in sorted(self.fleet.names()):
+            if not self.metered_device(name):
+                await self.async_backfill_statistics(name, force=False)
+
+    def naming_groups(self) -> list:
+        """What is waiting to be named, one group per meter: ``(meter, offered,
+        waiting)``, each offered row ``((meter, id), signature)`` - the grid's
+        id under "" - the loads under no meter first as ``"main"``, then the
+        meters by how much their loads use.
+
+        Split by where each load lives, so the page can be taken one circuit
+        at a time (2026-09-25: "any way of splitting the detected loads
+        early would help with organisation and naming"), and a meter's list
+        is its own detector's signatures (Fleet.namable). Named loads have a
+        page of their own (``named``). Each group gets the length
+        offer_for_naming earns it, and ``waiting`` is how many more cleared
+        the bar than that length fits."""
+        named = len(self.fleet.names())
+        out = []
+        for where, rows in self.fleet.namable(self.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH).items():
+            ref = {id(sig): r for r, sig in rows}
+            heirs = {id(sig) for r, sig in rows if self.fleet.predecessor_of(r) is not None}
+            worth = [sig for _, sig in rows]
+            shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
+                                     NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=lambda x: id(x) in heirs)
+            if shown:
+                clear = clears_for_naming(worth, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS, lambda x: id(x) in heirs)
+                out.append((where, [(ref[id(x)], x) for x in shown], max(0, len(clear) - len(shown))))
+        out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for _, x in g[1])))
+        return out
+
+    def named(self) -> list:
+        """Every named load as ``((meter, id), signature)``, biggest first, wherever it was seen."""
+        return sorted((((m, s.id), s) for m, det in self.fleet.detectors() for s in det.signatures if s.name),
+                      key=lambda r: -r[1].energy_wh)
+
+    async def async_adopt(self, ref: Tuple[str, int]) -> Optional[str]:
+        """Move a predecessor's name onto the signature (meter, id) - the
+        grid's under "" - and persist, between passes, as async_rename."""
+        async with self._lock:
+            before = self.fleet.names()
+            name = self.fleet.adopt(ref)
+            if name is None:
+                return None
+            self._carry_vanished(before)
+            await self._persist(force=True)
+        self.async_update_listeners()
         return name
 
-    async def async_rename(self, signature_id: int, name: Optional[str]) -> bool:
-        """Name a signature (or clear it) and persist at once - the caller
-        bumps the entry so the entities follow."""
-        if not self.detector.rename(signature_id, name):
-            return False
-        await self._persist(force=True)          # a user action, written at once
-        for cb in self._listeners:
-            cb()
+    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], family: bool = False) -> bool:
+        """Name the signature (meter, id) - the grid's under "" - or clear it (``family``: ref's id is a
+        family's), and persist at once; the caller bumps the entry so the entities follow. Either way the
+        name goes to the whole family: a family is named, not a signature.
+
+        Without telling the entities: the bump's reload is what makes the
+        name's sensors. Told here, the sensor platform added them too, and
+        name_load's reload began while that add was still running; an add
+        that finished after the unload left a live twin the new platform
+        refused ("ID ..._load_energy_kiln already exists"), frozen on the
+        old runner (37 % of name_load calls in a scratch HA test,
+        2026-10-02).
+
+        Between passes, never under one: a pass works on the library in an
+        executor thread, and a rename landing then changed it under the pass
+        (AGENTS.md, 2026-10-02)."""
+        async with self._lock:
+            before = self.fleet.names()
+            if not (self.fleet.rename_family(ref, name) if family else self.fleet.rename(ref, name)):
+                return False
+            self._carry_vanished(before)
+            await self._persist(force=True)      # a user action, written at once
         return True
+
+    def _carry_vanished(self, before: Dict[str, list]) -> None:
+        """After a rename or an adoption: a name that vanished into another
+        (vanished_into) leaves that name's meter its own meter's history, by
+        statistic id, and whatever it was owed itself - carried before the
+        window once (async_backfill_statistics). The meter it leaves keeps its
+        statistics as they are. A name only told apart by case or spaces is
+        the same meter (load_uid), which owes itself nothing."""
+        after = self.fleet.names()
+        registry = er.async_get(self.hass)
+        for into, gone in vanished_into(before, after).items():
+            for name in gone:
+                uid = load_uid(self.entry.entry_id, "energy", name)
+                eid = registry.async_get_entity_id("sensor", DOMAIN, uid)
+                own = [eid] if eid and uid != load_uid(self.entry.entry_id, "energy", into) else []
+                self.carries[into] = self.carries.get(into, []) + self.carries.pop(name, []) + own
+        self.carries = {n: ids for n, ids in self.carries.items() if n in after and ids}
 
     async def _persist(self, force: bool = False) -> None:
         """Write the state, but not on every pass.
@@ -492,7 +1104,7 @@ class DetectionRunner:
         The snapshot is the whole library and runs to well over a hundred
         kilobytes; written every five minutes that is tens of megabytes a day,
         and it is the single thing that would multiply if detection ran every
-        minute instead (Anze, 2026-09-18, whose suggestion this is: keep it in
+        minute instead (2026-09-18, whose suggestion this is: keep it in
         memory and write it at most hourly).
 
         async_delay_save alone will not do it. Called again before its delay
@@ -505,6 +1117,15 @@ class DetectionRunner:
         """
         now = dt_util.utcnow().timestamp()
         due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
+        # the older hours first: a reset's empty ones are never left beside
+        # the library they would no longer match. Daily, not hourly - a year
+        # of them is ~1.5 MB at Home, and a crash loses only hours that would
+        # have been carried, never carries one twice (a carry forces a write)
+        if force or self._history_saved_at is None or now - self._history_saved_at >= HISTORY_SAVE_INTERVAL_S:
+            await self._history.async_save(self._older())
+            self._history_saved_at = now
+        else:
+            self._history.async_delay_save(self._older, HISTORY_SAVE_INTERVAL_S)
         if force or due:
             await self._store.async_save(self._snapshot())
             self._saved_at = now
@@ -514,7 +1135,12 @@ class DetectionRunner:
     def _snapshot(self) -> dict:
         return {"fleet": self.fleet.to_dict(),
                 "last_processed": self.last_processed.isoformat() if self.last_processed else None,
+                "refiling": self.refiling,
+                "carry": self.carries,
                 "generation": DETECTOR_GENERATION}
+
+    def _older(self) -> dict:
+        return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
 
     @property
     def behind_s(self) -> Optional[float]:
@@ -523,32 +1149,20 @@ class DetectionRunner:
         None before it has read anything at all. The backfill walks ten days
         in six-hour slices, so a library part way through that is a library
         of whatever happened to be in the first few days - which is not a
-        thing to offer anyone for naming (Anze, 2026-09-18)."""
+        thing to offer anyone for naming (2026-09-18)."""
         if self.last_processed is None:
             return None
         return max(0.0, (dt_util.utcnow() - self.last_processed).total_seconds())
 
     @property
-    def declared_layout(self) -> Optional[str]:
-        """The wiring the user stated, from the Inverters page.
-
-        It lived on the grid page as a site-wide dropdown, which was the
-        wrong place: the topology is a fact about where an INVERTER sits, not
-        about the grid - Anze said so and I agreed and then left both in
-        place, one of them reading nothing (2026-09-18). The stored value is
-        still honoured so a site that set it before keeps its answer."""
-        stored = self.config.get(CONF_LAYOUT)
-        stored = LAYOUT_ALIASES.get(stored, stored)
-        return site_topology(self.entry.options.get(CONF_INVERTERS) or [], stored)
-
-    @property
-    def interval_minutes(self) -> int:
-        """How often to re-read the recorder, as configured or defaulted."""
+    def meter_wait_s(self) -> float:
+        """At most how long the grid's steps wait for the meters below it -
+        see METER_WAIT_CAP_S; as configured or defaulted, never negative."""
         try:
-            value = int(self.config.get(CONF_DETECTION_INTERVAL) or DETECTION_INTERVAL_MINUTES)
+            value = float(self.config.get(CONF_METER_WAIT, METER_WAIT_CAP_S))
         except (TypeError, ValueError):
-            return DETECTION_INTERVAL_MINUTES
-        return value if value > 0 else DETECTION_INTERVAL_MINUTES
+            return METER_WAIT_CAP_S
+        return max(0.0, value)
 
     @property
     def enabled(self) -> bool:
@@ -556,13 +1170,10 @@ class DetectionRunner:
         the house, or a grid meter, or an inverter."""
         if any(self.config.get(f"power_{p}") for p in PHASES):
             return True
-        if any(self.config.get(f"{ROLE_PREFIX['grid']}power_{p}") for p in PHASES):
+        if any(self.config.get(f"{GRID_PREFIX}power_{p}") for p in PHASES):
             return True
         return any(inv.get("power") or any(inv.get(f"power_{p}") for p in PHASES)
                    for inv in (self.entry.options.get(CONF_INVERTERS) or []))
-
-    def add_listener(self, cb) -> None:
-        self._listeners.append(cb)
 
     async def async_start(self) -> None:
         raw = await self._store.async_load() or {}
@@ -573,7 +1184,7 @@ class DetectionRunner:
             # dropping them behind a log line would take their devices, their
             # energy meters and their place on the Energy dashboard with them
             # - on every installation at once, the first time this constant
-            # moves (Anze asked what an update does to a named load,
+            # moves (the owner asked what an update does to a named load,
             # 2026-09-22). Read defensively: the whole point is that the old
             # shape may not be one we still understand.
             orphans = names_in_store(raw)
@@ -582,120 +1193,186 @@ class DetectionRunner:
                 "library again, keeping %d name(s) to re-attach", len(orphans)
             )
             raw = {}
-        if raw.get("fleet"):
-            self.fleet = Fleet.from_dict(raw.get("fleet"))
-        else:                                   # a store written before downstream meters existed
-            self.fleet = Fleet(main=Detector.from_dict(raw.get("detector")))
+        await self.autonamer.async_load()
+        self.fleet = Fleet.from_dict(raw.get("fleet"))
         if orphans:
-            self.fleet.main.carry_names(orphans)
+            self.fleet.carry_names(orphans)
         self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+        # before the platforms, which leave out the loads that ARE a metered
+        # device; every pass resolves them again
+        await self._refresh_submeters()
         lp = raw.get("last_processed")
         self.last_processed = dt_util.parse_datetime(lp) if lp else None
+        self.refiling = bool(raw.get("refiling")) or self.last_processed is None
+        self.carries = {n: list(ids) for n, ids in (raw.get("carry") or {}).items()}
+        if raw:                                  # this library, not one dropped for an older generation
+            older = await self._history.async_load() or {}
+            if older.get("generation") == DETECTOR_GENERATION:
+                self.fleet.load_older(older.get("older"))
+            # the steps store of its own is gone: a step group keeps its steps
+            # (StepGroup.recent, 2026-10-30) - the old file removed
+            await self._steps.async_remove()
         if not self.enabled:
             return
-        self._unsub = async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval_minutes))
-        self.hass.async_create_task(self._run())
+        self.entry.async_on_unload(
+            self.hass.bus.async_listen(EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, self._hour_compiled))
+        self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+        self.hass.async_create_task(self.async_refresh())
 
-    async def async_reset(self) -> None:
+    async def async_reset(self, forget_names: bool = False) -> None:
         """Forget everything learned and start the backfill again.
 
-        Everything except the NAMES. They are the one thing in the library
-        the user put there by hand, and the backfill re-learns everything
-        else in minutes. Each is carried across as a description and handed
-        back to the first rebuilt signature that looks like it; where the
-        site really has changed - the reason to do this by hand - nothing
-        matches and the name does not return."""
-        orphans = self.fleet.main.name_descriptors() if self.fleet else []
-        self.fleet = Fleet()
-        self.fleet.main.carry_names(orphans)
-        self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
-        self.last_processed = None
-        self.caught_up = False
-        self.samples_read = 0
-        self._saved_at = None
-        await self._persist(force=True)          # a reset must survive a crash
-        for cb in self._listeners:
-            cb()
-        self.hass.async_create_task(self._run())
+        Everything except the NAMES, unless ``forget_names``. They are the
+        one thing in the library the user put there by hand, and the backfill
+        re-learns everything else in minutes. Each is carried across as a
+        description and handed back to the first rebuilt signature that looks
+        like it; where the site really has changed - the reason to do this by
+        hand - nothing matches and the name does not return. The owner
+        (2026-09-30) would rather drop them than have a stale one land on the
+        wrong load, so the service can forget them too.
+
+        Between passes, never under one: a pass running when this lands
+        finishes by recording that it has processed up to now, and the ten
+        days are never re-read (Home, 2026-09-29: one signature, from the
+        minute of the reset)."""
+        async with self._lock:
+            orphans = self.fleet.name_descriptors() if self.fleet and not forget_names else []
+            if forget_names:
+                self.carries = {}               # owed to names that are gone
+            self.autonamer.reset(forget_names)
+            self.fleet = Fleet()
+            self.fleet.carry_names(orphans)
+            self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
+            self.last_processed = None
+            self.caught_up = False
+            self.refiling = True
+            self.samples_read = 0
+            self._saved_at = None
+            await self._persist(force=True)          # a reset must survive a crash
+        self.async_update_listeners()
+        self.hass.async_create_task(self.async_refresh())
 
     async def async_stop(self) -> None:
-        if self._unsub:
-            self._unsub()
-            self._unsub = None
+        await self.async_shutdown()              # no pass starts after this
+        # A reload - every options change is one - used to drop whatever was
+        # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
+        # the pending delayed write then landed after the next runner's own.
+        if not self._lock.locked():
+            await self._persist(force=True)
 
-    @callback
-    def _tick(self, _now) -> None:
-        self.hass.async_create_task(self._run())
+    async def async_follow_renames(self, renames: Dict[str, str]) -> None:
+        """Rename entities in what the detector learned - between passes,
+        never under one, and written at once: the options change that follows
+        reloads the entry, and the new runner reads the store."""
+        async with self._lock:
+            self.fleet.rename_entities(renames)
+            await self._persist(force=True)
 
     async def _run(self) -> None:
-        if self._running or not self.enabled:
+        if self._lock.locked() or not self.enabled:
             return
-        self._running = True
-        try:
-            now = dt_util.utcnow()
-            start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
-            end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
-            samples = await self._derive_load(start, end)
-            # the arrays, for telling a cloud from a load switching
-            self.solar = await self._resolve_solar()
-            generation: Dict[str, list] = {}
-            for fields in self.solar:
-                rows, _ = await self._read(start, end, fields)
-                for p, series in rows.items():
-                    generation.setdefault(p, [])
-                    generation[p] = _sum_series(generation[p], series)
-            # after the sum, not before: where the inverter is added back the
-            # grid meter is the circuit every household watt flows through,
-            # so its VAr is the one that steps when a load switches
-            q = await self._reactive_series(start, end, samples)
-            pv: Dict[str, Dict[float, float]] = {}
-            for p, target in samples.items():
-                if generation.get(p):
-                    pv[p] = _align(generation[p], target)
-            for p, rows in samples.items():
-                if p in self.fleet.main.phases:
-                    # a fixed floor since 2026-09-23 - see _interval_field in
-                    # config_flow; a value stored by an older version is not read
-                    self.fleet.main.phases[p].min_noise = MIN_NOISE_W
-                    # a reading that never exports is the house alone, and
-                    # the house cannot draw less than nothing
-                    self.fleet.main.phases[p].floor_zero = carries_generation(rows) is False
-            for p in list(pv):
-                verdict = carries_generation(samples[p])
-                if verdict is not None:
-                    self.pv_visible[p] = verdict
-                if self.pv_visible.get(p) is False:
-                    pv.pop(p)         # this reading never sees the sun; leave its steps alone
-            self.submeters = await self._resolve_submeters()
-            sub_samples, sub_q, agnostic = {}, {}, {}
-            for name, meter in self.submeters.items():
-                ss, sq = await self._read(start, end, meter["fields"])
-                if ss:
-                    sub_samples[name], sub_q[name] = ss, sq
-                    agnostic[name] = meter["agnostic"]
-            # the recorder's start-of-window row is a copy, not a reading - see
-            # without_window_start; the sums above needed it, the detector must not
-            samples = without_window_start(samples, start.timestamp())
-            sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
-            await self.hass.async_add_executor_job(
-                self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), agnostic, pv,
-                dict(self.q_quantum), dict(self.sub_q_quantum),
-            )
-            self.samples_read += sum(len(rows) for rows in samples.values())
-            self._update_average_power(end.timestamp())
-            self.last_processed = end
-            self.caught_up = end >= now - timedelta(minutes=1)
-            self.last_run = now
-            await self._persist()
-            for cb in self._listeners:
-                cb()
-            if not self.caught_up:
-                # keep slicing without waiting for the next tick
-                async_call_later(self.hass, 2, self._tick)
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Load detection run failed")
-        finally:
-            self._running = False
+        async with self._lock:
+            try:
+                self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+                began = time.monotonic()
+                try:
+                    await asyncio.wait_for(get_instance(self.hass).async_block_till_done(), RECORDER_FLUSH_S)
+                except asyncio.TimeoutError:
+                    _LOGGER.debug("The recorder did not drain in %.0f s; this pass waits a minute", RECORDER_FLUSH_S)
+                    return
+                flushed = time.monotonic() - began
+                now = dt_util.utcnow()
+                start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
+                end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
+                await self._prefetch(start, end)
+                samples = await self._derive_load(start, end)
+                # the arrays, for telling a cloud from a load switching
+                self.solar = await self._resolve_solar()
+                generation = _sum_phases([(await self._read(start, end, fields))[0] for fields in self.solar])
+                # after the sum, not before: where the inverter is added back the
+                # grid meter is the circuit every household watt flows through,
+                # so its VAr is the one that steps when a load switches
+                q = await self._reactive_series(start, end, samples)
+                pv: Dict[str, Dict[float, float]] = {}
+                for p, target in samples.items():
+                    if generation.get(p):
+                        pv[p] = _align(generation[p], target)
+                for p, rows in samples.items():
+                    if p in self.fleet.main.phases:
+                        # a reading that never exports is the house alone, and
+                        # the house cannot draw less than nothing. Kept, and
+                        # saved, where a pass is too short to say: "can't tell"
+                        # read as "no" switched the guard off on every live pass.
+                        # Not a meter's, though it is as house-side: what the
+                        # guard brings - runs the reading cannot carry end
+                        # unseen - assumes a reading many loads share, and Home's
+                        # office plug, its computer's draw sagging under its
+                        # runs, filed 364 sessions of its own in ten days for
+                        # 827 (the unify audit's R6, 2026-10-03)
+                        verdict = carries_generation(rows)
+                        if verdict is not None:
+                            self.fleet.main.phases[p].floor_zero = verdict is False
+                for p in list(pv):
+                    verdict = carries_generation(samples[p])
+                    if verdict is not None:
+                        self.pv_visible[p] = verdict
+                    if self.pv_visible.get(p) is False:
+                        pv.pop(p)         # this reading never sees the sun; leave its steps alone
+                for p, arr in self.array_in_house.items():
+                    if p in samples:
+                        pv[p] = arr       # ...but a house built with the inverter added has it in
+                await self._refresh_submeters()
+                for name, meter in self.all_submeters.items():
+                    if meter.get("ignored"):
+                        self.fleet.subs.pop(name, None)     # left out on the settings page: as if never read
+                self.fleet.parents = {n: m.get("parent") for n, m in self.submeters.items()}
+                # not waited for: as the settings page says, and any meter the
+                # dashboard no longer resolves, whose detector is kept unread
+                self.fleet.horizon_skip = ({n for n, m in self.submeters.items() if m.get("horizon_skip")}
+                                           | (set(self.fleet.subs) - set(self.submeters)))
+                self.fleet.cadence_forced = {n: m["cadence"] for n, m in self.submeters.items() if m.get("cadence") is not None}
+                sub_samples, sub_q = {}, {}
+                for name, meter in self.submeters.items():
+                    ss, sq = await self._read(start, end, meter["fields"], name)
+                    if ss:
+                        sub_samples[name], sub_q[name] = ss, sq
+                # the recorder's start-of-window row is a copy, not a reading - see
+                # without_window_start; the sums above needed it, the detector must not
+                samples = without_window_start(samples, start.timestamp())
+                sub_samples = {n: without_window_start(s, start.timestamp()) for n, s in sub_samples.items()}
+                single = {n: self.holds_one_device(n) for n in self.submeters}
+                switches, numbers, inputs = await self._read_inputs(start, end)
+                read = time.monotonic()
+                self._pass_rows = None
+                self.fleet.wait_cap_s = self.meter_wait_s
+                await self.hass.async_add_executor_job(
+                    self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
+                    dict(self.q_quantum), single, switches or None, numbers or None,
+                    inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None,
+                )
+                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
+                                  "hours": round((end - start).total_seconds() / 3600.0, 2)}
+                self.samples_read += sum(len(rows) for rows in samples.values())
+                self._update_live_power(end.timestamp())
+                self.last_processed = end
+                self.caught_up = end >= now - timedelta(minutes=1)
+                self.last_run = now
+                await self._persist()
+                self.async_update_listeners()
+                if self.caught_up and self.refiling:
+                    self.refiling = False
+                    # the ten days re-read are the named loads' history now
+                    self.entry.async_create_background_task(
+                        self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
+                if not self.caught_up:
+                    # keep slicing without waiting the minute
+                    self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
+                try:
+                    await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
+                except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
+                    _LOGGER.exception("Energy dashboard list failed")
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Load detection run failed")
 
     def _device_of(self, entity_id: Optional[str]) -> Optional[str]:
         """Which device publishes this entity, or None."""
@@ -726,12 +1403,21 @@ class DetectionRunner:
             # no device on either side means a template or a helper, and we
             # cannot prove they belong together - so we do not assume it
             return eid if eid and home is not None and self._device_of(eid) == home else None
-        pf = with_power(f"pf_{phase}")
+        pf, va = with_power(f"pf_{phase}"), with_power(f"va_{phase}")
         volts, amps = with_power(f"voltage_{phase}"), with_power(f"current_{phase}")
-        if not pf and not (volts and amps):
+        var = with_power(f"var_{phase}") or self._var_on(home, phase, power)
+        if not pf and not va and not (volts and amps) and not var:
             return None
-        return {f"power_{phase}": power, f"pf_{phase}": pf,
-                f"voltage_{phase}": volts, f"current_{phase}": amps}
+        return {f"power_{phase}": power, f"pf_{phase}": pf, f"va_{phase}": va,
+                f"voltage_{phase}": volts, f"current_{phase}": amps, f"var_{phase}": var}
+
+    def _var_on(self, device: Optional[str], phase: str, reference: str) -> Optional[str]:
+        """The device's own reactive power for this phase, if it publishes one
+        - found beside the power, so a site configured before it was enabled
+        uses it without being set up again."""
+        if device is None:
+            return None
+        return beside(device_rows(self.hass, device), reference, "var", phase)
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -752,17 +1438,11 @@ class DetectionRunner:
         device = self._device_of(amps)
         if device is None or device != self._device_of(volts):
             return None
-        registry = er.async_get(self.hass)
-        candidates = [r["entity_id"] for r in self._device_rows(registry, device)
-                      if (r.get("device_class") or "") == "power"
-                      and match_meter_entities([r]).get(f"power_{phase}")]
-        if not candidates:
-            return None
-        power = closest_by_name(candidates, amps)
+        power = beside(device_rows(self.hass, device), amps, "power", phase)
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,
-                f"current_{phase}": amps, f"pf_{phase}": None}
+                f"current_{phase}": amps, f"pf_{phase}": None, f"var_{phase}": self._var_on(device, phase, power)}
 
     async def _reactive_series(self, start: datetime, end: datetime,
                                targets: Dict[str, list]) -> Dict[str, Dict[float, float]]:
@@ -779,12 +1459,13 @@ class DetectionRunner:
         Nothing is returned when no role can offer one, which is honest: no
         power factor beats a fabricated one."""
         out: Dict[str, Dict[float, float]] = {}
+        self.volts = {}
         for phase, rows in targets.items():
             if not rows:
                 continue
-            for prefix in ("", "grid_"):
+            for prefix in ("", GRID_PREFIX):
                 cfg = {k[len(prefix):]: v for k, v in self.config.items()
-                       if not prefix or k.startswith(prefix)} if prefix else dict(self.config)
+                       if k.startswith(prefix)} if prefix else dict(self.config)
                 triple = self._coherent_triple(cfg, phase) or self._triple_beside_the_amps(cfg, phase)
                 if triple is None:
                     continue
@@ -792,9 +1473,17 @@ class DetectionRunner:
                 power_rows = series.get(("power", phase)) or []
                 if not carries_load(power_rows):
                     continue          # coherent, but nothing flows through it
+                if series.get(("voltage", phase)):
+                    self.volts.setdefault("", {})[phase] = series[("voltage", phase)]   # the edges' voltage - see Fleet.volts
+                signed = series.get(("var", phase))
                 var = _reactive(power_rows, series.get(("voltage", phase)),
-                                series.get(("current", phase)), series.get(("pf", phase)))
+                                series.get(("current", phase)), series.get(("pf", phase)), signed,
+                                series.get(("va", phase)))
                 if var:
+                    covers = bool(signed) and signed[0][0] <= power_rows[0][0] + SIGNED_VAR_SLACK_S
+                    self.reactive_from[phase] = (f"signed {triple.get(f'var_{phase}')}" if covers
+                                                 else f"apparent {triple.get(f'va_{phase}')}" if series.get(("va", phase))
+                                                 else f"V x I {triple.get(f'power_{phase}')}")
                     # the reference samples at its own moments; hold each
                     # value forward onto the load's
                     out[phase] = _align(sorted(var.items()), rows)
@@ -802,23 +1491,9 @@ class DetectionRunner:
                     # the error bar on every factor derived from them. A
                     # power-factor entity needs no amps and carries its own
                     # precision, so it is left ungated.
-                    # ACCUMULATED across passes, never re-measured from one.
-                    # A pass reads a single minute of history, which holds
-                    # nowhere near enough changes to confirm a lattice - so
-                    # measuring per pass returned nothing and, because it
-                    # cleared first, threw away what the six-hour backfill
-                    # slices HAD learned. Resolution is a property of the
-                    # instrument; it does not expire between passes.
-                    amps = series.get(("current", phase)) or []
-                    volts = series.get(("voltage", phase)) or []
-                    if amps and volts:
-                        steps = self._amp_steps.setdefault(phase, [])
-                        steps.extend(abs(b - a) for (_, a), (_, b)
-                                     in zip(amps, amps[1:]) if b != a)
-                        del steps[:-AMP_STEP_MEMORY]
-                        dq = quantum_of_steps(steps)
-                        if dq:
-                            self.q_quantum[phase] = dq * _median_of([v for _, v in volts])
+                    got = self._learn_q_quantum(phase, series, phase)
+                    if got:
+                        self.q_quantum[phase] = got
                 break
         return out
 
@@ -826,15 +1501,21 @@ class DetectionRunner:
         """Every configured field of one role as (kind, phase) -> rows."""
         entities = {}
         for p in PHASES:
-            for kind in ("power", "pf", "current", "voltage"):
+            for kind in ("power", "pf", "va", "current", "voltage", "var"):
                 eid = cfg.get(f"{kind}_{p}")
                 if eid:
                     entities[(kind, p)] = eid
         if not entities:
             return {}
-        states = await get_instance(self.hass).async_add_executor_job(
-            _fetch, self.hass, start, end, list(dict.fromkeys(entities.values()))
-        )
+        ids = list(dict.fromkeys(entities.values()))
+        pre = self._pass_rows
+        if pre is not None and pre[0] == start and pre[1] == end:
+            states = {e: pre[2][e] for e in ids if e in pre[2]}
+            missing = [e for e in ids if e not in pre[2]]
+        else:
+            states, missing = {}, ids
+        if missing:
+            states.update(await get_instance(self.hass).async_add_executor_job(_fetch, self.hass, start, end, missing))
         series: Dict[tuple, list] = {}
         for key, eid in entities.items():
             # History is fetched with no_attributes, so the unit comes from the
@@ -844,12 +1525,33 @@ class DetectionRunner:
             rows = []
             for st in states.get(eid, []):
                 try:
-                    rows.append((st.last_updated.timestamp(), float(st.state) * scale))
-                except (TypeError, ValueError):
+                    rows.append((float(st[COMPRESSED_STATE_LAST_UPDATED]), float(st[COMPRESSED_STATE_STATE]) * scale))
+                except (TypeError, ValueError, KeyError):
                     continue
             rows.sort()
             series[key] = rows
         return series
+
+    async def _prefetch(self, start: datetime, end: datetime) -> None:
+        """A live pass's readings of every meter it reads, in ONE recorder query:
+        one query a meter was ~37 a minute at Home and most of read_s's 2.6 s
+        (2026-10-30). Only for a short window - a backfill slice reads meter by
+        meter, so the memory is one meter's six hours at a time. What it misses
+        _read_raw fetches as before."""
+        self._pass_rows = None
+        if end - start > timedelta(minutes=PREFETCH_MAX_MIN):
+            return
+        ids = []
+        for cfg in [self.config, *(self.solar or []), *(m.get("fields") or {} for m in self.submeters.values())]:
+            for p in PHASES:
+                for kind in ("power", "pf", "va", "current", "voltage", "var"):
+                    eid = (cfg or {}).get(f"{kind}_{p}")
+                    if eid:
+                        ids.append(eid)
+        ids = list(dict.fromkeys(ids))
+        if ids:
+            rows = await get_instance(self.hass).async_add_executor_job(_fetch, self.hass, start, end, ids)
+            self._pass_rows = (start, end, rows)
 
     def _unit_of(self, entity_id: str) -> Optional[str]:
         state = self.hass.states.get(entity_id)
@@ -860,31 +1562,46 @@ class DetectionRunner:
         entry = er.async_get(self.hass).async_get(entity_id)
         return getattr(entry, "unit_of_measurement", None) if entry else None
 
-    def _update_average_power(self, processed_to: float) -> None:
-        """Mean watts each named load drew over the data just processed.
-
-        Anze, 2026-09-18: rather than report the instantaneous power of a
-        step whose matching step down has not arrived, report the ENERGY that
-        arrived divided by the time it covers. Everything that made the
-        instantaneous reading unreliable goes away - it counts only sessions
-        that CLOSED, so a 44-second kiln run contributes whether or not
-        anyone was looking at the right moment, and a step up whose partner
-        never came contributes nothing instead of sitting high for a day.
+    def _update_live_power(self, processed_to: float) -> None:
+        """Watts each named load draws as of the data just processed - live,
+        see LIVE_NAME_SHARE: its open runs from the moment their start is
+        declared, plus the runs that began and ended within the stretch,
+        spread over it.
 
         The denominator is the span of DATA processed, not wall-clock time.
         During the backfill a single pass covers six hours of history in a
         few seconds, and dividing that energy by the few seconds would report
-        megawatts.
-        """
-        energy = self.detector.energy_by_name()
-        previous, since = self._energy_mark, self._mark_ts
-        self._energy_mark, self._mark_ts = dict(energy), processed_to
-        if since is None or processed_to <= since:
-            return
-        self.average_power = mean_power(previous, energy, processed_to - since)
+        megawatts."""
+        since, self._mark_ts = self._mark_ts, processed_to
+        span = processed_to - since if since is not None else 0.0
+        self.live_power = self.fleet.live_power(processed_to, span, self._live_marks, self._live_shown)
 
-    async def _read(self, start: datetime, end: datetime, cfg: dict, derive_q: bool = True):
-        """(watts per phase, reactive VAr per phase) over the window.
+    def _learn_q_quantum(self, key, series: Dict[tuple, list], phase: str) -> Optional[float]:
+        """The apparent power one quantum of the amps behind a channel's
+        reactive power is worth - V x dI - the error bar on every power factor
+        derived from them; the same for the grid's channels (``key`` its
+        phase) and each meter's ((meter, channel)). A power-factor entity
+        needs no amps and carries its own precision, so it is left ungated.
+        ACCUMULATED across passes, never re-measured from one. A pass reads a
+        single minute of history, which holds nowhere near enough changes to
+        confirm a lattice - so measuring per pass returned nothing and,
+        because it cleared first, threw away what the six-hour backfill
+        slices HAD learned. Resolution is a property of the instrument; it
+        does not expire between passes."""
+        amps = series.get(("current", phase)) or []
+        volts = series.get(("voltage", phase)) or []
+        if not (amps and volts):
+            return None
+        steps = self._amp_steps.setdefault(key, [])
+        steps.extend(abs(b - a) for (_, a), (_, b) in zip(amps, amps[1:]) if b != a)
+        del steps[:-AMP_STEP_MEMORY]
+        dq = quantum_of_steps(steps)
+        return dq * _median([v for _, v in volts]) if dq else None
+
+    async def _read(self, start: datetime, end: datetime, cfg: dict, meter: Optional[str] = None):
+        """(watts per phase, reactive VAr per phase) over the window - and,
+        for a ``meter`` below the grid, what its amps resolve, as the grid's
+        (_learn_q_quantum).
 
         The VAr here is only ever derived from readings that sit on one
         device; a role whose watts and amps come from different meters gets
@@ -893,70 +1610,23 @@ class DetectionRunner:
         samples = {p: series[("power", p)] for p in PHASES if series.get(("power", p))}
         if not samples:
             return {}, {}
+        if meter is not None:
+            own = {p: series[("voltage", p)] for p in samples if series.get(("voltage", p))}
+            if own:
+                self.volts[meter] = own        # the meter's own voltage - see Fleet.volts
         q: Dict[str, Dict[float, float]] = {}
-        if derive_q:
-            for p in samples:
-                if self._coherent_triple(cfg, p) is None:
-                    continue          # different meters; not this power's VAr
-                var = _reactive(samples[p], series.get(("voltage", p)),
-                                series.get(("current", p)), series.get(("pf", p)))
-                if var:
-                    q[p] = var
+        for p in samples:
+            if self._coherent_triple(cfg, p) is None:
+                continue          # different meters; not this power's VAr
+            var = _reactive(samples[p], series.get(("voltage", p)),
+                            series.get(("current", p)), series.get(("pf", p)),
+                            series.get(("var", p)), series.get(("va", p)))
+            if var:
+                q[p] = var
+            got = self._learn_q_quantum((meter, p), series, p) if meter is not None else None
+            if got:
+                self.sub_q_quantum.setdefault(meter, {})[p] = got
         return samples, q
-
-
-def _as_of(rows: list, ts: float, i: int) -> int:
-    """Index of the last row at or before ``ts``, walking forward from ``i``;
-    -1 when the series has not started yet."""
-    if not rows or rows[0][0] > ts:
-        return -1
-    i = max(i, 0)
-    while i + 1 < len(rows) and rows[i + 1][0] <= ts:
-        i += 1
-    return i
-
-
-def _median_of(values: list) -> float:
-    """Plain median, for the one voltage level a quantum is scaled by."""
-    kept = sorted(values)
-    if not kept:
-        return 0.0
-    mid = len(kept) // 2
-    return kept[mid] if len(kept) % 2 else 0.5 * (kept[mid - 1] + kept[mid])
-
-
-def _align(source: list, target_rows: list) -> Dict[float, float]:
-    """``source`` read as of each of ``target_rows``' moments."""
-    out: Dict[float, float] = {}
-    i = 0
-    for ts, _ in target_rows:
-        i = _as_of(source, ts, i)
-        if i >= 0:
-            out[ts] = source[i][1]
-    return out
-
-
-def _reactive(power_rows: list, volts: Optional[list], amps: Optional[list],
-              pfs: Optional[list]) -> Dict[float, float]:
-    """Reactive VAr at each power sample.
-
-    Every entity updates at its own moment, so the other readings are taken
-    as of the power sample's time - sample and hold - rather than looked up
-    at the same instant, which almost never matches."""
-    volts, amps, pfs = volts or [], amps or [], pfs or []
-    out: Dict[float, float] = {}
-    vi = ai = fi = 0
-    for ts, p in power_rows:
-        vi, ai, fi = _as_of(volts, ts, vi), _as_of(amps, ts, ai), _as_of(pfs, ts, fi)
-        apparent = None
-        if vi >= 0 and ai >= 0:
-            apparent = volts[vi][1] * amps[ai][1]
-        elif fi >= 0 and pfs[fi][1]:
-            apparent = abs(p) / abs(pfs[fi][1])
-        if apparent is None:
-            continue
-        out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
-    return out
 
 
 def _fetch(hass, start, end, entity_ids):
@@ -964,13 +1634,16 @@ def _fetch(hass, start, end, entity_ids):
 
     This looped over state_changes_during_period, which takes a single
     entity_id, so a pass cost one SQL round trip per entity - about twenty at
-    Anze's home once the submeters are counted, and that is per pass rather
+    The owner's home once the submeters are counted, and that is per pass rather
     than per sample, so it is exactly the cost that multiplies if detection
     runs more often (2026-09-18). get_significant_states takes the whole
     list; significant_changes_only=False is what keeps it every change rather
     than the dashboard's thinned-out view, and minimal_response=False keeps
-    State objects rather than the compressed dicts, which is what the callers
-    read.
+    every row. Rows come as the recorder's compressed dicts - the state and a
+    float timestamp - not State objects: a six-hour backfill slice is ~100,000
+    grid readings at Home, and as State objects (datetimes, a context each)
+    they were Core's startup burst, ~300 MiB kept by Python after it (Home on
+    the CM4, 2026-10-30).
     """
     if not entity_ids:
         return {}
@@ -980,4 +1653,5 @@ def _fetch(hass, start, end, entity_ids):
         significant_changes_only=False,
         minimal_response=False,
         no_attributes=True,
+        compressed_state_format=True,
     )

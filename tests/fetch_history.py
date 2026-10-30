@@ -1,6 +1,6 @@
 """Pull the history the replay harness needs straight from Home Assistant.
 
-Clicking twenty exports through the History panel is the slow way (Anze,
+Clicking twenty exports through the History panel is the slow way (the owner,
 2026-09-18). The REST API returns the same states, so this walks a day at a
 time over each group of entities and writes one CSV per day per group, in
 exactly the shape the panel downloads - entity_id, state, last_changed - so
@@ -17,26 +17,318 @@ takes on the command line, where it would land in a shell history:
     that instance issued. The whole data/ folder is gitignored.
 
 A token belongs to ONE instance, so each site needs its own, and naming the
-file after the host is what keeps them straight (Anze, 2026-09-18).
+file after the host is what keeps them straight (2026-09-18).
 
-Days already downloaded are skipped, so an interrupted run resumes.
+Days already downloaded are skipped, so an interrupted run resumes. Beside
+the CSVs it writes units.json, each electrical entity's unit from its live
+state (write_units): the replay scales by it, as production does.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from export_urls import SITES  # noqa: E402  - one place for the entity lists
-
 ROOT = Path(__file__).resolve().parents[1]
+
+# Each site's base URL, zone, and the entities fetched for it, a CSV per day
+# per group; add a site by copying one.
+HOME = {
+    "base": "https://ha.alpacasbarn.com",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        # the SolarEdge meter and inverter, plus the template phase sensors
+        # detection is configured against, plus the single-phase device
+        # meters - all of them poll, so a day of these is modest
+        "meters-and-devices": (
+            [f"sensor.solaredge_se17k_m1_ac_{k}" for k in
+             ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
+              "voltage_an", "voltage_bn", "voltage_cn",
+              # recorded from 2026-09-30: the meter's own, signed reactive power
+              "var_a", "var_b", "var_c", "va_a", "va_b", "va_c", "pf_a", "pf_b", "pf_c")]
+            + ["sensor.solaredge_se17k_i1_ac_power"]
+            + [f"sensor.solaredge_se17k_i1_ac_{k}" for k in
+               ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]
+            + [f"sensor.se17k_home_power_phase_{p}" for p in "abc"]
+            + ["sensor.blaz_pc_power", "sensor.attic_office_power",
+               "sensor.evbox_elvi_power_active_import", "sensor.hidrofor_power",
+               "sensor.workshop_boiler_power", "sensor.attic_ac_power",
+               "sensor.server_ups_power", "sensor.shellypmminig3_susilna_power",
+               "sensor.workshop_charger_power"]),
+        # the two three-phase Shellys, which report every second
+        "shellys": (
+            [f"sensor.hisa_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.hisa_total_active_power"]
+            + [f"sensor.mansarda_phase_{p}_active_power" for p in "abc"]
+            + ["sensor.mansarda_total_active_power"]),
+        # ...and their power factors and apparent power per phase, so the
+        # replay can give their steps a reactive power the way production
+        # does (their steps sat at "no power factor" on the graphs, 2026-09-30)
+        "shellys-pf": (
+            [f"sensor.{m}_phase_{p}_{k}" for m in ("hisa", "mansarda") for p in "abc"
+             for k in ("power_factor", "apparent_power")]),
+        # ...and their voltage per phase: the cross-meter edges' v / dv
+        # beside each step (insights/edges.py, 2026-10-13)
+        "shellys-v": [f"sensor.{m}_phase_{p}_voltage" for m in ("hisa", "mansarda") for p in "abc"],
+        # small loads energy_bench's worth scores (2026-10-02): the bathroom
+        # fan's Shelly (behind Mansarda, from 22 Sep 12:58 UTC), the RF ceiling
+        # fan's assumed speed, and the blinds' Shelly 2PMs - West on the grid
+        # connection, North and East behind Mansarda. Their first days were
+        # fetched into data/history/home-extra.
+        "fans": ["sensor.bathroom_fan_switch_0_power", "switch.bathroom_fan_switch_0",
+                 "sensor.living_room_ceiling_fan_speed", "fan.ceiling_fan"],
+        "blinds": ["sensor.west_blinds_power", "sensor.north_blinds_power",
+                   "sensor.living_room_east_blinds_power"],
+        # The Sušilna plug feeds a Klarstein dehumidifier on Tuya Local (the owner,
+        # 2026-10-02: its state should help - it runs 20 h a day at ~300 W,
+        # 20:00 to 16:00, and the grid detector loses its run within hours).
+        "susilna": ["switch.susilna_dehumidifier_power", "select.susilna_dehumidifier_mode",
+                    "sensor.susilna_dehumidifier_humidity", "sensor.susilna_dehumidifier_temperature",
+                    "number.susilna_dehumidifier_humidity_setpoint"],
+        # production's switch inputs - the motion and presence sensors a run
+        # can be keyed to, and so ended by (INPUT_ENDS): fed with SWITCH= dials
+        "inputs": ["binary_sensor.living_room_living_area_motionaware_area", "binary_sensor.staircase_occupied",
+                   "binary_sensor.entrance_sensor_occupancy", "binary_sensor.bathroom_presence_occupancy"],
+        # every entity Load Insights reads on Home today (its own outputs left out), for
+        # benches that must see what production sees - the AEG appliance states, the meters'
+        # phases, the device meters, temperatures, fans and the calendar (2026-10-23)
+        "configured": [
+            "binary_sensor.bathroom_presence_occupancy",
+            "binary_sensor.entrance_sensor_occupancy",
+            "binary_sensor.living_room_living_area_motionaware_area",
+            "binary_sensor.staircase_occupied",
+            "calendar.workday_sensor_calendar",
+            "climate.termostat_kopalnica",
+            "fan.air_purifier",
+            "fan.ceiling_fan",
+            "fan.chimney_air_vent",
+            "fan.kitchen_hood",
+            "select.aeg_le_hottie_program",
+            "sensor.aeg_le_hottie_appliancestate",
+            "sensor.aeg_sock_eater_appliancestate",
+            "sensor.aeg_sock_eater_cyclephase",
+            "sensor.aeg_sock_eater_cyclesubphase",
+            "sensor.attic_ac_energy",
+            "sensor.attic_ac_power",
+            "sensor.attic_average_living_room_temp",
+            "sensor.attic_office_energy",
+            "sensor.attic_office_power",
+            "sensor.bathroom_bathroom_strip_3_energy",
+            "sensor.bathroom_bathroom_strip_3_power",
+            "sensor.bathroom_bathroom_strip_4_energy",
+            "sensor.bathroom_bathroom_strip_4_power",
+            "sensor.bathroom_fan_switch_0_energy",
+            "sensor.bathroom_fan_switch_0_power",
+            "sensor.blaz_pc_energy",
+            "sensor.blaz_pc_power",
+            "sensor.central_heating_energy",
+            "sensor.central_heating_power",
+            "sensor.ef_d30609_ac_output_power",
+            "sensor.ef_d30609_input_power",
+            "sensor.ef_d30609_usb_a_output_power",
+            "sensor.ef_d30609_usb_c_3_output_power",
+            "sensor.ef_d30609_usb_c_output_power",
+            "sensor.evbox_elvi_energy_active_import_register",
+            "sensor.evbox_elvi_power_active_import",
+            "sensor.fish_tank_air_pump_energy",
+            "sensor.fish_tank_air_pump_power",
+            "sensor.fish_tank_lamp_energy",
+            "sensor.fish_tank_lamp_power",
+            "sensor.hidrofor_energy",
+            "sensor.hidrofor_power",
+            "sensor.hisa_phase_a_active_power",
+            "sensor.hisa_phase_a_apparent_power",
+            "sensor.hisa_phase_a_current",
+            "sensor.hisa_phase_a_power_factor",
+            "sensor.hisa_phase_a_voltage",
+            "sensor.hisa_phase_b_active_power",
+            "sensor.hisa_phase_b_apparent_power",
+            "sensor.hisa_phase_b_current",
+            "sensor.hisa_phase_b_power_factor",
+            "sensor.hisa_phase_b_voltage",
+            "sensor.hisa_phase_c_active_power",
+            "sensor.hisa_phase_c_apparent_power",
+            "sensor.hisa_phase_c_current",
+            "sensor.hisa_phase_c_power_factor",
+            "sensor.hisa_phase_c_voltage",
+            "sensor.hisa_total_active_energy",
+            "sensor.hisa_total_active_power",
+            "sensor.living_room_east_blinds_energy",
+            "sensor.living_room_east_blinds_power",
+            "sensor.living_room_vacuum_core_status",
+            "sensor.mansarda_phase_a_active_power",
+            "sensor.mansarda_phase_a_apparent_power",
+            "sensor.mansarda_phase_a_current",
+            "sensor.mansarda_phase_a_power_factor",
+            "sensor.mansarda_phase_a_voltage",
+            "sensor.mansarda_phase_b_active_power",
+            "sensor.mansarda_phase_b_apparent_power",
+            "sensor.mansarda_phase_b_current",
+            "sensor.mansarda_phase_b_power_factor",
+            "sensor.mansarda_phase_b_voltage",
+            "sensor.mansarda_phase_c_active_power",
+            "sensor.mansarda_phase_c_apparent_power",
+            "sensor.mansarda_phase_c_current",
+            "sensor.mansarda_phase_c_power_factor",
+            "sensor.mansarda_phase_c_voltage",
+            "sensor.mansarda_total_active_energy",
+            "sensor.mansarda_total_active_power",
+            "sensor.monika_pc_energy",
+            "sensor.monika_pc_power",
+            "sensor.north_blinds_energy",
+            "sensor.north_blinds_power",
+            "sensor.outside_t_h_temperature",
+            "sensor.pralni_stroj_energy",
+            "sensor.pralni_stroj_power",
+            "sensor.pumpa_delavnica_zgoraj_switch_0_energy",
+            "sensor.pumpa_delavnica_zgoraj_switch_0_power",
+            "sensor.server_ups_energy",
+            "sensor.server_ups_power",
+            "sensor.shellypmminig3_susilna_energy",
+            "sensor.shellypmminig3_susilna_power",
+            "sensor.solaredge_se17k_i1_ac_energy",
+            "sensor.solaredge_se17k_i1_ac_power",
+            "sensor.solaredge_se17k_m1_ac_current_a",
+            "sensor.solaredge_se17k_m1_ac_current_b",
+            "sensor.solaredge_se17k_m1_ac_current_c",
+            "sensor.solaredge_se17k_m1_ac_power",
+            "sensor.solaredge_se17k_m1_ac_power_a",
+            "sensor.solaredge_se17k_m1_ac_power_b",
+            "sensor.solaredge_se17k_m1_ac_power_c",
+            "sensor.solaredge_se17k_m1_ac_power_inverted",
+            "sensor.solaredge_se17k_m1_ac_voltage_an",
+            "sensor.solaredge_se17k_m1_ac_voltage_bn",
+            "sensor.solaredge_se17k_m1_ac_voltage_cn",
+            "sensor.solaredge_se17k_m1_exported",
+            "sensor.solaredge_se17k_m1_imported",
+            "sensor.termostat_kopalnica_floor_temperature",
+            "sensor.termostat_kopalnica_local_temperature",
+            "sensor.west_blinds_energy",
+            "sensor.west_blinds_power",
+            "sensor.workshop_boiler_energy",
+            "sensor.workshop_boiler_power",
+            "sensor.workshop_boiler_temperature_1",
+            "sensor.workshop_charger_energy",
+            "sensor.workshop_charger_power",
+            "sensor.workshop_total_energy",
+            "sensor.workshop_total_power",
+            "weather.arso_weather_pasja_ravan",
+        ],
+    },
+}
+
+# Kozolec is a second Home Assistant, so it needs its own base URL and its
+# own token - a long-lived token is issued by one instance for one user and
+# means nothing to another (2026-09-18). Its LOAD side is the
+# MultiPlus AC OUT, whose entity names are still to be confirmed; the AC IN
+# it is currently pointed at reads zero, the site being off grid.
+KOZOLEC = {
+    "base": "https://ha.kozolec.hlevcek.com",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        # The LOAD side, and it is fully instrumented: power, current AND
+        # voltage on the MultiPlus output, which is a coherent triple on the
+        # very reading the loads hang off - the one thing home does not have.
+        # The AC INPUT is a generator port, real but idle almost always, so
+        # it comes along to show what "off" looks like rather than to detect
+        # on (2026-09-18).
+        "inverter": [
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_output_voltage_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_0_line_l2_output_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_power_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_current_l1",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_input_voltage_l1",
+            "sensor.gx_device_consumption_power_l1",
+            "sensor.gx_device_consumption_current_l1",
+            "sensor.gx_device_critical_loads_on_l1",
+        ],
+        # DC: the arrays charge the battery directly, so none of this ever
+        # reaches the AC side as generation - which is why the load signal
+        # here is clean and home's is not.
+        "dc": [
+            "sensor.mppt_150_70_pv_yield_power",
+            "sensor.mppt_150_85_pv_yield_power",
+            "sensor.gx_device_pv_power",
+            "sensor.gx_device_dc_battery_power",
+            "sensor.multiplus_ii_48_15000_200_100_id_276_dc_power",
+            "sensor.jk_bms_id_512_charge",
+        ],
+        "devices": [
+            "sensor.power_strip_power",      # Car charger
+            "sensor.boiler_power",      # Boiler
+            "sensor.washing_machine_power",      # Washing Machine
+            "sensor.well_pump_power",
+            "sensor.kozolec_hidrofor_power",                   # Water Pump
+            "sensor.pond_filter_power",               # Pond
+            "sensor.pond_evse_power",
+            "sensor.pastir_staja_power",
+            "sensor.bug_lamp_power",
+            "sensor.bathroom_ir_panel_switch_0_power",       # Bathroom IR Panel
+        ],
+    },
+}
+
+# the third site (2026-10-03): a SolarEdge SE17K with its M1 grid meter, which
+# reads export POSITIVE like Home's (the Energy dashboard declares it
+# inverted), and a go-e charger. Its Energy dashboard reads the charger through
+# OCPP in kW, sent every 30 s to 2 min; the go-e integration's own readings
+# come every ~5 s in W - nrg_11 the total, nrg_7-9 per phase (W), nrg_4-6 (A).
+# The hot-water heat pump (MELCloud Ecodan) has no power meter: its valve,
+# pump and tank are what show when it heats water.
+THIRD = {
+    "base": "https://andrejg.duckdns.org:8123",
+    "tz": timezone(timedelta(hours=2)),
+    "groups": {
+        "meters": (
+            [f"sensor.solaredge_i2_m1_ac_{k}" for k in
+             ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
+              "voltage_an", "voltage_bn", "voltage_cn", "power_factor_a", "power_factor_b", "power_factor_c",
+              # recorded from 2026-10-08 21:35 UTC: the meter's own, signed reactive power
+              "reactive_power_a", "reactive_power_b", "reactive_power_c")]
+            + ["sensor.solaredge_i2_ac_power"]
+            + [f"sensor.solaredge_i2_ac_{k}" for k in
+               ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]),
+        "chargers": (
+            ["sensor.charger_power_active_import", "sensor.charger_nova_power_active_import"]
+            + [f"sensor.goe_216841_nrg_{n}" for n in (4, 5, 6, 7, 8, 9, 11)]),
+        "heat-pump": ["binary_sensor.tc_3_way_valve", "binary_sensor.tc_water_pump_1", "binary_sensor.tc_boiler",
+                      "sensor.tc_tank_temperature", "sensor.tc_daily_hot_water_energy_consumed"],
+    },
+}
+
+SITES = {"home": HOME, "kozolec": KOZOLEC, "third": THIRD}
+
+# Entities renamed on 2026-09-28 (HA_Configs/<site>/rename-plan-2026-09-28*.json).
+# History fetched before then is under the old id and after under the new;
+# the recorder moved the old days to the new id too, so a fetch by the old id
+# came back empty from 23 Sep on - Home's house and attic meters, the office
+# plug, Kozolec's well pump and boiler all missing from the bench for those
+# days. replay.read_csv reads an old id as its new one.
+RENAMED = {
+    "sensor.attic_phase_a_active_power": "sensor.mansarda_phase_a_active_power",
+    "sensor.attic_phase_b_active_power": "sensor.mansarda_phase_b_active_power",
+    "sensor.attic_phase_c_active_power": "sensor.mansarda_phase_c_active_power",
+    "sensor.attic_total_active_power": "sensor.mansarda_total_active_power",
+    "sensor.kotlovnica_well_pump_power": "sensor.well_pump_power",
+    "sensor.nasa_station_power": "sensor.attic_office_power",
+    "sensor.shelly_pond_switch_0_power": "sensor.pond_filter_power",
+    "sensor.shellypmminig3_84fce63c6654_power": "sensor.blaz_pc_power",
+    "sensor.shellypmminig3_ecda3bc6b054_power": "sensor.workshop_charger_power",
+    "sensor.shellypro3em_34987a459ae0_phase_a_active_power": "sensor.hisa_phase_a_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_b_active_power": "sensor.hisa_phase_b_active_power",
+    "sensor.shellypro3em_34987a459ae0_phase_c_active_power": "sensor.hisa_phase_c_active_power",
+    "sensor.shellypro3em_34987a459ae0_total_active_power": "sensor.hisa_total_active_power",
+    "sensor.shellypro4pm_kozolec_switch_0_power": "sensor.power_strip_power",
+    "sensor.shellypro4pm_kozolec_switch_1_power": "sensor.boiler_power",
+    "sensor.shellypro4pm_kozolec_switch_3_power": "sensor.washing_machine_power",
+}
 
 
 def read_token(path: Path) -> str:
@@ -78,6 +370,28 @@ def fetch(base: str, token: str, entities, start: datetime, end: datetime, timeo
     return rows
 
 
+ELECTRICAL = {"power", "current", "voltage", "power_factor", "apparent_power", "reactive_power"}
+
+
+def write_units(out: Path, base: str, token: str, entities, timeout: int) -> dict:
+    """Each electrical entity's unit, from its live state, merged into
+    out/units.json - entity -> unit - which replay.read_csv scales by, as
+    production scales every reading it reads (detect.unit_scale). The history
+    comes without attributes, so the CSVs carry no unit: Home's EVBox and
+    The third site's OCPP chargers publish kW and were replayed as watts, the EVBox's
+    10.8 kW charge as 10.8 W (2026-10-04)."""
+    request = urllib.request.Request(f"{base}/api/states", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        states = json.load(response)
+    want, path = set(entities), out / "units.json"
+    got = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    got.update({s["entity_id"]: s["attributes"]["unit_of_measurement"] for s in states
+                if s["entity_id"] in want and s.get("attributes", {}).get("device_class") in ELECTRICAL
+                and s["attributes"].get("unit_of_measurement")})
+    path.write_text(json.dumps(dict(sorted(got.items())), indent=1) + "\n", encoding="utf-8")
+    return got
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site", default="home", choices=sorted(SITES))
@@ -89,20 +403,18 @@ def main() -> int:
                         help="split each day, for entities that report every second")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--dry-run", action="store_true", help="say what it would fetch")
+    parser.add_argument("--group", action="append",
+                        help="only this group (repeatable); default every group of the site")
     args = parser.parse_args()
 
     site = SITES[args.site]
     tz = site["tz"]
     out = Path(args.out) if args.out else ROOT / "data" / "history" / args.site
     out.mkdir(parents=True, exist_ok=True)
-    given = Path(args.token) if args.token else None
-    if given is not None:
-        token_path = given if given.is_absolute() else ROOT / given
+    if args.token:
+        token_path = Path(args.token) if Path(args.token).is_absolute() else ROOT / args.token
     else:
-        host = urllib.parse.urlsplit(site["base"]).hostname or args.site
-        candidates = [ROOT / "data" / host, ROOT / "data" / f"ha_token_{args.site}",
-                      ROOT / "data" / "ha_token"]
-        token_path = next((p for p in candidates if p.exists()), candidates[0])
+        token_path = ROOT / "data" / urllib.parse.urlsplit(site["base"]).hostname
     token = "" if args.dry_run else read_token(token_path)
 
     last = (datetime.strptime(args.ending, "%Y-%m-%d").replace(tzinfo=tz) if args.ending
@@ -112,6 +424,8 @@ def main() -> int:
     total = 0
     for day in days:
         for group, entities in site["groups"].items():
+            if args.group and group not in args.group:
+                continue
             target = out / f"{day:%Y-%m-%d}_{group}.csv"
             if target.exists():
                 print(f"  {target.name}: already here")
@@ -143,6 +457,8 @@ def main() -> int:
             print(f"  {target.name}: {len(rows)} rows")
     if not args.dry_run:
         print(f"{total} rows into {out}")
+        entities = [e for g, es in site["groups"].items() if not args.group or g in args.group for e in es]
+        print(f"{len(write_units(out, site['base'], token, entities, args.timeout))} units in {out / 'units.json'}")
     return 0
 
 

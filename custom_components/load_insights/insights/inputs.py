@@ -38,12 +38,13 @@ weekly profile cannot see: a price that moves day to day, occupancy, a mode.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Dict, List, Optional, Sequence, Tuple
+from datetime import datetime, tzinfo
+from typing import Dict, Optional, Sequence, Tuple
+
+from .profile import slot_of
 
 MAX_LABELS = 8          # more distinct values than this and it is treated as numeric
 BANDS = 4               # quantile bands for a numeric input
-MIN_HOURS = 168         # an input seen for less than a week cannot be fitted
-HOURS_PER_WEEK = 168
 CONSISTENCY = 0.8       # a slot must agree with itself this often to be projected
 HOLD_HOURS = 6          # how far an unprojectable input's current label is carried
 
@@ -82,14 +83,16 @@ def label_history(raw: Dict[float, object]) -> Tuple[Dict[float, str], str]:
 
 
 def project(labels: Dict[float, str], horizon_keys: Sequence[float],
-            tz_offset_s: float = 0.0, current: Optional[str] = None) -> Dict[float, str]:
+            tz: tzinfo, current: Optional[str] = None) -> Dict[float, str]:
     """The horizon's labels: projected where the input is schedule-like, held
-    where it is not, absent where neither applies."""
+    where it is not, absent where neither applies. Slots are the profile's,
+    in the site's zone ``tz`` - an hour of the week on either side of a
+    clock change."""
     if not labels:
         return {}
     by_slot: Dict[int, Counter] = {}
     for k, lab in labels.items():
-        by_slot.setdefault(_slot(k, tz_offset_s), Counter())[lab] += 1
+        by_slot.setdefault(slot_of(datetime.fromtimestamp(k, tz)), Counter())[lab] += 1
     firm: Dict[int, str] = {}
     for slot, c in by_slot.items():
         lab, n = c.most_common(1)[0]
@@ -97,7 +100,7 @@ def project(labels: Dict[float, str], horizon_keys: Sequence[float],
             firm[slot] = lab
     out: Dict[float, str] = {}
     for i, k in enumerate(sorted(horizon_keys)):
-        lab = firm.get(_slot(k, tz_offset_s))
+        lab = firm.get(slot_of(datetime.fromtimestamp(k, tz)))
         if lab is not None:
             out[k] = lab
         elif current is not None and i < HOLD_HOURS:
@@ -105,14 +108,100 @@ def project(labels: Dict[float, str], horizon_keys: Sequence[float],
     return out
 
 
-def _slot(key: float, tz_offset_s: float) -> int:
-    """(weekday, hour) of an epoch second, in the site's local time."""
-    local = key + tz_offset_s
-    hour = int(local // 3600)
-    # 1970-01-01 was a Thursday, so shift to make Monday 0
-    return ((hour // 24 + 3) % 7) * 24 + (hour % 24)
-
-
 def usable(labels: Dict[float, str]) -> bool:
-    """A fit needs a week of hours and more than one label to compare."""
-    return len(labels) >= MIN_HOURS and len({v for v in labels.values()}) > 1
+    """A fit needs more than one label to compare; how many hours is the evidence rule's to say (calendars.fit_factors)."""
+    return len({v for v in labels.values()}) > 1
+
+
+# An input's link to a named load rather than to an Energy dashboard device:
+# a load is named before anyone could put it on the dashboard.
+LOAD_PREFIX = "load:"
+
+
+def migrate_inputs(options: dict) -> dict:
+    """The options as they were before 2026-09-28 - the site's inputs, and
+    each device's own under ``device_state_sensors`` - as ONE list of inputs
+    in ``input_entities``, each with what it is linked to in ``input_links``
+    (2026-09-28: "a single storage with the tags only deciding to which
+    things it connects to"). Every input counts for the whole site; a link
+    adds a device, and that device's parents with it. Unchanged when there
+    is nothing to move."""
+    legacy = options.get("device_state_sensors")
+    if legacy is None:
+        return options
+    return add_inputs({k: v for k, v in options.items() if k != "device_state_sensors"},
+                      [(eid, device) for device, eids in legacy.items()
+                       for eid in ([eids] if isinstance(eids, str) else list(eids or []))])
+
+
+def relink(options: dict, old: Optional[str], new: Optional[str]) -> dict:
+    """The options with every link to the named load ``old`` following it to
+    ``new`` - or dropped, when the name was cleared."""
+    if not old or old == new:
+        return options
+    links = {}
+    for eid, targets in (options.get("input_links") or {}).items():
+        moved = [(LOAD_PREFIX + new if new else None) if t == LOAD_PREFIX + old else t for t in targets]
+        links[eid] = list(dict.fromkeys(t for t in moved if t))
+    return {**options, "input_links": links}
+
+
+def scoped(signals, links: dict, within, stat: Optional[str]) -> list:
+    """The signals the forecast of ``stat`` takes (2026-10-03). An
+    input linked to nothing acts on every forecast. One linked to devices
+    acts on those, on every meter they sit inside - ``within(target)``, the
+    walk the nowcast's links take - and on the site (``stat`` None), which
+    every meter sits inside; on nothing else, the unmetered remainder
+    included. Unscoped, the workshop boiler's tank temperature was fitted
+    on Blaz's PC and engaged there."""
+    return [g for g in signals
+            if stat is None or not links.get(g.entity) or any(stat in within(t) for t in links[g.entity])]
+
+
+def own_scoped(signals, links: dict, within, stat: Optional[str]) -> list:
+    """The signals the OWN part of ``stat`` takes (its series less its mature
+    parts): the inputs linked to nothing, and those linked to ``stat`` itself.
+    One linked to a part belongs to that part. For the site (None) that is
+    the unlinked ones alone, as the unmetered remainder always took them."""
+    return [g for g in signals
+            if not links.get(g.entity) or (stat is not None and any(within(t)[:1] == [stat] for t in links[g.entity]))]
+
+
+def suggest_inputs(targets: dict, candidates: dict, inputs, own: Optional[dict] = None,
+                   target_devices: Optional[dict] = None) -> list:
+    """(entity, target) for every candidate sharing an area with a target -
+    a dashboard device or a named load - that is not an input yet. Both map
+    an id to its area; without one nothing matches (2026-09-29).
+
+    A candidate in ``own`` (entity -> device) is a metering device's own
+    reading - a boiler's tank, a battery's cells, a car's cabin - and goes
+    only to a target on that same device (``target_devices``, target ->
+    device): the boiler's tank temperature is the boiler's best input and
+    says nothing about the room it stands in."""
+    taken, own, target_devices = set(inputs or ()), own or {}, target_devices or {}
+    out = []
+    for eid, where in candidates.items():
+        if eid in taken:
+            continue
+        for t, there in targets.items():
+            if eid in own:
+                if target_devices.get(t) is not None and target_devices.get(t) == own[eid]:
+                    out.append((eid, t))
+            elif where and there == where:
+                out.append((eid, t))
+    return out
+
+
+def add_inputs(options: dict, picks) -> dict:
+    """The options with each picked (entity, target): the entity an input,
+    linked to the target. Everything else exactly as it was."""
+    if not picks:
+        return options
+    inputs = list(options.get("input_entities") or [])
+    links = {k: list(v) for k, v in (options.get("input_links") or {}).items()}
+    for eid, target in picks:
+        if eid not in inputs:
+            inputs.append(eid)
+        if target not in links.setdefault(eid, []):
+            links[eid].append(target)
+    return {**options, "input_entities": inputs, "input_links": links}

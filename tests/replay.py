@@ -1,7 +1,7 @@
 """Run load detection over an exported history, with no Home Assistant.
 
 Shipping a build to a live site to see what the detector makes of it is a
-slow way to learn anything (Anze, 2026-09-18). This takes the CSV that
+slow way to learn anything (2026-09-18). This takes the CSV that
 Home Assistant's History panel downloads - the one with entity_id, state
 and last_changed - and feeds it through exactly the code that runs there,
 then prints the library the naming page would show.
@@ -21,21 +21,29 @@ matches a device's sensors, and anything it gets wrong can be pinned with
 """
 import argparse
 import bisect
-import math
 import csv
+import functools
+import hashlib
+import json
+import math
+import os
+import pickle
 import sys
+from array import array
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _load import load  # noqa: E402
+from fetch_history import RENAMED  # noqa: E402  - ids renamed since some history was fetched
 
 D = load("insights.detect")
-DISCOVERY = load("insights.discovery")
+DISCOVERY = load("insights.phases")
 
 KIND_HINTS = (
-    ("power_factor", "power_factor"), ("_pf", "power_factor"),
+    ("power_factor", "power_factor"), ("_pf", "power_factor"), ("_var_", "reactive_power"),
+    ("apparent", "apparent_power"),
     ("voltage", "voltage"), ("current", "current"), ("power", "power"),
 )
 
@@ -57,7 +65,7 @@ def drop_aggregates(rows):
     everything older. An hour's mean cannot show a 44-second burst, and fed
     to the detector each one looks like a step, so a month of them would
     invent a load an hour. They give themselves away by landing on the hour
-    after a long gap (Anze exporting 30 days, 2026-09-18)."""
+    after a long gap (the owner exporting 30 days, 2026-09-18)."""
     kept, dropped, previous = [], 0, None
     for ts, value in rows:
         on_the_hour = abs((ts + 30) % 3600.0 - 30) < 5.0
@@ -72,7 +80,7 @@ def drop_aggregates(rows):
 
 def expand(paths):
     """Files, or every .csv inside a directory - a long window has to come
-    out of the History panel a day at a time (Anze, 2026-09-18), so a folder
+    out of the History panel a day at a time (2026-09-18), so a folder
     of them is the normal case."""
     out = []
     for raw in paths:
@@ -81,47 +89,222 @@ def expand(paths):
     return out
 
 
-def read_csv(paths, keep_coarse=False):
-    """entity_id -> [(epoch seconds, value)], numbers only, in time order.
+ON_STATES = {"on", "heating", "cooling", "drying"}
 
-    Order across files does not matter, and the overlap between one day's
-    export and the next is harmless: rows are sorted and de-duplicated."""
-    series = defaultdict(list)
-    paths = expand(paths)
-    for path in paths:
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                eid = (row.get("entity_id") or "").strip()
-                raw = (row.get("state") or "").strip()
-                when = (row.get("last_changed") or row.get("last_updated") or "").strip()
-                if not eid or not when:
-                    continue
-                try:
-                    value = float(raw)
-                except ValueError:
-                    continue                      # unavailable, unknown, a text state
-                try:
-                    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if moment.tzinfo is None:
-                    moment = moment.replace(tzinfo=timezone.utc)
-                series[eid].append((moment.timestamp(), value))
-    out, coarse = {}, 0
-    for eid, rows in series.items():
-        rows.sort()
-        rows = [row for i, row in enumerate(rows) if i == 0 or row[0] != rows[i - 1][0]]
-        if not keep_coarse:
-            rows, gone = drop_aggregates(rows)
-            coarse += gone
-        out[eid] = rows
-    if coarse:
-        print(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
-    print(f"read {len(paths)} file(s)")
+
+CACHE = Path.home() / ".cache" / "load_insights_bench"
+TEMPLATE_HOUSE = "sensor.se17k_home_power_phase_"   # the owner's HA template house sensor - never replayed (run)
+SOURCE = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()   # a change here re-parses
+
+
+def _cached(key, build):
+    """build()'s result, kept as a pickle in CACHE under ``key``: every replay
+    of a scorecard parsed the same half a gigabyte of CSV again, most of a
+    Kozolec replay's time. Entries a week old go when a new one is written."""
+    path = CACHE / (hashlib.sha1(repr((SOURCE, sorted(RENAMED.items()), key)).encode()).hexdigest() + ".pickle")
+    try:
+        with open(path, "rb") as handle:
+            return pickle.load(handle)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        pass
+    value = build()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    for old in CACHE.glob("*.pickle"):
+        try:
+            if old.stat().st_mtime < datetime.now().timestamp() - 7 * 86400:
+                old.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass                                # another replay cleared it first
+    part = path.with_suffix(f".{os.getpid()}.part")    # replays started together each write their own
+    with open(part, "wb") as handle:
+        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    try:
+        os.replace(part, path)
+    except PermissionError:
+        # Windows will not replace a file another replay holds open: that one
+        # wrote the same entry, so this copy is dropped (VI-ANZEK, 2026-10-30)
+        part.unlink(missing_ok=True)
+    return value
+
+
+def _stamp(path) -> tuple:
+    st = os.stat(path)
+    return str(Path(path).resolve()), st.st_size, st.st_mtime_ns
+
+
+def _parse(path) -> dict:
+    """One export as {entity_id: [(epoch seconds, state)]}."""
+    out = defaultdict(list)
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            eid = (row.get("entity_id") or "").strip()
+            eid = RENAMED.get(eid, eid)       # history from before a rename
+            if not eid:
+                continue
+            when = (row.get("last_changed") or row.get("last_updated") or "").strip()
+            try:
+                moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            out[eid].append((moment.timestamp(), (row.get("state") or "").strip()))
+    return dict(out)
+
+
+@functools.lru_cache(maxsize=None)
+def _parsed(stamp: tuple) -> dict:
+    return _cached(("file", stamp), lambda: _parse(stamp[0]))
+
+
+def _rows(paths, entity_id=None):
+    """(entity_id, epoch seconds, state) for every row of the exports, or of
+    one entity's; an id renamed since is read as its new one."""
+    for path in expand(paths):
+        parsed = _parsed(_stamp(path))
+        for eid in ([entity_id] if entity_id else parsed):
+            for ts, state in parsed.get(eid, ()):
+                yield eid, ts, state
+
+
+def read_states(paths, entity_id):
+    """An entity's TEXT states over time [(ts, state)] - a washer's cycle
+    phase, a fan's speed exported as its own series."""
+    rows = sorted({(ts, D.INPUT_DOWN if state in ("unknown", "unavailable") else state)
+                   for _, ts, state in _rows(paths, entity_id) if state})
+    return [r for i, r in enumerate(rows) if i == 0 or r[1] != rows[i - 1][1]]     # states change; a fetch chunk's first row repeats one
+
+
+def read_switch(paths, entity_id):
+    """An entity's on-periods [(on, off)] from the exports' TEXT states - on,
+    or a thermostat's heating (its hvac_action exported as its own series).
+    A drop-out is not an off: Tuya Local's dehumidifier switch went
+    unavailable ~60 times in ten days, for under a second each."""
+    rows = sorted((ts, state.lower() in ON_STATES) for _, ts, state in _rows(paths, entity_id)
+                  if state not in ("unknown", "unavailable"))
+    spans, on = [], None
+    for t, is_on in rows:
+        if is_on and on is None:
+            on = t
+        elif not is_on and on is not None:
+            spans.append((on, t))
+            on = None
+    if on is not None:
+        spans.append((on, None))
+    return spans
+
+
+def units(files) -> dict:
+    """entity_id -> its unit, from the units.json fetch_history writes beside
+    a site's CSVs - read from each file's own folder, so a folder of symlinks
+    reads its site's."""
+    out = {}
+    for folder in sorted({Path(f).resolve().parent for f in files}):
+        if (folder / "units.json").is_file():
+            out.update(json.loads((folder / "units.json").read_text(encoding="utf-8")))
     return out
 
 
-def guess_roles(series):
+def read_csv(paths, keep_coarse=False, say=print):
+    """entity_id -> [(epoch seconds, value)], numbers only, in time order,
+    each scaled to W, A or V by its unit (units, detect.unit_scale) as
+    production scales what it reads: the CSVs carry no unit, and Home's
+    EVBox, publishing kW, was replayed as watts - its 10.8 kW charge 10.8 W,
+    its truth 0.20 kWh in every card (2026-10-04).
+
+    Order across files does not matter, and the overlap between one day's
+    export and the next is harmless: rows are sorted and de-duplicated. Kept
+    in CACHE, one file for the whole folder, until a file in it or a unit
+    changes."""
+    files = expand(paths)
+    scale = {e: D.unit_scale(u) for e, u in units(files).items()}
+    out, coarse = _cached(("series", [_stamp(f) for f in files], keep_coarse, sorted(scale.items())),
+                          lambda: _series(paths, keep_coarse, scale))
+    if coarse:
+        say(f"ignored {coarse} hourly rows - too coarse for a load that lasts seconds")
+    say(f"read {len(files)} file(s)")
+    return out
+
+
+def carried(before, row) -> bool:
+    """A row that is the recorder's start-of-window copy, not a reading:
+    fetch_history asks for windows that open on a local whole hour (each
+    day's, at 22:00:00 UTC in summer, and each chunk's), and the recorder
+    answers each with the state as of its start, stamped the start - a copy
+    of the last reading. Production drops that row from every window it
+    reads (detect.without_window_start); replayed, ~one an entity a day was
+    fed as a reading production never gets. Every UTC offset is a whole
+    number of quarter hours; every such row in the history repeats the
+    reading before it (2026-10-04: 2,869 at Home, 822 at Kozolec, 603 at
+    The third site's, none that differ)."""
+    return row[0] % 900.0 == 0.0 and row[1] == before[1]
+
+
+class Series:
+    """One entity's readings as two columns of doubles, behaving as the list of
+    (epoch seconds, value) it replaced: Home's 11.4 million readings took 1.8 GB
+    as tuples of float objects and take ~180 MB as columns (2026-10-24)."""
+    __slots__ = ("t", "v")
+
+    def __init__(self, rows=(), t=None, v=None):
+        if t is None:
+            rows = list(rows)
+            t, v = array("d", [r[0] for r in rows]), array("d", [r[1] for r in rows])
+        self.t, self.v = t, v
+
+    def __len__(self):
+        return len(self.t)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return list(zip(self.t[i], self.v[i]))     # a window, as the list it always was
+        return (self.t[i], self.v[i])
+
+    def __iter__(self):
+        return zip(self.t, self.v)
+
+    def __reversed__(self):
+        return zip(reversed(self.t), reversed(self.v))
+
+    def __add__(self, other):
+        return list(self) + list(other)
+
+    def __radd__(self, other):
+        return list(other) + list(self)
+
+    def __bool__(self):
+        return len(self.t) > 0
+
+    def __eq__(self, other):
+        return list(self) == list(other)
+
+    def __getstate__(self):
+        return self.t, self.v
+
+    def __setstate__(self, state):
+        self.t, self.v = state
+
+
+def _series(paths, keep_coarse, scale):
+    series = defaultdict(list)
+    for eid, ts, raw in _rows(paths):
+        try:
+            value = float(raw) * scale.get(eid, 1.0)
+        except ValueError:
+            continue                              # unavailable, unknown, a text state
+        series[eid].append((ts, value))
+    out, coarse = {}, 0
+    for eid, rows in series.items():
+        rows.sort()
+        rows = [row for i, row in enumerate(rows) if i == 0 or row[0] != rows[i - 1][0] and not carried(rows[i - 1], row)]
+        if not keep_coarse:
+            rows, gone = drop_aggregates(rows)
+            coarse += gone
+        out[eid] = Series(rows)
+    return out, coarse
+
+
+def guess_roles(series, say=print):
     """Which entity is which per-phase reading, by the live matcher.
 
     With one correction the live flow does not need. There, the user picks a
@@ -131,7 +314,7 @@ def guess_roles(series):
     volts and amps beside it. The harness has what the config flow does not -
     the actual data - so it settles it the way physics does: a reading that
     goes below zero contains the site's generation and is not what the house
-    draws (Anze's home, 2026-09-18, where that mistake put the idle floor at
+    draws (the owner's home, 2026-09-18, where that mistake put the idle floor at
     -8 kW)."""
     rows = [{"entity_id": eid, "device_class": device_class_of(eid), "name": eid,
              "device_id": pseudo_device(eid)}
@@ -147,20 +330,9 @@ def guess_roles(series):
                   and D.carries_generation(series[r["entity_id"]]) is False]
         if better:
             pick = max(better, key=lambda e: DISCOVERY._score(e, e, "load") or 0)
-            print(f"   ({chosen} carries generation - using {pick} for phase {p.upper()})")
+            say(f"   ({chosen} carries generation - using {pick} for phase {p.upper()})")
             fields[f"power_{p}"] = pick
     return fields
-
-
-def align(source, target_rows):
-    """``source`` read as of each of ``target_rows``' moments."""
-    out, i = {}, 0
-    for ts, _ in target_rows:
-        while i + 1 < len(source) and source[i + 1][0] <= ts:
-            i += 1
-        if source and source[0][0] <= ts:
-            out[ts] = source[i][1]
-    return out
 
 
 def pseudo_device(entity_id: str) -> str:
@@ -173,7 +345,8 @@ def pseudo_device(entity_id: str) -> str:
     parts = entity_id.split("_")
     while parts and (parts[-1] in ("a", "b", "c", "1", "2", "3", "an", "bn", "cn",
                                    "l1", "l2", "l3")
-                     or parts[-1] in ("power", "current", "voltage", "pf", "factor")):
+                     or parts[-1] in ("power", "current", "voltage", "pf", "factor", "var",
+                                      "active", "apparent", "reactive")):   # ..._ac_var_a beside ..._ac_power_a   # a 3EM's phase_a_active_power beside phase_a_power_factor
         parts.pop()
     return "_".join(parts)
 
@@ -200,6 +373,27 @@ def coherent_triples(series, fields, phases):
     return out
 
 
+# (meter, channel) -> when its reactive power starts to be the meter's own
+# SIGNED reading rather than one worked out from the apparent power or V x I
+# (which has no sign) - what the replay read, handed to the edges (edge_bench)
+SIGNED_FROM: dict = {}
+
+
+def own_reactive(series, power_eid, p, rows, key=None):
+    """VAr at ``rows``' times from what the power's own device publishes
+    beside it - its signed reactive power, apparent power or power factor -
+    as production derives it for every meter's channel; None without. Where
+    the device publishes a signed one, from when goes to SIGNED_FROM[key]."""
+    by_kind = {device_kind_phase(e): e for e in series if pseudo_device(e) == pseudo_device(power_eid)}
+    pf, va, signed = (series.get(by_kind.get((k, p))) for k in ("power_factor", "apparent_power", "reactive_power"))
+    if not (pf or va or signed):
+        return None
+    if signed and key is not None:
+        SIGNED_FROM[key] = signed[0][0]
+    var = reactive(rows, None, None, pf, signed, va)
+    return D._align(sorted(var.items()), rows) if var else None
+
+
 def device_kind_phase(entity_id: str):
     lowered = entity_id.lower()
     kind = device_class_of(entity_id)
@@ -207,30 +401,22 @@ def device_kind_phase(entity_id: str):
     return (kind, phase)
 
 
-def reactive(power_rows, volts, amps, pfs):
-    import math
-    out = {}
-    vi = ai = fi = 0
-    volts, amps, pfs = volts or [], amps or [], pfs or []
-
-    def walk(rows, ts, i):
-        while i + 1 < len(rows) and rows[i + 1][0] <= ts:
-            i += 1
-        return i if rows and rows[0][0] <= ts else -1
-
-    for ts, p in power_rows:
-        vi, ai, fi = walk(volts, ts, max(vi, 0)), walk(amps, ts, max(ai, 0)), walk(pfs, ts, max(fi, 0))
-        apparent = None
-        if vi >= 0 and ai >= 0:
-            apparent = volts[vi][1] * amps[ai][1]
-        elif fi >= 0 and pfs[fi][1]:
-            apparent = abs(p) / abs(pfs[fi][1])
-        if apparent is not None:
-            out[ts] = math.sqrt(max(0.0, apparent * apparent - p * p))
+def reactive(power_rows, volts, amps, pfs, signed=None, vas=None):
+    """Production's _reactive, with the meter's own signed reactive power
+    taken from its first reading on. Production decides per pass, minutes at
+    a time: the passes after the meter's own VAr began read it, the ones
+    before do not. Decided once for the whole replay, a VAr enabled on the
+    last day (Home's grid meter, 30.09 07:57) was never read at all."""
+    if not (signed and power_rows):
+        return D._reactive(power_rows, volts, amps, pfs, None, vas)
+    start = signed[0][0]
+    before = [r for r in power_rows if r[0] < start]
+    out = D._reactive(before, volts, amps, pfs, None, vas) if before else {}
+    out.update(D._reactive([r for r in power_rows if r[0] >= start], volts, amps, pfs, signed, vas))
     return out
 
 
-def main() -> int:
+def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", nargs="+", help="History panel exports")
     parser.add_argument("--role", action="append", default=[],
@@ -238,6 +424,19 @@ def main() -> int:
     parser.add_argument("--sub", action="append", default=[],
                         metavar="Name=sensor.x", help="a device's own meter")
     parser.add_argument("--pv", action="append", default=[], help="an array's power")
+    parser.add_argument("--switch", action="append", default=[],
+                        help="NAME=ENTITY: an entity whose on/off (or heating) says when a load runs")
+    parser.add_argument("--input", action="append", default=[],
+                        help="ENTITY: a setting a device reports - a washer's cycle phase")
+    parser.add_argument("--volts", action="append", default=[], help="phase=entity: the grid voltage, for the edges' v / dv")
+    parser.add_argument("--driver", action="append", default=[],
+                        help="ENTITY: a number a load's runs may follow - a room's temperature")
+    parser.add_argument("--parent", action="append", default=[],
+                        help="METER=PARENT: the meter hangs under PARENT, as the Energy dashboard nests them")
+    parser.add_argument("--single", action="append", default=[],
+                        help="a sub-meter declared to hold one device, as production's options say")
+    parser.add_argument("--cadence", action="append", default=[],
+                        help="METER=change|periodic: how the meter reports, as the settings page says (else classified from its gaps)")
     parser.add_argument("--sub-phases", action="append", default=[],
                         metavar="Name=sensor.a,sensor.b,sensor.c", help="a three-phase meter, per phase")
     parser.add_argument("--top", type=int, default=25, help="rows to print")
@@ -246,61 +445,95 @@ def main() -> int:
     parser.add_argument("--slice-hours", type=float, default=0.0,
                         help="feed the detector in slices this long, as production's "
                              "backfill does (6); 0 feeds everything in one call")
+    parser.add_argument("--live-days", type=float, default=0.0,
+                        help="feed the last this many days in --live-pass-s passes, as a site runs "
+                             "once it has caught up; the days before in --slice-hours slices, as its backfill")
+    parser.add_argument("--live-pass-s", type=float, default=60.0,
+                        help="how long each live pass is (production's default: one minute)")
+    parser.add_argument("--restart-hours", type=float, default=0.0,
+                        help="at the end of the first pass at or after every this many hours of the readings' "
+                             "clock, store the Fleet and read it back as a restarted site does; 0 never")
     parser.add_argument("--keep-coarse", action="store_true",
                         help="do not drop hourly statistics rows")
     parser.add_argument("--no-q", action="store_true",
                         help="ignore reactive power entirely")
     parser.add_argument("--rates", action="store_true",
                         help="print each entity's sampling rate and stop")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    series = read_csv(args.csv, args.keep_coarse)
-    if args.rates:
-        for eid, rows in sorted(series.items()):
-            if len(rows) < 3:
-                print(f"  {eid:62} {len(rows)} rows")
-                continue
-            gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
-            span = (rows[-1][0] - rows[0][0]) / 86400.0
-            print(f"  {eid:62} {len(rows):>8} rows, {span:5.1f} days, "
-                  f"median gap {gaps[len(gaps) // 2]:6.1f} s")
-        return 0
+
+def run(args, transform=None, say=print):
+    """Replay the exports ``args`` (see parse) through a Fleet, as production
+    would have read them; ``transform`` may rebuild the series first.
+    Returns the Fleet, every session its house detector filed or a meter's
+    signature took (Run.parent_signature), in order, and each sub-meter's series as
+    the Fleet was fed it, its phases summed."""
+    series = read_csv(args.csv, args.keep_coarse, say)
+    if transform:
+        series = transform(series)
+    # what an inverter added to a reading built with it (bench._prod_house): its array for the detector
+    arrays = {k[:-len("|array")]: series.pop(k) for k in list(series) if k.endswith("|array")}
+    # Never the owner's template house sensor: production builds the house from
+    # the grid meter and the inverter itself (bench._prod_house, the only thing
+    # that hands over an array with it), so a replay that would read the
+    # template as recorded stops here (the owner, 2026-10-29: an EVBox charge
+    # scored 41 % hidden on it against 70 % on production's house)
+    raw = sorted(k for k in series if k.startswith(TEMPLATE_HOUSE) and k not in arrays)
+    if raw:
+        raise SystemExit(f"{', '.join(raw)}: the owner's template house sensor, which production never "
+                         "reads - replay this folder through tests/bench.py, which builds the house as "
+                         "production does (PROD_HOUSE)")
     if not series:
-        print("no numeric rows found - is this a History panel export?")
-        return 1
-    fields = guess_roles(series)
+        raise SystemExit("no numeric rows found - is this a History panel export?")
+    fields = guess_roles(series, say)
     for pin in args.role:
         key, _, eid = pin.partition("=")
         fields[key.strip()] = eid.strip()
     fields = {k: v for k, v in fields.items() if v in series}
 
-    span = [t for rows in series.values() for t, _ in rows]
-    print(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
-          f"{(max(span) - min(span)) / 86400:.1f} days")
-    print("matched:")
+    first = min(rows[0][0] for rows in series.values() if rows)      # each series is in time order
+    last = max(rows[-1][0] for rows in series.values() if rows)
+    say(f"{len(series)} entities, {sum(len(r) for r in series.values())} rows, "
+        f"{(last - first) / 86400:.1f} days")
+    say("matched:")
     for key in sorted(fields):
-        print(f"   {key:12} {fields[key]}")
+        say(f"   {key:12} {fields[key]}")
     phases = [p for p in D.PHASES if fields.get(f"power_{p}")]
     if not phases:
-        print("no per-phase power found - pin one with --role power_a=sensor.x")
-        return 1
+        raise SystemExit("no per-phase power found - pin one with --role power_a=sensor.x")
 
     samples = {p: series[fields[f"power_{p}"]] for p in phases}
+    SIGNED_FROM.clear()
     q = {}
     q_quantum = {}
+    grid_v = {}
     if not args.no_q:
         trios = coherent_triples(series, fields, phases)
-        print("reactive power from:")
+        say("reactive power from:")
         for p in phases:
+            if p not in trios or pseudo_device(trios[p][0]) != pseudo_device(fields[f"power_{p}"]):
+                # the load reading's own device first, as production and every
+                # sub-meter: a 3EM's apparent power or power factor
+                got = own_reactive(series, fields[f"power_{p}"], p, samples[p], ("", p))
+                if got:
+                    q[p] = got
+                    say(f"   {p.upper()}: {fields[f'power_{p}']} (its own apparent power or power factor)")
+                    continue
             if p not in trios:
-                print(f"   {p.upper()}: no meter publishes power, voltage and current together")
+                say(f"   {p.upper()}: no meter publishes power, voltage and current together")
                 continue
             pw, v, i = trios[p]
-            print(f"   {p.upper()}: {pw}")
-            var = reactive(series[pw], series.get(v), series.get(i), None)
+            if series.get(v):
+                grid_v.setdefault("", {})[p] = series[v]
+            signed = next((e for e in series if device_kind_phase(e) == ("reactive_power", p)
+                           and pseudo_device(e) == pseudo_device(pw)), None)
+            say(f"   {p.upper()}: {pw}" + (f" (signed: {signed})" if signed else ""))
+            if signed and series.get(signed):
+                SIGNED_FROM[("", p)] = series[signed][0][0]
+            var = reactive(series[pw], series.get(v), series.get(i), None, series.get(signed) if signed else None)
             if var:
                 # held forward onto the load reading's own sample times
-                q[p] = align(sorted(var.items()), samples[p])
+                q[p] = D._align(sorted(var.items()), samples[p])
             # ...and what those amps can resolve, the same way production
             # measures it, so the preview is not kinder than the real thing
             amps, volts = series.get(i) or [], series.get(v) or []
@@ -309,41 +542,127 @@ def main() -> int:
                 if dq:
                     lvl = sorted(x for _, x in volts)[len(volts) // 2]
                     q_quantum[p] = dq * lvl
-                    print(f"      amps resolve {dq:g} A -> {dq * lvl:.1f} VA per quantum; "
-                          f"no power factor under {D.PF_MIN_QUANTA * dq * lvl:.0f} W")
+                    say(f"      amps resolve {dq:g} A -> {dq * lvl:.1f} VA per quantum; "
+                        f"no power factor under {D.PF_MIN_QUANTA * dq * lvl:.0f} W")
     pv = {}
     for eid in args.pv:
         rows = series.get(eid)
         if not rows:
-            print(f"   (no rows for {eid})")
+            say(f"   (no rows for {eid})")
             continue
         for p in phases:
             bucket = pv.setdefault(p, {})
-            for ts, watts in align(rows, samples[p]).items():
+            for ts, watts in D._align(rows, samples[p]).items():
                 bucket[ts] = bucket.get(ts, 0.0) + watts
-    for p in list(pv):
+    for p in phases:
+        if fields[f"power_{p}"] in arrays:
+            pv[p] = dict(arrays[fields[f"power_{p}"]])     # in the reading: kept, never left out below
+    for p in [p for p in pv if fields[f"power_{p}"] not in arrays]:
         verdict = D.carries_generation(samples[p])
-        print(f"   array shows in phase {p.upper()}: {verdict}")
+        say(f"   array shows in phase {p.upper()}: {verdict}")
         if verdict is False:
             pv.pop(p)
 
-    subs, agnostic = {}, {}
+    for pin in args.volts:
+        p, _, eid = pin.partition("=")
+        if eid.strip() in series:
+            grid_v.setdefault("", {})[p.strip()] = series[eid.strip()]
+    subs = {}
     for pin in args.sub:
         name, _, eid = pin.partition("=")
         if eid.strip() in series:
             subs[name.strip()] = {"a": series[eid.strip()]}
-            agnostic[name.strip()] = True
     # A three-phase meter, as production reads one: a reading per phase, under
     # the phase letters the METER gives them - which need not be the house's.
+    sub_q = {}
     for pin in args.sub_phases:
         name, _, eids = pin.partition("=")
         rows = {p: series[e.strip()] for p, e in zip("abc", eids.split(",")) if e.strip() in series}
         if rows:
             subs[name.strip()] = rows
-            agnostic[name.strip()] = False
+            own = {p: series[e.strip().replace("active_power", "voltage")] for p, e in zip("abc", eids.split(","))
+                   if e.strip().replace("active_power", "voltage") in series}
+            if own:
+                grid_v[name.strip()] = own        # the meter's own voltage - see Fleet.volts
+            if not args.no_q:
+                # its reactive power from what the meter publishes beside the
+                # power - a 3EM its apparent power and a power factor - as production
+                # derives it for every sub-meter
+                for p, prow in rows.items():
+                    got = own_reactive(series, eids.split(",")[0].strip(), p, prow, (name.strip(), p))
+                    if got:
+                        sub_q.setdefault(name.strip(), {})[p] = got
+                if name.strip() in sub_q:
+                    say(f"   {name.strip()}: reactive power from its apparent power or power factor on {''.join(sorted(sub_q[name.strip()]))}")
 
-    fleet = D.Fleet()
-    fleet.main.tz_offset_s = 0.0
+    # entities that say when a load is on, read as text: on-periods
+    switch_spans = {}
+    for pin in args.switch:
+        name, _, eid = pin.partition("=")
+        switch_spans[name.strip()] = read_switch(args.csv, eid.strip())
+    drivers = {eid.strip(): sorted(series.get(eid.strip()) or []) for eid in args.driver}
+    inputs = {eid.strip(): read_states(args.csv, eid.strip()) for eid in args.input}
+    for eid, rows in inputs.items():
+        say(f"input {eid}: {len(rows)} changes")
+    for eid, rows in drivers.items():
+        say(f"driver {eid}: {len(rows)} readings")
+
+    def look(a):
+        """Where the inputs are read back from: SWITCH_MEMORY_S before the pass or, on a Fleet that
+        has read before (a restarted one), before the oldest run or session it still has to place -
+        what it kept in memory and a restart cannot get back from anywhere else."""
+        return min(a, fleet._oldest_asked()) if fleet._now else a
+
+    def held(rows, a, b):
+        """[look(a) - SWITCH_MEMORY_S, b) as production reads it: with the value in
+        force at the start of that window."""
+        ts = [r[0] for r in rows]              # by time alone: a setting's values are words
+        i = bisect.bisect_left(ts, look(a) - D.SWITCH_MEMORY_S)
+        return rows[max(i - 1, 0):bisect.bisect_left(ts, b)]
+    filed, fed = [], {}
+
+    def wire(fleet):
+        """What the runner sets on a Fleet it has just made or loaded, and the
+        bench's two hooks: every session the house files, and every one a
+        meter's signature takes (Run.parent_signature). Called again after a restart."""
+        fleet.wait_cap_s = D.METER_WAIT_CAP_S      # as production's default; METER_WAIT_CAP_S=0 to judge at once
+        fleet.parents = dict(p.split("=", 1) for p in args.parent)
+        fleet.horizon_skip = set()
+        fleet.cadence_forced = {n: k == "change" for n, k in (c.split("=", 1) for c in args.cadence)}
+        file, owns = fleet.main._file, fleet._meter_owns
+
+        def keep(s, *a, **kw):
+            file(s, *a, **kw)
+            filed.append(s)
+
+        def owned(s, *a):
+            owns(s, *a)
+            filed.append(s)
+        fleet.main._file = keep
+        fleet._meter_owns = owned
+        return fleet
+
+    def restarted(fleet):
+        """The Fleet as a restart gives it back: what `_persist` stores, through
+        JSON, and the older hours beside it."""
+        tz = fleet.main.tz_offset_s
+        new = D.Fleet.from_dict(json.loads(json.dumps(fleet.to_dict())))
+        new.main.tz_offset_s = tz
+        new.load_older(json.loads(json.dumps(fleet.older_to_dict())))
+        # the day's runs are copies now, and the day's repair edits the copies: the bench's list follows them
+        # (a run split in two shares its span: the runs of one span follow in the order they were filed)
+        key = lambda x: (x.phases, x.start, x.end)  # noqa: E731
+        where = {}
+        for i, x in enumerate(filed):
+            where.setdefault(key(x), []).append(i)
+        copies = {}
+        for x in new.main._day_log:
+            copies.setdefault(key(x), []).append(x)
+        for k, cs in copies.items():
+            for c, i in zip(reversed(cs), reversed(where.get(k, []))):
+                filed[i] = c
+        return wire(new)
+    fleet = wire(D.Fleet())
     for p in phases:
         fleet.main.phases[p].floor_zero = D.carries_generation(samples[p]) is False
     latest = max(t for rows in samples.values() for t, _ in rows)
@@ -358,7 +677,7 @@ def main() -> int:
         """The rows in [a, b) the way the recorder answers for that window:
         with include_start_time_state, which production asks for, the first
         row is the state AS OF a, stamped a - a copy of the last reading,
-        repeated at every slice start (checked on Anze's home, 2026-09-23). At
+        repeated at every slice start (checked on the owner's home, 2026-09-23). At
         one-minute ticks that is one extra reading a minute on every phase."""
         i, j = bisect.bisect_left(rows, (a, -math.inf)), bisect.bisect_left(rows, (b, -math.inf))
         part = rows[i:j]
@@ -366,36 +685,71 @@ def main() -> int:
             part = [(a, rows[i - 1][1])] + part
         return part
     t = first
+    fed_last: dict = {}
+    restart_s = args.restart_hours * 3600.0
+    restart_at = first + restart_s if restart_s else math.inf
+    # the live passes END past the last reading: begun AT it, the last pass
+    # took that reading for the recorder's window-start copy and dropped it
+    # (without_window_start) - one reading at the end of LIVE replays alone
+    live_from = latest + 1e-6 - args.live_days * 86400.0 if args.live_days else math.inf
     while t <= latest:
-        e = min(t + step, latest + 1e-6)
+        if t < live_from:
+            e = min(t + step, live_from, latest + 1e-6)          # the backfill's slices, up to where live begins
+        else:
+            e = min(t + args.live_pass_s, latest + 1e-6)         # then pass by pass, as a caught-up site
         # sliced the way the recorder answers, then cleaned the way production
         # cleans it, so both paths are the same code
+        sub_slice = {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
+                     for n, byp in subs.items()}
+        for n, byp in sub_slice.items():
+            last = fed_last.setdefault(n, {})           # each channel held at its last value...
+            at = {p: 0 for p in byp}
+            for ts in sorted({ts for rows in byp.values() for ts, _ in rows}):
+                for p, rows in byp.items():
+                    while at[p] < len(rows) and rows[at[p]][0] <= ts:
+                        last[p] = rows[at[p]][1]
+                        at[p] += 1
+                fed.setdefault(n, []).append((ts, sum(last.values())))   # ...across slices, as the Fleet keeps them
         fleet.process(D.without_window_start({p: cut(rows, t, e) for p, rows in samples.items()}, t),
-                      {n: D.without_window_start({p: cut(rows, t, e) for p, rows in byp.items()}, t)
-                       for n, byp in subs.items()},
-                      q, None, e, agnostic, pv or None, q_quantum)
+                      sub_slice, q, sub_q or None, e, pv or None, q_quantum,
+                      single={n: n in args.single for n in subs},     # every meter declared, as the runner does
+                      switches={n: [(a, b if b is not None and b <= e else None) for a, b in spans
+                                    if a < e and (b is None or b > look(t) - D.SWITCH_MEMORY_S)]
+                                for n, spans in switch_spans.items()} or None,
+                      numbers={n: held(rows, t, e) for n, rows in drivers.items()} or None,
+                      inputs={n: held(rows, t, e) for n, rows in inputs.items()} or None,
+                      volts={n: {p: cut(rows, t, e) for p, rows in byp.items()} for n, byp in grid_v.items()} or None)
+        if e >= restart_at:
+            fleet = restarted(fleet)
+            restart_at = e + restart_s
         t = e
-    detector = fleet.main
-    # The detector's OWN measured noise, which is what production passes.
-    # This said 100.0 from when MIN_NOISE_W was 100, and left the harness
-    # misrepresenting the thing it exists to preview: at Kozolec, where the
-    # floor is now 10 W, it merged a 20 W load into a 221 W one and folded
-    # seventy signatures into thirty-five - taking the Hidrofor's clean
-    # 162 / 188 / 221 W cycles with it (Anze, 2026-09-19).
-    noise = max((st.noise for st in detector.phases.values() if st.noise),
-                default=D.MIN_NOISE_W)
-    merged = detector.consolidate(noise)
+    return fleet, filed, {k: sorted(v) for k, v in fed.items() if v}
 
+
+def main() -> int:
+    args = parse(sys.argv[1:])
+    if args.rates:
+        for eid, rows in sorted(read_csv(args.csv, args.keep_coarse).items()):
+            if len(rows) < 3:
+                print(f"  {eid:62} {len(rows)} rows")
+                continue
+            gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
+            span = (rows[-1][0] - rows[0][0]) / 86400.0
+            print(f"  {eid:62} {len(rows):>8} rows, {span:5.1f} days, "
+                  f"median gap {gaps[len(gaps) // 2]:6.1f} s")
+        return 0
+    detector = run(args)[0].main
+    # The detector's OWN measured noise, which is what production passes.
     print()
     print(f"{len(detector.signatures)} signatures from "
-          f"{sum(s.count for s in detector.signatures)} sessions, {merged} merged on the way")
+          f"{sum(s.count for s in detector.signatures)} sessions")
     for phase, state in detector.phases.items():
         if state.baseline is not None:
             print(f"   phase {phase.upper()}: idle {state.baseline:.0f} W, "
                   f"noise {state.noise:.0f} W, {len(state.open_edges)} still open")
     print()
     for sig in sorted(detector.signatures, key=lambda s: -s.energy_wh)[:args.top]:
-        print(f"  {sig.row(timezone.utc)}")
+        print(f"  {sig.describe(timezone.utc)}")
     return 0
 
 

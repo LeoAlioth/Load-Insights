@@ -93,6 +93,19 @@ def test_included_in_an_unlisted_device_still_counts():
     assert [d.energy for d in s.remainder_devices()] == ["sensor.a"]
 
 
+def test_parts_of_walks_three_levels():
+    """Home's tree: Centralna holds Obtocni, Pisarna holds EcoFlow; an
+    included_in naming an unlisted statistic counts as top-level."""
+    def dev(e, parent=None):
+        return {"stat_consumption": e, **({"included_in_stat": parent} if parent else {})}
+    prefs = {"energy_sources": [{"type": "grid", "stat_energy_from": "sensor.g"}], "device_consumption": [
+        dev("w"), dev("c", "w"), dev("o", "c"), dev("m"), dev("p", "m"), dev("e", "p"), dev("x", "unlisted")]}
+    s = SiteModel.from_prefs(prefs)
+    names = lambda parent: [d.energy for d in s.parts_of(parent)]  # noqa: E731
+    assert names(None) == ["w", "m", "x"] and names("w") == ["c"] and names("c") == ["o"]
+    assert names("m") == ["p"] and names("p") == ["e"] and names("e") == []
+
+
 def test_no_dashboard_means_no_sources():
     assert not SiteModel.from_prefs(None).has_sources
     assert not SiteModel.from_prefs({}).has_sources
@@ -125,7 +138,33 @@ def test_the_dashboard_already_states_which_way_round_the_meter_is():
     site = SiteModel.from_prefs({"energy_sources": [
         {"type": "grid", "stat_energy_from": "sensor.i", "stat_rate": "sensor.p"}]})
     assert site.grid_power[0].polarity == 1
-    assert site.grid_power[0].rate_entity == "sensor.p"
+    assert site.grid_power[0].rate == "sensor.p"
+
+
+def test_its_own_estimates_listed_on_the_dashboard_are_not_devices():
+    # The kiln's detected-load energy listed under Hiša, to be seen there: read
+    # back as a device it would become a meter of itself (2026-09-28).
+    prefs = {"energy_sources": LEGACY_2025_9["energy_sources"], "device_consumption": [
+        {"stat_consumption": "sensor.hisa_energy", "name": "Hiša"},
+        {"stat_consumption": "sensor.pec_za_glino_energy", "name": "Peč za Glino", "included_in_stat": "sensor.hisa_energy"},
+    ]}
+    site = SiteModel.from_prefs(prefs, ignore=frozenset({"sensor.pec_za_glino_energy"}))
+    assert [d.energy for d in site.devices] == ["sensor.hisa_energy"]
+    assert [d.energy for d in site.remainder_devices()] == ["sensor.hisa_energy"]
+    assert "sensor.pec_za_glino_energy" not in site.all_statistic_ids()
+    # and without the list, as before
+    assert len(SiteModel.from_prefs(prefs).devices) == 2
+
+
+def test_load_juggler_carries_this_module_verbatim():
+    """Load Juggler copies this module whole (as energy_prefs.py) and keeps it
+    in sync by hand. Passes without checking where that repository is not
+    checked out beside this one, as in CI."""
+    mine = Path(model.__file__)
+    copy = (Path(__file__).resolve().parents[2]
+            / "Dynamic_OCPP_EVSE/custom_components/dynamic_ocpp_evse/energy_prefs.py")
+    if copy.exists():
+        assert copy.read_bytes() == mine.read_bytes(), f"{copy} differs from {mine}: copy it over"
 
 
 if __name__ == "__main__":

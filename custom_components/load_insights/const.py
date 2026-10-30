@@ -2,11 +2,7 @@
 
 # The pure layer owns the words for what it measures, so they have one
 # definition; the rest of the integration keeps importing from here.
-from .insights.detect import (  # noqa: F401  - one definition, re-exported
-    SOURCE_GENERATOR,
-    SOURCE_NONE,
-    SOURCE_UTILITY,
-)
+from .insights.grid import LAYOUT_PARALLEL, LAYOUT_SERIES  # noqa: F401  - one definition, re-exported
 
 DOMAIN = "load_insights"
 
@@ -25,9 +21,45 @@ CONF_CALENDAR_ENTITIES = "calendar_entities"
 # irradiance, an occupancy sensor. Fitted like a calendar and kept only if it
 # explains something.
 CONF_INPUT_ENTITIES = "input_entities"
-# device statistic id -> the device's own state sensor (tank temperature,
-# tank level...), for the nowcast of its next hours
-CONF_DEVICE_STATE_SENSORS = "device_state_sensors"
+# A Wh/kWh sensor for the battery's usable capacity (installed Ah x state of
+# health x nominal volts), taking over from the Energy dashboard's fixed figure
+# while it reads, so the pack's ageing follows.
+CONF_BATTERY_CAPACITY_ENTITY = "battery_capacity_entity"
+# input -> what it is linked to: Energy dashboard devices, or LOAD_PREFIX + a
+# named load. Every input counts for the site; a link adds a device (and every
+# device it sits inside), whose next hours a number then nudges. Before
+# 2026-09-28 each device kept its own under "device_state_sensors" - see
+# insights.inputs.migrate_inputs.
+CONF_INPUT_LINKS = "input_links"
+# Energy dashboard devices (statistic ids) "Not in the house forecast": never
+# added to it, their energy always comes out of the own part of the meter that
+# holds them (insights.profile.assemble). Their own forecast sensors are unchanged.
+CONF_FORECAST_EXCLUDE = "forecast_exclude"
+
+# SOC planning (the "SOC planning" options page; insights/planning.py).
+# One horizon for the page, and one scale for each side shared by the three
+# sensors; each sensor then has its own weights, per side: full weight for
+# <side>_full_hours hours, then <side>_derate percent less per hour. The
+# owner's values are the defaults (2026-10-17).
+CONF_PLAN_DAYS = "plan_days"
+CONF_PLAN_PRODUCTION_SCALE = "plan_production_scale"
+CONF_PLAN_CONSUMPTION_SCALE = "plan_consumption_scale"
+CONF_PLAN_FULL_SOC = "plan_full_soc"                  # the target counts down from here, in %
+CONF_PLAN_FULL_SOC_ENTITY = "plan_full_soc_entity"    # a number entity that takes over from it
+CONF_PLAN_MINIMUM_FLOOR = "plan_minimum_floor"
+CONF_PLAN_SPREAD = "plan_spread_evenly"               # devices planned with their energy spread evenly
+PLAN_DEFAULTS = {
+    CONF_PLAN_DAYS: 5, CONF_PLAN_PRODUCTION_SCALE: 1.0, CONF_PLAN_CONSUMPTION_SCALE: 1.0,
+    CONF_PLAN_FULL_SOC: 100, CONF_PLAN_MINIMUM_FLOOR: 10,
+}
+PLAN_SENSORS = ("target", "minimum", "excess")
+# per sensor and side: (full hours, derate %/h)
+PLAN_WEIGHTS = {"target": (24, 0.9), "minimum": (48, 0.5), "excess": (24, 0.0)}
+
+
+def plan_key(sensor: str, side: str, what: str) -> str:
+    """The option for one sensor's one side: ``plan_target_consumption_full_hours``."""
+    return f"plan_{sensor}_{side}_{what}"
 
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the
@@ -39,7 +71,6 @@ CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a
 # inverter makes, so the load is their sum; behind a transfer switch or off
 # grid, everything reaches the loads through the inverter and adding the
 # grid would count the pass-through twice.
-CONF_GRID_PREFIX = "grid_power_"
 CONF_GRID_DEVICE = "grid_device"
 # Each ROLE carries the whole electrical set, not just watts. Voltage and
 # current belong to the meter that publishes them, and pairing one meter's
@@ -47,70 +78,90 @@ CONF_GRID_DEVICE = "grid_device"
 # subtraction artefact. Home did exactly that: the load reading was a
 # template of house consumption while the volts and amps came off the grid
 # meter, and the reactive power derived from the pair turned 121 signatures
-# into 199 in a single day (Anze, 2026-09-18).
-ROLE_PREFIX = {"load": "", "grid": "grid_"}
+# into 199 in a single day (2026-09-18). The load's own set has no prefix.
+GRID_PREFIX = "grid_"
 # Inverters, as a LIST from the start: one site already has two - a SolarEdge
 # cabled to a Deye hybrid's load port - and retrofitting a list onto a
 # single-inverter config would be a migration across every site.
 CONF_INVERTERS = "inverters"
 CONF_INV_DEVICE = "device"
-CONF_INV_ATTACH = "attach"          # which node its output feeds
 CONF_INV_TOPOLOGY = "topology"
 # An inverter's GRID-side reading, stored beside its output under this
 # prefix. What it contributes to the house is output minus input, so a
 # hybrid does not hand back the grid power it merely passed along; a PV
 # string inverter has no input and contributes its output whole.
 CONF_INV_INPUT_PREFIX = "in_"
-ATTACH_BUS = "bus"                  # the same bus as the grid/main meter
-ATTACH_LOAD_PORT = "load_port"      # behind another inverter's output
 CONF_LAYOUT = "layout"
-LAYOUT_AUTO = "auto"
-LAYOUT_PARALLEL = "parallel"          # load = inverter output + grid
-LAYOUT_SERIES = "series"              # load = inverter output alone
-LAYOUTS = (LAYOUT_AUTO, LAYOUT_PARALLEL, LAYOUT_SERIES)
 # What was stored before the word was borrowed from Load Juggler, which
 # describes the same two wirings and had the better name for this one.
 LAYOUT_ALIASES = {"separate": LAYOUT_SERIES}
 # WHAT is connected there, which the topology does not say. An AC input is
 # an AC input whether the utility or a generator is behind it, and Kozolec
 # has the second: an off-grid site whose MultiPlus input port feeds from a
-# generator, idle - and so reading zero - almost all the time (Anze,
+# generator, idle - and so reading zero - almost all the time (the owner,
 # 2026-09-18). It changes nothing electrically and everything about what a
 # shortfall MEANS: energy bought at a tariff, a generator someone has to
 # start, or a load that simply goes unserved.
-# Auto is the default and the honest answer nearly always: only a utility
-# absorbs a surplus, and a generator is off far more than it is on, so the
-# reading itself says which is there. The override exists for the one case
-# the data cannot settle - a generator that has not run inside the window
-# looks exactly like nothing at all.
+# Said, not read off the data: an "auto" choice was offered until 2026-10-01
+# and never worked anything out - nothing set what it read, so it was the
+# utility, which it still is where an entry stored it (as is no choice).
 CONF_SOURCE_KIND = "source_kind"
-SOURCE_AUTO = "auto"
-SOURCE_KINDS = (SOURCE_AUTO, SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
-DEFAULT_SOURCE_KIND = SOURCE_AUTO
-# Meters BELOW the main one are not configured: the Energy dashboard already
-# lists every individually metered device and, through included_in_stat, how
-# they nest. Load Insights resolves each one to its Home Assistant device and
-# discovers that device's per-phase readings, so a load seen by both the main
-# meter and a device's own meter is located - and named - with nothing typed.
-DETECTION_KINDS = ("power", "pf", "current", "voltage")
-# How often the recorder is re-read. One minute by default since the pass
-# itself costs well under a millisecond and its overheads no longer scale
-# with it - one query rather than one per entity, and the state written
-# hourly rather than every pass (Anze, 2026-09-18). Configurable because a
-# large site, or one on slow storage, may still want it slower; it buys
-# latency, not accuracy, since the same recorded edges are reconstructed
-# either way.
-CONF_DETECTION_INTERVAL = "interval_minutes"
+SOURCE_UTILITY = "utility"
+SOURCE_GENERATOR = "generator"
+SOURCE_NONE = "none"
+SOURCE_KINDS = (SOURCE_UTILITY, SOURCE_GENERATOR, SOURCE_NONE)
+# Inside CONF_DETECTION: at most how long, in seconds, live detection waits
+# for the meters below the grid before judging its steps - see
+# METER_WAIT_CAP_S in insights/detect.py, which is its default.
+CONF_METER_WAIT = "meter_wait_s"
+# Inside CONF_DETECTION: the Energy-dashboard devices (by statistic id) whose
+# meter holds ONE device. Absent until the detection page is saved; then every
+# meter not listed holds several.
+CONF_SINGLE_DEVICE = "single_device"
+# Inside CONF_DETECTION, keyed the same way: meters left out of detection
+# altogether - not read, as if not on the Energy dashboard - and meters still
+# read whose lag does not set how far behind its meters the grid is read (a
+# slow polled one not worth waiting for; see Fleet._horizon).
+CONF_IGNORE_METERS = "ignore_meters"
+CONF_HORIZON_SKIP = "horizon_skip"
+# ...and how a meter reports, when not left to detection (PhaseState._classify): on change, or polled
+CONF_CHANGE_METERS = "change_meters"
+CONF_PERIODIC_METERS = "periodic_meters"
+# Inside CONF_DETECTION, both ON when absent (the owner, 2026-10-20; INS-21): name a
+# confidently detected fridge or heating element by itself (insights/autoname.py),
+# and, as its own switch, add the auto-named load's energy to the Energy
+# dashboard. The second only means something while the first is on.
+CONF_AUTONAME = "autoname"
+CONF_AUTONAME_DASHBOARD = "autoname_dashboard"
+# Inside CONF_DETECTION: each meter's idle floor offered as a load of its own,
+# "Base load" (the owner, 2026-10-30) - the meters that offer one (statistic
+# ids, BASE_LOAD_GRID for the grid meter; every meter when absent) and the
+# ones whose base load is split by phase (none when absent). A floor under
+# BASE_LOAD_MIN_W is not offered: a policy of what to show, not a measurement.
+CONF_BASE_LOAD = "base_load_meters"
+CONF_BASE_LOAD_PHASES = "base_load_phases"
+BASE_LOAD_GRID = "grid"
+BASE_LOAD_MIN_W = 2.0
+# How often the recorder is re-read: every minute. The pass itself costs well
+# under a millisecond and its overheads no longer scale with it - one query
+# rather than one per entity, and the state written hourly rather than every
+# pass (2026-09-18). It was a setting until 2026-10-01, for a large site
+# or slow storage; a slower one bought latency, not accuracy, and an entry
+# that stored one keeps it unread.
 DETECTION_INTERVAL_MINUTES = 1
-DETECTION_INTERVAL_CHOICES = (1, 2, 5, 10, 15, 30)
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
+PREFETCH_MAX_MIN = 15         # a pass this short reads every meter in one recorder query (detection._prefetch)
 # How long the detector's state may sit in memory unwritten. The snapshot is
 # the whole signature library - well over a hundred kilobytes - and writing
 # it every pass is what makes the polling interval expensive rather than the
 # detection itself, which costs under a millisecond per pass. An hour caps
 # what an ungraceful shutdown can lose; a clean one always writes.
 SAVE_MAX_INTERVAL_S = 3600.0
+# The year of hours confident unnamed loads keep (Signature.older) is written
+# daily: it only changes as hours age out of the library's window, and losing
+# a day of them to a crash only shortens what a later name is carried.
+HISTORY_SAVE_INTERVAL_S = 86400.0
 # How far behind the detector may be before the naming page will show its
 # library. A backfill part way through holds whatever happened in the first
 # few days, and rows that change under the reader are worse than no rows.
@@ -119,7 +170,7 @@ SAVE_MAX_INTERVAL_S = 3600.0
 NAMING_MAX_STALE_S = 3600.0
 # How sure the detector must be that a signature is a real repeating load
 # before it is offered for naming. A house makes far more shapes than it has
-# appliances, and a list of two hundred is a list nobody reads (Anze,
+# appliances, and a list of two hundred is a list nobody reads (the owner,
 # 2026-09-18). Evidence is the score: how often it has been seen and how
 # tightly its power and duration repeat. A fixed policy since 2026-09-23 - it
 # was a setting nobody could judge a value for.
@@ -137,7 +188,7 @@ NAMING_MIN_ROWS = 5
 # The naming page earns its length. It opens with a handful - the few loads the
 # library is surest of - and lengthens as the user names them, because the
 # right number of rows is not a property of the site but of how much work the
-# person has already done (Anze, 2026-09-22). A static bar cannot do this: set
+# person has already done (2026-09-22). A static bar cannot do this: set
 # high it hides a big house's real loads for ever, set low it opens with two
 # hundred rows and is put down unread. Nothing is lost either way - the library
 # holds every signature and the page says how many are waiting.
@@ -147,8 +198,9 @@ NAMING_ROWS_PER_NAME = 4
 # load's entities appear. The names themselves live with the detector.
 CONF_SIGNATURE_REVISION = "signature_revision"
 
-SERVICE_REFRESH = "refresh"
 SERVICE_RESET_DETECTION = "reset_detection"
+SERVICE_NAME_LOAD = "name_load"
+SERVICE_BACKFILL_STATISTICS = "backfill_statistics"
 
 # How much history the profile is fitted on. Twelve weeks of hourly rows is
 # ~2 000 rows per statistic - cheap to refetch in full every refresh, so
@@ -158,8 +210,26 @@ HISTORY_WEEKS = 12
 # The model is hourly - it can only change when a completed hour's statistic
 # arrives - so the forecast is recomputed once an hour, a little after the
 # mark so the recorder has compiled that hour. It was every quarter hour;
-# three of those four refreshes carried nothing new (Anže, 2026-09-16).
+# three of those four refreshes carried nothing new (2026-09-16).
 REFRESH_MINUTES = (0,)
 REFRESH_SECOND = 30
 
 HORIZON_HOURS = 168
+
+# Load Juggler's tank entries, read from outside (its config keys and the boost slider's unique id suffix)
+JUGGLER_DOMAIN = "dynamic_ocpp_evse"
+JUGGLER_DEVICE_TYPE = "device_type"
+# a thermostat load's device type -> what Load Insights learns it as (insights/thermal.py KINDS)
+JUGGLER_THERMOSTAT_KINDS = {"hot_water_tank": "tank", "room_thermostat": "room"}
+JUGGLER_TANK_POWER = "tank_power_entity_id"
+JUGGLER_CLIMATE = "climate_entity_id"
+JUGGLER_BOOST_OPTION = "tank_boost_temperature"
+JUGGLER_BOOST_SUFFIX = "_tank_boost_temperature"
+JUGGLER_NORMAL_OPTION = "tank_normal_temperature"
+JUGGLER_NORMAL_SUFFIX = "_tank_normal_temperature"
+JUGGLER_AWAY_OPTION = "tank_away_temperature"
+JUGGLER_AWAY_SUFFIX = "_tank_away_temperature"
+
+# Heat nudge, shadow mode (insights/heatnudge.py; the "Heat devices" options page): a list of
+# {name, source, kind, target, target_entity, activity_entity}, read with heatnudge.parse_devices.
+CONF_HEAT_DEVICES = "heat_devices"
