@@ -779,6 +779,32 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return meter["single"]
         return self.fleet.guess_one_device(name)     # nested meters included: Fleet.parents is set each pass
 
+    def remainder_meter(self) -> Optional[Tuple[str, str, List[str]]]:
+        """(name, energy statistic, the read meters beside it) of the one top-level Energy dashboard meter that
+        detection does not read (ignore_meters): a meter worked out as the grid less the others - Home's
+        Delavnica, grid + PV - Hiša - Mansarda - the EVBox, its timing spikes no measurement (the owner,
+        2026-10-30). Its base load is the grid's less those meters' (remainder_base_load). None unless
+        exactly one such meter."""
+        top = [(n, m) for n, m in self.all_submeters.items()
+               if m.get("ignored") and not m.get("parent") and m.get("energy")]
+        if len(top) != 1:
+            return None
+        name, meter = top[0]
+        return name, meter["energy"], sorted(n for n, m in self.submeters.items() if not m.get("parent"))
+
+    def remainder_base_load(self) -> Tuple[Optional[float], float]:
+        """(W, Wh) of the remainder meter's base load: the grid's less the read top-level meters' beside it
+        (Fleet.base_load) - W None while the grid's is not learned, never below 0."""
+        rem = self.remainder_meter()
+        w, wh = self.fleet.base_load("")
+        if rem is None:
+            return None, 0.0
+        for name in rem[2]:
+            mw, mwh = self.fleet.base_load(name)
+            w = None if w is None else w - (mw or 0.0)
+            wh -= mwh
+        return (None if w is None else max(w, 0.0)), wh
+
     def base_load_keys(self) -> set:
         """The meters whose base load is a load of its own, by energy statistic (BASE_LOAD_GRID the grid):
         the ticked ones, or until the page is saved the grid and every meter holding several loads - an end
@@ -787,8 +813,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         chosen = self.config.get(CONF_BASE_LOAD)
         if chosen is not None:
             return set(chosen)
-        return {BASE_LOAD_GRID} | {m["energy"] for name, m in self.submeters.items()
-                                   if m.get("energy") and not self.holds_one_device(name)}
+        rem = self.remainder_meter()
+        return ({BASE_LOAD_GRID} | ({rem[1]} if rem is not None else set())
+                | {m["energy"] for name, m in self.submeters.items() if m.get("energy") and not self.holds_one_device(name)})
 
     def metered_device(self, name: str) -> Optional[str]:
         """The meter a named load IS - named after one that holds a single

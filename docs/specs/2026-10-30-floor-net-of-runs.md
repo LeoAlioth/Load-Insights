@@ -92,7 +92,13 @@ off by default (an option per meter); a base load under `BASE_LOAD_MIN_W` (a cou
 policy of what to show, not a measurement) is not offered. Narrowed the same evening (the owner): by
 default only the grid meter and the meters holding several loads (Home: Hiša, Mansarda, Delavnica;
 Kozolec: the Inverter) - an end device's floor is its own standby, not a base load (`DetectionRunner.
-base_load_keys`; a meter ticked by hand still gets one).
+base_load_keys`; a meter ticked by hand still gets one). Later the same night (the owner): Delavnica is not read
+any more (ignore_meters) - it is grid + PV - Hiša - Mansarda - the EVBox, a template whose inputs report at
+different moments (271 spikes of median 390 W in three hours), so it measures nothing the grid does not and its
+spikes were false steps. Its base load stays under it on the charts: the one ignored top-level meter is the
+remainder (`DetectionRunner.remainder_meter`), its base load the grid's less the read top-level meters' beside it
+(`remainder_base_load`), under the same unique ids as its own had. Its power graph is smoothed in HA by an
+outlier filter helper (window 15, radius 100 W: 271 spikes -> 6, real steps ~9 s late).
 
 Built 2026-10-30: each phase adds up its base load x time per reading (`PhaseState.floor_wh`, gaps counted up
 to `FLOOR_GAP_S`), `Fleet.base_load(meter, phase)`. The base load was first the idle floor (`baseline`), which

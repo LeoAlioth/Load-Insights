@@ -241,4 +241,11 @@ class AutoNamer:
                 if energy:
                     power = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, key, p, "power"))
                     out.append((energy, base_load_label(r.fleet, meter, p), power, key))
+        # the remainder meter's (Delavnica, not read): under it on the dashboard as its own was
+        rem = r.remainder_meter()
+        if rem is not None and rem[1] in keys:
+            energy = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, rem[1], None, "energy"))
+            if energy:
+                power = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, rem[1], None, "power"))
+                out.append((energy, base_load_label(r.fleet, rem[0], None), power, rem[1]))
         return out
