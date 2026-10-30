@@ -47,10 +47,13 @@ jobs:
           VERSION=$(jq -r '.version' "custom_components/$COMPONENT/manifest.json")
 
           if [ "$PRE" = "true" ]; then
-            # The manifest's version, the branch and a UTC timestamp, so every
-            # push gets a new tag: 2.2.0-dev.20260217.2112 off dev,
-            # 2.2.0-dev-glm.20260217.2112 off dev-glm.
-            TAG_NAME="${VERSION}-${GITHUB_REF_NAME}.$(date -u +"%Y%m%d.%H%M")"
+            # The manifest's version, the branch and a UTC timestamp to the
+            # second, so every push gets a new tag: 2.2.0-dev.20260217.211205
+            # off dev, 2.2.0-dev-glm.20260217.211205 off dev-glm. To the
+            # minute, two pushes built in the same minute shared a tag and the
+            # second's release replaced the first's under the same name, so
+            # the sites, already on that name, never installed it (2026-10-30).
+            TAG_NAME="${VERSION}-${GITHUB_REF_NAME}.$(date -u +"%Y%m%d.%H%M%S")"
           elif echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
             # Triggered by tag push - use the tag name directly
             TAG_NAME="$GITHUB_REF_NAME"
