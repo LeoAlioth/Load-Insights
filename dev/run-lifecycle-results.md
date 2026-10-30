@@ -495,7 +495,14 @@ ownership-by-rise fixes (`rose2head` = head), devices kWh right / wrong, on this
 | `FALL_PLATEAU_NOISES` 1.5 | 85.8 / 11.4 | 100.2 / 9.9 | 153.4 / 9.7 | 209.7 / 7.2 | 227.1 / 3.2 |
 | `FALL_NO_PAIR` 0.5 | 91.4 / 8.3 | 107.0 / 10.6 | 153.2 / 10.0 | 211.6 / 7.8 | 227.1 / 3.2 |
 
-The fed gains the sweep saw are gone on the head (the fixes took what they were finding); the age and plateau
-dials still lose circuits. `FALL_NO_PAIR` 0.5 is the one even trade worth a look: Home's wrong energy down 4.6 kWh
-over the three modes (1.1 + 1.7 + 1.8) for +1.6 right, Kozolec hidden -1.2 right / +0.5 wrong - small, consistent,
-within what the bench's spread could be; its invariance check was started and not read. The owner decides.
+| `FALL_NO_PAIR` 0.6 | 92.9 / 10.2 | 99.7 / 8.8 | 154.4 / 11.1 | 212.0 / 7.2 | 227.1 / 3.2 |
+| `FALL_OTHER_PAIR` 0.55 | 97.7 / 9.6 | 96.0 / 9.2 | 151.3 / 10.0 | 212.8 / 7.3 | 227.1 / 3.2 |
+| `FALL_NOTHING_MIN` 0.3 | 93.0 / 10.7 | 102.4 / 12.6 | 149.8 / 11.3 | 214.1 / 5.7 | 227.1 / 3.2 |
+| `FALL_NO_PAIR` 0.5 + `FALL_OTHER_PAIR` 0.55 | 95.2 / 11.5 | 103.0 / 10.4 | 149.8 / 10.8 | 211.6 / 7.8 | 227.1 / 3.2 |
+
+The fed gains the sweep saw are gone on the head (the fixes took what they were finding); the age, plateau,
+other-pair and nothing-min dials and the pair all lose circuits or fed by 3-10 kWh for a hidden gain. `FALL_NO_PAIR`
+0.5 alone is an even trade (Home wrong -4.6 kWh over the three modes for +1.6 right, Kozolec hidden -1.2 / +0.5;
+invariance clean, restarts 0.19 kWh) - but 0.6, between it and the default, loses circuits 6.1 kWh (Polnilnica
+30.6 -> 25.5), so the dial's effect at this size is the bench's own spread, not a trend. Kept at 0.7. Nothing shipped;
+the best of the eight is the head as it is.
