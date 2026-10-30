@@ -8307,7 +8307,7 @@ class Fleet:
         lags = {name: round(self._declare_lag(name), 1) for name in sorted(self.subs)
                 if name not in self.horizon_skip and self._shares(name)}
         top = max(lags.items(), key=lambda kv: kv[1], default=None)
-        set_by = top[0] if top is not None and top[1] <= self.wait_cap_s and top[1] >= self._wait - 1e-6 else None
+        set_by = top[0] if top is not None and top[1] < self.wait_cap_s else None      # at the cap, the cap sets it
         return {"wait_s": round(self._wait, 1), "cap_s": self.wait_cap_s, "set_by": set_by, "declare_lag_s": lags}
 
     def _declare_lag(self, name: str) -> float:
