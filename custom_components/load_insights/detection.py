@@ -55,6 +55,7 @@ from .insights.detect import (
     combine,
     COMBINE_SETTLE_S,
     PHASES,
+    PREFETCH_MAX_MIN,
     Detector,
     Fleet,
     carries_generation,
@@ -387,6 +388,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
+        # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
+        self._pass_rows: Optional[tuple] = None
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         # the hours confident unnamed loads keep past the window
@@ -1230,6 +1233,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 now = dt_util.utcnow()
                 start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
                 end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
+                await self._prefetch(start, end)
                 samples = await self._derive_load(start, end)
                 # the arrays, for telling a cloud from a load switching
                 self.solar = await self._resolve_solar()
@@ -1288,6 +1292,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 single = {n: self.holds_one_device(n) for n in self.submeters}
                 switches, numbers, inputs = await self._read_inputs(start, end)
                 read = time.monotonic()
+                self._pass_rows = None
                 self.fleet.wait_cap_s = self.meter_wait_s
                 await self.hass.async_add_executor_job(
                     self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
@@ -1447,9 +1452,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     entities[(kind, p)] = eid
         if not entities:
             return {}
-        states = await get_instance(self.hass).async_add_executor_job(
-            _fetch, self.hass, start, end, list(dict.fromkeys(entities.values()))
-        )
+        ids = list(dict.fromkeys(entities.values()))
+        pre = self._pass_rows
+        if pre is not None and pre[0] == start and pre[1] == end:
+            states = {e: pre[2][e] for e in ids if e in pre[2]}
+            missing = [e for e in ids if e not in pre[2]]
+        else:
+            states, missing = {}, ids
+        if missing:
+            states.update(await get_instance(self.hass).async_add_executor_job(_fetch, self.hass, start, end, missing))
         series: Dict[tuple, list] = {}
         for key, eid in entities.items():
             # History is fetched with no_attributes, so the unit comes from the
@@ -1465,6 +1476,27 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             rows.sort()
             series[key] = rows
         return series
+
+    async def _prefetch(self, start: datetime, end: datetime) -> None:
+        """A live pass's readings of every meter it reads, in ONE recorder query:
+        one query a meter was ~37 a minute at Home and most of read_s's 2.6 s
+        (2026-10-30). Only for a short window - a backfill slice reads meter by
+        meter, so the memory is one meter's six hours at a time. What it misses
+        _read_raw fetches as before."""
+        self._pass_rows = None
+        if end - start > timedelta(minutes=PREFETCH_MAX_MIN):
+            return
+        ids = []
+        for cfg in [self.config, *(self.solar or []), *(m.get("fields") or {} for m in self.submeters.values())]:
+            for p in PHASES:
+                for kind in ("power", "pf", "va", "current", "voltage", "var"):
+                    eid = (cfg or {}).get(f"{kind}_{p}")
+                    if eid:
+                        ids.append(eid)
+        ids = list(dict.fromkeys(ids))
+        if ids:
+            rows = await get_instance(self.hass).async_add_executor_job(_fetch, self.hass, start, end, ids)
+            self._pass_rows = (start, end, rows)
 
     def _unit_of(self, entity_id: str) -> Optional[str]:
         state = self.hass.states.get(entity_id)
