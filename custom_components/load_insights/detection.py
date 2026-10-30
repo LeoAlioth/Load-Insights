@@ -105,6 +105,21 @@ def device_uid(entry_id: str, energy: str) -> str:
     return f"{entry_id}_device_{energy.replace('.', '_')}"
 
 
+def base_load_uid(entry_id: str, key: str, phase: Optional[str], kind: str) -> str:
+    """A meter's base load entity's unique id: ``key`` its energy statistic (BASE_LOAD_GRID for the grid),
+    ``phase`` its phase or None for the whole, ``kind`` "power" or "energy"."""
+    return f"{entry_id}_baseload_{kind}_{key.replace('.', '_')}_{phase or 'all'}"
+
+
+def base_load_label(fleet, meter: str, phase: Optional[str]) -> str:
+    """What a meter's base load is called - its device and its dashboard entry."""
+    label = "Base load" if not meter else f"{meter} base load"
+    if phase is not None:
+        house = fleet.phase_map(meter).get(phase, phase) if meter else phase
+        label += f" {SYSTEM_PHASES.get(house, phase.upper())}"
+    return label
+
+
 @dataclass
 class RuntimeData:
     """What a loaded entry runs - its ConfigEntry.runtime_data."""

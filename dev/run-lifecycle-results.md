@@ -440,3 +440,23 @@ Every setting loses Home circuits (1.5 to 14.6 kWh right); the fed gains (`FALL_
 dials +4.6 / +5.7) come with circuits losses as large or larger, and Kozolec fed does not move. The defaults sit on a
 flat optimum within the bench's spread; the circuits mode is the one most sensitive to the age and plateau weights.
 Not retested on the two fixes above (the sweep ran on the pre-fix tree). Ruled out (AGENTS.md).
+
+## Susilna hidden: the base run is declared every night and closed within the hour (2026-10-30, nothing shipped)
+
+Delegated trace on the two fixes above, Home hidden (Susilna 91.0 kWh truth, 24.8 right, 27.5 attributed; 61.4 of
+the 85.2 kWh inside its on-stretches of 30 min or more credited to no run, 3-7.7 kWh a night). The grid declares the
+dehumidifier's start every night, 12 of 12, a 248-338 W rise on phase a at 18:00. The run is then closed after 5-188
+min (median ~27) by another load's fall: `_pair`'s scored close (5 nights), `_combination`'s multi-close (3),
+`_unseen_stop` (2), and once by `MAX_OPEN_EDGES` - a thirteenth run opened on phase a and popped the oldest. Phase
+a's idle floor then climbs over the base (91 -> 537 -> 821 W on 10-04, 262 -> 710 on 10-10) and the real stop at
+14:00, a 298-459 W fall, closes nothing in 11 of 12 nights: it moves the floor down or is held as a drop. Tried, not
+shipped: `FLOOR_RECOVER` - remember a run closed by another load's fall while the reading stays its size above the
+floor it closed on; a later fall that closes nothing and brings the reading, less the open runs, under half of it
+files the run from its start. v1 Home hidden 90.9 / 10.1 -> 100.1 / 11.4 right / wrong, but the gain is Polnilnica
++4.1 and the office plug +5.1, Susilna unchanged (24.7), Hidrofor wrong +2.3, Kozolec hidden +0.85 / +1.9; v2 97.4 /
+17.4. It fails because a single 0 W reading drops the remembered run and the recovery fires at early falls, the open
+runs' believed draw overstating the other loads on a busy phase, so the recovered runs end 20:00-08:00, not 14:00.
+Doing it right needs the floor's own history (what it rose by while idle), a design question. The `MAX_OPEN_EDGES`
+eviction, 12 -> 24 (card `open24` against `meterbook`): Home fed 146.0 / 10.4 -> 150.2 / 11.0, circuits 105.8 / 11.7
+-> 102.5 / 9.0, hidden 90.9 / 10.1 -> 91.5 / 12.5, Kozolec identical - a trade, not a win; not shipped. Untested:
+evicting the run least likely still on instead of the oldest.

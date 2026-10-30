@@ -267,6 +267,18 @@ def test_a_hand_named_load_goes_on_the_dashboard_with_its_power_and_a_rename_mov
     assert A.plan_dashboard(mine, {}, [], [], {})[0] is None
 
 
+def test_a_meters_base_load_sits_under_its_meter_and_goes_with_the_option():
+    meter = [{"stat_consumption": "sensor.hisa_energy", "stat_rate": "sensor.hisa_power", "name": "Hiša"}]
+    wanted = {"sensor.hisa_base_load_energy": "Hiša base load"}
+    new, added, _ = A.plan_dashboard(meter, wanted, [], [], {"sensor.hisa_base_load_energy": "sensor.hisa_base_load_power"},
+                                     {"sensor.hisa_base_load_energy": "sensor.hisa_energy"})
+    assert new[1] == {"stat_consumption": "sensor.hisa_base_load_energy", "name": "Hiša base load",
+                      "stat_rate": "sensor.hisa_base_load_power", "included_in_stat": "sensor.hisa_energy"}
+    # the option off: nothing wanted, our entry goes, the meter's stays
+    gone, added2, _ = A.plan_dashboard(new, {}, added, [], {}, {})
+    assert gone == meter and added2 == []
+
+
 def test_both_switches_are_options_on_by_default_and_translated():
     const = (BASE / "const.py").read_text(encoding="utf-8")
     flow = (BASE / "config_flow.py").read_text(encoding="utf-8")
