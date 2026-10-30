@@ -56,6 +56,7 @@ from .insights.detect import (
     combine,
     COMBINE_SETTLE_S,
     PHASES,
+    SYSTEM_PHASES,
     Detector,
     Fleet,
     carries_generation,

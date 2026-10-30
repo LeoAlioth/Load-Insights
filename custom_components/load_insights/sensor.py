@@ -27,7 +27,7 @@ from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, base_load_label, base_load_uid, device_uid, load_uid, loaded
-from .insights.detect import (PF_MIN_QUANTA, PHASES, SYSTEM_PHASES, display_phase, ref_label, running_markdown,
+from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
                               signature_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
