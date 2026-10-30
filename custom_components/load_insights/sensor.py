@@ -603,6 +603,8 @@ class DetectedLoadsSensor(_DetectionBase):
             "pf_floor_w": {p.upper(): round(PF_MIN_QUANTA * st.q_quantum) for p, st in det.phases.items() if st.q_quantum},
             "processed_until": self._runner.last_processed.isoformat() if self._runner.last_processed else None,
             "caught_up": self._runner.caught_up,
+            # how far behind its meters the grid is read, and which meter sets it (Fleet._horizon)
+            "live_horizon": self._runner.fleet.horizon_info(),
         }
 
 

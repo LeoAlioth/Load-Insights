@@ -8297,6 +8297,19 @@ class Fleet:
         rows = self.meter_lag.get(name) or []
         return bool(rows) and (len(rows) < LAG_MIN_SAMPLES or bool(_shared(rows)))
 
+    def horizon_info(self) -> dict:
+        """What the grid is read behind its meters now and why (the detected
+        loads sensor, the owner 2026-10-30: the horizon could only be inferred):
+        ``wait_s`` the horizon in force, ``cap_s`` its cap, ``set_by`` the meter
+        whose declaring lag sets it (None where the cap or the inputs' reach
+        does), and every sharing meter's declaring lag, so a slow one that never
+        owns a shared load can be put in horizon_skip."""
+        lags = {name: round(self._declare_lag(name), 1) for name in sorted(self.subs)
+                if name not in self.horizon_skip and self._shares(name)}
+        top = max(lags.items(), key=lambda kv: kv[1], default=None)
+        set_by = top[0] if top is not None and top[1] <= self.wait_cap_s and top[1] >= self._wait - 1e-6 else None
+        return {"wait_s": round(self._wait, 1), "cap_s": self.wait_cap_s, "set_by": set_by, "declare_lag_s": lags}
+
     def _declare_lag(self, name: str) -> float:
         """How long after a step the grid shares with it this meter has
         declared its own: the LAG_PERCENTILE of what was learned, once
