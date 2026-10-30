@@ -13,6 +13,17 @@ just a higher quiet level, so it is taken into the floor:
 - Susilna's compressor (~20 h runs): its runs closed as "emptied" when the phase drops back to a floor
   that already holds it (43 of 60 closes of one week's runs).
 
+## Finding before building (2026-10-30)
+
+The floor already learns only while no run is open (`PhaseState._idle()`: `baseline` follows the reading
+only with nothing believed running, `BASELINE_EMA`). So a long-running load is not absorbed while its run
+is open: its run must end first (some close - the 0.5 rule, `_floor_stop`, the emptied-run rule, an
+unmatched fall, `MAX_OPEN_EDGES` eviction), after which the phase reads idle with the load still on and the
+floor climbs to it. Next: trace the pond pump's runs at Kozolec (hidden) - is the start declared, and what
+ends each run - and fix that path; "floor net of open runs" below then matters only where a run is open
+and the floor still moves (none today) and becomes the guard, not the fix. The base load as a detected
+load stands as designed.
+
 ## The change
 
 The floor learns from the reading **less the open runs' levels** (`level_of`), never from the raw
