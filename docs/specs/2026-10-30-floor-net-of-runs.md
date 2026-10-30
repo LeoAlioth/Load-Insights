@@ -89,7 +89,10 @@ nothing is thrown away. Check first whether the forecast side's BaseLoadSensor c
 
 Decided (the owner, 2026-10-30): on by default for every meter, as the meter's total; split by phase
 off by default (an option per meter); a base load under `BASE_LOAD_MIN_W` (a couple of watts - a
-policy of what to show, not a measurement) is not offered.
+policy of what to show, not a measurement) is not offered. Narrowed the same evening (the owner): by
+default only the grid meter and the meters holding several loads (Home: Hiša, Mansarda, Delavnica;
+Kozolec: the Inverter) - an end device's floor is its own standby, not a base load (`DetectionRunner.
+base_load_keys`; a meter ticked by hand still gets one).
 
 Built 2026-10-30: each phase adds up its floor x time per reading (`PhaseState.floor_wh`, gaps counted up to
 `FLOOR_GAP_S`), `Fleet.base_load(meter, phase)`; per meter a "Base load" device (the grid's "Base load", a

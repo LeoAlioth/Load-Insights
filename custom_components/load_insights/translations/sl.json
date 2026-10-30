@@ -244,7 +244,7 @@
                             "base_load_phases": "Osnovna poraba po fazah"
                         },
                         "data_description": {
-                            "base_load_meters": "Kar označeni števec porabi, ko ni zaznano nobeno breme - njegova spodnja meja mirovanja - prikazano kot breme zase, \"Osnovna poraba\", z močjo in energijo: vedno vklopljeni del hiše (usmerjevalniki, stanje pripravljenosti, črpalka, ki nikoli ne ustavi). Meja pod 2 W ni prikazana. Dokler tega ne shraniš, so označeni vsi števci.",
+                            "base_load_meters": "Kar označeni števec porabi, ko ni zaznano nobeno breme - njegova spodnja meja mirovanja - prikazano kot breme zase, \"Osnovna poraba\", z močjo in energijo: vedno vklopljeni del hiše (usmerjevalniki, stanje pripravljenosti, črpalka, ki nikoli ne ustavi). Meja pod 2 W ni prikazana. Dokler tega ne shraniš, so označeni omrežni števec in števci z več bremeni; spodnja meja končne naprave je njeno stanje pripravljenosti, ne osnovna poraba.",
                             "base_load_phases": "Označi števec, katerega osnovna poraba naj bo eno breme na fazo (Osnovna poraba X, Y, Z) namesto enega za ves števec."
                         }
                     }

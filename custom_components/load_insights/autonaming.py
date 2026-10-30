@@ -24,7 +24,7 @@ from homeassistant.helpers import entity_registry as er, translation
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_AUTONAME, CONF_AUTONAME_DASHBOARD, CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES, DOMAIN
+from .const import CONF_AUTONAME, CONF_AUTONAME_DASHBOARD, CONF_BASE_LOAD_PHASES, DOMAIN
 from .insights import autoname as A
 from .insights.classify import FRIDGE, appliance_from_name
 from .insights.model import SiteModel
@@ -230,11 +230,11 @@ class AutoNamer:
         from .detection import base_load_label, base_load_uid      # detection imports this module
         r = self._runner
         registry = er.async_get(r.hass)
-        chosen, split = r.config.get(CONF_BASE_LOAD), set(r.config.get(CONF_BASE_LOAD_PHASES) or [])
+        keys, split = r.base_load_keys(), set(r.config.get(CONF_BASE_LOAD_PHASES) or [])
         out = []
         for meter, det in r.fleet.detectors():
             key = (r.submeters.get(meter) or {}).get("energy") if meter else None
-            if not key or (chosen is not None and key not in chosen):
+            if not key or key not in keys:
                 continue
             for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
                 energy = registry.async_get_entity_id("sensor", DOMAIN, base_load_uid(r.entry.entry_id, key, p, "energy"))

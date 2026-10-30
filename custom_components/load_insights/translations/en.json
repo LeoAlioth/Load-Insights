@@ -244,7 +244,7 @@
                             "base_load_phases": "Base load split by phase"
                         },
                         "data_description": {
-                            "base_load_meters": "What a ticked meter draws with nothing detected on - its idle floor - shown as a load of its own, \"Base load\", with its power and energy: the always-on part of the house (routers, standby, a pump that never stops). A floor under 2 W is not shown. Until this is saved, every meter is ticked.",
+                            "base_load_meters": "What a ticked meter draws with nothing detected on - its idle floor - shown as a load of its own, \"Base load\", with its power and energy: the always-on part of the house (routers, standby, a pump that never stops). A floor under 2 W is not shown. Until this is saved, the grid meter and the meters holding several loads are ticked; an end device's floor is its own standby, not a base load.",
                             "base_load_phases": "Tick a meter whose base load should be one load per phase (Base load X, Y, Z) instead of one for the whole meter."
                         }
                     }
