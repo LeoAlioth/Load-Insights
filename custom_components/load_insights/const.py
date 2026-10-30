@@ -142,6 +142,7 @@ CONF_AUTONAME_DASHBOARD = "autoname_dashboard"
 DETECTION_INTERVAL_MINUTES = 1
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
+PREFETCH_MAX_MIN = 15         # a pass this short reads every meter in one recorder query (detection._prefetch)
 # How long the detector's state may sit in memory unwritten. The snapshot is
 # the whole signature library - well over a hundred kilobytes - and writing
 # it every pass is what makes the polling interval expensive rather than the
