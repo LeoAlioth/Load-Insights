@@ -55,10 +55,14 @@ in six-hour slices (7,484, a74c450ef786); the live two-day replay 120.7 -> 48.5 
 Deploys: both sites install a pushed build and restart by themselves (their update automations; the
 Supervisor logs a requested restart, no watchdog). Kozolec rebuilt generation 23 and caught up by 01:25;
 Home's recorder holds 4 days, its rebuild runs at ~12 min per six-hour slice (~05:00 to catch up). The
-compressed recorder read works (sessions filed during the rebuild). Open: after Kozolec caught up, the name
-"Pond EVSE" (twice) is still waiting (`awaiting_name`) - no new signature is `alike` the old one yet;
-likely the EVSE's runs now carry their step downs as levels. Cosmetic (a metered device's energy is its
-meter's); to look at.
+compressed recorder read works (sessions filed during the rebuild). Open, for the owner: after Kozolec caught up the
+name "Pond EVSE" (twice) still waits (`awaiting_name`). Its charges now file at the EVSE meter as 3.56-3.60
+kW signatures of 2,504 / 5,351 / 11,518 s typical length: since 8b4496b a charge whose current steps down
+is ONE run of its whole length, not several cut at each step down, so no new signature is `alike` the old
+~75-min one and _reclaim never fires. Proposed (not built - it changes how names return): a waiting name
+equal to a one-device meter's name re-attaches to that meter's biggest main signature whatever its length.
+Energy unaffected (a metered device's sensor reads its meter); grid-level runs show unnamed. Home: 4 names
+still waiting at 01:55 (Le Hottie x3, Kompresor), down from 12 - check after it catches up.
 
 Quality item found (not built yet): a leg of a multi-phase grid event goes to a meter whose own rise is
 "all of it" within MATCH_EDGE_REL (15 %): Home 7 Oct 18:16:06, the EVBox's phase C leg (+793) taken whole
