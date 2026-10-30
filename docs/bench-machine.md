@@ -41,3 +41,16 @@ use `ssh` with the bench PC's LAN address as HostName and its host key alias (rs
 remote_card.sh lived in the session scratchpad and macOS /tmp cleanup removed it - the runner on the machine
 (/home/<user>/li-bench/card.sh TREE LABEL PAR) is what persists: rsync a tree to runs/LABEL (data/ excluded; card.sh links
 the history) and run it there.
+
+## Second bench: VI-ANZEK (work network, 2026-10-30)
+
+Reachable only from the work LAN, the bench PC above only from home - never both at once (the owner).
+i7-9700, 8 cores, 32 GB, Windows 10, no WSL. `ssh win` lands in cmd.exe (see the windows-dev-box
+skill for quoting and the banner filter). Python 3.14.2 installed per user beside 3.11 (`py -3.14`).
+
+- Tree at `C:\li-bench\<tree>` (custom_components + tests), history unpacked into `C:\li-bench\<tree>\data\history`
+  (home + kozolec, from a `COPYFILE_DISABLE=1 tar -czf` of the Mac's data/history - without that flag macOS
+  adds `._` files Python cannot compile).
+- Run a card: `ssh win "cd /d C:\li-bench\<tree> && set PYTHONIOENCODING=utf-8 && py -3.14 tests\energy_bench.py card home kozolec LABEL=x"`;
+  the scorecard lands in `C:\li-bench\<tree>\data\scorecard` - scp it back to the Mac's data/scorecard.
+- A new code tree: tar custom_components + tests (COPYFILE_DISABLE=1), scp, untar into a fresh folder, move data over.

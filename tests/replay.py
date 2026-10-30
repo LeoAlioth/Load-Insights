@@ -115,7 +115,12 @@ def _cached(key, build):
     part = path.with_suffix(f".{os.getpid()}.part")    # replays started together each write their own
     with open(part, "wb") as handle:
         pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(part, path)
+    try:
+        os.replace(part, path)
+    except PermissionError:
+        # Windows will not replace a file another replay holds open: that one
+        # wrote the same entry, so this copy is dropped (VI-ANZEK, 2026-10-30)
+        part.unlink(missing_ok=True)
     return value
 
 
