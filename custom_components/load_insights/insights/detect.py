@@ -291,6 +291,7 @@ CORROBORATE_MIN_NOISES = 20.0
 CADENCE_GAPS = 600
 MOVING_PERCENTILE = 0.10
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
+FLOOR_GAP_S = 600.0            # the longest gap between readings the floor's energy spans (floor_wh)
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
 SLOW_FOLLOW = 0.02
@@ -2159,6 +2160,9 @@ class PhaseState:
     # B watts] - A stepped down by it, or B stopped at it; and runs a later step
     # closed in deciding it, handed out with the next step's
     step_pending: Optional[List[float]] = field(default=None, repr=False, compare=False)
+    # the floor's energy, Wh: the floor times the time between readings (the
+    # base load as a load of its own, BaseLoadEnergy)
+    floor_wh: float = 0.0
     _resolved: List["Run"] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -2360,6 +2364,10 @@ class PhaseState:
             moved = prev_w is not None and abs(w - prev_w) >= self.noise_at(prev_w)
             same = self.last_ts is not None and ts - self.last_ts <= SAME_UPDATE_S
             self._moved = moved or (same and self._moved)
+            if self.last_ts is not None and self.baseline is not None and ts > self.last_ts:
+                # ponytail: a gap past FLOOR_GAP_S counts that long, the floor
+                # unknown beyond it (an outage the recorder never saw)
+                self.floor_wh += max(self.baseline, 0.0) * min(ts - self.last_ts, FLOOR_GAP_S) / 3600.0
             self.last_ts = ts
         # The array moved under this reading by its noise or more: what the
         # reading does then is the array's timing as much as the house - the
@@ -3660,7 +3668,7 @@ class PhaseState:
                 "absorb_until": None if self.absorb_until == -math.inf else self.absorb_until,
                 "held_drops": [list(x) for x in self.held_drops], "recent_closed": [list(x) for x in self.recent_closed],
                 "closed_groups": [[_trim(x[0], 3), x[1]] for x in self.closed_groups],
-                "step_pending": self.step_pending,
+                "step_pending": self.step_pending, "floor_wh": _trim(self.floor_wh, 3),
                 "declared": [[_trim(x, 3) for x in e] for e in self.declared]}
 
     @classmethod
@@ -3687,7 +3695,7 @@ class PhaseState:
                    held_drops=[tuple(x) for x in d.get("held_drops") or []],
                    recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
                    closed_groups=[tuple(x) for x in d.get("closed_groups") or []],
-                   step_pending=d.get("step_pending"),
+                   step_pending=d.get("step_pending"), floor_wh=float(d.get("floor_wh") or 0.0),
                    declared=[tuple(e) for e in d.get("declared") or []],
                    declared_t=[e[0] for e in d.get("declared") or []])
         st._classify()
@@ -10019,6 +10027,15 @@ class Fleet:
             for name, ids in det.names().items():
                 out.setdefault(name, []).extend((meter, i) for i in ids)
         return out
+
+    def base_load(self, meter: str, phase: Optional[str] = None) -> Tuple[Optional[float], float]:
+        """(floor W, floor Wh) of a meter ("" the grid's) - its phases summed,
+        or the one channel - the base load as a load of its own; W None while
+        no floor is learned yet."""
+        det = self._det(meter)
+        sts = [] if det is None else [st for p, st in det.phases.items() if phase is None or p == phase]
+        floors = [max(st.baseline, 0.0) for st in sts if st.baseline is not None]
+        return (sum(floors) if floors else None), sum(st.floor_wh for st in sts)
 
     def entity_names(self) -> List[str]:
         """Every name a named load's entities exist for: the names the library wears and the names still

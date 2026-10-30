@@ -1,6 +1,6 @@
 # The idle floor learns only what the open runs do not explain
 
-Status: agreed 2026-10-30, not built yet.
+Status: agreed 2026-10-30. Part 1 (the floor) benched and ruled out - the floor is not where long loads are lost (below; numbers in `dev/run-lifecycle-results.md`). Part 2 (the base load as a load) built 2026-10-30.
 
 ## The problem
 
@@ -24,7 +24,34 @@ ends each run - and fix that path; "floor net of open runs" below then matters o
 and the floor still moves (none today) and becomes the guard, not the fix. The base load as a detected
 load stands as designed.
 
-## The change
+### The trace (Kozolec hidden, 2026-10-30)
+
+The pump's on-time by what its own run did (a run starting within 60 s of its switch-on):
+
+| outcome | switch-ons | hours | at 46 W |
+|---|---|---|---|
+| its run ended early | 12 | 156 | 7.2 kWh |
+| no run of its own | 26 | 97 | 4.5 kWh |
+| its run lasted to its end | 36 | 3 | 0.2 kWh |
+
+- **Ended early**, 11 of 13 by a scored fall: the pump shares its step group (3, ~40 W) with the
+  unmetered fridges; a fridge's fall closed the pump's run - mostly with the fridge's own run open
+  beside it (the age bell chose the pump, 15 min old, over the fridge, 35 min), sometimes with nothing
+  else open (the fridge's start missed) and the reading still carrying the pump whole. Two by
+  `second_rise`: an alike fall seen between (the fridge's) ended the pump's run though the reading before
+  the fridge's rise still carried the pump (10-09 17:00, a 100-hour stretch).
+- **No run**: the pump switched on in the reading a 1-3.5 kW load did; that load's fall, alike its
+  rise, ended the run "though a rest is carried" (`_score_held`), and the rest went to the floor.
+- Some closes find the other open runs overstating the reading (stale runs); there nothing can be
+  read from the reading.
+
+So the floor is not where the load is lost; the closes are, and the idle floor merely takes what a wrong
+close leaves. Rules tried (dials): `CARRY_REST` (a close must leave the reading without the run: carried
+whole, another load's fall; carried in part, the rest runs on from the same start), `TIE_OLDEST` (near
+tied runs of one group, the oldest ends), `SEEN_CARRY` (second_rise's seen-fall branch only where the
+reading no longer carries the run). Results in `dev/run-lifecycle-results.md`.
+
+## The change (as first designed)
 
 The floor learns from the reading **less the open runs' levels** (`level_of`), never from the raw
 reading. A load whose start step was seen stays a run until its stop; the floor under it is what is
@@ -64,4 +91,11 @@ Decided (the owner, 2026-10-30): on by default for every meter, as the meter's t
 off by default (an option per meter); a base load under `BASE_LOAD_MIN_W` (a couple of watts - a
 policy of what to show, not a measurement) is not offered.
 
-Status: design agreed; to build, bench on the cards (targets and risks above) and ship by the usual rule.
+Built 2026-10-30: each phase adds up its floor x time per reading (`PhaseState.floor_wh`, gaps counted up to
+`FLOOR_GAP_S`), `Fleet.base_load(meter, phase)`; per meter a "Base load" device (the grid's "Base load", a
+meter's "<meter> base load", split: "... X/Y/Z") with power and energy (`BaseLoadPower` / `BaseLoadEnergy`,
+counted up as a named load's energy is); options `base_load_meters` (all until saved, `grid` the grid meter)
+and `base_load_phases` (none until saved) on the detection page; `BASE_LOAD_MIN_W` 2 W. Detection unchanged
+(the card with it in place equals 51427c4's digit for digit). The forecast side's `BaseLoadSensor` is left as
+it was. Adoption (`FLOOR_ADOPT`) and the contradiction check were not built: they only mattered for the floor
+change, which was ruled out.

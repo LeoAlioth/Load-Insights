@@ -133,6 +133,15 @@ CONF_PERIODIC_METERS = "periodic_meters"
 # dashboard. The second only means something while the first is on.
 CONF_AUTONAME = "autoname"
 CONF_AUTONAME_DASHBOARD = "autoname_dashboard"
+# Inside CONF_DETECTION: each meter's idle floor offered as a load of its own,
+# "Base load" (the owner, 2026-10-30) - the meters that offer one (statistic
+# ids, BASE_LOAD_GRID for the grid meter; every meter when absent) and the
+# ones whose base load is split by phase (none when absent). A floor under
+# BASE_LOAD_MIN_W is not offered: a policy of what to show, not a measurement.
+CONF_BASE_LOAD = "base_load_meters"
+CONF_BASE_LOAD_PHASES = "base_load_phases"
+BASE_LOAD_GRID = "grid"
+BASE_LOAD_MIN_W = 2.0
 # How often the recorder is re-read: every minute. The pass itself costs well
 # under a millisecond and its overheads no longer scale with it - one query
 # rather than one per entity, and the state written hourly rather than every

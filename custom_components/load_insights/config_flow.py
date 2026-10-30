@@ -44,6 +44,9 @@ from .const import (
     CONF_DETECTION,
     CONF_AUTONAME,
     CONF_AUTONAME_DASHBOARD,
+    CONF_BASE_LOAD,
+    CONF_BASE_LOAD_PHASES,
+    BASE_LOAD_GRID,
     CONF_SINGLE_DEVICE,
     CONF_CHANGE_METERS,
     CONF_IGNORE_METERS,
@@ -872,9 +875,16 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
             # switches are answers whichever way they sit: False must be stored, not dropped as empty
             for key in (CONF_AUTONAME, CONF_AUTONAME_DASHBOARD):
                 cfg[key] = bool(user_input.get(key, True))
+            for key in (CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES):
+                cfg[key] = list(user_input.get(key) or [])     # none ticked is an answer too
             return self.async_create_entry(data={**dict(self.config_entry.options), CONF_DETECTION: cfg})
         fields = _meter_wait_field(current)
         fields.update(_autoname_fields(current))
+        # the base load as a load of its own: every meter's until saved, by phase none's
+        every = [(BASE_LOAD_GRID, "Grid meter", False)] + meters
+        chosen = current.get(CONF_BASE_LOAD)
+        fields.update(_meters_field(CONF_BASE_LOAD, every, [m[0] for m in every] if chosen is None else chosen))
+        fields.update(_meters_field(CONF_BASE_LOAD_PHASES, every, current.get(CONF_BASE_LOAD_PHASES)))
         if meters:
             # which meters hold ONE device: until the page is saved, what the
             # library's shape suggests (the Hidrofor plug: 99 % of its

@@ -18,7 +18,8 @@ from homeassistant.helpers.entity import Entity, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_BATTERY_CAPACITY_ENTITY, CONF_HEAT_DEVICES, DOMAIN
+from .const import (BASE_LOAD_GRID, BASE_LOAD_MIN_W, CONF_BASE_LOAD, CONF_BASE_LOAD_PHASES,
+                    CONF_BATTERY_CAPACITY_ENTITY, CONF_HEAT_DEVICES, DOMAIN)
 from homeassistant.util import dt as dt_util
 
 from .insights.heatnudge import parse_devices
@@ -26,8 +27,8 @@ from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
 from .detection import DetectionRunner, device_uid, load_uid, loaded
-from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown, signature_rows,
-                              suggest_levels)
+from .insights.detect import (PF_MIN_QUANTA, PHASES, SYSTEM_PHASES, display_phase, ref_label, running_markdown,
+                              signature_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -91,6 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     detection: DetectionRunner = entry.runtime_data.runner
     entities += [DetectedLoadsSensor(detection, entry), SignatureLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
+    entities += _base_loads(hass, entry, detection)
     device_names = {d.label.casefold() for d in site.devices}
     for n in detection.fleet.entity_names():
         if n.casefold() in device_names:
@@ -970,6 +972,100 @@ class BaseLoadSensor(_PowerW, _DetectionBase):
                 for name, d in self._runner.fleet.subs.items()
             },
         }
+
+
+def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner) -> list:
+    """Each meter's idle floor as a load of its own (CONF_BASE_LOAD, the owner
+    2026-10-30): power and energy on a "Base load" device - the meter's whole,
+    or one per phase where it is split. Not a floor known to be under
+    BASE_LOAD_MIN_W, and gone when its meter is unticked or split the other
+    way; one not learned yet (a rebuild) is kept."""
+    chosen, split = runner.config.get(CONF_BASE_LOAD), set(runner.config.get(CONF_BASE_LOAD_PHASES) or [])
+    out, keep = [], set()
+    for meter, det in runner.fleet.detectors():
+        key = (runner.submeters.get(meter) or {}).get("energy") if meter else BASE_LOAD_GRID
+        if not key or (chosen is not None and key not in chosen):
+            continue
+        for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
+            for kind in ("power", "energy"):
+                keep.add(_base_uid(entry, key, p, kind))
+            w, _ = runner.fleet.base_load(meter, p)
+            if w is None or w >= BASE_LOAD_MIN_W:
+                out += [BaseLoadPower(runner, entry, meter, key, p), BaseLoadEnergy(runner, entry, meter, key, p)]
+            else:
+                keep -= {_base_uid(entry, key, p, kind) for kind in ("power", "energy")}
+    registry = er.async_get(hass)
+    for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (ent.unique_id or "").startswith(f"{entry.entry_id}_baseload_") and ent.unique_id not in keep:
+            registry.async_remove(ent.entity_id)
+    return out
+
+
+def _base_uid(entry: ConfigEntry, key: str, phase: Optional[str], kind: str) -> str:
+    return f"{entry.entry_id}_baseload_{kind}_{key.replace('.', '_')}_{phase or 'all'}"
+
+
+class _BaseLoad(_DetectionBase):
+    """One meter's base load - its floor - or one phase of it, as a load."""
+
+    def __init__(self, runner: DetectionRunner, entry: ConfigEntry, meter: str, key: str,
+                 phase: Optional[str], kind: str) -> None:
+        super().__init__(runner, entry, f"named_load_{kind}")
+        self._meter, self._phase = meter, phase
+        self._attr_unique_id = _base_uid(entry, key, phase, kind)
+        label = "Base load" if not meter else f"{meter} base load"
+        if phase is not None:
+            house = runner.fleet.phase_map(meter).get(phase, phase) if meter else phase
+            label += f" {SYSTEM_PHASES.get(house, phase.upper())}"
+        self._attr_device_info = _child_device(entry, f"baseload_{key}_{phase or 'all'}", label, "Base load")
+
+
+class BaseLoadPower(_PowerW, _BaseLoad):
+    def __init__(self, runner, entry, meter, key, phase) -> None:
+        super().__init__(runner, entry, meter, key, phase, "power")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        w, _ = self._runner.fleet.base_load(self._meter, self._phase)
+        return None if w is None else round(w)
+
+
+class BaseLoadEnergy(_BaseLoad, RestoreSensor):
+    """What the base load has used: the floor times the time, counted up as
+    a named load's energy is (carry_reading) - never down, not while history
+    is re-read."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, runner, entry, meter, key, phase) -> None:
+        super().__init__(runner, entry, meter, key, phase, "energy")
+        self._reading: Optional[float] = None
+        self._seen: Optional[float] = None
+
+    @property
+    def native_value(self) -> Optional[float]:
+        return self._reading
+
+    def _total(self) -> float:
+        return self._runner.fleet.base_load(self._meter, self._phase)[1] / 1000.0
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._reading, self._seen = carry_reading(self._reading, self._seen, self._total(),
+                                                  not self._runner.refiling)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        last = await self.async_get_last_sensor_data()
+        try:
+            self._reading = float(last.native_value)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        self._reading, self._seen = carry_reading(self._reading, None, self._total(), False)
+        await super().async_added_to_hass()
 
 
 class NamedLoadPower(_PowerW, _DetectionBase):
