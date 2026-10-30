@@ -4740,10 +4740,17 @@ def test_a_ramp_two_meters_declared_over_different_stretches_is_placed_by_the_gr
         fleet.process(part, {"Mansarda": sub}, now_ts=e, single={"Mansarda": False})
     got = sorted(((round(s.start - s1), round(s.end - s1), round(s.energy_wh * 3600.0 / s.duration_s),
                    _at(fleet, s, "Mansarda")) for s in filed if s.duration_s > 120.0), key=lambda g: g[0])
-    first = [g for g in got if abs(g[0]) <= 5]
-    second = [g for g in got if abs(g[0] - (s2 - s1)) <= 5]
-    assert len(first) == 1 and abs(first[0][1] - (e1 - s1)) <= 10 and 280 <= first[0][2] <= 360 and first[0][3], got
-    assert len(second) == 1 and abs(second[0][1] - (e2 - s1)) <= 10 and 320 <= second[0][2] <= 410 and second[0][3], got
+    # what each ramp's runs book together: the ramp still opens more than one
+    # grid run (its first plateau and the rest - open), each the meter's;
+    # booked at what Mansarda drew they share it, where each booked at its own
+    # level they drew the ramp about twice over (302 + 326 + 24 + 24 W for a
+    # ~307 W ramp, before 2026-10-30)
+    first = [g for g in got if -5 <= g[0] <= 30]
+    second = [g for g in got if -5 <= g[0] - (s2 - s1) <= 30]
+    assert first and all(abs(g[1] - (e1 - s1)) <= 10 and g[3] for g in first), got
+    assert 280 <= sum(g[2] for g in first) <= 360, got
+    assert second and all(abs(g[1] - (e2 - s1)) <= 10 and g[3] for g in second), got
+    assert 320 <= sum(g[2] for g in second) <= 410, got
 
 
 def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():

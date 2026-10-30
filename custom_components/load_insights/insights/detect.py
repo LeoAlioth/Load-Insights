@@ -9472,8 +9472,14 @@ class Fleet:
         terms (gain) - its whole rise from the run's start. The meter's
         levels, not its readings: a spike never became a level (raw readings
         integrated booked an 88 W, 13 s run at 1,040 W - exp2, 2026-10-03).
-        Only a meter holding one device (holds_one_device): a circuit's
-        change since is every load in it. None without the rise or its levels.
+        Any meter, not only one holding one device (2026-10-30): a meter
+        holding several loads books its runs at what it drew too, the runs open
+        on it at once sharing it - Susilna's dehumidifier base, booked at its
+        grid start while it crept 286 -> ~500 W over 22 h, and Kozolec's car
+        charger's strip (Home fed +8.9 / +0.8 kWh right / wrong, circuits +1.8
+        / +0.5, Kozolec fed +5.4 / 0; until then "a circuit's change since is
+        every load in it" kept them at their start). None without the rise or
+        its levels.
         Booked by its levels, a one-level run is the mean of its start and
         stop, or the smaller: Home's EVBox started a charge at 8.0 kW, drew
         10.6 for most of it and tapered at its end; Kozolec's water pump
@@ -9495,7 +9501,7 @@ class Fleet:
         2,545 W of the EVSE's 3,529) books what the meter drew, 5.83 kWh for
         5.8, not 4.18."""
         det = self.subs.get(name)
-        if det is None or o.watts <= 0 or not self.holds_one_device(name):
+        if det is None or o.watts <= 0:
             return None
         mine = self._run_levels(name, ph, o, at)
         if mine is None:
