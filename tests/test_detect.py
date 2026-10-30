@@ -5387,6 +5387,35 @@ def test_an_event_on_several_phases_is_placed_where_every_leg_was_one_meters():
     assert cl.owner != "Hiša"
 
 
+def test_a_total_only_meter_that_rose_by_a_three_phase_events_total_owns_it():
+    """Home's EVBox (Polnilnica trace, 2026-10-30): its one total ramps 0 ->
+    3,168 -> 4,000 W while the grid declares legs of 1,237 / 1,002 / 1,135 W,
+    so no leg is ever the meter's declared step and the charge was nobody's -
+    evicted by the open-run cap on a +20 W rise. A one-device meter whose
+    readings rose by the event's total over its span owns it; one that rose by
+    a leg only, or a meter holding several loads, does not."""
+    f = D.Fleet()
+    for ph, w in (("a", 1237.0), ("b", 1002.0), ("c", 1135.0)):
+        f.main.phases[ph] = D.PhaseState(noise=10.0, interval=2.0)
+        _declare(f.main.phases[ph], (T0, w, None, T0 - 2.0, T0))
+    ch = D.Detector()
+    ch.phases["a"] = D.PhaseState(noise=5.0, interval=10.0, last_ts=T0 + 60.0)
+    f.subs["Charger"] = ch
+    f.single = {"Charger": True}
+    f.phase_votes = {"Charger": {"a": {"abc": D.PHASE_MAP_MIN_VOTES}}}
+    f.sub_rows["Charger"] = {"a": [(T0 - 30.0, 0.0), (T0 + 2.0, 3168.0), (T0 + 20.0, 4000.0)]}
+    f._now = T0 + 60.0
+    f._bind()
+    assert f._meter_rose(["a", "b", "c"], T0, 3374.0) == "Charger"
+    f.sub_rows["Charger"] = {"a": [(T0 - 30.0, 0.0), (T0 + 2.0, 1237.0)]}       # one leg's worth: not it
+    f._sub_totals.clear()
+    assert f._meter_rose(["a", "b", "c"], T0, 3374.0) is None
+    f.sub_rows["Charger"] = {"a": [(T0 - 30.0, 0.0), (T0 + 2.0, 3374.0)]}
+    f._sub_totals.clear()
+    f.single = {"Charger": False}                                               # a circuit's rise is every load in it
+    assert f._meter_rose(["a", "b", "c"], T0, 3374.0) is None
+
+
 def test_a_meters_stop_the_grid_did_not_show_ends_its_run():
     """Home 09-22 11:20: the pump stopped (its plug -942 W) as a 3.2 kW load
     on its phase rose by about as much - the grid declared no fall at all,

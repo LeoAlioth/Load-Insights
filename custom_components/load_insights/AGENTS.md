@@ -924,6 +924,15 @@ seed it wrong: Susilna's plug seeded 301 W with the dehumidifier on, so its
 floor stops fire on 10 W wobbles of the 270 W run (its own runs hold 35 % of
 its energy).
 
+**A total-only meter that rose by a three-phase event's total owns it (2026-10-30, `Fleet._meter_rose`).**
+An event on several phases is placed under a meter when every leg is the meter's own declared step; Home's EVBox,
+one total ramping 0 -> 3,168 -> 4,000 W under legs of 1,237 / 1,002 / 1,135 W, never matched, so its charges were
+nobody's and `MAX_OPEN_EDGES` evicted them on a +20 W rise (18 of 27 closes). Now a one-device meter whose readings
+rose by the event's total over the step's span (plus its latency) owns an event on several phases no declared step
+placed. Home fed 146.0 / 10.4 -> 153.3 / 11.7 kWh right / wrong (Polnilnica 31.8 -> 38.8), everything else identical;
+on single-phase events too it cost Kozolec's pond EVSE 7.5 kWh, so several phases only. See
+`dev/run-lifecycle-results.md`.
+
 **A run its one-device meter owns is booked at what the meter drew
 (2026-10-04, `Fleet._meter_wh`).** A session's energy is its levels times
 their lengths, and a one-level run is booked at the mean of its start and stop
