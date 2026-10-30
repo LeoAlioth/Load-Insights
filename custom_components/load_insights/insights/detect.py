@@ -1541,6 +1541,25 @@ def combine(terms: Sequence[Tuple[Sequence[Tuple[float, float]], float]],
 _TS = operator.itemgetter(0)
 
 
+def _kept_merge(old: Optional[list], rows, keep: float, cast) -> list:
+    """``old`` rows (time, value) with ``rows`` added - a time already held
+    takes the new value - kept from ``keep`` on, with the one still in force
+    at it. New rows all later than the last held, in order (a live pass's),
+    are appended and the front cut by bisection; anything else merged through
+    a dict and sorted, as every pass was (a sixth of a live pass's own time,
+    Home 2026-10-30)."""
+    new = [(float(t), cast(v)) for t, v in rows]
+    old = old or []
+    if all(new[i][0] < new[i + 1][0] for i in range(len(new) - 1)) and (not old or not new or new[0][0] > old[-1][0]):
+        both = old + new
+        j = bisect.bisect_left(both, (keep,)) if both else 0
+        return both[max(j - 1, 0):] if j else both
+    held = dict(old)
+    held.update(new)
+    last = max((t for t in held if t < keep), default=None)   # still in force at the cut
+    return sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+
+
 def _as_of(rows: Sequence[Tuple[float, float]], ts: float, i: int) -> int:
     """Index of the last row at or before ``ts``, never before ``i``; -1 when
     the series has not started yet. Two steps on are looked at directly -
@@ -7726,16 +7745,11 @@ class Fleet:
                 del known[on]                  # a span still on is never forgotten
         for store, fed, cast in ((self.main.numbers, numbers, float), (self.main.inputs, inputs, str)):
             for name, rows in (fed or {}).items():
-                held = dict(store.get(name) or [])
-                held.update((float(t), cast(v)) for t, v in rows)
-                last = max((t for t in held if t < keep), default=None)   # still in force at the cut
-                store[name] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+                store[name] = _kept_merge(store.get(name), rows, keep, cast)
         for name, by_ph in (volts or {}).items():
+            mine = self.volts.setdefault(name, {})
             for ph, rows in by_ph.items():
-                held = dict(self.volts.setdefault(name, {}).get(ph) or [])
-                held.update((float(t), float(v)) for t, v in rows)
-                last = max((t for t in held if t < keep), default=None)
-                self.volts[name][ph] = sorted((t, v) for t, v in held.items() if t >= keep or t == last)
+                mine[ph] = _kept_merge(mine.get(ph), rows, keep, float)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         sub_samples = sub_samples or {}
