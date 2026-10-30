@@ -10,7 +10,13 @@ reset_detection:
 name_load:
   fields:
     load_id:
-      required: true
+      required: false
+      selector:
+        number:
+          min: 0
+          mode: box
+    signature_id:
+      required: false
       selector:
         number:
           min: 0
