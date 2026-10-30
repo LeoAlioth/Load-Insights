@@ -41,6 +41,18 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 6. [ ] **[BUG] Release workflow: the HA webhook fires before HACS can see the GitHub release** - build 1901 was
    installed on neither site (the automation ran 3 s before the release's `created_at`); installed by hand. Check the
    GitHub asset is served before notifying, or let the automation retry.
+7. [ ] **[BUG] Polnilnica: nothing owns the three-phase charge in fed mode; the open-run cap evicts it.** Delegated
+   trace 2026-10-30 (tree `scratchpad/bench51`, patch `polnilnica-rose-evict.patch`): 12.4 of 14.0 missing fed kWh
+   is in no run. An event on several phases is placed under a meter only when every leg is the meter's own declared
+   step (`Detector._classify_step`, `Fleet._step_meter`); the EVBox's one total ramped 0 -> 3,168 -> 4,000 W against
+   legs of +1,237 / +1,002 / +1,135, so no one owns it, and at `MAX_OPEN_EDGES` the oldest unowned run - the charge -
+   is evicted by a +20 W rise (18 of 27 closes). Candidate `METER_ROSE=2` (a start no meter placed becomes a
+   one-device meter's run when that meter rose by the event's total over the step's span plus its latency, events on
+   several phases only): Home fed 146.0 / 10.4 -> 153.3 / 11.7 kWh right / wrong (Polnilnica 31.8 -> 38.8), every
+   other cell identical; `METER_ROSE=1` (every event) costs Kozolec's pond EVSE 7.5 kWh, out. Needs my card and
+   the invariance check before it ships. `EVICT_SMALLEST` (evict the unowned run drawing least) is a trade (circuits
+   -2.9). Still missing after it: the 8 Oct solar-following single-phase charge (~5 kWh), the meter keeping the whole
+   level through its modulation.
 
 ### Planning and early start (Load Juggler reads these)
 
