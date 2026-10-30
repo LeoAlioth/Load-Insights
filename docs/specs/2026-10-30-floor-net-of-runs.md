@@ -94,8 +94,14 @@ default only the grid meter and the meters holding several loads (Home: Hiša, M
 Kozolec: the Inverter) - an end device's floor is its own standby, not a base load (`DetectionRunner.
 base_load_keys`; a meter ticked by hand still gets one).
 
-Built 2026-10-30: each phase adds up its floor x time per reading (`PhaseState.floor_wh`, gaps counted up to
-`FLOOR_GAP_S`), `Fleet.base_load(meter, phase)`; per meter a "Base load" device (the grid's "Base load", a
+Built 2026-10-30: each phase adds up its base load x time per reading (`PhaseState.floor_wh`, gaps counted up
+to `FLOOR_GAP_S`), `Fleet.base_load(meter, phase)`. The base load was first the idle floor (`baseline`), which
+the owner rejected the same evening: the floor climbs over every long load lost at a close - "literally the
+definition of unknown loads, not base load" (Delavnica's read 13 to 2458 W in three hours). Now it is the
+minimum of the reading in each hour of the day over the last `BASE_LOAD_DAYS` (10) days (`PhaseState.floor_days`,
+stored; a 0 reading left out), the lowest of those minima for the hour, smoothed over `BASE_LOAD_SMOOTH_H` (3)
+hours and interpolated between hour centres (`base_load_at`); an hour never read takes the nearest one that was.
+It stays under the real loads at all times and may differ night from day. Detection does not read it; per meter a "Base load" device (the grid's "Base load", a
 meter's "<meter> base load", split: "... X/Y/Z") with power and energy (`BaseLoadPower` / `BaseLoadEnergy`,
 counted up as a named load's energy is); options `base_load_meters` (all until saved, `grid` the grid meter)
 and `base_load_phases` (none until saved) on the detection page; `BASE_LOAD_MIN_W` 2 W. Detection unchanged

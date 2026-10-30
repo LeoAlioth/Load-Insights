@@ -292,6 +292,13 @@ CADENCE_GAPS = 600
 MOVING_PERCENTILE = 0.10
 BASELINE_EMA = 0.02            # idle baseline drifts slowly
 FLOOR_GAP_S = 600.0            # the longest gap between readings the floor's energy spans (floor_wh)
+# The base load (BaseLoadPower / BaseLoadEnergy) is the minimum of the reading in each hour of the day over the last
+# BASE_LOAD_DAYS days, smoothed over BASE_LOAD_SMOOTH_H neighbouring hours and interpolated between hour centres
+# (PhaseState.base_load_at) - what is always on at that time of day, never above the real loads. Not the idle
+# floor (baseline), which climbs over every long load lost at a close (the owner, 2026-10-30: "literally the
+# definition of unknown loads, not base load"). Zero readings (an outage, a dropped meter) are left out.
+BASE_LOAD_DAYS = 10
+BASE_LOAD_SMOOTH_H = 3
 BASELINE_SEED_SAMPLES = 24     # two minutes at 5 s; the seed takes a LOW percentile, not the median,
 BASELINE_SEED_PERCENTILE = 0.25  # so a window that begins mid-load does not call the load the floor
 SLOW_FOLLOW = 0.02
@@ -2160,9 +2167,12 @@ class PhaseState:
     # B watts] - A stepped down by it, or B stopped at it; and runs a later step
     # closed in deciding it, handed out with the next step's
     step_pending: Optional[List[float]] = field(default=None, repr=False, compare=False)
-    # the floor's energy, Wh: the floor times the time between readings (the
-    # base load as a load of its own, BaseLoadEnergy)
+    # the base load's energy, Wh: base_load_at times the time between readings
+    # (the base load as a load of its own, BaseLoadEnergy)
     floor_wh: float = 0.0
+    # [day number (ts // 86400), the reading's minimum in each hour of that
+    # day (None where nothing was read)] for the last BASE_LOAD_DAYS days
+    floor_days: List[list] = field(default_factory=list, repr=False, compare=False)
     _resolved: List["Run"] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -2234,6 +2244,49 @@ class PhaseState:
                 # this is often never idle for that long.
                 self.noise = max(self.noise, self.quantum)
         self.last_w = w
+
+    def _note_minimum(self, ts: float, w: float) -> None:
+        """The reading's minimum in this hour of this day (floor_days), the
+        last BASE_LOAD_DAYS days kept; a reading of 0 or less is an outage or
+        a dropped meter, not a draw, and is left out."""
+        if w <= 0.0:
+            return
+        day, hour = int(ts // 86400), int((ts % 86400) // 3600)
+        if not self.floor_days or self.floor_days[-1][0] != day:
+            if self.floor_days and self.floor_days[-1][0] > day:
+                return                                  # a reading from before the day being read
+            self.floor_days.append([day, [None] * 24])
+            del self.floor_days[:-BASE_LOAD_DAYS]
+        mins = self.floor_days[-1][1]
+        if mins[hour] is None or w < mins[hour]:
+            mins[hour] = w
+
+    def base_load_at(self, ts: float) -> Optional[float]:
+        """The base load at ``ts``: the lowest minimum of its hour of the day
+        over floor_days, smoothed over BASE_LOAD_SMOOTH_H hours and interpolated
+        between hour centres; None until something was read."""
+        prof = []
+        for h in range(24):
+            vals = [mins[h] for _, mins in self.floor_days if mins[h] is not None]
+            prof.append(min(vals) if vals else None)
+        if all(v is None for v in prof):
+            return None
+        # an hour never read (the first days, a long outage) takes the nearest hour that was
+        filled = [v if v is not None else next(prof[(h + k * s) % 24] for k in range(1, 13) for s in (-1, 1)
+                                                    if prof[(h + k * s) % 24] is not None)
+                  for h, v in enumerate(prof)]
+        half = BASE_LOAD_SMOOTH_H // 2
+
+        def smooth(h: int) -> float:
+            vals = [filled[(h + k) % 24] for k in range(-half, half + 1)]
+            return sum(vals) / len(vals)
+
+        hour, frac = int((ts % 86400) // 3600), (ts % 3600) / 3600.0
+        if frac >= 0.5:
+            a, b, f = smooth(hour), smooth((hour + 1) % 24), frac - 0.5
+        else:
+            a, b, f = smooth((hour - 1) % 24), smooth(hour), frac + 0.5
+        return a + (b - a) * f
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Run]:
@@ -2364,10 +2417,12 @@ class PhaseState:
             moved = prev_w is not None and abs(w - prev_w) >= self.noise_at(prev_w)
             same = self.last_ts is not None and ts - self.last_ts <= SAME_UPDATE_S
             self._moved = moved or (same and self._moved)
-            if self.last_ts is not None and self.baseline is not None and ts > self.last_ts:
-                # ponytail: a gap past FLOOR_GAP_S counts that long, the floor
+            self._note_minimum(ts, w)
+            base = self.base_load_at(ts)
+            if self.last_ts is not None and base is not None and ts > self.last_ts:
+                # ponytail: a gap past FLOOR_GAP_S counts that long, the base
                 # unknown beyond it (an outage the recorder never saw)
-                self.floor_wh += max(self.baseline, 0.0) * min(ts - self.last_ts, FLOOR_GAP_S) / 3600.0
+                self.floor_wh += base * min(ts - self.last_ts, FLOOR_GAP_S) / 3600.0
             self.last_ts = ts
         # The array moved under this reading by its noise or more: what the
         # reading does then is the array's timing as much as the house - the
@@ -3119,6 +3174,44 @@ class PhaseState:
                 return max(0.0, o.watts * math.exp(ratio[0]) - o.down)
         return o.now if o.now is not None and o.now > 0 else o.watts
 
+    def model_level(self, o: _Open, ts: float) -> float:
+        """What run ``o`` draws by its groups alone (the owner, 2026-10-30):
+        its start's size moving straight to its stop's size - the ratio learned
+        with its strongest partner - over the pair's usual length, held there;
+        less what it stepped down by. Its start's size while it has no partner."""
+        start = o.watts
+        if self.lib is not None and o.cluster is not None:
+            best = max(((self.lib.partner_evidence(o.cluster, f), f) for f in self.lib.partners_of(o.cluster)),
+                       default=None)
+            ratio = self.lib.pair_ratio(o.cluster, best[1]) if best is not None else None
+            if ratio is not None:
+                usual = self.lib.usual_length(o.cluster)
+                f = min(1.0, max(0.0, ts - o.since) / usual) if usual else 1.0
+                return max(0.0, start + (start * math.exp(ratio[0]) - start) * f - o.down)
+        return max(0.0, start - o.down)
+
+    def live_level(self, o: _Open, ts: float) -> float:
+        """What run ``o`` is shown drawing (Detector.live_runs; the owner,
+        2026-10-30): its model (model_level), pulled toward what the phase
+        carries above its base load less the other runs' models by the SQUARE
+        of the share of that carry the model is - a run that is most of its
+        meter follows the meter, a 600 W mat on a 3 kW phase stays at its model
+        (the square is a judgement: a 1/50 share moves by 1/2500, so unknown
+        load on the phase cannot double a small run). Following the phase level
+        read Talno gretje 458-482 W as the incubator cycled beside it."""
+        model = self.model_level(o, ts)
+        base = self.base_load_at(ts) if self.last_ts is not None else None
+        if self.level is None or base is None or model <= 0:
+            return model
+        excess = max(0.0, self.level - base)
+        total = sum(self.model_level(x, ts) for x in self.open_edges)
+        if total >= excess:
+            # the models explain more than the phase carries (a lost fall left a start open): each takes its
+            # share of what is there - conservation, as open_scale did
+            return model * excess / total if total > 0 else 0.0
+        share = model / excess
+        return model + share * share * (excess - total)
+
     def _not_carried(self, o: _Open, level: float) -> bool:
         """Is the reading, less what the other open runs draw, under half of
         what ``o`` draws (and under it by more than the noise)?"""
@@ -3687,6 +3780,7 @@ class PhaseState:
                 "held_drops": [list(x) for x in self.held_drops], "recent_closed": [list(x) for x in self.recent_closed],
                 "closed_groups": [[_trim(x[0], 3), x[1]] for x in self.closed_groups],
                 "step_pending": self.step_pending, "floor_wh": _trim(self.floor_wh, 3),
+                "floor_days": [[day, [None if m is None else _trim(m, 1) for m in mins]] for day, mins in self.floor_days],
                 "declared": [[_trim(x, 3) for x in e] for e in self.declared]}
 
     @classmethod
@@ -3714,6 +3808,7 @@ class PhaseState:
                    recent_closed=[tuple(x) for x in d.get("recent_closed") or []],
                    closed_groups=[tuple(x) for x in d.get("closed_groups") or []],
                    step_pending=d.get("step_pending"), floor_wh=float(d.get("floor_wh") or 0.0),
+                   floor_days=[[int(day), list(mins)] for day, mins in d.get("floor_days") or []],
                    declared=[tuple(e) for e in d.get("declared") or []],
                    declared_t=[e[0] for e in d.get("declared") or []])
         st._classify()
@@ -7288,13 +7383,14 @@ class Detector:
         longest = {name: _quantile(sorted(lens), LIVE_STALE_QUANTILE) for name, lens in lengths.items()}
         out = []
         for st in self.phases.values():
-            scale = st.open_scale()
             for o in st.open_edges:
                 name = self.start_name(o.cluster)
                 # its own group's usual run where one is known (run lifecycle), not the name's
                 usual = self.usual_length(o.cluster) if name and o.cluster is not None else None
                 if name and now_ts - o.since <= LIVE_STALE_FACTOR * (usual or longest.get(name, 0.0)):
-                    out.append((name, o.since, st.level_of(o) * scale))
+                    # its groups' model, pulled toward the phase only by its share of it (the owner, 2026-10-30;
+                    # it followed the phase level, scaled, before)
+                    out.append((name, o.since, st.live_level(o, now_ts)))
         return out
 
     def start_homes(self, cluster: Optional[int]) -> Dict[int, float]:
@@ -10053,13 +10149,15 @@ class Fleet:
         return out
 
     def base_load(self, meter: str, phase: Optional[str] = None) -> Tuple[Optional[float], float]:
-        """(floor W, floor Wh) of a meter ("" the grid's) - its phases summed,
-        or the one channel - the base load as a load of its own; W None while
-        no floor is learned yet."""
+        """(base load W, its Wh) of a meter ("" the grid's) - its phases summed,
+        or the one channel - the base load as a load of its own
+        (PhaseState.base_load_at, the hour-of-day minimum, not the idle
+        floor); W None while nothing was read yet."""
         det = self._det(meter)
         sts = [] if det is None else [st for p, st in det.phases.items() if phase is None or p == phase]
-        floors = [max(st.baseline, 0.0) for st in sts if st.baseline is not None]
-        return (sum(floors) if floors else None), sum(st.floor_wh for st in sts)
+        bases = [st.base_load_at(st.last_ts) for st in sts if st.last_ts is not None]
+        bases = [b for b in bases if b is not None]
+        return (sum(bases) if bases else None), sum(st.floor_wh for st in sts)
 
     def entity_names(self) -> List[str]:
         """Every name a named load's entities exist for: the names the library wears and the names still

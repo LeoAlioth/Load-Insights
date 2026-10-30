@@ -10,6 +10,38 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 ## To build
 
+### The owner's list of 2026-10-30 (evening) - in this order
+
+1. [ ] **[FEATURE] Base load = the minimum of each hour of the day, over ten days.** What the sensor shows now is the
+   detector's idle floor, which climbs over every long load lost at a close - "literally the definition of unknown
+   loads, not base load" (the owner). Per phase: the minimum of the meter's reading in each hour of the day, kept
+   for the last 10 days (a 10 x 24 table stored with the phase, zero readings left out), the base load at any moment
+   the lowest of those minima for that hour, smoothed over the neighbouring hours (3 h) and interpolated between hour
+   centres; energy = that x time. It stays under the real loads at all times. The detector's own floor stays internal.
+2. [ ] **[FEATURE] Named load live power from the step groups, not the phase level.** An open run reads its start
+   group's mean, moving linearly to its stop group's mean over the pair's learned length and holding there; then
+   blended with the live reading by the share the modelled watts make of the meter's reading above its base load (a
+   load that is most of its meter follows the meter; a 600 W mat on a 3 kW phase stays at its model). A run with no
+   partner yet reads its start size, flat. Replaces `PhaseState.level_of` in `Detector.live_runs` (Talno gretje read
+   458-482 W following phase c, 2026-10-30 20:35).
+3. [ ] **[BUG] A grid edge a sub-meter has claimed is judged at once; the horizon only for unclaimed edges.** Today the
+   whole grid is read `Fleet._horizon` behind the slowest sharing meter (up to `METER_WAIT_CAP_S`, 300 s), so Hiša's
+   floor heating showed 4.5 min after its step though Hiša declares in ~15 s (the owner: "we are not taking hierarchy
+   into account at all"). Once a meter has claimed the edge, nothing is waited for; a sub-meter's own run shows at the
+   meter's latency. Also: the current horizon and the meter setting it in the diagnostics (tonight it could only be
+   inferred).
+4. [ ] **[BUG] Long runs closed by other loads' falls.** Susilna hidden: the base run is declared 12 of 12 nights and
+   closed within the hour by another load's fall (`_pair`, `_combination`, `_unseen_stop`, `MAX_OPEN_EDGES`); Talno
+   gretje's run closed at 20:39 on a 60 W fall while the mat stayed on, the grid's run of the name then read half
+   size. `FLOOR_RECOVER` and `MAX_OPEN_EDGES` 24 ruled out (dev/run-lifecycle-results.md). Needs the floor's own
+   history or the run-lifecycle redesign (AGENTS.md draft, 2026-10-28).
+5. [ ] **[BUG] Sub-meter libraries fragment one load into dozens of signatures.** Hiša: Talno gretje 49 signatures,
+   Likalnik 16 (cleared 2026-10-30, "bad"); no Hiša signature at all for its 70 W / 30 min fridge, whose grid
+   signature (#2591, named Hladilnik Hiša) reads 46 W. Trace why Hiša's 10 W noise does not give one clean group.
+6. [ ] **[BUG] Release workflow: the HA webhook fires before HACS can see the GitHub release** - build 1901 was
+   installed on neither site (the automation ran 3 s before the release's `created_at`); installed by hand. Check the
+   GitHub asset is served before notifying, or let the automation retry.
+
 ### Planning and early start (Load Juggler reads these)
 
 *The room sensor's two refinements feed Load Juggler's early start; do them as one stretch.*
