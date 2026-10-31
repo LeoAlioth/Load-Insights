@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.5.1
+
+_Nothing yet: changes made after 0.5.0 was released (2026-10-31) go here._
+
+---
+
 ## 0.5.0
 
 ### New Features
