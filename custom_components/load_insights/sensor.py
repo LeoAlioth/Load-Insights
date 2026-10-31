@@ -991,7 +991,7 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
         for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
             for kind in ("power", "energy"):
                 keep.add(_base_uid(entry, key, p, kind))
-            w, _ = runner.fleet.base_load(meter, p)
+            w, _ = runner.base_load(meter, p)
             if w is None or w >= BASE_LOAD_MIN_W:
                 out += [BaseLoadPower(runner, entry, meter, key, p), BaseLoadEnergy(runner, entry, meter, key, p)]
             else:
@@ -1032,7 +1032,11 @@ class _BaseLoad(_DetectionBase):
     def _base(self):
         if self._remainder:
             return self._runner.remainder_base_load()
-        return self._runner.fleet.base_load(self._meter, self._phase)
+        return self._runner.base_load(self._meter, self._phase)
+
+    def _cap(self) -> Optional[float]:
+        """Never above what the meter draws now less what the meters inside it draw now (the owner, 2026-10-31)."""
+        return self._runner.base_load_cap(self._meter, self._phase, self._remainder)
 
 
 class BaseLoadPower(_PowerW, _BaseLoad):
@@ -1042,7 +1046,10 @@ class BaseLoadPower(_PowerW, _BaseLoad):
     @property
     def native_value(self) -> Optional[float]:
         w, _ = self._base()
-        return None if w is None else round(w)
+        if w is None:
+            return None
+        cap = self._cap()
+        return round(w if cap is None else min(w, cap))
 
 
 class BaseLoadEnergy(_BaseLoad, RestoreSensor):
@@ -1069,8 +1076,15 @@ class BaseLoadEnergy(_BaseLoad, RestoreSensor):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        self._reading, self._seen = carry_reading(self._reading, self._seen, self._total(),
-                                                  not self._runner.refiling)
+        total = self._total()
+        counted = total
+        if self._seen is not None and self._runner.caught_up:
+            # a pass's gain never more than the cap over the hours it read (BaseLoadPower's cap, as energy)
+            cap, hours = self._cap(), (self._runner.last_pass or {}).get("hours")
+            if cap is not None and hours:
+                counted = self._seen + min(max(0.0, total - self._seen), cap * hours / 1000.0)
+        self._reading, _ = carry_reading(self._reading, self._seen, counted, not self._runner.refiling)
+        self._seen = total
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:

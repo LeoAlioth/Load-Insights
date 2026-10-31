@@ -303,11 +303,13 @@ def test_both_switches_are_options_on_by_default_and_translated():
     assert sl["exceptions"]["autoname_heater"]["message"] == "Grelnik {n}"
 
 
-def test_the_remainder_meters_base_load_is_the_grids_less_the_meters_beside_it():
-    """Home's Delavnica, grid + PV - Hiša - Mansarda - the EVBox, is not read
-    (the owner, 2026-10-30: its timing spikes are no measurement); its base
-    load is the grid's less those three's, and the meters inside it (Klima)
-    are not taken off. Two ignored top-level meters: no remainder at all."""
+def test_a_base_load_is_its_meters_less_the_meters_inside_it():
+    """The owner, 2026-10-31: "the submeters should always be subtracted" - a
+    meter's base load counted the always-on draw of the meters inside it a
+    second time (Delavnica's held the Server UPS's ~95 W, Mansarda's the
+    EcoFlow). Home's Delavnica, grid + PV - Hiša - Mansarda - the EVBox, is not
+    read; its base load is the grid's less those three's and less the meters
+    inside it (Klima). Two ignored top-level meters: no remainder at all."""
     import ast
     import types
     from typing import List, Optional, Tuple
@@ -315,21 +317,39 @@ def test_the_remainder_meters_base_load_is_the_grids_less_the_meters_beside_it()
     cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "DetectionRunner")
     ns = {"List": List, "Optional": Optional, "Tuple": Tuple}
     for fn in cls.body:
-        if isinstance(fn, ast.FunctionDef) and fn.name in ("remainder_meter", "remainder_base_load"):
+        if isinstance(fn, ast.FunctionDef) and fn.name in ("remainder_meter", "remainder_base_load", "_inside", "base_load",
+                                                           "_now_w", "_inner_now", "base_load_cap"):
             exec(compile(ast.Module([fn], []), "detection.py", "exec"), ns)
     bases = {"": (900.0, 9000.0), "Hiša": (300.0, 3000.0), "Mansarda": (150.0, 1500.0),
-             "Polnilnica": (5.0, 50.0), "Klima": (20.0, 200.0)}
-    fleet = types.SimpleNamespace(base_load=lambda name, phase=None: bases[name])
+             "Polnilnica": (5.0, 50.0), "Klima": (20.0, 200.0), "Skrinja": (165.0, 1650.0)}
+    fleet = types.SimpleNamespace(base_load=lambda name, phase=None: bases[name], subs={}, phase_map=lambda n: {})
     subs = {"Hiša": {"energy": "h"}, "Mansarda": {"energy": "m"}, "Polnilnica": {"energy": "p"},
-            "Klima": {"energy": "k", "parent": "Delavnica"}}
+            "Klima": {"energy": "k", "parent": "Delavnica"}, "Skrinja": {"energy": "s", "parent": "Hiša"}}
     every = {**subs, "Delavnica": {"energy": "d", "ignored": True}}
     r = types.SimpleNamespace(all_submeters=every, submeters=subs, fleet=fleet)
-    r.remainder_meter = types.MethodType(ns["remainder_meter"], r)
+    for name in ("remainder_meter", "_inside"):
+        setattr(r, name, types.MethodType(ns[name], r))
     assert r.remainder_meter() == ("Delavnica", "d", ["Hiša", "Mansarda", "Polnilnica"])
-    assert ns["remainder_base_load"](r) == (445.0, 4450.0)
+    assert ns["remainder_base_load"](r) == (425.0, 4250.0)            # 900 - 300 - 150 - 5 - Klima's 20
+    assert ns["base_load"](r, "Hiša") == (135.0, 1350.0)              # Hiša less the freezers inside it
+    assert ns["base_load"](r, "Mansarda") == (150.0, 1500.0)          # nothing metered inside it
+    bases["Skrinja"] = (400.0, 4000.0)
+    assert ns["base_load"](r, "Hiša")[0] == 0.0                       # never below 0
+    # ...and never above what the meter draws now less what the meters inside it draw now (the owner,
+    # 2026-10-31): Hiša reading 400 W with its freezers at 330 W leaves 70 W at most
+    det = lambda **lv: types.SimpleNamespace(phases={p: types.SimpleNamespace(level=w) for p, w in lv.items()})
+    fleet.main = det(a=600.0, b=500.0, c=400.0)
+    fleet.subs = {"Hiša": det(a=150.0, c=250.0), "Mansarda": det(a=200.0), "Polnilnica": det(a=0.0),
+                  "Klima": det(a=30.0), "Skrinja": det(a=330.0)}
+    for name in ("_now_w", "_inner_now"):
+        setattr(r, name, types.MethodType(ns[name], r))
+    assert ns["base_load_cap"](r, "Hiša") == 70.0
+    assert ns["base_load_cap"](r, "Mansarda") == 200.0
+    assert ns["base_load_cap"](r, "", None, True) == 1500.0 - 400.0 - 200.0 - 0.0 - 30.0   # the remainder's
+    fleet.subs["Skrinja"] = det(a=500.0)
+    assert ns["base_load_cap"](r, "Hiša") == 0.0                       # never below 0
     every["Garage"] = {"energy": "g", "ignored": True}
     assert r.remainder_meter() is None and ns["remainder_base_load"](r) == (None, 0.0)
-
 
 def test_the_runner_asks_the_namer_only_after_history_is_read():
     named = (BASE / "autonaming.py").read_text(encoding="utf-8")
