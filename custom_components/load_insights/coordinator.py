@@ -73,7 +73,7 @@ from .insights.covariates import interpolate_hourly
 from .insights.detect import site_topology
 from .insights import heatnudge
 from .insights.grid import GridForecast, build as build_grid
-from .detection import named_load_energy
+from .detection import base_load_entities, named_load_energy
 from .insights.planning import absorption_rate, base_consumption, plan_all, room_from_series, spread_evenly, sun_window
 from .insights.model import SiteModel
 from .insights.profile import Forecast, assemble, floor_hour, forecast, hour_buckets
@@ -224,7 +224,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> InsightsData:
         manager = await async_get_manager(self.hass)
-        site = SiteModel.from_prefs(manager.data)
+        site = SiteModel.from_prefs(manager.data, ignore=base_load_entities(self.hass, self.config_entry.entry_id))
         if not site.has_sources:
             raise UpdateFailed("the Energy dashboard has no grid source configured")
         capacity = self._battery_capacity()

@@ -8,6 +8,7 @@
 
 ### Fixes
 
+- **No forecast or planning sensors for a base load.** A base load on the Energy dashboard was taken for a device, so it got a forecast, a *Room to absorb today* and an *Absorption rate* that never had a value; the forecasts now leave Load Insights' own base loads out, and those sensors are removed.
 - **A base load no longer counts the meters inside it a second time.** A circuit's base load is now its lowest reading less the base loads of the meters inside it, never below 0, and never more than the circuit draws right now less what those meters draw right now. It counted their always-on draw a second time - Delavnica's held the Server UPS's ~95 W, Mansarda's the EcoFlow and the kitchen fridge - so the Energy dashboard's devices added up to more than the house drew (1.2 kWh over the workshop in one morning). The grid's own base load is now the part no meter covers.
 
 ---
