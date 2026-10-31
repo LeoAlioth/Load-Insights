@@ -991,7 +991,10 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
         for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
             for kind in ("power", "energy"):
                 keep.add(_base_uid(entry, key, p, kind))
-            w, _ = runner.base_load(meter, p)
+            # whether it is offered goes by the meter's own floor, not what is left once the meters inside it are
+            # taken off - that is 0 in some hours (Delavnica's while Sušilna's dehumidifier runs), and a reload then
+            # would remove the entity and its dashboard row
+            w, _ = runner.fleet.base_load(meter, p)
             if w is None or w >= BASE_LOAD_MIN_W:
                 out += [BaseLoadPower(runner, entry, meter, key, p), BaseLoadEnergy(runner, entry, meter, key, p)]
             else:
@@ -1000,7 +1003,7 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
     # under the same unique ids its own had, so its history carries on
     rem = runner.remainder_meter()
     if rem is not None and rem[1] in keys:
-        w, _ = runner.remainder_base_load()
+        w, _ = runner.fleet.base_load("")          # the grid's own floor, as above
         if w is None or w >= BASE_LOAD_MIN_W:
             keep |= {_base_uid(entry, rem[1], None, kind) for kind in ("power", "energy")}
             out += [BaseLoadPower(runner, entry, rem[0], rem[1], None, True),
