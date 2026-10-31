@@ -318,7 +318,7 @@ def test_a_base_load_is_its_meters_less_the_meters_inside_it():
     ns = {"List": List, "Optional": Optional, "Tuple": Tuple}
     for fn in cls.body:
         if isinstance(fn, ast.FunctionDef) and fn.name in ("remainder_meter", "remainder_base_load", "_inside", "base_load",
-                                                           "_now_w", "_inner_now", "base_load_cap"):
+                                                           "_now_w", "_inner_now", "base_load_cap", "_read_parent"):
             exec(compile(ast.Module([fn], []), "detection.py", "exec"), ns)
     bases = {"": (900.0, 9000.0), "Hiša": (300.0, 3000.0), "Mansarda": (150.0, 1500.0),
              "Polnilnica": (5.0, 50.0), "Klima": (20.0, 200.0), "Skrinja": (165.0, 1650.0)}
@@ -327,10 +327,13 @@ def test_a_base_load_is_its_meters_less_the_meters_inside_it():
             "Klima": {"energy": "k", "parent": "Delavnica"}, "Skrinja": {"energy": "s", "parent": "Hiša"}}
     every = {**subs, "Delavnica": {"energy": "d", "ignored": True}}
     r = types.SimpleNamespace(all_submeters=every, submeters=subs, fleet=fleet)
-    for name in ("remainder_meter", "_inside"):
+    for name in ("remainder_meter", "_inside", "_read_parent", "base_load"):
         setattr(r, name, types.MethodType(ns[name], r))
     assert r.remainder_meter() == ("Delavnica", "d", ["Hiša", "Mansarda", "Polnilnica"])
     assert ns["remainder_base_load"](r) == (425.0, 4250.0)            # 900 - 300 - 150 - 5 - Klima's 20
+    # Klima is inside Delavnica, which is not read: it is inside the grid's base load as well, so the grid's
+    # is Delavnica's (the owner: "shouldn't Delavnica's inner meters also get subtracted?")
+    assert ns["base_load"](r, "") == (425.0, 4250.0)
     assert ns["base_load"](r, "Hiša") == (135.0, 1350.0)              # Hiša less the freezers inside it
     assert ns["base_load"](r, "Mansarda") == (150.0, 1500.0)          # nothing metered inside it
     bases["Skrinja"] = (400.0, 4000.0)
@@ -346,6 +349,7 @@ def test_a_base_load_is_its_meters_less_the_meters_inside_it():
     assert ns["base_load_cap"](r, "Hiša") == 70.0
     assert ns["base_load_cap"](r, "Mansarda") == 200.0
     assert ns["base_load_cap"](r, "", None, True) == 1500.0 - 400.0 - 200.0 - 0.0 - 30.0   # the remainder's
+    assert ns["base_load_cap"](r, "") == ns["base_load_cap"](r, "", None, True)             # = the grid's
     fleet.subs["Skrinja"] = det(a=500.0)
     assert ns["base_load_cap"](r, "Hiša") == 0.0                       # never below 0
     every["Garage"] = {"energy": "g", "ignored": True}

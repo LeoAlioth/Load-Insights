@@ -803,18 +803,13 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return name, meter["energy"], sorted(n for n, m in self.submeters.items() if not m.get("parent"))
 
     def remainder_base_load(self) -> Tuple[Optional[float], float]:
-        """(W, Wh) of the remainder meter's base load: the grid's less the read top-level meters' beside it
-        (Fleet.base_load) and less the meters inside it (the owner, 2026-10-31: "the submeters should always
-        be subtracted") - W None while the grid's is not learned, never below 0."""
-        rem = self.remainder_meter()
-        w, wh = self.fleet.base_load("")
-        if rem is None:
+        """(W, Wh) of the remainder meter's base load: what no read meter covers - the grid's base load
+        (base_load("")), every read meter taken off, the ones inside the unread remainder too (the owner,
+        2026-10-31: "the submeters should always be subtracted"; Delavnica's is the grid's, as he said).
+        W None while the grid's is not learned, never below 0."""
+        if self.remainder_meter() is None:
             return None, 0.0
-        for name in rem[2] + self._inside(rem[0]):
-            mw, mwh = self.fleet.base_load(name)
-            w = None if w is None else w - (mw or 0.0)
-            wh -= mwh
-        return (None if w is None else max(w, 0.0)), wh
+        return self.base_load("")
 
     def _now_w(self, meter: str, phase: Optional[str] = None) -> Optional[float]:
         """What a meter ("" the grid) - or one phase of it - reads now: its phases' settled levels."""
@@ -842,19 +837,28 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         meters inside it draw now - the remainder's: the grid's less the meters beside it and inside it. None
         while the meter has no reading."""
         if remainder:
-            rem = self.remainder_meter()
-            now = self._now_w("") if rem is not None else None
-            if now is None:
+            if self.remainder_meter() is None:
                 return None
-            return max(0.0, now - sum(self._now_w(n) or 0.0 for n in rem[2] + self._inside(rem[0])))
+            meter, phase = "", None                    # the remainder is what no read meter covers: the grid's
         now = self._now_w(meter, phase)
         if now is None:
             return None
         return max(0.0, now - sum(self._inner_now(meter, phase, n) for n in self._inside(meter)))
 
+    def _read_parent(self, name: str) -> str:
+        """The nearest read meter ``name`` hangs under on the Energy dashboard ("" the grid): a meter inside one
+        detection does not read (Delavnica) is inside that one's parent - the Server, Centralna and the rest of
+        the workshop's meters are inside the grid's base load, not beside it."""
+        parent, seen = (self.submeters.get(name) or {}).get("parent"), {name}
+        while parent and parent not in self.submeters and parent not in seen:
+            seen.add(parent)
+            parent = (self.all_submeters.get(parent) or {}).get("parent")
+        return parent if parent in self.submeters else ""
+
     def _inside(self, meter: str) -> List[str]:
-        """The read meters directly inside ``meter`` on the Energy dashboard ("" the grid: the top-level ones)."""
-        return sorted(n for n, m in self.submeters.items() if (m.get("parent") or "") == meter and n != meter)
+        """The read meters directly inside ``meter`` ("" the grid), a meter inside an unread one counted under the
+        nearest read meter above it (_read_parent)."""
+        return sorted(n for n in self.submeters if n != meter and self._read_parent(n) == meter)
 
     def base_load(self, meter: str, phase: Optional[str] = None) -> Tuple[Optional[float], float]:
         """(W, Wh) of a meter's base load as a load of its own: its lowest reading (Fleet.base_load) less the
