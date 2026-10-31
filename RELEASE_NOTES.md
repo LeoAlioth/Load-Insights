@@ -4,7 +4,7 @@
 
 ### New Features
 
-- **A Load Insights card: name a load where you see it.** A dashboard card that comes with the integration (no resource to add): `type: custom:load-insights-card`, with `mode: to_name` for the loads waiting for a name (power, phases, how long and how often it runs, where, how certain, when it last ran, what it may be) or `mode: running` for what is on right now. Every unnamed row has a name field and a *Name* button; the field offers the names already in use, and picking one joins the load to it. The detected loads sensor carries a `running` list for it.
+- **A Load Insights card: name a load where you see it.** A dashboard card that comes with the integration (no resource to add): `type: custom:load-insights-card`, with `mode: to_name` for the loads waiting for a name (power, phases, how long and how often it runs, where, how certain, when it last ran, what it may be) or `mode: running` for what is on right now. Every unnamed row has a name field and a *Name* button; the field offers the names already in use, and picking one joins the load to it. The card's editor sets how many rows it shows and filters them by size, run length (or for running loads, how long they have been on), runs a day, certainty, how recently seen, and for running loads named or unnamed only. The detected loads sensor carries a `running` list for it.
 
 ### Fixes
 
