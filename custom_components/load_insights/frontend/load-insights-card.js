@@ -59,10 +59,12 @@ class LoadInsightsCard extends HTMLElement {
     const hass = this._hass;
     const set = this._config[kind === "library" ? "library_entity" : "detected_entity"];
     if (set) return hass.states[set];
-    return Object.values(hass.states).find((s) =>
-      s.entity_id.startsWith("sensor.") &&
-      (kind === "library" ? Array.isArray(s.attributes.signatures) && s.attributes.meters !== undefined
-                          : Array.isArray(s.attributes.running_ids)));
+    // by what it carries; while Load Insights starts it carries nothing, so then by its entity id's ending
+    const states = Object.values(hass.states).filter((s) => s.entity_id.startsWith("sensor."));
+    return states.find((s) => kind === "library"
+        ? Array.isArray(s.attributes.signatures) && s.attributes.meters !== undefined
+        : Array.isArray(s.attributes.running_ids))
+      || states.find((s) => s.entity_id.endsWith(kind === "library" ? "_signature_library" : "_detected_loads"));
   }
 
   set hass(hass) {
@@ -72,7 +74,8 @@ class LoadInsightsCard extends HTMLElement {
     const det = this._entity("detected");
     const rows = this._rows(lib, det);
     // render only when what is shown changes, and never under a field being typed in
-    const key = JSON.stringify(rows) + JSON.stringify(this._named) + JSON.stringify(this._errors);
+    const key = JSON.stringify(rows) + JSON.stringify(this._named) + JSON.stringify(this._errors) +
+      `${lib?.entity_id}:${lib?.state === "unavailable"}:${det?.entity_id}:${det?.state === "unavailable"}`;
     if (key === this._key) return;
     if (this.contains(document.activeElement) && document.activeElement.tagName === "INPUT") {
       this._pending = true;
@@ -143,10 +146,12 @@ class LoadInsightsCard extends HTMLElement {
     const c = this._config;
     const title = c.title ?? (c.mode === "running" ? "Running now" : "To name");
     const names = this._names(lib);
-    const missing = !(c.mode === "running" ? det : lib);
-    const body = missing
+    const source = c.mode === "running" ? det : lib;
+    const body = !source
       ? `<div class="empty">Load Insights' ${c.mode === "running" ? "detected loads" : "signature library"} sensor was not found.</div>`
-      : rows.length === 0
+      : ["unavailable", "unknown"].includes(source.state)
+        ? `<div class="empty">Load Insights is starting - its loads show once it has read its history.</div>`
+        : rows.length === 0
         ? `<div class="empty">${c.mode === "running" ? "Nothing detected running." : "Nothing waiting for a name."}</div>`
         : rows.map((r) => this._row(r)).join("");
     this.innerHTML = `
