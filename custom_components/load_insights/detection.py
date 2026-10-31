@@ -794,15 +794,81 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     def remainder_base_load(self) -> Tuple[Optional[float], float]:
         """(W, Wh) of the remainder meter's base load: the grid's less the read top-level meters' beside it
-        (Fleet.base_load) - W None while the grid's is not learned, never below 0."""
+        (Fleet.base_load) and less the meters inside it (the owner, 2026-10-31: "the submeters should always
+        be subtracted") - W None while the grid's is not learned, never below 0."""
         rem = self.remainder_meter()
         w, wh = self.fleet.base_load("")
         if rem is None:
             return None, 0.0
-        for name in rem[2]:
+        for name in rem[2] + self._inside(rem[0]):
             mw, mwh = self.fleet.base_load(name)
             w = None if w is None else w - (mw or 0.0)
             wh -= mwh
+        return (None if w is None else max(w, 0.0)), wh
+
+    def _now_w(self, meter: str, phase: Optional[str] = None) -> Optional[float]:
+        """What a meter ("" the grid) - or one phase of it - reads now: its phases' settled levels."""
+        det = self.fleet.main if not meter else self.fleet.subs.get(meter)
+        if det is None:
+            return None
+        levels = [st.level for p, st in det.phases.items() if (phase is None or p == phase) and st.level is not None]
+        return sum(levels) if levels else None
+
+    def _inner_now(self, meter: str, phase: Optional[str], inner: str) -> float:
+        """What inner meter ``inner`` draws now of ``meter``'s phase ``phase`` (all of it with None), a channel on
+        several phases shared out evenly."""
+        if phase is None:
+            return self._now_w(inner) or 0.0
+        target = set(self.fleet.phase_map(meter).get(phase, phase) if meter else phase)
+        det, out = self.fleet.subs.get(inner), 0.0
+        for c in (det.phases if det is not None else {}):
+            sys = self.fleet.phase_map(inner).get(c, "")
+            if sys:
+                out += (self._now_w(inner, c) or 0.0) * len(set(sys) & target) / len(sys)
+        return out
+
+    def base_load_cap(self, meter: str, phase: Optional[str] = None, remainder: bool = False) -> Optional[float]:
+        """The most a base load may read now (the owner, 2026-10-31): what its meter draws now less what the
+        meters inside it draw now - the remainder's: the grid's less the meters beside it and inside it. None
+        while the meter has no reading."""
+        if remainder:
+            rem = self.remainder_meter()
+            now = self._now_w("") if rem is not None else None
+            if now is None:
+                return None
+            return max(0.0, now - sum(self._now_w(n) or 0.0 for n in rem[2] + self._inside(rem[0])))
+        now = self._now_w(meter, phase)
+        if now is None:
+            return None
+        return max(0.0, now - sum(self._inner_now(meter, phase, n) for n in self._inside(meter)))
+
+    def _inside(self, meter: str) -> List[str]:
+        """The read meters directly inside ``meter`` on the Energy dashboard ("" the grid: the top-level ones)."""
+        return sorted(n for n, m in self.submeters.items() if (m.get("parent") or "") == meter and n != meter)
+
+    def base_load(self, meter: str, phase: Optional[str] = None) -> Tuple[Optional[float], float]:
+        """(W, Wh) of a meter's base load as a load of its own: its lowest reading (Fleet.base_load) less the
+        base loads of the meters directly inside it, never below 0 - each of those is a device or a circuit
+        of its own, and its always-on draw was counted twice: Delavnica's held the Server UPS's ~95 W and
+        Centralna's pumps, Mansarda's the EcoFlow and the kitchen fridge (the owner, 2026-10-31: "the
+        submeters should always be subtracted"). One phase of a meter (``phase``) less what each inner
+        meter's channels carry on that phase, a channel on several phases shared out evenly."""
+        w, wh = self.fleet.base_load(meter, phase)
+        for inner in self._inside(meter):
+            if phase is None:
+                iw, iwh = self.fleet.base_load(inner)
+            else:
+                target = set(self.fleet.phase_map(meter).get(phase, phase) if meter else phase)
+                det, iw, iwh = self.fleet.subs.get(inner), 0.0, 0.0
+                for c in (det.phases if det is not None else {}):
+                    sys = self.fleet.phase_map(inner).get(c, "")
+                    if not sys:
+                        continue
+                    share = len(set(sys) & target) / len(sys)
+                    cw, cwh = self.fleet.base_load(inner, c)
+                    iw, iwh = iw + (cw or 0.0) * share, iwh + cwh * share
+            w = None if w is None else w - (iw or 0.0)
+            wh -= iwh
         return (None if w is None else max(w, 0.0)), wh
 
     def base_load_keys(self) -> set:
