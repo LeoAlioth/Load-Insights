@@ -108,6 +108,16 @@ def device_uid(entry_id: str, energy: str) -> str:
     return f"{entry_id}_device_{energy.replace('.', '_')}"
 
 
+def base_load_entities(hass: HomeAssistant, entry_id: str) -> frozenset:
+    """The entity ids of this entry's base load sensors (base_load_uid). They go on the Energy dashboard so its
+    Sankeys show them, but they are a meter's floor worked out here, not a device: the forecasts leave them
+    out - a forecast, a room to absorb and an absorption rate of a base load never had a value (the owner,
+    2026-10-31)."""
+    prefix = f"{entry_id}_baseload_"
+    return frozenset(e.entity_id for e in er.async_get(hass).entities.values()
+                     if e.platform == DOMAIN and (e.unique_id or "").startswith(prefix))
+
+
 def base_load_uid(entry_id: str, key: str, phase: Optional[str], kind: str) -> str:
     """A meter's base load entity's unique id: ``key`` its energy statistic (BASE_LOAD_GRID for the grid),
     ``phase`` its phase or None for the whole, ``kind`` "power" or "energy"."""

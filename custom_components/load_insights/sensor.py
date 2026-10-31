@@ -26,7 +26,8 @@ from .insights.heatnudge import parse_devices
 from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner, base_load_label, base_load_uid, device_uid, load_uid, loaded
+from .detection import (DetectionRunner, base_load_entities, base_load_label, base_load_uid, device_uid, load_uid,
+                        loaded)
 from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
                               signature_rows, suggest_levels)
 from .insights.model import SiteModel
@@ -53,7 +54,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # one keeps its entity, unavailable. Read from the dashboard itself, as
     # the first refresh does, rather than from that refresh: setup no longer
     # waits for it (2026-09-29), and each shows unavailable until it lands.
-    site = SiteModel.from_prefs((await async_get_manager(hass)).data)
+    # less this entry's own base loads (detection.base_load_entities), whose leftover device sensors go
+    based = base_load_entities(hass, entry.entry_id)
+    site = SiteModel.from_prefs((await async_get_manager(hass)).data, ignore=based)
+    for energy in based:
+        for suffix in ("", "_room", "_rate"):
+            _forget(hass, "sensor", device_uid(entry.entry_id, energy) + suffix)
     # The state of charge is only forecastable where the Energy dashboard
     # gives a battery SOC and a capacity (or a capacity sensor is set). A site with no battery was
     # getting the sensor anyway, permanently unavailable (the owner,
