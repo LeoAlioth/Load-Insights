@@ -13,7 +13,8 @@
  *   min_certainty: 10                # to_name: percent
  *   seen_within_hours: 24            # to_name: last seen at most this long ago
  *   show: all                        # running: all, unnamed or named
- *   running_now: false               # to_name: only the loads running right now
+ *                                    # to_name: the unnamed loads running now on top (any meter's), then the
+ *                                    # rest seen within seen_within_hours under their own heading
  *   sort_by: certainty               # certainty (to_name), size, length, runs_per_day (to_name), recent
  *   library_entity: sensor.x_signature_library   # optional, found by its attributes otherwise
  *   detected_entity: sensor.x_detected_loads     # optional, found by its attributes otherwise
@@ -43,7 +44,7 @@ class LoadInsightsCard extends HTMLElement {
     const mode = config.mode || "to_name";
     if (!["to_name", "running"].includes(mode)) throw new Error("mode must be to_name or running");
     this._config = { max_rows: 10, min_certainty: 10, seen_within_hours: 24, show: "all", sort_by: "certainty",
-                     running_now: false, ...config, mode };
+                     ...config, mode };
     this._typed = {};      // row key -> what was typed, kept across renders
     this._named = {};      // row key -> the name given, hidden until the library catches up
     this._errors = {};
@@ -121,11 +122,30 @@ class LoadInsightsCard extends HTMLElement {
     }
     const run = new Set(det?.attributes.running_ids || []);
     const c = this._config;
-    const seen = (num(c.seen_within_hours) ?? 24) * 3600;
+    const hours = num(c.seen_within_hours) ?? 24;
+    const seen = hours * 3600;
     const sure = (num(c.min_certainty) ?? 10) / 100;
+    // on top: what is running now unnamed, the grid's and every meter's (Fleet.running's rows)
+    const on = (r) => now - Date.parse(r.since) / 1000;
+    const running = (det?.attributes.running || [])
+      .filter((r) => !r.name && r.id !== null && r.id !== undefined && !this._named[`${r.meter ?? ""}#${r.id}`] &&
+        within(r.watts, num(c.min_watts), num(c.max_watts)))
+      .sort((a, b) => c.sort_by === "recent" ? on(a) - on(b) : c.sort_by === "length" ? on(b) - on(a) : b.watts - a.watts)
+      .slice(0, max)
+      .map((r) => ({
+        key: `${r.meter ?? ""}#${r.id}`, meter: r.meter ?? "", id: r.id, name: null,
+        line: `${watts(r.watts)} on ${phases(r.phases)}, on for ${dur(on(r))}${r.where ? `, in ${r.where}` : ""}`,
+        tag: r.tag || "",
+      }));
+    const rest = this._toName(lib, run, c, now, seen, sure, max);
+    if (!running.length) return rest;
+    return [{ header: "Running now" }, ...running, ...(rest.length ? [{ header: `Seen in the last ${hours} h` }, ...rest] : [])];
+  }
+
+  _toName(lib, run, c, now, seen, sure, max) {
     return (lib?.attributes.signatures || [])
       .filter((s) => !s.name && s.last_seen_ts >= now - seen && (s.evidence || 0) >= sure && !this._named[`#${s.id}`])
-      .filter((s) => !c.running_now || run.has(s.id))
+      .filter((s) => !run.has(s.id))                    // running now: in the section above
       .filter((s) => {
         const w = Object.values(s.watts_by_phase || {}).reduce((a, b) => a + b, 0);
         const perDay = s.typical_interval_s ? DAY_S / s.typical_interval_s : null;
@@ -177,6 +197,9 @@ class LoadInsightsCard extends HTMLElement {
         <style>
           .li-rows { padding: 0 16px 8px; }
           .li-row { padding: 8px 0; border-bottom: 1px solid var(--divider-color); }
+          .li-section { padding: 12px 0 2px; font-weight: 500; color: var(--secondary-text-color);
+            text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.05em; }
+          .li-section:first-child { padding-top: 0; }
           .li-row:last-child { border-bottom: none; }
           .li-top { display: flex; align-items: baseline; gap: 8px; }
           .li-name { font-weight: 500; }
@@ -207,6 +230,7 @@ class LoadInsightsCard extends HTMLElement {
   }
 
   _row(r) {
+    if (r.header) return `<div class="li-section">${esc(r.header)}</div>`;
     const head = r.name
       ? `<span class="li-name">${esc(r.name)}</span>`
       : `<span class="li-name">Unnamed</span> <a class="li-id" href="${INTEGRATION_URL}">#${esc(r.id)}</a>`;
@@ -252,7 +276,6 @@ const EDITOR_SCHEMA = [
     { value: "certainty", label: "Certainty (to name) / named first (running)" }, { value: "size", label: "Size" },
     { value: "length", label: "Run length (to name) / on longest (running)" },
     { value: "runs_per_day", label: "Runs a day (to name)" }, { value: "recent", label: "Most recent" }] } } },
-  { name: "running_now", selector: { boolean: {} } },
   { type: "grid", name: "", schema: [
     { name: "min_watts", selector: { number: { min: 0, mode: "box", unit_of_measurement: "W" } } },
     { name: "max_watts", selector: { number: { min: 0, mode: "box", unit_of_measurement: "W" } } },
@@ -268,7 +291,7 @@ const EDITOR_SCHEMA = [
 ];
 const EDITOR_LABELS = {
   mode: "Show", title: "Title", max_rows: "Most rows", sort_by: "Sort by",
-  running_now: "Only loads running now (to name)",
+
   min_watts: "Smallest", max_watts: "Largest",
   min_seconds: "Shortest run (to name) / on at least (running)", max_seconds: "Longest run (to name) / on at most (running)",
   min_per_day: "Fewest runs a day (to name)", max_per_day: "Most runs a day (to name)",
