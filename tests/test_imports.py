@@ -33,7 +33,7 @@ INHERITED = {
 
 
 def _scope(tree):
-    out = set(dir(builtins))
+    out = set(dir(builtins)) | {"__file__"}       # a module's own path, set on every module
     for n in ast.walk(tree):
         if isinstance(n, (ast.Import, ast.ImportFrom)):
             out |= {(a.asname or a.name).split(".")[0] for a in n.names}

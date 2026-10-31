@@ -41,8 +41,30 @@ def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
     return next(iter(hass.config_entries.async_loaded_entries(DOMAIN)), None)
 
 
+CARD_URL = "/load_insights/load-insights-card.js"
+
+
+async def _register_card(hass: HomeAssistant) -> None:
+    """Serve the Load Insights card and load it on every dashboard (the owner, 2026-10-31), so it needs no
+    resource added by hand. Its URL carries a hash of the file: a new build's card replaces a cached one."""
+    import hashlib
+    from pathlib import Path
+
+    from homeassistant.components.frontend import add_extra_js_url
+    from homeassistant.components.http import StaticPathConfig
+
+    path = Path(__file__).parent / "frontend" / "load-insights-card.js"
+    digest = await hass.async_add_executor_job(lambda: hashlib.sha1(path.read_bytes()).hexdigest()[:10])
+    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(path), False)])
+    add_extra_js_url(hass, f"{CARD_URL}?v={digest}")
+
+
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Register the services once, whatever entries come and go."""
+    try:
+        await _register_card(hass)
+    except Exception:  # noqa: BLE001 - a card that will not load must not stop the integration
+        _LOGGER.exception("Load Insights card not registered")
 
     async def _reset_detection(call) -> None:
         if (entry := _loaded(hass)) is not None:
