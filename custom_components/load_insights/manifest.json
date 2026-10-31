@@ -7,6 +7,8 @@
   "config_flow": true,
   "dependencies": [
     "energy",
+    "frontend",
+    "http",
     "recorder"
   ],
   "documentation": "https://gitea.alpacasbarn.com/LeoAlioth/Load-Insights",

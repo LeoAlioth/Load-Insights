@@ -99,5 +99,23 @@ def test_an_attribute_assembled_per_update_is_kept_out_of_the_database():
     assert checked >= 3, f"only {checked} sensors examined - did the parse work?"
 
 
+def test_the_card_reads_the_running_rows_the_sensor_publishes():
+    """The Load Insights card (frontend/load-insights-card.js, 2026-10-31) is
+    served from the path __init__ registers, defines its element, and reads the
+    detected loads sensor's ``running`` rows by the keys the sensor writes."""
+    import re
+    base = SENSOR.parent
+    card = (base / "frontend" / "load-insights-card.js").read_text(encoding="utf-8")
+    assert 'customElements.define("load-insights-card"' in card
+    init = (base / "__init__.py").read_text(encoding="utf-8")
+    assert '"/load_insights/load-insights-card.js"' in init and '"frontend" / "load-insights-card.js"' in init
+    sensor = SENSOR.read_text(encoding="utf-8")
+    row = re.search(r'"running": \[\s*\{(.*?)\}\s*for r in rows', sensor, re.S).group(1)
+    keys = set(re.findall(r'"(\w+)":', row))
+    assert {"name", "meter", "id", "watts", "phases", "since", "where", "tag"} <= keys, keys
+    for k in ("r.meter", "r.id", "r.name", "r.watts", "r.phases", "r.since", "r.where", "r.tag"):
+        assert k in card, k
+
+
 if __name__ == "__main__":
     run_main(globals())

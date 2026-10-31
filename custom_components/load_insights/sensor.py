@@ -578,6 +578,14 @@ class DetectedLoadsSensor(_DetectionBase):
             # which signatures are running now: the library (Signature library sensor) holds nothing that
             # depends on the clock, so a dashboard joins the two
             "running_ids": sorted(running),
+            # every load on now, once, as rows for the Load Insights card (frontend/load-insights-card.js): ``meter``
+            # and ``id`` are its signature ("" the grid's) - what Name a load takes as meter and signature_id
+            "running": [
+                {"name": r["name"], "meter": r["ref"][0] if r["ref"] else None,
+                 "id": r["ref"][1] if r["ref"] else None, "watts": round(r["watts"]),
+                 "phases": r["phases"].upper(), "since": iso(r["since"]), "where": r["where"], "tag": r["tag"]}
+                for r in rows
+            ],
             # what each sub-meter has on now; its signatures are in the library sensor's "meters"
             "meters_active": {name: [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])}
                                      for a in d.active(now)]
