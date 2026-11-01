@@ -41,22 +41,29 @@ def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
     return next(iter(hass.config_entries.async_loaded_entries(DOMAIN)), None)
 
 
-CARD_URL = "/load_insights/load-insights-card.js"
+# The cards in frontend/: the naming / running card (2026-10-31) and the forecast card (2026-11-01, spec in
+# Load Juggler's docs/plans/2026-11-01/dashboard-cards.md).
+CARD_FILES = ("load-insights-card.js", "load-insights-forecast-card.js")
 
 
 async def _register_card(hass: HomeAssistant) -> None:
-    """Serve the Load Insights card and load it on every dashboard (the owner, 2026-10-31), so it needs no
-    resource added by hand. Its URL carries a hash of the file: a new build's card replaces a cached one."""
+    """Serve the Load Insights cards and load them on every dashboard (the owner, 2026-10-31), so they need no
+    resource added by hand. Each URL carries a hash of its file: a new build's card replaces a cached one."""
     import hashlib
     from pathlib import Path
 
     from homeassistant.components.frontend import add_extra_js_url
     from homeassistant.components.http import StaticPathConfig
 
-    path = Path(__file__).parent / "frontend" / "load-insights-card.js"
-    digest = await hass.async_add_executor_job(lambda: hashlib.sha1(path.read_bytes()).hexdigest()[:10])
-    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(path), False)])
-    add_extra_js_url(hass, f"{CARD_URL}?v={digest}")
+    folder = Path(__file__).parent / "frontend"
+    digests = await hass.async_add_executor_job(
+        lambda: {name: hashlib.sha1((folder / name).read_bytes()).hexdigest()[:10] for name in CARD_FILES}
+    )
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(f"/load_insights/{name}", str(folder / name), False) for name in CARD_FILES]
+    )
+    for name, digest in digests.items():
+        add_extra_js_url(hass, f"/load_insights/{name}?v={digest}")
 
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
