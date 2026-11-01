@@ -203,7 +203,8 @@ class AutoNamer:
         rates: Dict[str, str] = {}
         parents: Dict[str, str] = {}
         if self.dashboard:
-            for name in sorted(r.fleet.names()):
+            refs_by_name = r.fleet.names()
+            for name in sorted(refs_by_name):
                 if not r.metered_device(name):
                     entity = r.energy_entity(name)
                     if not entity:
@@ -211,6 +212,8 @@ class AutoNamer:
                     wanted[entity] = name
                     if rate := r.power_entity(name):
                         rates[entity] = rate
+                    if parent := self._home_meter(refs_by_name[name]):
+                        parents[entity] = parent
             for entity, name, rate, parent in self._base_loads():
                 wanted[entity], parents[entity] = name, parent
                 if rate:
@@ -222,6 +225,26 @@ class AutoNamer:
             _LOGGER.info("Energy dashboard device list written (auto-named loads: %s)",
                          ", ".join(sorted(wanted.values())) or "none")
         return written or moved
+
+    def _home_meter(self, refs) -> Optional[str]:
+        """The energy statistic of the meter a named load lives in, for its Energy dashboard entry's parent (the
+        owner, 2026-11-01: Fridge 2, a signature of the Skrinja & Omara plug's own library, sat at the top level):
+        the one meter whose own library holds the name; for a name only the grid holds, the meter its biggest
+        signature was seen in (most_specific); None when that is no meter or several."""
+        from .insights.detect import most_specific      # detection imports this module
+        r = self._runner
+        meters = {m for m, _ in refs if m}
+        if len(meters) > 1:
+            return None
+        if meters:
+            home = meters.pop()
+        else:
+            sigs = [s for s in r.fleet.main.signatures if ("", s.id) in set(refs)]
+            if not sigs:
+                return None
+            head = max(sigs, key=lambda s: s.count)
+            home = most_specific(head.locations, head.count, r.fleet.parents)
+        return (r.all_submeters.get(home) or {}).get("energy")
 
     def _base_loads(self) -> List[Tuple[str, str, Optional[str], str]]:
         """(energy entity, name, power entity, the meter's statistic) of each sub-meter's base load - the
