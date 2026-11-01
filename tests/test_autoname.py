@@ -267,6 +267,27 @@ def test_a_hand_named_load_goes_on_the_dashboard_with_its_power_and_a_rename_mov
     assert A.plan_dashboard(mine, {}, [], [], {})[0] is None
 
 
+def test_a_named_load_goes_under_the_meter_it_lives_in_and_ours_are_moved_there():
+    """The owner, 2026-11-01: Fridge 2, a signature of the Skrinja & Omara
+    plug's own library, sat at the top level of the Energy dashboard. A named
+    load goes in under its meter; one of ours already listed is moved under it;
+    the owner's own entries, and a parent set by hand on one of ours where we
+    know none, are never touched."""
+    fridge = {"stat_consumption": "sensor.fridge_2_energy", "name": "Fridge 2"}
+    mine = {"stat_consumption": "sensor.plug_energy", "name": "Plug"}
+    hand = {"stat_consumption": "sensor.heater_energy", "name": "Heater", "included_in_stat": "sensor.hisa_energy"}
+    wanted = {"sensor.fridge_2_energy": "Fridge 2", "sensor.heater_energy": "Heater", "sensor.kettle_energy": "Kettle"}
+    parents = {"sensor.fridge_2_energy": "sensor.skrinja_energy", "sensor.kettle_energy": "sensor.mansarda_energy"}
+    new, added, _ = A.plan_dashboard([fridge, mine, hand], wanted,
+                                     ["sensor.fridge_2_energy", "sensor.heater_energy"], [], {}, parents)
+    by = {d["stat_consumption"]: d for d in new}
+    assert by["sensor.fridge_2_energy"]["included_in_stat"] == "sensor.skrinja_energy"     # ours, moved
+    assert "included_in_stat" not in by["sensor.plug_energy"]                               # the owner's
+    assert by["sensor.heater_energy"]["included_in_stat"] == "sensor.hisa_energy"           # set by hand, kept
+    assert by["sensor.kettle_energy"]["included_in_stat"] == "sensor.mansarda_energy"       # new, under its meter
+    assert A.plan_dashboard(new, wanted, added, [], {}, parents)[0] is None                 # nothing more to do
+
+
 def test_a_meters_base_load_sits_under_its_meter_and_goes_with_the_option():
     meter = [{"stat_consumption": "sensor.hisa_energy", "stat_rate": "sensor.hisa_power", "name": "Hiša"}]
     wanted = {"sensor.hisa_base_load_energy": "Hiša base load"}
@@ -289,7 +310,8 @@ def test_both_switches_are_options_on_by_default_and_translated():
     assert "get(CONF_AUTONAME, True)" in named and "get(CONF_AUTONAME_DASHBOARD, True)" in named
     # the dashboard switch covers every named load and does not depend on auto-naming (2026-10-25)
     assert "self.enabled and" not in named.split("def dashboard")[1].split("# ----")[0]
-    assert "for name in sorted(r.fleet.names())" in named and "sorted(self.marks)" not in named
+    assert "refs_by_name = r.fleet.names()" in named and "for name in sorted(refs_by_name)" in named
+    assert "sorted(self.marks)" not in named
     for lang in ("en", "sl"):
         t = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
         step = t["options"]["step"]["detection"]

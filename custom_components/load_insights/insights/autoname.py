@@ -334,6 +334,12 @@ def plan_dashboard(devices: Sequence[dict], wanted: Dict[str, str], added: Seque
         elif stat not in listed:
             added.remove(stat)
             declined.append(stat)
+    for i, d in enumerate(new):
+        # one of ours whose meter is now known, or has changed: nested under it - never un-nested, so a parent
+        # the owner set by hand on one of ours stays where it is when we know none
+        stat = d.get("stat_consumption")
+        if stat in added and stat in wanted and parents and parents.get(stat) and d.get("included_in_stat") != parents[stat]:
+            new[i] = {**d, "included_in_stat": parents[stat]}
     for stat, name in sorted(wanted.items()):
         if stat in declined or any(d.get("stat_consumption") == stat for d in new):
             continue
