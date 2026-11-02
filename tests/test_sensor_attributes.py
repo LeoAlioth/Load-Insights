@@ -108,7 +108,10 @@ def test_the_card_reads_the_running_rows_the_sensor_publishes():
     card = (base / "frontend" / "load-insights-card.js").read_text(encoding="utf-8")
     assert 'customElements.define("load-insights-card"' in card
     init = (base / "__init__.py").read_text(encoding="utf-8")
-    assert '"/load_insights/load-insights-card.js"' in init and '"frontend" / "load-insights-card.js"' in init
+    files = re.search(r"CARD_FILES = \((.*?)\)", init).group(1)
+    for name in ("load-insights-card.js", "load-insights-forecast-card.js"):
+        assert f'"{name}"' in files and (base / "frontend" / name).is_file(), name
+    assert 'f"/load_insights/{name}"' in init and '/ "frontend"' in init
     sensor = SENSOR.read_text(encoding="utf-8")
     row = re.search(r'"running": \[\s*\{(.*?)\}\s*for r in rows', sensor, re.S).group(1)
     keys = set(re.findall(r'"(\w+)":', row))
