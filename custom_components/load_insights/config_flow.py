@@ -459,7 +459,7 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
     def __init__(self) -> None:
         self._naming_selected: tuple | None = None
         self._pending_grid: dict | None = None
-        self._naming_rows: list[tuple] = []    # menu position -> (meter, signature id), the grid's under ""
+        self._naming_rows: list[tuple] = []    # menu position -> (meter, pair id), the grid's under ""
         self._naming_group: str | None = None
         self._naming_groups: list[str] = []
         self._pending_links: dict | None = None   # what Done relinks and links - see _links
@@ -648,9 +648,9 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         partners, by_ref = {}, {}
         for meter in dict.fromkeys(m for (m, _), _ in shown):
             det = runner.fleet._det(meter)
-            by_ref.update(((meter, x.id), x) for x in det.signatures)
+            by_ref.update(((meter, x.id), x) for x in det.pairs)
             # the other settings each load may be of the same device as
-            for group in suggest_levels(det.signatures, det.recent) + input_groups(det.signatures):
+            for group in suggest_levels(det.pairs, det.recent) + input_groups(det.pairs):
                 for i in group:
                     partners[(meter, i)] = list(dict.fromkeys(partners.get((meter, i), [])
                                                               + [(meter, g) for g in group if g != i]))
@@ -736,12 +736,12 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
 
     def _picked(self):
         """The runner, the load chosen from the list as (meter, id), and its
-        signature - None for the runner, or the load and its signature."""
+        pair - None for the runner, or the load and its pair."""
         runner = runner_of(self.config_entry)
         if runner is None:
             return None, None, None
         ref = self._naming_selected
-        sig = runner.fleet.signature(ref) if ref is not None else None
+        sig = runner.fleet.pair(ref) if ref is not None else None
         return runner, (ref if sig is not None else None), sig
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):

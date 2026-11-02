@@ -48,11 +48,11 @@ def first_change(rows: List[dict], hours: List[dict]) -> Optional[int]:
 
 
 def vanished_into(before: Dict[str, list], after: Dict[str, list]) -> Dict[str, List[str]]:
-    """name -> the names a rename or an adoption left with no signature,
-    every one of whose signatures now wears that name - between two
+    """name -> the names a rename or an adoption left with no pair,
+    every one of whose pairs now wears that name - between two
     ``Fleet.names()``: a load named after another named one joins it, a
     name given a new one is renamed. Their meters' older history belongs
-    to it now. One whose signatures went partly elsewhere, or were
+    to it now. One whose pairs went partly elsewhere, or were
     forgotten, is in nothing: its history cannot be split."""
     wears = {ref: name for name, refs in after.items() for ref in refs}
     out: Dict[str, List[str]] = {}
@@ -88,8 +88,8 @@ def plan_carry(extra_kwh: Dict[int, float], covered_from: int, hours: List[dict]
                fives: List[dict]) -> Tuple[List[dict], List[dict], float]:
     """A named load's meter's statistics before the window, with energy from
     elsewhere added: a name that vanished into it (vanished_into: the
-    differences of its meter's recorded sum), the hours a signature kept
-    from before it was named (Signature.older).
+    differences of its meter's recorded sum), the hours a pair kept
+    from before it was named (Pair.older).
 
     ``extra_kwh`` is hour start (epoch s) -> kWh, only what is before
     ``covered_from`` counted - plan_rewrite writes the window from the

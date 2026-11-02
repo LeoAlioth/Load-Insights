@@ -1,5 +1,5 @@
 """The scorecard: per MEASURED load, how much of its energy the detector puts
-in that load's signatures, and how much of those signatures' energy is really
+in that load's pairs, and how much of those pairs' energy is really
 its own - in watt-hours, the way a named load's energy statistics will be
 right or wrong. Loads can also be PLANTED into the house reading, a square
 wave of known size and timing, to score a load no meter watches.
@@ -19,21 +19,21 @@ Two numbers per measured load L (2026-10-02; a boiler that used 10 kWh,
 L's measured energy is its meter's above its idle floor - the level it holds a
 tenth of the TIME, by time, since a meter that reports on change reads mostly
 while running; the floor's kWh is printed beside it. Attributed to L: every
-session in a signature L owns, one holding at least half of its energy - the
-signature that would be named after L. A session's energy is L's where L's
+session in a pair L owns, one holding at least half of its energy - the
+pair that would be named after L. A session's energy is L's where L's
 meter switched on with it (_started_with), as far as the meter drew above its
 floor while it ran (_above). Over a site: capture weighted by energy, impurity
 pooled (all wrong / all attributed).
 
 Beside them the SHARE-CREDITED pair (2026-10-04: the >= 50 % line flips -
-one signature moved the hidrofor 41 points): every signature counts for L by
-L's share of its energy instead of all-or-nothing - as if each signature were
+one pair moved the hidrofor 41 points): every pair counts for L by
+L's share of its energy instead of all-or-nothing - as if each pair were
 named after a load drawn by its share. Attributed to L: the sum of its energy
-in every signature; rightly: each signature's L-energy times L's share of it.
-The same figures where every signature is pure; smooth across the line.
+in every pair; rightly: each pair's L-energy times L's share of it.
+The same figures where every pair is pure; smooth across the line.
 
 Each site is scored against two truth sets (_tables), each one owner per
-signature: its DEVICES - every meter that holds no other: Home's seven plugs
+pair: its DEVICES - every meter that holds no other: Home's seven plugs
 under the grid connection plus Blaževa Soba (inside Hiša) and the office
 (inside Mansarda), a session credited to a device inside a circuit and never
 to the circuit - and its PARTITION: the meters directly under the main meter
@@ -44,7 +44,7 @@ over any charge the house did not draw - a portable unit charging elsewhere
 kitchen fridge under the incubator on Hiša's C (overnight #64) - a HEURISTIC
 truth, bench._kitchen_fridge_runs' runs off the 3EM's minimum envelope, each
 credited to the session starting within KITCHEN_RUN_S of it, scored over every
-session (a pulse beside it takes its overlap's share, never the signature).
+session (a pulse beside it takes its overlap's share, never the pair).
 
 Modes (bench.py's SUBS): hidden (SUBS=none - no meter fed, the main-meter
 estimate), circuits (SUBS=circuits - only the meters others hang under, Home's
@@ -270,7 +270,7 @@ def _started_with(rows: list, times: list, s) -> bool:
     not its reading ten seconds before: a 2.15 kW load at Home drops out for
     six seconds and restarts, and read against the reading before the drop it
     was nobody's run - 8.8 kWh of the Delavnica's, counted as wrongly
-    attributed once its signature was hers (2026-10-02)."""
+    attributed once its pair was hers (2026-10-02)."""
     first = sum(rows_[0][1] for rows_ in s.levels.values() if rows_)
     i, k, j = (bisect.bisect_right(times, s.start - 10.0), bisect.bisect_right(times, s.start),
                bisect.bisect_right(times, s.start + 60.0))
@@ -469,7 +469,7 @@ def _truth(rows: list) -> tuple:
 
 
 def _own(per_sig: dict, names) -> dict:
-    """signature -> the load among ``names`` holding the most of its energy,
+    """pair -> the load among ``names`` holding the most of its energy,
     where that is at least half of it."""
     out = {}
     for sid, row in per_sig.items():
@@ -485,10 +485,10 @@ def _rates(truth_wh: float, attributed_wh: float, correct_wh: float) -> tuple:
 
 
 def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scope=None) -> tuple:
-    """One truth set's scorecard, and which load owns which signature. A load
+    """One truth set's scorecard, and which load owns which pair. A load
     under 50 Wh over the replay is not scored, unless it is one of ``small``;
     one in ``scope`` (load -> (what it says of itself, per_sig over fewer
-    sessions)) is scored over those alone, its signatures owned as they
+    sessions)) is scored over those alone, its pairs owned as they
     decide: a meter whose history begins late over what it covers, a
     heuristic truth over the sessions it can judge."""
     owner = _own(per_sig, names)
@@ -501,7 +501,7 @@ def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scop
         mine = [(sid, sig_e[sid]) for sid, m in own.items() if m == n]
         right, of = sum(r[n] for _, r in mine), sum(r["total"] for _, r in mine)
         cap, imp = _rates(truth[n], of, right)
-        # share-credited: each signature L holds energy in, weighted by L's share of it
+        # share-credited: each pair L holds energy in, weighted by L's share of it
         held = [r for r in sig_e.values() if r.get(n, 0.0) > 0]
         s_of, s_in = sum(r[n] for r in held), sum(r[n] * r[n] / r["total"] for r in held)
         s_cap, s_imp = _rates(truth[n], s_of, s_in)
@@ -716,26 +716,26 @@ def energy(site: str, folder: str, dials: list) -> dict:
         floors[name] = (0.0, 0.0)
         for names in tables.values():
             names.append(name)
-    by_id = {x.id: x for x in det.signatures}
-    by_id.update({f"{n}#{x.id}": x for n, d in fleet.subs.items() for x in d.signatures})   # a meter's own, see sid_of
+    by_id = {x.id: x for x in det.pairs}
+    by_id.update({f"{n}#{x.id}": x for n, d in fleet.subs.items() for x in d.pairs})   # a meter's own, see sid_of
 
     def sid_of(s):
-        # the signature it stands in now, merges followed; one since evicted
+        # the pair it stands in now, merges followed; one since evicted
         # still counts - its runs were detected and their energy written
-        if s.parent_signature:                     # a meter's own signature's (Run.parent_signature): "Mansarda#11"
-            name, own = s.parent_signature
-            while own.parent_signature:            # ...or the meter's own run is a meter's inside it
-                name, own = own.parent_signature
-            cur = f"{name}#{fleet.subs[name]._current(own.signature_id)}" if own.signature_id is not None else None
-            return cur if cur in by_id else f"{name}#gone {own.signature_id}"
-        cur = det._current(s.signature_id) if s.signature_id is not None else None
-        return cur if cur in by_id else f"gone {s.signature_id}"
+        if s.parent_pair:                     # a meter's own pair's (Run.parent_signature): "Mansarda#11"
+            name, own = s.parent_pair
+            while own.parent_pair:            # ...or the meter's own run is a meter's inside it
+                name, own = own.parent_pair
+            cur = f"{name}#{fleet.subs[name]._current(own.pair_id)}" if own.pair_id is not None else None
+            return cur if cur in by_id else f"{name}#gone {own.pair_id}"
+        cur = det._current(s.pair_id) if s.pair_id is not None else None
+        return cur if cur in by_id else f"gone {s.pair_id}"
     sids = [sid_of(s) for s in filed]
     run_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], runs)
     kitchen_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], kitchen, KITCHEN_RUN_S)
 
     def attribute(keep=lambda s: True):
-        """(per signature: its energy, runs and each load's share; each
+        """(per pair: its energy, runs and each load's share; each
         load's credited sessions; Wh below the quality gate) over the sessions
         ``keep`` keeps."""
         per_sig: dict = {}
@@ -782,7 +782,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
     # a meter of EXTRA_SUBS is scored from its first reading - Home's fan and
     # blinds from 22 Sep; the fridges over the sessions credited a run the
     # finder found - it finds about half of them (2026-10-02: 46 of the 126
-    # runs of 49 W / 29 min in the fridges' main signature), and a session it
+    # runs of 49 W / 29 min in the fridges' main pair), and a session it
     # missed is not known to be anyone else's
     scope = {n: ({"from": devices[n][0][0]}, attribute(lambda s, t=devices[n][0][0]: s.start >= t)[0])
              for n in B.EXTRA_SUBS.get(site, {}) if n in devices}
@@ -828,7 +828,7 @@ def _print_run(res: dict, per_sig: dict, by_id: dict) -> None:
     total = res["detected_kwh"] * 1000.0
     print(f"  {res['dials']}   {res['signatures']} signatures with energy, {res['detected_kwh']:.0f} kWh detected in all"
           + (f", {res['gated_kwh']:.0f} kWh more left unattributed below the quality gate" if res["gated_kwh"] else ""))
-    # the signatures holding most of the detected energy: a blob here is
+    # the pairs holding most of the detected energy: a blob here is
     # energy no name will ever fit
     for sid, row in sorted(per_sig.items(), key=lambda kv: -kv[1]["total"])[:5]:
         sig = by_id.get(sid)
@@ -841,7 +841,7 @@ def _print_run(res: dict, per_sig: dict, by_id: dict) -> None:
               f"{'capture':>7s} {'impurity':>8s}  signatures (id, runs, kWh, share)   holds most")
         for name, g in sorted(tab["loads"].items(), key=lambda kv: -kv[1]["truth_kwh"]):
             sigs = " ".join(f"#{sid}:{n}x{kwh}kWh@{sh:.0%}" for sid, n, kwh, sh in g["sigs"][:4])
-            # ...and where the rest of its energy went: the signatures holding
+            # ...and where the rest of its energy went: the pairs holding
             # most of it, whether or not it is their majority
             went = sorted(((row.get(name, 0.0), sid, row) for sid, row in per_sig.items() if row.get(name, 0.0) > 0),
                           key=lambda x: x[0], reverse=True)[:3]   # ids mix numbers and "gone N"
@@ -877,10 +877,10 @@ def _near(t: float, bounds: list):
 
 
 def compare(a: list, b: list, bounds: list) -> list:
-    """Every session (phases, start, end, Wh, signature, its owner) that two
+    """Every session (phases, start, end, Wh, pair, its owner) that two
     slicings of the same history, ``a`` and ``b``, file differently: only in
     A, only in B, or matched by its start (the same, or within MOVED_S on the
-    same phases) with another start, end, size or signature. A signature of A
+    same phases) with another start, end, size or pair. A pair of A
     is "the same" as the one of B most of its matched sessions went to.
     Biggest first, each with how far it lies from the nearest pass boundary
     in ``bounds``."""
@@ -1305,8 +1305,8 @@ def check() -> None:
     # the floor: 5 W for 900 s, 1005 W for 100 s - the level of a tenth of the time
     wh, floor, floor_wh = _truth([(0.0, 5.0), (900.0, 1005.0), (1000.0, 5.0)])
     assert floor == 5.0 and round(wh, 2) == 27.78 and round(floor_wh, 2) == 1.39
-    # the owner's boiler: 10 kWh used, its signature 9.5 kWh of which 9 its own -
-    # capture 90 %, impurity 5.3 %; a signature nobody holds half of is nobody's
+    # the owner's boiler: 10 kWh used, its pair 9.5 kWh of which 9 its own -
+    # capture 90 %, impurity 5.3 %; a pair nobody holds half of is nobody's
     per_sig = {1: {"total": 9500.0, "n": 40, "Boiler": 9000.0, "Pump": 300.0},
                2: {"total": 1000.0, "n": 5, "Boiler": 400.0, "Pump": 450.0}}
     tab, owner = _table(per_sig, {"Boiler": 10000.0, "Pump": 2000.0}, {}, ["Boiler", "Pump"])
@@ -1315,11 +1315,11 @@ def check() -> None:
     assert tab["loads"]["Pump"]["capture"] == 0.0 and tab["loads"]["Pump"]["impurity"] is None
     assert round(tab["capture"], 2) == 0.75 and round(tab["impurity"], 3) == 0.053   # 9 of 12; 0.5 of 9.5
     assert _own(per_sig, ["Pump"]) == {}          # a truth set without the boiler: still nobody's
-    # share-credited: each signature by the load's share of it - 9000^2/9500 + 400^2/1000 right of 9400
+    # share-credited: each pair by the load's share of it - 9000^2/9500 + 400^2/1000 right of 9400
     assert round(b["capture_share"], 4) == 0.8686 and round(b["impurity_share"], 4) == 0.0759
-    p = tab["loads"]["Pump"]                      # nobody's signature #2 still credits it its 45 %
+    p = tab["loads"]["Pump"]                      # nobody's pair #2 still credits it its 45 %
     assert round(p["capture_share"], 4) == 0.106 and round(p["impurity_share"], 4) == 0.7174
-    # ...and smooth across the ownership line: 49 -> 51 % of a signature flips the headline, not the share
+    # ...and smooth across the ownership line: 49 -> 51 % of a pair flips the headline, not the share
     near = [_table({1: {"total": 100.0, "n": 1, "L": x}}, {"L": 100.0}, {}, ["L"])[0]["loads"]["L"] for x in (49.0, 51.0)]
     assert near[0]["capture"] == 0.0 and near[1]["capture"] == 0.51
     assert abs(near[1]["capture_share"] - near[0]["capture_share"]) < 0.021
@@ -1334,7 +1334,7 @@ def check() -> None:
                       [[(0.0, 50.0), (15.0, 150.0)], [(5.0, 10.0)]])
     assert rest == [(0.0, 50.0), (5.0, 40.0), (10.0, 240.0), (15.0, 140.0), (20.0, -60.0), (30.0, -60.0)]
     assert round(_held_wh([(0.0, 100.0), (10.0, 300.0)], 5.0, 20.0) * 3600) == 3500
-    # invariance: one the same (its signature renumbered), another end, one
+    # invariance: one the same (its pair renumbered), another end, one
     # missing, one moved, one extra; the boundary 10 s after the second start
     ref = [["a", 0.0, 60.0, 10.0, 1, None], ["a", 100.0, 160.0, 10.0, 1, None], ["b", 200.0, 260.0, 5.0, 2, None],
            ["a", 300.0, 360.0, 10.0, 1, None]]

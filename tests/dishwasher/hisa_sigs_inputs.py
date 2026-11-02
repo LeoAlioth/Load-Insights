@@ -4,7 +4,7 @@ B = W.B
 B._apply(["SUBS=prod", "HOUSE=prod", "SLICE=0", *sys.argv[1:]])
 fleet, filed, _ = B._run(W.FOLDER, "home")
 det = fleet.subs["Hiša"]
-sigs = [s for s in det.signatures if s.phases == "c" and 50 <= sum(s.power.values()) <= 70 and s.count >= 5]
+sigs = [s for s in det.pairs if s.phases == "c" and 50 <= sum(s.power.values()) <= 70 and s.count >= 5]
 print(f"Hiša 50-70 W signatures on c with 5+ runs: {len(sigs)}, runs {sum(s.count for s in sigs):.0f}")
 for s in sorted(sigs, key=lambda s: -s.count)[:12]:
     keys = {}

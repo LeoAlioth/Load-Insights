@@ -16,7 +16,7 @@ What is in it, and why:
   This is the part that answers "why is it predicting that".
 * ``scoring`` - the settled errors per lead, so an accuracy complaint can be
   checked rather than discussed.
-* ``detection`` - each meter's baselines and noise floors, the signature
+* ``detection`` - each meter's baselines and noise floors, the pair
   library with its locations, and the recent sessions.
 
 Nothing is redacted: this integration stores entity ids, statistic ids and
@@ -137,7 +137,7 @@ def _detection(runner) -> dict:
              "where_confidence": location_confidence(sig.locations, sig.count, parents),
              "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict(),
              "edge_story": edge_story(det.edges, sig)}
-            for sig in sorted(det.signatures, key=lambda x: (-x.evidence, -x.count))
+            for sig in sorted(det.pairs, key=lambda x: (-x.evidence, -x.count))
         ],
         "recent_sessions": det.recent[-60:],
         # the edge library: every kind of step the house meter takes, and
@@ -151,7 +151,7 @@ def _detection(runner) -> dict:
                              for p, st in d.phases.items()}
                       for name, d in [("", det), *sorted(runner.fleet.subs.items())]},
         "submeter_signatures": {
-            name: [_jsonable(s.to_dict()) for s in d.signatures]
+            name: [_jsonable(s.to_dict()) for s in d.pairs]
             for name, d in runner.fleet.subs.items()
         },
     }

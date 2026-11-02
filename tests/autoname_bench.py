@@ -1,15 +1,15 @@
-"""The auto-naming bar against real signatures (INS-21; plan docs/auto-naming-plan.md).
+"""The auto-naming bar against real pairs (INS-21; plan docs/auto-naming-plan.md).
 
     python3 tests/autoname_bench.py                # data/autoname/{home,kozolec,andrejg}.json + lib_{home,kozolec}.json
 
 Two sources per site, both read-only:
-  * the LIVE export of the detected-loads sensor's `signatures` attribute (with
+  * the LIVE export of the detected-loads sensor's `pairs` attribute (with
     the owner's names; carries no first/last-seen or level count, so those
     tests are skipped or read from the description),
   * `lib_<site>.json`: a production-style replay of the last ten days
-    (`tools/dumplib.py` style: every meter's signatures with all fields, NO
+    (`tools/dumplib.py` style: every meter's pairs with all fields, NO
     names - a replay has none).
-Prints, per source, every signature that clears the bar and, for the export,
+Prints, per source, every pair that clears the bar and, for the export,
 each hand-named load with what stopped it.
 """
 import json

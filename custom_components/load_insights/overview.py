@@ -87,7 +87,7 @@ def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
         return "\n".join(lines)
 
     det = runner.detector
-    sigs = det.signatures
+    sigs = det.pairs
     sessions = sum(s.count for s in sigs)
     named = [s for s in sigs if s.name]
     lines.append(f"**Load detection** - {'caught up' if runner.caught_up else 'still reading history'}, "

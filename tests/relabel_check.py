@@ -21,9 +21,9 @@ def golden(folder: str, site: str) -> list:
     fleet, filed, _ = B._run(folder, site)
     rows = []
     for s in filed:
-        who = s.parent_signature[0] if s.parent_signature else ""
+        who = s.parent_pair[0] if s.parent_pair else ""
         rows.append([round(s.start, 1), round(s.end, 1), s.phases.translate(BACK), round(s.energy_wh, 1), who,
-                     s.signature_id if s.signature_id is not None else -1])
+                     s.pair_id if s.pair_id is not None else -1])
     return sorted(rows)
 
 

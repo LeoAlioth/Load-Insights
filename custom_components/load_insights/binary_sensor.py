@@ -37,7 +37,7 @@ def _running_uid(entry_id: str, name: str) -> str:
 class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     """On while a running load is filed under this name, read one load at a
     time from the grid meter's runs (Fleet.running) - the same answer as the
-    dashboard's list, whatever else shares its phase. Signatures that share a
+    dashboard's list, whatever else shares its phase. Pairs that share a
     name are one device, so the entity is per NAME."""
 
     _attr_has_entity_name = True
@@ -59,7 +59,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         fleet = self._runner.fleet
         refs = fleet.names().get(self._name, [])
-        sigs = [s for s in (fleet.signature(r) for r in refs) if s is not None]
+        sigs = [s for s in (fleet.pair(r) for r in refs) if s is not None]
         return {
             # the grid's by id, a meter's as "Mansarda#11"; its phases are its own meter's
             "signatures": [ref_label(r) for r in refs],

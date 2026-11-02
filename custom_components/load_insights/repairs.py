@@ -84,12 +84,12 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     # INPUT it was pointed at is zero by definition, and ten days of backfill
     # over a flat line taught it nothing - which looked like a broken
     # detector rather than the wrong sensor (2026-09-17).
-    nothing = bool(cfg) and runner.caught_up and not runner.detector.signatures
+    nothing = bool(cfg) and runner.caught_up and not runner.detector.pairs
     _set(hass, entry, FOUND_NOTHING, nothing,
          {"samples": str(runner.samples_read if runner is not None else 0)})
 
     # A house that idles deeply negative is not a house. Nothing breaks -
-    # sessions open and close and signatures form - and every one of them is
+    # sessions open and close and pairs form - and every one of them is
     # nonsense, which is exactly why it needs saying (the owner's Home ran for days
     # at -6318 W on phase A, its grid meter read as the house with its sign
     # inverted and its solar never added back, 2026-09-22).
