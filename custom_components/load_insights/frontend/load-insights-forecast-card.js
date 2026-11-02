@@ -18,6 +18,10 @@ const HOUR = 3600e3;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const kw = (w) => (w >= 1000 ? `${(w / 1000).toFixed(1)}k` : `${Math.round(w)}`);
+/** The battery SOC forecast's rows say `soc` (%), every other forecast's say `kwh`. */
+const isSoc = (attrs) => attrs.detailedForecast?.[0]?.soc !== undefined;
+/** ... and with the pack's capacity known, also `stored_kwh`: what is left in it, drawn in kWh like the other forecasts' energy. */
+const hasKwhLeft = (attrs) => isSoc(attrs) && attrs.detailedForecast[0].stored_kwh !== undefined;
 
 class LoadInsightsForecastCard extends HTMLElement {
   static getConfigForm() {
@@ -98,14 +102,18 @@ class LoadInsightsForecastCard extends HTMLElement {
       (this.shadowRoot || this.attachShadow({ mode: "open" })).appendChild(this._card);
       this._card.innerHTML = `<style>${STYLE}</style>
         <div class="head"><div class="title"></div><div class="pick"></div></div>
-        <div class="legend">bars: actual · dotted: forecast · band: likely range (W)</div>
+        <div class="legend"></div>
         <div class="chart"></div>`;
     }
     this._card.querySelector(".title").textContent = this._config.title;
     this._renderPicker();
-    this._card.querySelector(".chart").innerHTML = this._selected
-      ? this._chart(this._hass.states[this._selected]?.attributes || {})
-      : `<div class="none">No forecasts found.</div>`;
+    const attrs = this._selected ? this._hass.states[this._selected]?.attributes || {} : {};
+    const chart = this._selected ? this._chart(attrs) : null;
+    this._card.querySelector(".legend").textContent = !chart ? ""
+      : hasKwhLeft(attrs) ? "line: actual · dotted: forecast (kWh left in the battery)"
+      : isSoc(attrs) ? "line: actual · dotted: forecast (%)" : "bars: actual · dotted: forecast · band: likely range (W)";
+    this._card.querySelector(".chart").innerHTML = chart
+      || `<div class="none">${this._selected ? "No forecast data yet." : "No forecasts found."}</div>`;
   }
 
   /** HA's own dropdown (ha-select), so the card matches the dashboard; a plain select where it is missing. */
@@ -155,19 +163,26 @@ class LoadInsightsForecastCard extends HTMLElement {
     const now = Date.now();
     const t0 = now - this._config.hours_back * HOUR, t1 = now + this._config.hours_ahead * HOUR;
     const inside = (r) => r.t >= t0 && r.t <= t1;
+    const soc = isSoc(attrs), stored = hasKwhLeft(attrs);
+    // The battery is a level, not an hourly energy: kWh left in it (or % without a capacity), one value per hour, no range.
+    const level = (p) => (stored ? p.stored_kwh : soc ? p.soc : 1000 * p.kwh);
+    const ok = (r) => Number.isFinite(r.v) && Number.isFinite(r.t);
     const ahead = (attrs.detailedForecast || []).map((p) => ({
-      t: +new Date(p.period_start), v: 1000 * p.kwh, lo: 1000 * (p.kwh_p10 ?? p.kwh), hi: 1000 * (p.kwh_p90 ?? p.kwh),
-    })).filter(inside);
-    const past = (attrs.history || []).map((p) => ({ t: +new Date(p.period_start), v: 1000 * p.kwh })).filter(inside);
+      t: +new Date(p.period_start), v: level(p),
+      lo: soc ? level(p) : 1000 * (p.kwh_p10 ?? p.kwh), hi: soc ? level(p) : 1000 * (p.kwh_p90 ?? p.kwh),
+    })).filter((r) => ok(r) && inside(r));
+    const past = (attrs.history || []).map((p) => ({ t: +new Date(p.period_start), v: level(p) })).filter((r) => ok(r) && inside(r));
+    if (!ahead.length && !past.length) return null;
     const W = 520, H = 230, L = 44, R = 8, T = 10, B = 28;
-    const top = Math.max(10, ...ahead.map((p) => p.hi), ...past.map((p) => p.v)) * 1.1;
+    const peak = Math.max(...ahead.map((p) => p.hi), ...past.map((p) => p.v));
+    const top = stored ? Math.max(attrs.capacity_kwh || 0, peak) * 1.05 : soc ? 100 : Math.max(10, peak) * 1.1;
     const X = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - R);
     const Y = (v) => T + (1 - v / top) * (H - T - B);
     let svg = "";
     for (let k = 0; k <= 4; k++) {
       const v = (top * k) / 4;
       svg += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="grid"/>
-        <text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end" class="axis">${kw(v)}</text>`;
+        <text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end" class="axis">${stored ? v.toFixed(v < 10 ? 1 : 0) : soc ? `${Math.round(v)}%` : kw(v)}</text>`;
     }
     for (let t = Math.ceil(t0 / HOUR) * HOUR; t <= t1; t += HOUR) {
       const d = new Date(t);
@@ -176,14 +191,18 @@ class LoadInsightsForecastCard extends HTMLElement {
       svg += `<text x="${X(t)}" y="${H - 10}" text-anchor="middle" class="axis">${label}</text>`;
     }
     const bar = Math.max(2, ((W - L - R) / ((t1 - t0) / HOUR)) * 0.8);
-    for (const p of past) {
-      svg += `<rect x="${X(p.t)}" y="${Y(p.v)}" width="${bar}" height="${Y(0) - Y(p.v)}" class="actual">
-        <title>${new Date(p.t).toLocaleString()}: ${Math.round(p.v)} W</title></rect>`;
+    if (soc && past.length) {
+      svg += `<path d="M${past.map((p) => `${X(p.t)},${Y(p.v)}`).join(" L")}" class="actualline"/>`;
+    } else {
+      for (const p of past) {
+        svg += `<rect x="${X(p.t)}" y="${Y(p.v)}" width="${bar}" height="${Y(0) - Y(p.v)}" class="actual">
+          <title>${new Date(p.t).toLocaleString()}: ${Math.round(p.v)} W</title></rect>`;
+      }
     }
     if (ahead.length) {
       const pts = (key) => ahead.map((p) => `${X(p.t)},${Y(p[key])}`);
-      svg += `<path d="M${pts("hi").join(" L")} L${pts("lo").reverse().join(" L")} Z" class="band"/>
-        <path d="M${pts("v").join(" L")}" class="line"/>`;
+      if (!soc) svg += `<path d="M${pts("hi").join(" L")} L${pts("lo").reverse().join(" L")} Z" class="band"/>`;
+      svg += `<path d="M${pts("v").join(" L")}" class="line"/>`;
     }
     svg += `<line x1="${X(now)}" x2="${X(now)}" y1="${T}" y2="${H - B}" class="now"/>
       <text x="${X(now) + 3}" y="${T + 10}" class="axis">now</text>`;
@@ -201,6 +220,7 @@ const STYLE = `
   .grid { stroke:var(--divider-color); }
   .axis { font-size:10px; fill:var(--secondary-text-color); }
   .actual { fill:rgba(120,170,120,0.65); }
+  .actualline { stroke:rgba(120,170,120,0.9); stroke-width:2; fill:none; }
   .band { fill:rgba(130,130,190,0.18); }
   .line { stroke:var(--primary-color); stroke-width:2; stroke-dasharray:4 3; fill:none; }
   .now { stroke:var(--secondary-text-color); stroke-dasharray:2 2; }

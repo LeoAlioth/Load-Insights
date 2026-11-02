@@ -731,7 +731,7 @@ class BatterySocForecastSensor(_GridBase):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 0
-    _unrecorded_attributes = frozenset({"detailedForecast"})
+    _unrecorded_attributes = frozenset({"detailedForecast", "history"})
 
     @property
     def available(self) -> bool:
@@ -749,11 +749,21 @@ class BatterySocForecastSensor(_GridBase):
         if not g or not g.battery_modelled:
             return {}
         socs = [h.soc for h in g.hours if h.soc is not None]
+        data: InsightsData = self.coordinator.data
+        capacity = data.site.battery_capacity_kwh or None
+
+        def row(when: str, soc: float) -> dict[str, Any]:
+            """One hour: the SOC and, with a known capacity, the kWh left in the pack."""
+            out = {"period_start": when, "soc": round(soc, 1)}
+            if capacity:
+                out["stored_kwh"] = round(soc / 100 * capacity, 2)
+            return out
+
         return {
-            "detailedForecast": [
-                {"period_start": h.when.isoformat(), "soc": round(h.soc, 1)}
-                for h in g.hours if h.soc is not None
-            ],
+            "detailedForecast": [row(h.when.isoformat(), h.soc) for h in g.hours if h.soc is not None],
+            # the last 48 h as they happened (the sensor's statistics), same shape - what a chart draws as the actual line
+            "history": [row(dt_util.utc_from_timestamp(ts).isoformat(), soc) for ts, soc in data.soc_history],
+            "capacity_kwh": round(capacity, 2) if capacity else None,
             "minimum": round(min(socs), 1) if socs else None,
             "maximum": round(max(socs), 1) if socs else None,
         }
