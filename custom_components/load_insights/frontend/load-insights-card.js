@@ -67,6 +67,17 @@ class LoadInsightsCard extends HTMLElement {
     return 2 + Math.min(this._config?.max_rows || 10, 10);
   }
 
+  // named loads the owner is sure of and hid from "Running now": by name, kept in this browser
+  _hidden() {
+    try { return new Set(JSON.parse(localStorage.getItem("load-insights-card-hidden") || "[]")); } catch (e) { return new Set(); }
+  }
+
+  _setHidden(names) {
+    try { localStorage.setItem("load-insights-card-hidden", JSON.stringify([...names])); } catch (e) { /* kept for this view only */ }
+    this._key = null;
+    this.hass = this._hass;
+  }
+
   _entity(kind) {
     const hass = this._hass;
     const set = this._config[kind === "library" ? "library_entity" : "detected_entity"];
@@ -86,7 +97,7 @@ class LoadInsightsCard extends HTMLElement {
     const det = this._entity("detected");
     const rows = this._rows(lib, det);
     // render only when what is shown changes, and never under a field being typed in
-    const key = JSON.stringify(rows) + JSON.stringify(this._named) + JSON.stringify(this._errors) +
+    const key = JSON.stringify(rows) + JSON.stringify(this._named) + JSON.stringify(this._errors) + JSON.stringify([...this._hidden()]) +
       `${lib?.entity_id}:${lib?.state === "unavailable"}:${det?.entity_id}:${det?.state === "unavailable"}`;
     if (key === this._key) return;
     if (this.contains(document.activeElement) && document.activeElement.tagName === "INPUT") {
@@ -135,13 +146,15 @@ class LoadInsightsCard extends HTMLElement {
     const sure = (num(c.min_certainty) ?? 10) / 100;
     // on top: what is running now unnamed, the grid's and every meter's (Fleet.running's rows)
     const on = (r) => now - Date.parse(r.since) / 1000;
+    const hidden = this._hidden();
     const running = (det?.attributes.running || [])
-      .filter((r) => !r.name && r.id !== null && r.id !== undefined && !this._named[`${r.meter ?? ""}#${r.id}`] &&
+      .filter((r) => r.id !== null && r.id !== undefined &&
+        (r.name ? !hidden.has(r.name) : !this._named[`${r.meter ?? ""}#${r.id}`]) &&
         within(r.watts, num(c.min_watts), num(c.max_watts)))
       .sort((a, b) => c.sort_by === "recent" ? on(a) - on(b) : c.sort_by === "length" ? on(b) - on(a) : b.watts - a.watts)
       .slice(0, max)
       .map((r) => ({
-        key: `${r.meter ?? ""}#${r.id}`, meter: r.meter ?? "", id: r.id, name: null,
+        key: `${r.meter ?? ""}#${r.id}`, meter: r.meter ?? "", id: r.id, name: r.name || null, rename: !!r.name,
         line: `${watts(r.watts)} on ${phases(r.phases)}, on for ${dur(on(r))}${r.where ? `, in ${r.where}` : ""}`,
         tag: r.tag || "",
       }));
@@ -192,6 +205,7 @@ class LoadInsightsCard extends HTMLElement {
     const c = this._config;
     const title = c.title ?? (c.mode === "running" ? "Running now" : "To name");
     const names = this._names(lib);
+    const hiddenCount = c.mode === "running" ? 0 : this._hidden().size;
     const source = c.mode === "running" ? det : lib;
     const body = !source
       ? `<div class="empty">Load Insights' ${c.mode === "running" ? "detected loads" : "signature library"} sensor was not found.</div>`
@@ -222,12 +236,14 @@ class LoadInsightsCard extends HTMLElement {
           .li-form button:disabled { opacity: 0.5; cursor: default; }
           .li-err { color: var(--error-color); font-size: 0.85em; margin-top: 4px; }
           .empty { padding: 0 16px 16px; color: var(--secondary-text-color); }
+          .li-hide { margin-left: auto; font-size: 0.85em; color: var(--secondary-text-color); cursor: pointer; white-space: nowrap; }
           .li-foot { padding: 0 16px 12px; font-size: 0.85em; }
           .li-foot a { color: var(--primary-color); }
         </style>
         <datalist id="li-names-${c.mode}">${names.map((n) => `<option value="${esc(n)}"></option>`).join("")}</datalist>
         <div class="li-rows">${body}</div>
-        <div class="li-foot"><a href="${INTEGRATION_URL}">Load Insights</a></div>
+        <div class="li-foot"><a href="${INTEGRATION_URL}">Load Insights</a>${hiddenCount
+          ? ` &middot; <a href="#" class="li-unhide">${hiddenCount} hidden - show again</a>` : ""}</div>
       </ha-card>`;
     this.querySelectorAll("form.li-form").forEach((f) => {
       const input = f.querySelector("input");
@@ -235,22 +251,29 @@ class LoadInsightsCard extends HTMLElement {
       input.addEventListener("blur", () => { if (this._pending) { this._pending = false; this._key = null; this.hass = this._hass; } });
       f.addEventListener("submit", (ev) => { ev.preventDefault(); this._name(f.dataset.key, f.dataset.meter, Number(f.dataset.id), input.value.trim(), f); });
     });
+    this.querySelectorAll("input.li-hide-box").forEach((cb) => cb.addEventListener("change", () => {
+      const names = this._hidden();
+      names.add(cb.dataset.name);
+      this._setHidden(names);
+    }));
+    this.querySelector("a.li-unhide")?.addEventListener("click", (ev) => { ev.preventDefault(); this._setHidden(new Set()); });
   }
 
   _row(r) {
     if (r.header) return `<div class="li-section">${esc(r.header)}</div>`;
     const head = r.name
-      ? `<span class="li-name">${esc(r.name)}</span>`
+      ? `<span class="li-name">${esc(r.name)}</span>${r.rename ? ` <a class="li-id" href="${INTEGRATION_URL}">#${esc(r.id)}</a>` : ""}`
       : `<span class="li-name">Unnamed</span> <a class="li-id" href="${INTEGRATION_URL}">#${esc(r.id)}</a>`;
-    const form = r.name ? "" : `
-      <form class="li-form" data-key="${esc(r.key)}" data-meter="${esc(r.meter)}" data-id="${esc(r.id)}">
-        <input type="text" list="li-names-${this._config.mode}" placeholder="Name it, or pick a name in use to join it"
-               value="${esc(this._typed[r.key] || "")}">
-        <button type="submit">Name</button>
+    const form = r.name && !r.rename ? "" : `
+      <form class="li-form" data-key="${esc(r.key)}" data-meter="${esc(r.meter)}" data-id="${esc(r.id)}"${r.rename ? ' data-rename="1"' : ""}>
+        <input type="text" list="li-names-${this._config.mode}" placeholder="${r.rename ? "Rename it, or pick a name in use to join it" : "Name it, or pick a name in use to join it"}"
+               value="${esc(this._typed[r.key] ?? (r.rename ? r.name : ""))}">
+        <button type="submit">${r.rename ? "Rename" : "Name"}</button>
       </form>
       ${this._errors[r.key] ? `<div class="li-err">${esc(this._errors[r.key])}</div>` : ""}`;
     return `<div class="li-row">
-      <div class="li-top">${head}${r.tag ? `<span class="li-tag">${esc(r.tag)}</span>` : ""}</div>
+      <div class="li-top">${head}${r.tag ? `<span class="li-tag">${esc(r.tag)}</span>` : ""}${r.rename
+        ? `<label class="li-hide" title="Sure of this name: stop showing it here"><input type="checkbox" class="li-hide-box" data-name="${esc(r.name)}"> Hide</label>` : ""}</div>
       <div class="li-line">${esc(r.line)}</div>${form}</div>`;
   }
 
@@ -263,7 +286,7 @@ class LoadInsightsCard extends HTMLElement {
     if (meter) data.meter = meter;
     try {
       await this._hass.callService("load_insights", "name_load", data);
-      this._named[key] = name;
+      if (!form.dataset.rename) this._named[key] = name;
       delete this._typed[key];
     } catch (err) {
       this._errors[key] = err?.message || String(err);
