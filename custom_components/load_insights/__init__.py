@@ -46,13 +46,34 @@ def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
 CARD_FILES = ("load-insights-card.js", "load-insights-forecast-card.js")
 
 
+async def _ensure_lovelace_resource(hass: HomeAssistant, url: str) -> None:
+    """Keep one Lovelace resource (a module) for ``url``, its ``?v=`` hash updated to this build's.
+
+    A resource, not frontend.add_extra_js_url: HA's frontend (2026.10) swaps in a scoped custom-element registry
+    polyfill after the extra modules have run, and forgets what they defined ("Custom element doesn't exist");
+    resources load after it, like every HACS card (2026-11-02). A copy of Load Juggler's - change both."""
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+    data = hass.data.get(LOVELACE_DATA)
+    if data is None or data.resource_mode != "storage":
+        _LOGGER.warning("Dashboard resources are kept in YAML - add %s (type module) by hand", url)
+        return
+    resources = data.resources
+    await resources.async_get_info()  # loads the stored list before it is read
+    base = url.split("?")[0]
+    mine = [item for item in resources.async_items() if item.get("url", "").split("?")[0] == base]
+    if not mine:
+        await resources.async_create_item({"res_type": "module", "url": url})
+    elif mine[0]["url"] != url or mine[0].get("type") != "module":
+        await resources.async_update_item(mine[0]["id"], {"res_type": "module", "url": url})
+
+
 async def _register_card(hass: HomeAssistant) -> None:
-    """Serve the Load Insights cards and load them on every dashboard (the owner, 2026-10-31), so they need no
+    """Serve the Load Insights cards and keep each a dashboard resource (the owner, 2026-10-31), so they need no
     resource added by hand. Each URL carries a hash of its file: a new build's card replaces a cached one."""
     import hashlib
     from pathlib import Path
 
-    from homeassistant.components.frontend import add_extra_js_url
     from homeassistant.components.http import StaticPathConfig
 
     folder = Path(__file__).parent / "frontend"
@@ -63,7 +84,7 @@ async def _register_card(hass: HomeAssistant) -> None:
         [StaticPathConfig(f"/load_insights/{name}", str(folder / name), False) for name in CARD_FILES]
     )
     for name, digest in digests.items():
-        add_extra_js_url(hass, f"/load_insights/{name}?v={digest}")
+        await _ensure_lovelace_resource(hass, f"/load_insights/{name}?v={digest}")
 
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
