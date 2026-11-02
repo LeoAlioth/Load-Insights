@@ -141,6 +141,8 @@ class InsightsData:
     # series key -> Ledger (site, remainder, each device by statistic id)
     ledgers: Dict[str, Ledger] = None  # type: ignore[assignment]
     grid: Optional[GridForecast] = None
+    # ((hour start timestamp, SOC %), ...) over the last 48 h, from the battery SOC sensor's statistics
+    soc_history: tuple = ()
     # SOC planning: sensor (target / minimum / excess) -> {value, attributes, held_since}; None while it has never read
     plan: Dict[str, Optional[dict]] = None  # type: ignore[assignment]
     # One forecast per individually metered device, keyed by its statistic id.
@@ -442,8 +444,14 @@ class InsightsCoordinator(DataUpdateCoordinator):
         except Exception:  # noqa: BLE001 - shadow mode must never take the forecasts with it
             _LOGGER.exception("Heat nudge failed; its sensors keep their last readings")
             heat = (self.data.heat if self.data is not None else None) or {}
+        try:
+            soc_history = await self._soc_history(site, now)
+        except Exception:  # noqa: BLE001 - the SOC sensor then has no actual line, the forecasts go on
+            _LOGGER.exception("Battery SOC history not read")
+            soc_history = ()
         data = InsightsData(
             site=site, consumption=cons_fc, remainder=rem_fc, computed_at=now,
+            soc_history=soc_history,
             remainder_complete_since=complete_since,
             devices_without_statistics=tuple(labels.get(m, m) for m in missing),
             devices=device_fc,
@@ -976,6 +984,16 @@ class InsightsCoordinator(DataUpdateCoordinator):
             if current is not None:
                 out[k] = current
         return out
+
+    async def _soc_history(self, site: SiteModel, now: datetime, hours: int = 48) -> tuple:
+        """((hour start, SOC %), ...) for the last ``hours`` hours: the first of the site's battery SOC sensors
+        that has hourly statistics - what the Battery SOC forecast sensor draws as the actual line."""
+        start = now - timedelta(hours=hours)
+        for entity_id in site.battery_soc:
+            means = await self._hourly_means(entity_id, start)
+            if means:
+                return tuple(sorted(means.items()))
+        return ()
 
     async def _hourly_means(self, entity_id: str, start: datetime,
                             units: Optional[Dict[str, str]] = None) -> Dict[float, float]:
