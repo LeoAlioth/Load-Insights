@@ -11,7 +11,7 @@ twice. A button entity on the same page is as close as it allows, so both
 sit in CONTROLS - the card directly beside device info - rather than in the
 configuration card further down.
 
-Reset is destructive: the signature library and the names given to it go,
+Reset is destructive: the pair library and the names given to it go,
 and a button fires on one click with no confirmation. The same action sits
 behind a confirmation on the overview page for anyone who wants that.
 """
@@ -54,7 +54,7 @@ class RefreshButton(_Base):
 
 
 class ResetDetectionButton(_Base):
-    """Forget the signature library and start the meter's backfill again."""
+    """Forget the pair library and start the meter's backfill again."""
 
     def __init__(self, entry: ConfigEntry, runner: DetectionRunner) -> None:
         super().__init__(entry, "reset_detection")

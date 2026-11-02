@@ -102,8 +102,8 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         """Name a load by its family id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
         the page's bar (2026-09-28). An empty name clears it. The name goes to every
-        signature of the family (2026-10-26) - given as the family id (load_id) or as any
-        of its signatures' ids (signature_id, the # the sensor and the cards show; the
+        pair of the family (2026-10-26) - given as the family id (load_id) or as any
+        of its pairs' ids (signature_id, the # the sensor and the cards show; the
         two id spaces overlap, so the field says which, 2026-10-30)."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
         meter = (call.data.get("meter") or "").strip()
@@ -117,7 +117,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         if runner is None:
             # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        sig = runner.fleet.family_head(ref) if family else runner.fleet.signature(ref)
+        sig = runner.fleet.family_head(ref) if family else runner.fleet.pair(ref)
         was = sig.name if sig is not None else None
         names_before = set(runner.fleet.names())
         if not await runner.async_rename(ref, name, family=family):

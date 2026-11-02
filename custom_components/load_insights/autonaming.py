@@ -79,7 +79,7 @@ class AutoNamer:
             "tombs": [t.to_dict() for t in self.tombs], "added": self.added, "declined": self.declined})
 
     def reset(self, forget_names: bool) -> None:
-        """A detection reset: signature ids mean nothing any more, so the
+        """A detection reset: pair ids mean nothing any more, so the
         candidates go. Our names are carried like any other (orphan names) unless
         ``forget_names``, which drops them and their marks too; tombstones stay
         (they describe loads, not ids)."""
@@ -126,9 +126,9 @@ class AutoNamer:
             await self._save()
 
     def _owner_names(self) -> List[Tuple[str, Tuple[str, int], object]]:
-        """(name, ref, signature) of every named signature."""
+        """(name, ref, pair) of every named pair."""
         r = self._runner
-        return [(sig.name, (meter, sig.id), sig) for meter, det in r.fleet.detectors() for sig in det.signatures if sig.name]
+        return [(sig.name, (meter, sig.id), sig) for meter, det in r.fleet.detectors() for sig in det.pairs if sig.name]
 
     async def _name(self) -> bool:
         r = self._runner
@@ -228,9 +228,9 @@ class AutoNamer:
 
     def _home_meter(self, refs) -> Optional[str]:
         """The energy statistic of the meter a named load lives in, for its Energy dashboard entry's parent (the
-        owner, 2026-11-01: Fridge 2, a signature of the Skrinja & Omara plug's own library, sat at the top level):
+        owner, 2026-11-01: Fridge 2, a pair of the Skrinja & Omara plug's own library, sat at the top level):
         the one meter whose own library holds the name; for a name only the grid holds, the meter its biggest
-        signature was seen in (most_specific); None when that is no meter or several."""
+        pair was seen in (most_specific); None when that is no meter or several."""
         from .insights.detect import most_specific      # detection imports this module
         r = self._runner
         meters = {m for m, _ in refs if m}
@@ -239,7 +239,7 @@ class AutoNamer:
         if meters:
             home = meters.pop()
         else:
-            sigs = [s for s in r.fleet.main.signatures if ("", s.id) in set(refs)]
+            sigs = [s for s in r.fleet.main.pairs if ("", s.id) in set(refs)]
             if not sigs:
                 return None
             head = max(sigs, key=lambda s: s.count)

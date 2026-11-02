@@ -28,6 +28,14 @@ const INTEGRATION_URL = "/config/integrations/integration/load_insights";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const watts = (w) => (w >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`);
+// "every 20-60 min": the usual start-to-start gap with its spread, or a single figure when it is steady
+const every = (s, mad) => {
+  const lo = Math.max(s - (mad || 0), 0), hi = s + (mad || 0);
+  const f = (x) => (x < 90 ? Math.round(x) : x < 5400 ? Math.round(x / 60) : +(x / 3600).toFixed(1));
+  const u = (x) => (x < 90 ? "s" : x < 5400 ? "min" : "h");
+  return f(lo) === f(hi) || u(lo) !== u(hi) && mad == null ? `every ~${f(s)} ${u(s)}`
+    : u(lo) === u(hi) ? `every ${f(lo)}-${f(hi)} ${u(hi)}` : `every ${f(lo)} ${u(lo)}-${f(hi)} ${u(hi)}`;
+};
 const dur = (s) => (s < 90 ? `~${Math.round(s)} s` : s < 5400 ? `~${Math.round(s / 60)} min` : `~${(s / 3600).toFixed(1)} h`);
 const ago = (s) => (s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`);
 const phases = (p) => String(p || "").split("").join("+");
@@ -173,7 +181,7 @@ class LoadInsightsCard extends HTMLElement {
         return {
           key: `#${s.id}`, meter: "", id: s.id, name: null,
           line: `${watts(w)} on ${phases(s.phases)}, runs ${dur(s.typical_duration_s || 0)}` +
-                `${perDay ? `, ${perDay >= 1 ? Math.round(perDay) : perDay.toFixed(1)}× a day` : ""}, seen ${s.count}×, ${where}, ` +
+                `${perDay ? `, ${every(s.typical_interval_s, s.interval_spread_s)}` : ""}, seen ${s.count}×, ${where}, ` +
                 `${Math.round((s.evidence || 0) * 100)} % certain, ${last}`,
           tag: guess,
         };

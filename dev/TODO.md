@@ -10,6 +10,11 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 ## To build
 
+### Naming refactor (the owner, 2026-11-02) - first, before the behaviour change
+
+1. [ ] **[REFACTOR] Rename in code, tests, card and docs: "signature" -> pair, the detector's auto-"family" -> signature.** Terms in AGENTS.md. Stored keys and the HA-facing names (sensor, attributes, services) stay readable by old data and old dashboards until the behaviour change lands.
+2. [ ] **[FEATURE] Behaviour: signatures are pairs joined on a shared rise or fall group (loose alike PF and length; overlap never joins; input-split siblings join); families only by the owner's name.** Bench against Hidrofor (3 rise groups, 1 fall) and the Kozolec compressor.
+
 ### The owner's list of 2026-10-30 (evening) - in this order
 
 1. [ ] **[FEATURE] Base load = the minimum of each hour of the day, over ten days.** What the sensor shows now is the

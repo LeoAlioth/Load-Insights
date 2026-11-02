@@ -1,6 +1,6 @@
-"""Auto-naming (INS-21): the bar on real signatures, hysteresis, markers and tombstones, numbering, the dashboard list.
+"""Auto-naming (INS-21): the bar on real pairs, hysteresis, markers and tombstones, numbering, the dashboard list.
 
-The Facts below are real signatures from the live exports of 2026-10-20 (Home,
+The Facts below are real pairs from the live exports of 2026-10-20 (Home,
 Kozolec, Andrej's site) and the ten-day replays; `tests/autoname_bench.py` runs
 the whole table.
 """
@@ -170,7 +170,7 @@ def test_what_the_owner_removed_or_renamed_is_never_made_again():
              "Heater 1": {"kind": "heater", "descriptor": A.descriptor(heater())}}
     kept, tombs = A.reconcile(marks, ["Heater 1", "Kitchen fridge"])     # Fridge 1 was renamed away
     assert list(kept) == ["Heater 1"] and [t.name for t in tombs] == ["Fridge 1"]
-    again = {"#1": fridge(ref=("", 7), watts=70.0)}                       # the same fridge, a new signature
+    again = {"#1": fridge(ref=("", 7), watts=70.0)}                       # the same fridge, a new pair
     assert A.decide(again, ready_cands(again), kept, tombs, PATTERNS, []) == []
     other = {"#2": fridge(ref=("", 8), watts=250.0)}                      # another size is not buried
     assert [n for _, n, _ in A.decide(other, ready_cands(other), kept, tombs, PATTERNS, [])] == ["Fridge 1"]
@@ -268,7 +268,7 @@ def test_a_hand_named_load_goes_on_the_dashboard_with_its_power_and_a_rename_mov
 
 
 def test_a_named_load_goes_under_the_meter_it_lives_in_and_ours_are_moved_there():
-    """The owner, 2026-11-01: Fridge 2, a signature of the Skrinja & Omara
+    """The owner, 2026-11-01: Fridge 2, a pair of the Skrinja & Omara
     plug's own library, sat at the top level of the Energy dashboard. A named
     load goes in under its meter; one of ours already listed is moved under it;
     the owner's own entries, and a parent set by hand on one of ours where we

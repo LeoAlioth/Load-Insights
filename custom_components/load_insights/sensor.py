@@ -29,7 +29,7 @@ from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsD
 from .detection import (DetectionRunner, base_load_entities, base_load_label, base_load_uid, device_uid, load_uid,
                         loaded)
 from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
-                              signature_rows, suggest_levels)
+                              pair_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -535,7 +535,7 @@ class _DetectionBase(CoordinatorEntity, SensorEntity):
 
 class DetectedLoadsSensor(_DetectionBase):
     """State: how many unexplained loads are on right now. Attributes: which,
-    the last sessions, and where the backfill stands. The signature library is
+    the last sessions, and where the backfill stands. The pair library is
     SignatureLibrarySensor's: moved off this sensor, which is rewritten every
     pass, because its 0.5 MB went to every connected dashboard each time."""
 
@@ -581,29 +581,29 @@ class DetectedLoadsSensor(_DetectionBase):
             # a one-figure inverter's phases on the grid's, from its voltages: "X (L1)" per phase
             "inverter_phases": {n: {c.upper(): display_phase(p) for c, p in m.items() if p in PHASES}
                                 for n, m in self._runner.fleet.inverter_phases.items()},
-            # which signatures are running now: the library (Signature library sensor) holds nothing that
+            # which pairs are running now: the library (Pair library sensor) holds nothing that
             # depends on the clock, so a dashboard joins the two
             "running_ids": sorted(running),
             # every load on now, once, as rows for the Load Insights card (frontend/load-insights-card.js): ``meter``
-            # and ``id`` are its signature ("" the grid's) - what Name a load takes as meter and signature_id
+            # and ``id`` are its pair ("" the grid's) - what Name a load takes as meter and signature_id
             "running": [
                 {"name": r["name"], "meter": r["ref"][0] if r["ref"] else None,
                  "id": r["ref"][1] if r["ref"] else None, "watts": round(r["watts"]),
                  "phases": r["phases"].upper(), "since": iso(r["since"]), "where": r["where"], "tag": r["tag"]}
                 for r in rows
             ],
-            # what each sub-meter has on now; its signatures are in the library sensor's "meters"
+            # what each sub-meter has on now; its pairs are in the library sensor's "meters"
             "meters_active": {name: [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])}
                                      for a in d.active(now)]
                               for name, d in self._runner.fleet.subs.items()},
             "meter_hierarchy": self._runner.parents,
             "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
-            # names whose signature a reset took, still looking for the load
+            # names whose pair a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
             # names detection gave by itself (insights/autoname.py), told from the owner's
             "auto_named": {n: m.get("kind") for n, m in sorted(self._runner.autonamer.marks.items())},
-            "looks_like_one_device": suggest_levels(det.signatures, det.recent),
+            "looks_like_one_device": suggest_levels(det.pairs, det.recent),
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
@@ -623,11 +623,11 @@ class DetectedLoadsSensor(_DetectionBase):
 
 
 class SignatureLibrarySensor(_DetectionBase):
-    """State: how many signatures the detector holds. Attributes: every
-    signature in words and figures, and each sub-meter's own.
+    """State: how many pairs the detector holds. Attributes: every
+    pair in words and figures, and each sub-meter's own.
 
     Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
-    pass and its signatures were 0.5 MB - every pass, to every connected
+    pass and its pairs were 0.5 MB - every pass, to every connected
     dashboard and phone, and into the state machine. Nothing here depends on
     the clock (``signature_rows``), so a pass that filed nothing writes nothing.
     Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
@@ -641,7 +641,7 @@ class SignatureLibrarySensor(_DetectionBase):
 
     @property
     def native_value(self) -> int:
-        return len(self._runner.detector.signatures)
+        return len(self._runner.detector.pairs)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -649,11 +649,11 @@ class SignatureLibrarySensor(_DetectionBase):
         tz = dt_util.DEFAULT_TIME_ZONE
         parents = self._runner.parents
         return {
-            "signatures": signature_rows(det.signatures, tz, parents),
+            "signatures": pair_rows(det.pairs, tz, parents),
             "meters": {
                 name: {
                     "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
-                                   for x in sorted(d.signatures, key=lambda y: -y.count)],
+                                   for x in sorted(d.pairs, key=lambda y: -y.count)],
                     "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
                     "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
                 }

@@ -18,5 +18,5 @@ print("Mansarda filed", len(msess), "sessions;", sum(1 for s in msess if s.max_w
 for s in sorted(filed, key=lambda s: s.start):
     if s.energy_wh <= 0 or s.phases != "a" or s.max_w < 1200 or W.classify(s) != "dishwasher":
         continue
-    near = [(f(x.start), round(x.duration_s), x.phases, round(x.max_w), x.signature_id) for x in msess if abs(x.start - s.start) <= 120 and x.max_w >= 300]
-    print(f(s.start), f"{s.duration_s:5.0f}s", round(s.max_w), "W  owner", s.parent_signature[0] if s.parent_signature else "-", "sig", s.signature_id, "| Mansarda 300W+ sessions within 2 min:", near)
+    near = [(f(x.start), round(x.duration_s), x.phases, round(x.max_w), x.pair_id) for x in msess if abs(x.start - s.start) <= 120 and x.max_w >= 300]
+    print(f(s.start), f"{s.duration_s:5.0f}s", round(s.max_w), "W  owner", s.parent_pair[0] if s.parent_pair else "-", "sig", s.pair_id, "| Mansarda 300W+ sessions within 2 min:", near)
