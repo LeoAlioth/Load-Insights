@@ -829,8 +829,25 @@ FAMILY_REACH_MADS = 3.0
 # spread is the noise's, the spread reaches every look-alike, and the join would make blobs out of loads
 # nobody could tell apart (Home, 2026-10-26: 14 families of 17-22 W steps made one). Also a count.
 FAMILY_REACH_NOISES = 50.0
+# Pairs that closed on the same stop (fall) group, on the same phases, are one signature when their power factors,
+# lengths and sizes are alike - loosely, since a load's rises differ (the hidrofor's three) and only the fall is
+# steady - and their runs never overlapped (_join_shared_stops; the owner, 2026-11-02). A pair counts for a stop
+# group when at least JOIN_STOP_MIN_RUNS of its runs closed there and they are JOIN_STOP_MIN_SHARE of all its
+# runs. JOIN_STOP_MIN_RUNS very high turns the rule off. The power-factor gap is this many times the usual
+# tolerance, lengths may differ by JOIN_LEN_FACTOR, per-phase watts by JOIN_POWER_FACTOR; more than
+# JOIN_OVERLAP_MAX run overlaps (of the RUN_MEMORY windows each) keeps two pairs apart: one device is never two at once.
+JOIN_STOP_MIN_RUNS = 3
+JOIN_STOP_MIN_SHARE = 0.2
+# ...and the pair at least this many noises (of its phases together) tall: a stop of a few tens of watts is shared by
+# every look-alike and its power factor and length say nothing (Home, 2026-11-03: a 35 W, 0.23-factor load of
+# Blaževa Soba joined with the office plug's 23 W ones). Also a count of noises, not watts.
+JOIN_STOP_NOISES = 15.0
+JOIN_PF_LOOSE = 2.0
+JOIN_LEN_FACTOR = 4.0
+JOIN_POWER_FACTOR = 1.25
+JOIN_OVERLAP_MAX = 1
 # The daily repair's hints that a family is two loads (_hint_split; spec
-# docs/specs/2026-10-26-pair-families.md section 11): its runs' lengths
+# docs/specs/2026-10-26-signature-families.md section 11): its runs' lengths
 # fall in two modes at least MATCH_DURATION_FACTOR apart AND the rarer mode
 # sits in a few hours of the day the other does not. Counts and shares, no
 # watts or seconds. A family remembers its last HINT_KEEP runs' (length,
@@ -6872,6 +6889,7 @@ class Detector:
                 if sigs[0].alike(other, noise, inputs=False):
                     self._join(sigs[0], other)
         self._join_neighbours()
+        self._join_shared_stops()
 
     def _join_neighbours(self) -> None:
         """One family from the pairs of start clusters that neighbour each other (FAMILY_REACH_MADS) on the
@@ -6894,6 +6912,60 @@ class Detector:
                 noise = max((self.phases[p].noise for p in a.phases if p in self.phases), default=MIN_NOISE_W)
                 if a.family != b.family and a.alike(b, noise, inputs=False):
                     self._join(a, b)
+
+    def _stops_of(self, sid: int) -> Dict[int, float]:
+        """The stop groups, after the daily joins, that pair ``sid``'s runs closed on, with how many each."""
+        out: Dict[int, float] = {}
+        for d, n in ((self._votes or {}).get(sid) or {}).items():
+            if d < 0:
+                stop = self._final((-d) % PAIR_ID_BASE)
+                out[stop] = out.get(stop, 0.0) + n
+        return out
+
+    @staticmethod
+    def _overlaps(a: "Pair", b: "Pair") -> int:
+        """In how many of their remembered run windows two pairs ran at once."""
+        return sum(1 for s1, e1 in a.runs for s2, e2 in b.runs if s1 < e2 and s2 < e1)
+
+    def _loosely_alike(self, a: "Pair", b: "Pair") -> bool:
+        """Alike enough to be one signature when they share a stop group (JOIN_*): the same phases, power
+        factors within a loose tolerance, lengths and per-phase watts within a factor, never running at once."""
+        if a.phases != b.phases or a is b:
+            return False
+        if a.pf is not None and b.pf is not None and \
+                abs(a.pf - b.pf) > JOIN_PF_LOOSE * pf_tolerance(a.pf_mad, b.pf_mad):
+            return False
+        lo, hi = sorted((max(a.duration_s, 1.0), max(b.duration_s, 1.0)))
+        if hi / lo > JOIN_LEN_FACTOR:
+            return False
+        for ph in a.phases:
+            x, y = sorted((max(a.power.get(ph, 0.0), 1.0), max(b.power.get(ph, 0.0), 1.0)))
+            if y / x > JOIN_POWER_FACTOR:
+                return False
+        return self._overlaps(a, b) <= JOIN_OVERLAP_MAX
+
+    def _join_shared_stops(self) -> None:
+        """One family (a signature, in the owner's terms of 2026-11-02) from the pairs whose runs closed on the
+        same stop group on the same phases, when they are loosely alike: the hidrofor's three rise groups share
+        one fall group of 808 W. Larger pairs first; _join still refuses a pair kept apart on purpose."""
+        if self._votes is None:
+            self._rebuild_votes()
+        by: Dict[Tuple[int, str], List["Pair"]] = {}
+        for sig in self.pairs:
+            noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in sig.phases)
+            if sum(sig.power.values()) < JOIN_STOP_NOISES * noise:
+                continue
+            stops = self._stops_of(sig.id)
+            total = sum(stops.values())
+            for stop, n in stops.items():
+                if n >= JOIN_STOP_MIN_RUNS and n >= JOIN_STOP_MIN_SHARE * total:
+                    by.setdefault((stop, sig.phases), []).append(sig)
+        for sigs in by.values():
+            sigs.sort(key=lambda x: -x.count)
+            for i, other in enumerate(sigs):
+                for keep in sigs[:i]:
+                    if keep.family != other.family and self._loosely_alike(keep, other) and self._join(keep, other):
+                        break
 
     def _join(self, keep: "Pair", other: "Pair") -> bool:
         """Put ``other``'s family into ``keep``'s, unless the two were kept apart on purpose: named apart, a run
