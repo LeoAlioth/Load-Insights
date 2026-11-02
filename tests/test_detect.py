@@ -6932,5 +6932,63 @@ def test_a_run_its_meter_shows_on_is_never_another_loads_close_hint():
         assert [x.start for x in closed] == ([] if plug else [T0]), (plug, closed)
 
 
+def _stop_shared(*groups, runs=((0.0, 100.0),), watts=850.0, **kw):
+    """A detector with one pair per ``(start, stop, pf, dur)``, each its own family, its runs closing on that
+    start/stop pair of step groups - the hidrofor's rises over one fall."""
+    det = D.Detector()
+    det._votes = {}
+    for i, (start, stop, pf, dur) in enumerate(groups, 1):
+        sig = _sig(i, watts, dur=dur, count=10, pf=pf, runs=list(runs) if i == 1 else [(1000.0 * i, 1000.0 * i + dur)], **kw)
+        sig.family = det._new_family()
+        det.pairs.append(sig)
+        det._votes[i] = {-(start * D.PAIR_ID_BASE + stop): 10.0}
+    return det
+
+
+def test_pairs_closing_on_one_fall_group_are_one_signature():
+    """The hidrofor (Home, 2026-11-02): three rise groups and one fall group are three pairs, one signature."""
+    det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.97, 260.0), (3, 9, 0.88, 50.0))
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 1
+
+
+def test_pairs_with_different_fall_groups_stay_apart():
+    det = _stop_shared((1, 9, 0.93, 150.0), (2, 8, 0.93, 150.0))
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+
+
+def test_pairs_that_ran_at_once_are_never_joined():
+    """One device is never two at once: runs overlapping in time are two devices on one fall size."""
+    det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.93, 150.0))
+    det.pairs[0].runs = [(0.0, 100.0), (500.0, 600.0), (900.0, 950.0)]
+    det.pairs[1].runs = [(50.0, 150.0), (550.0, 650.0), (920.0, 980.0)]
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+
+
+def test_pairs_with_far_apart_lengths_or_power_factors_are_not_joined():
+    det = _stop_shared((1, 9, 0.93, 20.0), (2, 9, 0.93, 150.0))
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+    det = _stop_shared((1, 9, 0.55, 150.0), (2, 9, 0.99, 150.0))
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+
+
+def test_a_stop_group_a_pair_barely_closes_on_does_not_join_it():
+    det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.93, 150.0))
+    det._votes[2] = {-(2 * D.PAIR_ID_BASE + 9): 2.0, -(2 * D.PAIR_ID_BASE + 7): 20.0}
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+
+
+def test_pairs_of_a_few_tens_of_watts_are_not_joined_on_a_shared_stop():
+    """A stop that small is shared by every look-alike, and says nothing about one device (Home, 2026-11-03)."""
+    det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.93, 150.0), watts=35.0)
+    det._join_shared_stops()
+    assert len({s.family for s in det.pairs}) == 2
+
+
 if __name__ == "__main__":
     run_main(globals())
