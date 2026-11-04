@@ -15,7 +15,7 @@ T0 = 1_789_000_000.0     # some epoch, arbitrary
 DT = 5.0
 
 
-def _sig(id, watts, dur=60.0, count=5, phases="a", pf=None, **kw):
+def _pair(id, watts, dur=60.0, count=5, phases="a", pf=None, **kw):
     """A pair of ``watts`` split evenly over ``phases``, first seen at 0
     and last at ``id`` unless ``kw`` says otherwise."""
     kw = {"first_seen": 0.0, "last_seen": float(id), **kw}
@@ -96,7 +96,7 @@ def test_a_load_the_reading_cannot_be_carrying_is_closed():
     assert phase(False)._unseen_stop(T0 + 300, 450.0) == []              # a reading with solar in it
 
 
-def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
+def test_a_two_phase_pulser_becomes_one_pair_on_a_plus_c():
     det = D.Detector()
     hours = 2
     a = series(hours * 3600, kiln())
@@ -104,11 +104,11 @@ def test_a_two_phase_pulser_becomes_one_signature_on_a_plus_c():
     b = series(hours * 3600, lambda s: 0.0, seed=2)
     closed = det.process({"a": a, "b": b, "c": c}, now_ts=T0 + hours * 3600 + 120)
     assert len(det.pairs) == 1, [s.describe(None) for s in det.pairs]
-    sig = det.pairs[0]
-    assert sig.phases == "ac" and sig.count >= 20, (sig.phases, sig.count)
-    assert abs(sig.power["a"] - 3000) < 150 and abs(sig.power["c"] - 3000) < 150, sig.power
-    assert 60 < sig.duration_s < 100 and 250 < sig.interval_s < 350, (sig.duration_s, sig.interval_s)
-    assert any(f"{w} kW on phases A and C" in sig.describe(None) for w in ("5.9", "6.0", "6.1")), sig.describe(None)
+    pair = det.pairs[0]
+    assert pair.phases == "ac" and pair.count >= 20, (pair.phases, pair.count)
+    assert abs(pair.power["a"] - 3000) < 150 and abs(pair.power["c"] - 3000) < 150, pair.power
+    assert 60 < pair.duration_s < 100 and 250 < pair.interval_s < 350, (pair.duration_s, pair.interval_s)
+    assert any(f"{w} kW on phases A and C" in pair.describe(None) for w in ("5.9", "6.0", "6.1")), pair.describe(None)
     assert all(s.phases == "ac" for s in closed)
 
 
@@ -713,9 +713,9 @@ def test_a_two_level_session_is_one_session_with_two_levels():
     b = series(3600, washer)
     det.process({"b": b}, now_ts=T0 + 3700)
     assert len(det.pairs) == 1
-    sig = det.pairs[0]
-    assert sig.phases == "b" and sig.count == 1 and round(sig.level_count) == 2, (sig.phases, sig.count, sig.level_count)
-    assert 1700 < sig.duration_s < 1900
+    pair = det.pairs[0]
+    assert pair.phases == "b" and pair.count == 1 and round(pair.level_count) == 2, (pair.phases, pair.count, pair.level_count)
+    assert 1700 < pair.duration_s < 1900
     rec = det.recent[-1]
     assert rec["levels"] == 2 and 0.42 < rec["kwh"] < 0.52, rec     # 2 kW x 10 min + 0.4 kW x 20 min = 0.467 kWh
 
@@ -924,9 +924,11 @@ def test_every_field_is_persisted_or_derived():
     PhaseState, Detector and Fleet is in its to_dict, or says it is derived -
     a cache, a hook set each pass, a reading fed again by the recorder -
     with metadata=DERIVED. (The ones stored under another name are listed;
-    the pairs keep the key they had as "signatures", for the saved state.)"""
+    the pairs keep the key they had as "signatures", and the signature counters
+    theirs from when they were "families", for the saved state.)"""
     import dataclasses
-    renamed = {"_pending": "pending_rises", "pairs": "signatures"}
+    renamed = {"_pending": "pending_rises", "pairs": "signatures", "next_signature": "next_family",
+               "signature_runs": "family_runs", "signature_eps": "family_eps"}
     for cls in (D.PhaseState, D.Detector, D.Fleet):
         keys = set(cls().to_dict())
         lost = [f.name for f in dataclasses.fields(cls) if not f.metadata.get("derived") and f.name not in renamed
@@ -1016,7 +1018,7 @@ def test_a_one_device_meters_run_lasts_as_long_as_the_meter_draws():
     step started is that meter's until the meter shows it stopped
     (PhaseState.owned, the converse of Fleet._meter_stop). With the phase
     quiet it always was. A young plug holds several devices, so the run is
-    its own pair's (Run.parent_signature)."""
+    its own pair's (Run.parent_pair)."""
     for busy in (False, True):
         filed, fleet, on, off = _plug_fleet(busy)
         # the plug's own detector: one 20 h run of its load (a 15 W wobble step
@@ -1197,7 +1199,7 @@ def test_a_meters_run_carries_only_a_step_it_can_hold():
 
 def _keep_filed(fleet):
     """Every house session the fleet files, and every one a meter's own
-    pair takes (Run.parent_signature), in order, as the bench keeps them."""
+    pair takes (Run.parent_pair), in order, as the bench keeps them."""
     filed, file, owns = [], fleet.main._file, fleet._meter_owns
 
     def keep(s, *a, **kw):
@@ -1213,12 +1215,12 @@ def _keep_filed(fleet):
 
 def _at(fleet, s, meter):
     """Is the house session ``s`` placed at ``meter``: its own pair's
-    (a meter holding several - Run.parent_signature), or filed in a house pair
+    (a meter holding several - Run.parent_pair), or filed in a house pair
     located there?"""
     if s.parent_pair:
         return s.parent_pair[0] == meter
-    sig = fleet.main.pair_of(s)
-    return bool(sig is not None and sig.locations.get(meter))
+    pair = fleet.main.pair_of(s)
+    return bool(pair is not None and pair.locations.get(meter))
 
 
 def test_a_meters_rise_inside_a_bigger_start_owns_its_part():
@@ -1296,10 +1298,10 @@ def test_a_total_only_meter_locates_by_size_and_learns_the_phase():
         fleet.process({"a": main_a[i:j], "b": main_b[i:j]}, {"boiler": {"a": boiler[i:j]}},
                       now_ts=main_b[j - 1][0], single={"boiler": True})
     fleet.process({}, {}, now_ts=end)
-    sig = fleet.main.pairs[0]
-    assert sig.phases == "b", sig.phases          # the main meter knows the phase
-    assert sig.location == "boiler", sig.locations
-    assert sig.locations["boiler"] >= sig.count * 0.8, (sig.locations, sig.count)
+    pair = fleet.main.pairs[0]
+    assert pair.phases == "b", pair.phases          # the main meter knows the phase
+    assert pair.location == "boiler", pair.locations
+    assert pair.locations["boiler"] >= pair.count * 0.8, (pair.locations, pair.count)
 
 
 def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
@@ -1311,9 +1313,9 @@ def test_a_one_device_meter_takes_only_the_phases_its_device_uses():
     fleet = D.Fleet()
     fleet.subs["pump"] = D.Detector()
     # the plug's own library is one load, so it holds one device by its shape...
-    fleet.subs["pump"].pairs.append(_sig(1, 880.0, 140.0, 50, first_seen=T0, last_seen=T0))
+    fleet.subs["pump"].pairs.append(_pair(1, 880.0, 140.0, 50, first_seen=T0, last_seen=T0))
     # ...and the house has placed the pump there, on A, often enough to know
-    fleet.main.pairs.append(_sig(1, 880.0, 140.0, 45, first_seen=T0, last_seen=T0,
+    fleet.main.pairs.append(_pair(1, 880.0, 140.0, 45, first_seen=T0, last_seen=T0,
                                       locations={"pump": D.METER_PHASES_MIN + 20}))
     assert fleet.meter_phases() == {"pump": "a"}
     two = D.Run("ab", T0 + 1000, T0 + 1140, {"a": [(T0 + 1000, 300.0)], "b": [(T0 + 1000, 420.0)]})
@@ -1344,8 +1346,8 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     a session on such an on-period is credited to the thermostat, and a switch
     is deeper than the circuit meter that saw it too (2026-09-28)."""
     fleet = D.Fleet()
-    sig = _sig(1, 640.0, 120.0, 1, phases="c", first_seen=T0, last_seen=T0)
-    fleet.main.pairs.append(sig)
+    pair = _pair(1, 640.0, 120.0, 1, phases="c", first_seen=T0, last_seen=T0)
+    fleet.main.pairs.append(pair)
     fleet.switch_on[D.SWITCH_PREFIX + "climate.mat"] = {T0 + 1000: T0 + 1120, T0 + 5000: None}
     fleet._now = T0 + 6000.0                                                  # the clock is past the off
 
@@ -1363,7 +1365,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     assert fleet._switch_for(session(T0 + 1002, T0 + 2400), 6.0) == name     # is not known yet, whatever a pass read
     fleet._now = T0 + 6000.0
     # once it has shown its phase, a load on another one is not its own
-    sig.locations[name] = D.METER_PHASES_MIN
+    pair.locations[name] = D.METER_PHASES_MIN
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "a"), 6.0) is None
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "c"), 6.0) == name
     # seen by the circuit AND switched by the thermostat: the thermostat's
@@ -1389,11 +1391,11 @@ def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
         fleet.process({"a": main_a[i:j], "b": main_b[i:j], "c": main_c[i:j]},
                       {"workshop": {"a": ws_a[i:j], "b": ws_b[i:j], "c": ws_c[i:j]}}, now_ts=main_a[j - 1][0])
     fleet.process({}, {}, now_ts=end)
-    sigs = {s.phases: s for s in fleet.main.pairs}
-    assert set(sigs) == {"ac", "b"}, [s.describe(None) for s in fleet.main.pairs]
-    assert sigs["ac"].location == "workshop", sigs["ac"].locations
-    assert sigs["b"].location == "main" and sigs["b"].locations == {}
-    assert sigs["ac"].locations["workshop"] >= sigs["ac"].count * 0.8, (sigs["ac"].locations, sigs["ac"].count)
+    pairs = {s.phases: s for s in fleet.main.pairs}
+    assert set(pairs) == {"ac", "b"}, [s.describe(None) for s in fleet.main.pairs]
+    assert pairs["ac"].location == "workshop", pairs["ac"].locations
+    assert pairs["b"].location == "main" and pairs["b"].locations == {}
+    assert pairs["ac"].locations["workshop"] >= pairs["ac"].count * 0.8, (pairs["ac"].locations, pairs["ac"].count)
     # the workshop meter has its own, finer library: just the kiln
     assert len(fleet.subs["workshop"].pairs) == 1
     # and all of it survives a restart
@@ -1401,15 +1403,15 @@ def test_a_load_seen_downstream_is_located_there_and_one_not_seen_is_main():
     assert {s.phases: s.location for s in copy.main.pairs} == {"ac": "workshop", "b": "main"}
 
 
-def test_signatures_sharing_a_name_are_one_device():
+def test_pairs_sharing_a_name_are_one_device():
     det = D.Detector()
     a = series(1200, lambda s: 2000.0 if 100 <= s < 300 else 0.0)
     det.process({"a": a}, now_ts=T0 + 1300)
     b = series(1200, lambda s: 900.0 if 600 <= s < 800 else 0.0, seed=9)
     det.process({"b": b}, now_ts=T0 + 1300)
     assert len(det.pairs) == 2
-    for sig in det.pairs:
-        assert det.rename(sig.id, "Hob")
+    for pair in det.pairs:
+        assert det.rename(pair.id, "Hob")
     assert det.names() == {"Hob": sorted(s.id for s in det.pairs)}
     assert det.rename(999, "Nope") is False
     # clearing a name forgets it
@@ -1422,8 +1424,8 @@ def test_active_power_is_reported_per_name():
     a = series(400, lambda s: 3000.0 if s >= 100 else 0.0)
     det.process({"a": a}, now_ts=T0 + 400)
     # name the pair the open session will be guessed as
-    sig_id = det._guess("a", 3000.0, 250.0)
-    assert sig_id is None      # nothing closed yet, so no pair to guess
+    pair_id = det._guess("a", 3000.0, 250.0)
+    assert pair_id is None      # nothing closed yet, so no pair to guess
     tail = [(T0 + 400 + i * 5.0, 300.0) for i in range(1, 30)]
     det.process({"a": tail}, now_ts=T0 + 700)
     det.rename(det.pairs[0].id, "Kettle")
@@ -1458,15 +1460,15 @@ def test_levels_of_one_device_are_suggested_and_a_shared_load_is_not():
     assert D.suggest_levels(det.pairs, det.recent) == []
 
 
-def test_overlapping_signatures_are_never_suggested_as_one_device():
-    sigs = [
-        _sig(1, 1000.0, 300, first_seen=T0, last_seen=T0),
-        _sig(2, 2000.0, 300, first_seen=T0, last_seen=T0),
+def test_overlapping_pairs_are_never_suggested_as_one_device():
+    pairs = [
+        _pair(1, 1000.0, 300, first_seen=T0, last_seen=T0),
+        _pair(2, 2000.0, 300, first_seen=T0, last_seen=T0),
     ]
     recent = [{"signature": 1, "start": T0, "end": T0 + 600}, {"signature": 2, "start": T0 + 300, "end": T0 + 900}]
-    assert D.suggest_levels(sigs, recent) == []
+    assert D.suggest_levels(pairs, recent) == []
     apart = [{"signature": 1, "start": T0, "end": T0 + 300}, {"signature": 2, "start": T0 + 600, "end": T0 + 900}]
-    assert D.suggest_levels(sigs, apart) == [[1, 2]]
+    assert D.suggest_levels(pairs, apart) == [[1, 2]]
 
 
 def test_a_load_that_starts_while_another_runs_still_closes():
@@ -1506,9 +1508,9 @@ def test_a_real_load_is_still_found_while_the_sun_comes_up():
         return w + (2000.0 if 3000 <= s < 3600 else 0.0)
     det.process({"a": series(7200, ramp_and_load, base=3000.0)}, now_ts=T0 + 7300)
     assert len(det.pairs) == 1, [(x.power, x.duration_s) for x in det.pairs]
-    sig = det.pairs[0]
-    assert 1850 < sum(sig.power.values()) < 2150, sig.power
-    assert 550 < sig.duration_s < 650, sig.duration_s
+    pair = det.pairs[0]
+    assert 1850 < sum(pair.power.values()) < 2150, pair.power
+    assert 550 < pair.duration_s < 650, pair.duration_s
 
 
 def test_the_power_factor_is_the_loads_own_not_the_meters():
@@ -1696,10 +1698,10 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     and used to be pruned in the call that created it. The rest go weakest
     first."""
     hour = 3600.0
-    cap = D.MAX_SIGNATURES
+    cap = D.MAX_PAIRS
     det = D.Detector()
     det.pairs = [
-        _sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour)
+        _pair(i, 100.0 + i, 60.0, 1, last_seen=i * hour)
         for i in range(cap + 5)
     ]
     det.pairs[0].name = "Boiler"                # named, stalest of all, count 1
@@ -1711,18 +1713,18 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     assert len(det.pairs) == cap
     assert 0 in kept, "a named load was evicted"
     assert 1 in kept, "a well-evidenced load lost its place by pausing"
-    assert newest in kept, "a signature seen once was pruned before it could be seen twice"
+    assert newest in kept, "a pair seen once was pruned before it could be seen twice"
     # what went: the stalest singletons that are past the grace period
     assert kept.isdisjoint({2, 3, 4, 5, 6}), sorted(set(range(2, 7)) & kept)
 
     # a library FULL of established loads still admits a newcomer - over the cap
     det2 = D.Detector()
     det2.pairs = [
-        _sig(i, 100.0 + i, 60.0, 20, last_seen=i * hour)
+        _pair(i, 100.0 + i, 60.0, 20, last_seen=i * hour)
         for i in range(cap)
     ]
     now = cap * hour
-    det2.pairs.append(_sig(9999, 5000.0, 40.0, 1, first_seen=now, last_seen=now))
+    det2.pairs.append(_pair(9999, 5000.0, 40.0, 1, first_seen=now, last_seen=now))
     det2._prune(now=now)
     assert any(s.id == 9999 for s in det2.pairs)
     assert len(det2.pairs) == cap + 1, "established loads are not traded for a cap"
@@ -1733,7 +1735,7 @@ def test_a_named_load_is_never_the_first_thing_evicted():
     day = 86400.0
     det3 = D.Detector()
     det3.pairs = [
-        _sig(i, 100.0 + i, 60.0, 20, last_seen=500 * day + i)
+        _pair(i, 100.0 + i, 60.0, 20, last_seen=500 * day + i)
         for i in range(cap + 1)
     ]
     det3.pairs[0].last_seen = 0.0               # gone for five hundred days
@@ -1753,15 +1755,15 @@ def test_a_start_is_known_by_its_own_record_and_every_pair_it_starts():
     assert det.start_homes(7) == {1: 6.0, 2: 3.0} and det.start_homes(8) == {3: 4.0} and det.start_homes(None) == {}
 
 
-def test_a_signature_evicted_is_not_where_its_device_files_next():
+def test_a_pair_evicted_is_not_where_its_device_files_next():
     """_prune left the pair lookup holding what it had just evicted, so
     a device whose home it was filed its next run into a pair no longer
-    in the library - one signature_of then finds nowhere (the pass audit,
+    in the library - one pair_of then finds nowhere (the pass audit,
     2026-10-02)."""
     hour = 3600.0
-    cap = D.MAX_SIGNATURES
+    cap = D.MAX_PAIRS
     det = D.Detector()
-    det.pairs = [_sig(i, 100.0 + i, 60.0, 1, last_seen=i * hour) for i in range(cap + 5)]
+    det.pairs = [_pair(i, 100.0 + i, 60.0, 1, last_seen=i * hour) for i in range(cap + 5)]
     det.pair_home = {"7": {2: 5.0}}                 # cluster 7's runs went to pair 2, the stalest
     assert det._device_pair(7, None, (), "a").id == 2
     det._prune(now=(cap + 4) * hour)
@@ -1769,7 +1771,7 @@ def test_a_signature_evicted_is_not_where_its_device_files_next():
     assert det._device_pair(7, None, (), "a") is None
 
 
-def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
+def test_a_run_kept_out_of_a_pair_is_not_merged_back_into_it():
     """Kozolec 09-28 17:05: a 1 kW run of the well pump's start cluster while
     the pump's plug held at 0 W was kept out of the pump's pair (the plug
     did not start it) and founded one of its own - which the device merge,
@@ -1777,31 +1779,31 @@ def test_a_run_kept_out_of_a_signature_is_not_merged_back_into_it():
     fell under half its own and its 1.5 kWh went unowned. A pair born of
     a run kept out of others is never merged into them."""
     det = D.Detector()
-    det.pairs = [_sig(1, 1000.0, 300.0, 12, first_seen=T0, last_seen=T0)]
+    det.pairs = [_pair(1, 1000.0, 300.0, 12, first_seen=T0, last_seen=T0)]
     det.next_id = 2
     det.pair_home = {"7": {1: 12.0}}
     run = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 4560.0, levels={"a": [(T0 + 3600.0, 1000.0)]}, pair=(7, None))
     det._file(run, avoid=[1])
-    assert run.pair_id == 2 and det._sig(2).apart == [1]
+    assert run.pair_id == 2 and det._pair(2).apart == [1]
     assert det._merge_devices() == 0 and len(det.pairs) == 2
-    back = D.Pair.from_dict(json.loads(json.dumps(det._sig(2).to_dict())))
+    back = D.Pair.from_dict(json.loads(json.dumps(det._pair(2).to_dict())))
     assert back.apart == [1]
 
 
-def test_a_run_of_a_shared_start_cluster_joins_the_devices_family_only_when_it_fits_a_member():
+def test_a_run_of_a_shared_start_cluster_joins_the_devices_signature_only_when_it_fits_a_member():
     """Home's Hidrofor (827 W, 110 s) shares a start cluster with a 1 kW heater's starts: the heater's runs founded
-    pairs that adopted the pump's family, so the name covered their energy (2026-10-27: 20.2 % impure by
-    family against 10.4 per pair, 12.6 once a run that fits no member founds a family of its own)."""
+    pairs that adopted the pump's signature, so the name covered their energy (2026-10-27: 20.2 % impure by
+    signature against 10.4 per pair, 12.6 once a run that fits no member founds a signature of its own)."""
     det = D.Detector()
-    det.pairs = [_sig(1, 827.0, 110.0, 12, first_seen=T0, last_seen=T0, family=1)]
-    det.next_id, det.next_family = 2, 2
+    det.pairs = [_pair(1, 827.0, 110.0, 12, first_seen=T0, last_seen=T0, signature=1)]
+    det.next_id, det.next_signature = 2, 2
     det.pair_home = {"7": {1: 12.0}}
     heater = D.Run(phases="a", start=T0 + 3600.0, end=T0 + 3789.0, levels={"a": [(T0 + 3600.0, 1026.0)]}, pair=(7, None))
     det._file(heater, avoid=[1])               # kept out of the pump's pair: its plug did not start it
-    assert heater.pair_id == 2 and det._sig(2).family != 1
+    assert heater.pair_id == 2 and det._pair(2).signature != 1
     like = D.Run(phases="a", start=T0 + 7200.0, end=T0 + 7310.0, levels={"a": [(T0 + 7200.0, 840.0)]}, pair=(7, None))
     det._file(like, avoid=[1, 2])
-    assert like.pair_id == 3 and det._sig(3).family == 1
+    assert like.pair_id == 3 and det._pair(3).signature == 1
 
 
 def test_a_reading_with_generation_in_it_is_the_one_that_goes_negative():
@@ -1894,8 +1896,8 @@ def test_how_well_a_run_was_measured_decides_its_weight_and_its_tolerance():
     assert D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 3000.0)]}).confidence == 1.0
 
     # and it pulls the running mean less far
-    lax = _sig(2, 3000.0, 40.0, 10)
-    strict = _sig(3, 3000.0, 40.0, 10)
+    lax = _pair(2, 3000.0, 40.0, 10)
+    strict = _pair(3, 3000.0, 40.0, 10)
     import datetime as _dt
     lax.absorb(D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=4), _dt.timezone.utc)
     strict.absorb(D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, 2000.0)]}, samples=40), _dt.timezone.utc)
@@ -1908,11 +1910,11 @@ def test_a_named_load_that_changed_points_at_what_replaced_it():
     unnamed. The hint is recorded; nothing is renamed without the user."""
     day = 86400.0
     det = D.Detector()
-    old = _sig(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
+    old = _pair(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
     old.last_seen = 0.0
-    new = _sig(2, 2400.0, 42.0, 60, pf=0.95)
+    new = _pair(2, 2400.0, 42.0, 60, pf=0.95)
     new.last_seen = 9 * day
-    unrelated = _sig(3, 300.0, 42.0, 60, pf=0.95)      # nothing like it
+    unrelated = _pair(3, 300.0, 42.0, 60, pf=0.95)      # nothing like it
     unrelated.last_seen = 9 * day
     det.pairs = [old, new, unrelated]
     det._link_successors(now=10 * day)
@@ -1929,7 +1931,7 @@ def test_a_named_load_that_changed_points_at_what_replaced_it():
     assert old.successor_id is None
 
 
-def test_a_mature_signature_still_follows_a_load_that_changes():
+def test_a_mature_pair_still_follows_a_load_that_changes():
     """Without a cap the running mean ossifies: at 300 sightings a new one
     moves it by 0.3%, so a load that genuinely changes can never drag its own
     fingerprint across - the new sessions stop matching and found a sibling
@@ -1937,7 +1939,7 @@ def test_a_mature_signature_still_follows_a_load_that_changes():
     import datetime as _dt
     tz = _dt.timezone.utc
     run = lambda w: D.Run(phases="a", start=0.0, end=40.0, levels={"a": [(0.0, w)]}, samples=40)
-    young, mature = _sig(1, 3000.0, 40.0, 10), _sig(2, 3000.0, 40.0, 300)
+    young, mature = _pair(1, 3000.0, 40.0, 10), _pair(2, 3000.0, 40.0, 300)
     before = mature.power["a"]
     young.absorb(run(2000.0), tz)
     mature.absorb(run(2000.0), tz)
@@ -1949,10 +1951,10 @@ def test_a_mature_signature_still_follows_a_load_that_changes():
     assert mature.count == 301, "the history is kept, only the weight is capped"
 
     # over fifty runs at the new power it gets most of the way there
-    sig = _sig(3, 3000.0, 40.0, 300)
+    pair = _pair(3, 3000.0, 40.0, 300)
     for _ in range(50):
-        sig.absorb(run(2000.0), tz)
-    assert sig.power["a"] < 2650.0, sig.power["a"]
+        pair.absorb(run(2000.0), tz)
+    assert pair.power["a"] < 2650.0, pair.power["a"]
 
 
 def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
@@ -1961,14 +1963,14 @@ def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
     the kettle. Evidence is the gate; age is only the backstop for an
     appliance that has genuinely left the house."""
     day = 86400.0
-    cap = D.MAX_SIGNATURES
+    cap = D.MAX_PAIRS
     det = D.Detector()
     # a library already full of well-evidenced everyday loads
     det.pairs = [
-        _sig(i, 100.0 + i, 60.0, 30, last_seen=400 * day + i)
+        _pair(i, 100.0 + i, 60.0, 30, last_seen=400 * day + i)
         for i in range(cap)
     ]
-    rare = _sig(9999, 7000.0, 3600.0, 8, pf=0.99, last_seen=400 * day - 180 * day)
+    rare = _pair(9999, 7000.0, 3600.0, 8, pf=0.99, last_seen=400 * day - 180 * day)
     rare.power_mad, rare.duration_mad = 40.0, 20.0        # tight: real evidence
     det.pairs.append(rare)
     assert rare.evidence >= D.ESTABLISHED_EVIDENCE
@@ -1978,16 +1980,16 @@ def test_a_load_that_runs_twice_a_year_is_rare_not_stale():
     # and it is not offered a successor merely for being rare
     rare.name = "Kiln"
     rare.interval_s = 180 * day
-    other = _sig(1234, 7000.0, 3600.0, 20, pf=0.99)
+    other = _pair(1234, 7000.0, 3600.0, 20, pf=0.99)
     other.last_seen = 400 * day
     det.pairs = [rare, other]
     det._link_successors(now=400 * day)
     assert rare.successor_id is None, "a rare load was declared replaced for running rarely"
 
     # a load that runs every five minutes and has not for a week IS quiet
-    fast = _sig(5, 2000.0, 60.0, 200, pf=0.95, name="Pump")
+    fast = _pair(5, 2000.0, 60.0, 200, pf=0.95, name="Pump")
     fast.interval_s, fast.last_seen = 300.0, 0.0
-    heir = _sig(6, 2100.0, 60.0, 20, pf=0.95)
+    heir = _pair(6, 2100.0, 60.0, 20, pf=0.95)
     heir.last_seen = 8 * day
     det.pairs = [fast, heir]
     det._link_successors(now=8 * day)
@@ -2002,31 +2004,31 @@ def test_a_named_load_publishes_a_meter_that_only_ever_goes_up():
     import datetime as _dt
     tz = _dt.timezone.utc
     det = D.Detector()
-    sig = _sig(1, 2000.0, 60.0, 0, last_seen=0.0, name="Boiler")
-    det.pairs = [sig]
+    pair = _pair(1, 2000.0, 60.0, 0, last_seen=0.0, name="Boiler")
+    det.pairs = [pair]
     run = lambda i: D.Run(phases="a", start=T0 + i * 3600, end=T0 + i * 3600 + 1800.0,
                               levels={"a": [(T0 + i * 3600, 2000.0)]}, samples=20)
     seen = []
     for i in range(5):                       # half an hour at 2 kW is 1 kWh
-        sig.absorb(run(i), tz)
+        pair.absorb(run(i), tz)
         seen.append(det.energy_by_name()["Boiler"] / 1000.0)
     assert [round(x, 3) for x in seen] == [1.0, 2.0, 3.0, 4.0, 5.0], seen
     assert seen == sorted(seen)
 
     # two pairs under one name are one device, so their energy adds
-    twin = _sig(2, 2000.0, 60.0, 3, last_seen=0.0, name="Boiler")
+    twin = _pair(2, 2000.0, 60.0, 3, last_seen=0.0, name="Boiler")
     twin.hour_wh = [500.0] + [0.0] * 23
     det.pairs.append(twin)
     assert round(det.energy_by_name()["Boiler"] / 1000.0, 3) == 5.5
 
     # and a merge carries the history across rather than losing half of it
-    sig.swallow(twin)
-    det.pairs = [sig]
+    pair.swallow(twin)
+    det.pairs = [pair]
     assert round(det.energy_by_name()["Boiler"] / 1000.0, 3) == 5.5
-    assert sig.name == "Boiler"
+    assert pair.name == "Boiler"
 
     # an unnamed pair contributes nothing to anyone's meter
-    det.pairs.append(_sig(3, 9.0, 1.0, 1, last_seen=0.0))
+    det.pairs.append(_pair(3, 9.0, 1.0, 1, last_seen=0.0))
     assert set(det.energy_by_name()) == {"Boiler"}
 
 
@@ -2038,19 +2040,19 @@ def test_stored_state_carries_only_the_precision_it_has():
     meter reset."""
     import json
     det = D.Detector()
-    sig = _sig(1, 2000.123456789, 61.987654321, 40, pf=0.9543210987, first_seen=1_789_000_000.25,
+    pair = _pair(1, 2000.123456789, 61.987654321, 40, pf=0.9543210987, first_seen=1_789_000_000.25,
                last_seen=1_789_050_000.75, name="Boiler")
-    sig.hour_wh = [276.1825572400394] * 24
-    sig.day_wh = [946.9116248229 for _ in range(7)]
-    det.pairs = [sig]
+    pair.hour_wh = [276.1825572400394] * 24
+    pair.day_wh = [946.9116248229 for _ in range(7)]
+    det.pairs = [pair]
     blob = json.dumps(det.to_dict())
     copy = D.Detector.from_dict(json.loads(blob))
     back = copy.pairs[0]
     assert "276.1825572400394" not in blob, "full float precision still stored"
-    assert abs(back.energy_wh - sig.energy_wh) < 2.5, (back.energy_wh, sig.energy_wh)
-    assert abs(back.energy_wh - sig.energy_wh) / sig.energy_wh < 1e-4
+    assert abs(back.energy_wh - pair.energy_wh) < 2.5, (back.energy_wh, pair.energy_wh)
+    assert abs(back.energy_wh - pair.energy_wh) / pair.energy_wh < 1e-4
     # timestamps keep their precision - a rounded epoch second is a second lost
-    assert back.first_seen == sig.first_seen and back.last_seen == sig.last_seen
+    assert back.first_seen == pair.first_seen and back.last_seen == pair.last_seen
     assert back.name == "Boiler" and back.count == 40
     assert abs(back.power["a"] - 2000.1) < 0.05 and abs((back.pf or 0) - 0.9543) < 1e-4
 
@@ -2061,9 +2063,9 @@ def test_a_name_can_be_moved_to_the_load_that_replaced_it():
     did draw it - but stops it answering to a name nothing matches."""
     day = 86400.0
     det = D.Detector()
-    old = _sig(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
+    old = _pair(1, 3000.0, 40.0, 200, pf=0.95, name="Kiln")
     old.last_seen, old.hour_wh = 0.0, [1000.0] + [0.0] * 23
-    new = _sig(2, 2400.0, 42.0, 60, pf=0.95)
+    new = _pair(2, 2400.0, 42.0, 60, pf=0.95)
     new.last_seen, new.hour_wh = 9 * day, [250.0] + [0.0] * 23
     det.pairs = [old, new]
     det._link_successors(now=10 * day)
@@ -2170,7 +2172,7 @@ def test_a_load_that_keeps_a_clock_says_so_in_its_row():
     and that is what its owner would recognise first."""
     import datetime as _dt
     tz = _dt.timezone.utc
-    clock = _sig(1, 1800.0, 70.0, 60, pf=0.96)
+    clock = _pair(1, 1800.0, 70.0, 60, pf=0.96)
     clock.interval_s, clock.interval_mad = 840.0, 60.0      # every 14 min, tight
     clock.first_seen = clock.last_seen - 59 * 840.0             # 60 starts over 13.8 h...
     clock.hour_wh = [500.0] * 24
@@ -2186,7 +2188,7 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
     tells loads apart; everything else goes underneath, where it wraps."""
     import datetime as _dt
     tz = _dt.timezone.utc
-    clock = _sig(1, 1800.0, 70.0, 60, pf=0.96)
+    clock = _pair(1, 1800.0, 70.0, 60, pf=0.96)
     clock.interval_s, clock.interval_mad = 840.0, 60.0
     clock.first_seen = clock.last_seen - 5 * 86400.0
     clock.hour_wh = [500.0] * 24
@@ -2205,10 +2207,10 @@ def test_a_menu_row_is_a_short_headline_and_a_line_that_wraps():
 def test_a_possible_second_setting_is_described_not_numbered():
     """"set 4 of one device" meant nothing on a page where no other row was in
     set 4. Say what the other load looks like instead (2026-09-23)."""
-    other = _sig(9, 1000.0, 600.0, 20, pf=0.99)
+    other = _pair(9, 1000.0, 600.0, 20, pf=0.99)
     assert D.same_device_phrase([other]) == "maybe the same device as the 1.0 kW, 10 min load"
     assert D.same_device_phrase([]) == ""
-    three = [_sig(i, 1000.0 * i, 60.0, 20, pf=0.99) for i in (1, 2, 3)]
+    three = [_pair(i, 1000.0 * i, 60.0, 20, pf=0.99) for i in (1, 2, 3)]
     assert D.same_device_phrase(three).endswith("and 1 more"), D.same_device_phrase(three)
     assert D.on_phases("a") == "on phase A" and D.on_phases("ac") == "on phases A and C"
     assert D.on_phases("abc") == "on all three phases"
@@ -2248,15 +2250,15 @@ def test_the_step_threshold_is_measured_and_scales_with_what_is_running():
         [round(sum(s.power_by_phase().values())) for s in closed]
 
 
-def test_one_devices_signatures_are_one_and_a_name_survives():
+def test_one_devices_pairs_are_one_and_a_name_survives():
     """Filed by device, the pairs a device's runs went to are merged:
     the named one survives with the other's energy, two named apart stay
     apart (2026-09-30)."""
     def lib():
         det = D.Detector()
         det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=600.0)]        # one start cluster: one device
-        a = _sig(10, 600.0, 300.0, first_seen=T0, last_seen=T0)
-        b = _sig(11, 610.0, 300.0, 3, first_seen=T0, last_seen=T0)
+        a = _pair(10, 600.0, 300.0, first_seen=T0, last_seen=T0)
+        b = _pair(11, 610.0, 300.0, 3, first_seen=T0, last_seen=T0)
         a.hourly, b.hourly = {1000: 100.0}, {1000: 50.0, 4600: 20.0}
         det.pairs = [a, b]
         det.pair_home = {"1": {10: 5.0, 11: 3.0}}          # its runs went to two pairs
@@ -2333,14 +2335,14 @@ def test_the_charts_hold_energy_spread_over_the_hours_it_ran():
     start = datetime(2026, 9, 18, 23, 40, tzinfo=timezone.utc).timestamp()   # a Friday
     det._file(D.Run(phases="a", start=start, end=start + 6000,
                         levels={"a": [(start, 2000.0)]}, pf=1.0))
-    sig = det.pairs[0]
-    assert round(sum(sig.hour_wh)) == round(2000 * 6000 / 3600), sig.hour_wh
-    assert round(sig.hour_wh[23]) == 667 and round(sig.hour_wh[0]) == 2000, sig.hour_wh
-    assert round(sig.hour_wh[1]) == 667, sig.hour_wh
-    assert round(sig.day_wh[4]) == 667 and round(sig.day_wh[5]) == 2667, sig.day_wh
-    assert round(sum(sig.day_wh)) == round(sum(sig.hour_wh))
+    pair = det.pairs[0]
+    assert round(sum(pair.hour_wh)) == round(2000 * 6000 / 3600), pair.hour_wh
+    assert round(pair.hour_wh[23]) == 667 and round(pair.hour_wh[0]) == 2000, pair.hour_wh
+    assert round(pair.hour_wh[1]) == 667, pair.hour_wh
+    assert round(pair.day_wh[4]) == 667 and round(pair.day_wh[5]) == 2667, pair.day_wh
+    assert round(sum(pair.day_wh)) == round(sum(pair.hour_wh))
 
-    lines = D.day_histogram(sig.day_wh)
+    lines = D.day_histogram(pair.day_wh)
     assert lines[-1].strip().startswith("Mo"), lines[-1]
     assert len(lines) == 5, lines                                 # 3 rows, axis, labels
     assert D.day_histogram([0.0] * 7) == []
@@ -2659,7 +2661,7 @@ def test_a_three_phase_meters_channels_are_mapped_by_what_they_see():
     assert D._same_load(house, s, {"a": "b", "b": "c", "c": "a"}) and not D._same_load(house, s, {"b": "b", "c": "c"})
 
 
-def test_a_sub_meter_decides_which_signature_a_session_joins():
+def test_a_sub_meter_decides_which_pair_a_session_joins():
     """A detection on a sub-meter overrides the house's: the device's own meter
     saw it run, so its pair takes the run whatever the house's power
     reading of it looks like (2026-09-22; trusted whether or not it
@@ -2667,9 +2669,9 @@ def test_a_sub_meter_decides_which_signature_a_session_joins():
     det = D.Detector()
     for p in "a":
         det.phases[p].noise = 10.0
-    near = _sig(1, 1000.0, last_seen=0.0)
-    other = _sig(2, 1040.0, last_seen=0.0)
-    far = _sig(3, 3000.0, last_seen=0.0)
+    near = _pair(1, 1000.0, last_seen=0.0)
+    other = _pair(2, 1040.0, last_seen=0.0)
+    far = _pair(3, 3000.0, last_seen=0.0)
     det.pairs = [near, other, far]
     s = D.Run(phases="a", start=100.0, end=160.0, levels={"a": [(100.0, 1000.0)]})
     det._file(s, prefer=2)
@@ -2745,7 +2747,7 @@ def test_a_merge_owns_up_to_the_distance_it_just_closed():
     tightness, which feeds evidence, which feeds the confidence the user is
     shown - a merge made a pair look BETTER measured the further apart
     the things it merged."""
-    keep, other = _sig(1, 1000.0, 100.0, 10), _sig(2, 700.0, 100.0, 10)
+    keep, other = _pair(1, 1000.0, 100.0, 10), _pair(2, 700.0, 100.0, 10)
     keep.swallow(other)
     assert round(sum(keep.power.values())) == 850
     # 150 W from the new mean on each side, and neither had any spread before
@@ -2758,18 +2760,18 @@ def test_a_pool_may_not_be_stretched_wider_than_the_tolerance_that_made_it():
     """Merging is transitive: each one re-centres the band on the new mean,
     so A reaches B, the pair reaches C, and it walks. What it has already
     absorbed has to stay inside the tolerance that let the pair match."""
-    keep = _sig(1, 400.0, 100.0, 10)
-    assert keep.alike(_sig(2, 330.0, 100.0, 10), 115.0)          # 70 apart, inside 115
-    keep.swallow(_sig(2, 330.0, 100.0, 10))                      # now 365 W, spread 35
-    assert keep.alike(_sig(3, 260.0, 100.0, 10), 115.0)          # 105 apart, spread would be 70
-    keep.swallow(_sig(3, 260.0, 100.0, 10))                      # now 330 W, spread 70
+    keep = _pair(1, 400.0, 100.0, 10)
+    assert keep.alike(_pair(2, 330.0, 100.0, 10), 115.0)          # 70 apart, inside 115
+    keep.swallow(_pair(2, 330.0, 100.0, 10))                      # now 365 W, spread 35
+    assert keep.alike(_pair(3, 260.0, 100.0, 10), 115.0)          # 105 apart, spread would be 70
+    keep.swallow(_pair(3, 260.0, 100.0, 10))                      # now 330 W, spread 70
     # 200 W is 130 away - outside the band on its own terms
-    assert not keep.alike(_sig(4, 200.0, 100.0, 10), 115.0)
+    assert not keep.alike(_pair(4, 200.0, 100.0, 10), 115.0)
     # and a pool already at the limit refuses a partner that is inside the
     # band on its own terms, because taking it would push the pool past it
-    stretched = _sig(5, 330.0, 100.0, 100, power_mad=120.0)
+    stretched = _pair(5, 330.0, 100.0, 100, power_mad=120.0)
     assert abs(330.0 - 260.0) < 115.0                       # the pair would match
-    assert not stretched.alike(_sig(6, 260.0, 100.0, 10), 115.0)  # the pool would not
+    assert not stretched.alike(_pair(6, 260.0, 100.0, 10), 115.0)  # the pool would not
 
 
 def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
@@ -2778,9 +2780,9 @@ def test_a_three_phase_load_is_not_judged_by_a_single_phase_yardstick():
     wanders about three times what one leg does, so it was refused merges an
     identical single-phase load was granted (2026-09-22)."""
     def leg(i, per_phase, count, phases, mad=0.0):
-        sig = _sig(i, per_phase * len(phases), 60.0, count, phases=phases, last_seen=1.0, power_mad=mad)
-        sig.hour_wh = [10.0] * 24
-        return sig
+        pair = _pair(i, per_phase * len(phases), 60.0, count, phases=phases, last_seen=1.0, power_mad=mad)
+        pair.hour_wh = [10.0] * 24
+        return pair
 
     # one leg apart by 70 W, tolerance 115 W: fine on any number of phases
     single = leg(1, 400.0, 10, "a")
@@ -2815,9 +2817,9 @@ def test_a_name_outlives_the_library_it_was_written_on():
     det = D.Detector()
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
-    assert det.pairs, "no signature to name"
-    sig = det.pairs[0]
-    assert det.rename(sig.id, "Kiln")
+    assert det.pairs, "no pair to name"
+    pair = det.pairs[0]
+    assert det.rename(pair.id, "Kiln")
 
     # what a reset keeps
     orphans = det.name_descriptors()
@@ -2842,7 +2844,7 @@ def test_a_name_does_not_come_back_to_a_load_that_is_not_it():
                          "duration_s": 3600.0, "pf": 0.99}]
     samples, t = _session(T0, 150.0, 120.0)          # a small brief thing, nothing like a kiln
     det.process(samples, now_ts=t)
-    assert det.pairs, "no signature was filed"
+    assert det.pairs, "no pair was filed"
     assert [s.name for s in det.pairs] == [None]
     assert [o["name"] for o in det.orphan_names] == ["Kiln"]
 
@@ -2954,9 +2956,9 @@ def test_a_generation_bump_keeps_names():
     det = D.Detector()
     samples, t = _session(T0, 2000.0, 600.0)
     det.process(samples, now_ts=t)
-    sig = det.pairs[0]
-    det.rename(sig.id, "Kiln")
-    sig.carried_wh = 10436.2 - sum(sig.hour_wh)
+    pair = det.pairs[0]
+    det.rename(pair.id, "Kiln")
+    pair.carried_wh = 10436.2 - sum(pair.hour_wh)
     stored = {"generation": 5, "fleet": {"main": det.to_dict()}}
 
     # the bump: the store is read by a detector that has disowned its shape
@@ -2996,19 +2998,19 @@ def test_a_row_says_whether_the_load_is_on_now_or_when_it_last_ran():
     workshop since Tuesday. A row that says a load is on RIGHT NOW turns
     naming into walking over and looking at it."""
     now = 1_000_000.0
-    sig = _sig(1, 2000.0, 600.0, 9, pf=0.99, first_seen=now - 86400.0, last_seen=now - 600.0)
-    assert "last ran 10 min ago" in sig.describe(timezone.utc, now)
-    assert "running now" in sig.describe(timezone.utc, now, running=True)
-    assert "last ran" not in sig.describe(timezone.utc, now, running=True)
+    pair = _pair(1, 2000.0, 600.0, 9, pf=0.99, first_seen=now - 86400.0, last_seen=now - 600.0)
+    assert "last ran 10 min ago" in pair.describe(timezone.utc, now)
+    assert "running now" in pair.describe(timezone.utc, now, running=True)
+    assert "last ran" not in pair.describe(timezone.utc, now, running=True)
     # a run that has only just stopped reads better as that
-    sig.last_seen = now - 30.0
-    assert "just finished" in sig.describe(timezone.utc, now)
+    pair.last_seen = now - 30.0
+    assert "just finished" in pair.describe(timezone.utc, now)
     # and without a clock the row is exactly what it always was
-    assert "ran" not in sig.describe(timezone.utc)
-    assert "running" not in sig.describe(timezone.utc)
+    assert "ran" not in pair.describe(timezone.utc)
+    assert "running" not in pair.describe(timezone.utc)
 
 
-def test_running_now_names_the_signatures_that_are_on():
+def test_running_now_names_the_pairs_that_are_on():
     """A pair only exists once a run has FINISHED - the session is the
     step up paired with the step down that undoes it - so the first time a
     load ever runs there is nothing to say it is on. From the second time,
@@ -3022,7 +3024,7 @@ def test_running_now_names_the_signatures_that_are_on():
     for _ in range(40):
         rows.append((t, 200.0)); t += 10.0
     det.process({"a": rows}, now_ts=t)
-    assert det.pairs, "a finished run should have made a signature"
+    assert det.pairs, "a finished run should have made a pair"
     ids = lambda: {i for _, i in D.Fleet(main=det).running_refs(t)}      # noqa: E731
     assert ids() == set(), "nothing is on between runs"
 
@@ -3086,7 +3088,7 @@ def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     busy house - so for most pairs there is nothing recorded either way, and
     reading that silence as "they never overlap" offered a 149 W load and a
     2.7 kW one as one device (the owner's house, 2026-09-22)."""
-    a, b = _sig(1, 1000.0, 100.0, pf=0.96), _sig(2, 2700.0, 100.0, pf=0.96, last_seen=1.0)
+    a, b = _pair(1, 1000.0, 100.0, pf=0.96), _pair(2, 2700.0, 100.0, pf=0.96, last_seen=1.0)
     assert D.suggest_levels([a, b], []) == []               # nothing seen of either
     seen_a = [{"signature": 1, "start": 0.0, "end": 50.0}]
     assert D.suggest_levels([a, b], seen_a) == []           # only one side seen
@@ -3097,7 +3099,7 @@ def test_two_loads_are_not_one_device_just_because_nothing_was_recorded():
     # eighteen to one - is refused whatever the recording says, because the
     # recording was never the whole fault. Being seen apart is necessary and
     # nowhere near sufficient: most short loads in a house never overlap.
-    far = [_sig(3, 150.0, 100.0, pf=0.96, last_seen=1.0), _sig(4, 2700.0, 100.0, pf=0.96, last_seen=1.0)]
+    far = [_pair(3, 150.0, 100.0, pf=0.96, last_seen=1.0), _pair(4, 2700.0, 100.0, pf=0.96, last_seen=1.0)]
     apart = [{"signature": 3, "start": 0.0, "end": 50.0},
              {"signature": 4, "start": 500.0, "end": 550.0}]
     assert D.suggest_levels(far, apart) == []
@@ -3111,8 +3113,8 @@ def test_levels_of_one_device_run_for_about_as_long_each_time():
     seen = [{"signature": 1, "start": 0.0, "end": 30.0},
             {"signature": 2, "start": 500.0, "end": 530.0},
             {"signature": 3, "start": 1000.0, "end": 1600.0}]
-    brief_a, brief_b = _sig(1, 3000.0, 25.0, pf=0.96), _sig(2, 5900.0, 23.0, pf=0.96, last_seen=1.0)
-    lengthy = _sig(3, 4100.0, 600.0, pf=0.96, last_seen=1.0)
+    brief_a, brief_b = _pair(1, 3000.0, 25.0, pf=0.96), _pair(2, 5900.0, 23.0, pf=0.96, last_seen=1.0)
+    lengthy = _pair(3, 4100.0, 600.0, pf=0.96, last_seen=1.0)
     groups = D.suggest_levels([brief_a, brief_b, lengthy], seen)
     assert groups == [[1, 2]], groups
 
@@ -3120,7 +3122,7 @@ def test_levels_of_one_device_run_for_about_as_long_each_time():
 def test_a_load_that_overlaps_another_is_never_the_same_device():
     """The whole test: one appliance cannot run two of its own settings at
     once, so an observed overlap rules the pair out however well they match."""
-    a, b = _sig(1, 1000.0, 100.0, pf=0.96), _sig(2, 2000.0, 100.0, pf=0.96, last_seen=1.0)
+    a, b = _pair(1, 1000.0, 100.0, pf=0.96), _pair(2, 2000.0, 100.0, pf=0.96, last_seen=1.0)
     together = [{"signature": 1, "start": 0.0, "end": 100.0},
                 {"signature": 2, "start": 50.0, "end": 150.0}]
     assert D.suggest_levels([a, b], together) == []
@@ -3151,25 +3153,25 @@ def test_the_naming_page_lengthens_as_loads_are_named():
     loads for ever, set low it opens with two hundred rows and is put down
     unread. The right number of rows is not a property of the site but of how
     much work the person has already done (2026-09-22)."""
-    sigs = []
+    pairs = []
     for i in range(40):
-        sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
-        sig.hour_wh = [40.0] * 24
-        sigs.append(sig)
-    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+        pair = _pair(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
+        pair.hour_wh = [40.0] * 24
+        pairs.append(pair)
+    assert all(s.evidence >= 0.7 for s in pairs), "these should all clear the bar"
 
     def offer(named):
-        return D.offer_for_naming(sigs, named, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+        return D.offer_for_naming(pairs, named, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
 
     assert len(offer(0)) == 6, "opens with a handful"
     assert len(offer(1)) == 10
     assert len(offer(3)) == 18
-    assert len(offer(100)) == len(sigs), "and never more than there are"
+    assert len(offer(100)) == len(pairs), "and never more than there are"
 
 
 def test_the_naming_page_never_runs_dry():
     """A bar that hides everything is worse than one set too low."""
-    weak = [_sig(i, 500.0, 60.0, 2, pf=0.9, last_seen=1.0) for i in range(9)]
+    weak = [_pair(i, 500.0, 60.0, 2, pf=0.9, last_seen=1.0) for i in range(9)]
     assert all(s.evidence < 0.7 for s in weak), "none of these clears the bar"
     got = D.offer_for_naming(weak, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
     assert len(got) == 5, "the best of the rest come along anyway"
@@ -3186,20 +3188,20 @@ def test_the_page_can_say_how_many_are_waiting():
     It could not: the caller had only the already-shortened list and
     subtracted it from itself, so every site read "0 more than fit here" -
     Kozolec showing 6 of 12, Home 14 of 60 (the owner's screenshots, 2026-09-22)."""
-    sigs = []
+    pairs = []
     for i in range(30):
-        sig = _sig(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
-        sig.hour_wh = [40.0] * 24
-        sigs.append(sig)
-    assert all(s.evidence >= 0.7 for s in sigs), "these should all clear the bar"
+        pair = _pair(i, 1000.0 + i * 50, 60.0, 9, pf=0.95, last_seen=1.0)
+        pair.hour_wh = [40.0] * 24
+        pairs.append(pair)
+    assert all(s.evidence >= 0.7 for s in pairs), "these should all clear the bar"
 
-    clear = D.clears_for_naming(sigs, 0.7, min_rows=5)
+    clear = D.clears_for_naming(pairs, 0.7, min_rows=5)
     assert len(clear) == 30, "the bar decides WHICH, and does not shorten"
-    shown = D.offer_for_naming(sigs, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    shown = D.offer_for_naming(pairs, 0, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
     assert len(shown) == 6, "the earned length decides HOW MANY"
     assert len(clear) - len(shown) == 24, "and 24 are waiting, not 0"
     # naming eats into the backlog rather than inventing rows
-    after = D.offer_for_naming(sigs, 2, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
+    after = D.offer_for_naming(pairs, 2, 0.7, min_rows=5, start_rows=6, rows_per_name=4)
     assert len(clear) - len(after) == 16
 
 
@@ -3382,8 +3384,8 @@ def test_a_small_load_is_described_in_watts():
     read "0.0 kW on A" line after line, every row identical and none of them
     wrong (2026-09-22)."""
     def row(watts):
-        sig = _sig(1, float(watts), 180.0, 50, pf=0.95, last_seen=9 * 86400.0)
-        return sig.describe(timezone.utc)
+        pair = _pair(1, float(watts), 180.0, 50, pf=0.95, last_seen=9 * 86400.0)
+        return pair.describe(timezone.utc)
     assert row(28).startswith("28 W on phase A")
     assert row(92).startswith("92 W on phase A")
     assert row(345).startswith("345 W on phase A")
@@ -3447,25 +3449,25 @@ def test_the_surge_is_kept_as_evidence_and_survives_a_restart():
 
     # ONE load, not several, and at what it actually draws
     assert len(det.pairs) == 1, [round(sum(x.power.values())) for x in det.pairs]
-    sig = det.pairs[0]
-    assert sig.count == 5
-    assert 750 <= sum(sig.power.values()) <= 900, sum(sig.power.values())
+    pair = det.pairs[0]
+    assert pair.count == 5
+    assert 750 <= sum(pair.power.values()) <= 900, sum(pair.power.values())
     # with the surge kept beside it as evidence
-    assert sig.inrush_w > 1000, sig.inrush_w
-    back = D.Pair.from_dict(sig.to_dict())
-    assert round(back.inrush_w, 1) == round(sig.inrush_w, 1)
+    assert pair.inrush_w > 1000, pair.inrush_w
+    back = D.Pair.from_dict(pair.to_dict())
+    assert round(back.inrush_w, 1) == round(pair.inrush_w, 1)
 
 
 
 def test_what_a_switch_and_a_number_taught_follows_a_rename():
     fleet = D.Fleet()
-    sig = _sig(1, 635.0, 130.0, 10, phases="c", first_seen=T0, last_seen=T0)
-    sig.locations = {D.SWITCH_PREFIX + "climate.t": 6, "Hiša": 10}
-    fleet.main.pairs.append(sig)
+    pair = _pair(1, 635.0, 130.0, 10, phases="c", first_seen=T0, last_seen=T0)
+    pair.locations = {D.SWITCH_PREFIX + "climate.t": 6, "Hiša": 10}
+    fleet.main.pairs.append(pair)
     fleet.switch_on[D.SWITCH_PREFIX + "climate.t"] = {T0: None}
     fleet.main.numbers["sensor.floor"] = [(T0, 20.0)]
     fleet.rename_entities({"climate.t": "climate.termostat", "sensor.floor": "sensor.tla"})
-    assert sig.locations == {D.SWITCH_PREFIX + "climate.termostat": 6, "Hiša": 10}
+    assert pair.locations == {D.SWITCH_PREFIX + "climate.termostat": 6, "Hiša": 10}
     assert list(fleet.switch_on) == [D.SWITCH_PREFIX + "climate.termostat"]
     assert list(fleet.main.numbers) == ["sensor.tla"]
 
@@ -3517,13 +3519,13 @@ def test_a_load_that_runs_in_one_phase_of_a_setting_is_learned_as_its_stage():
 
 def test_loads_tied_to_one_setting_are_offered_as_one_device():
     def tied(sid, setting, value):
-        sig = _sig(sid, 100.0 * sid, 60.0 * sid, 20, first_seen=T0, last_seen=T0)
+        pair = _pair(sid, 100.0 * sid, 60.0 * sid, 20, first_seen=T0, last_seen=T0)
         for k in range(12):
-            sig.note_input(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
-        return sig
-    sigs = [tied(1, "sensor.phase", "Wash"), tied(2, "sensor.phase", "Spin"), tied(3, "fan.x", "33 %"),
-            _sig(4, 50.0, 30.0, 20, first_seen=T0, last_seen=T0)]
-    assert D.input_groups(sigs) == [[1, 2]]
+            pair.note_input(setting, value, {value: 0.05, "Off": 0.95}, T0 + k * 3600.0)
+        return pair
+    pairs = [tied(1, "sensor.phase", "Wash"), tied(2, "sensor.phase", "Spin"), tied(3, "fan.x", "33 %"),
+            _pair(4, 50.0, 30.0, 20, first_seen=T0, last_seen=T0)]
+    assert D.input_groups(pairs) == [[1, 2]]
 
 
 
@@ -3571,7 +3573,7 @@ def test_one_device_that_starts_two_ways_is_two_starts_for_now():
     assert len(by_kind["A"]) == 1 and len(by_kind["B"]) == 1, by_kind
 
 
-def test_a_heater_that_runs_only_while_washing_gets_its_own_signature():
+def test_a_heater_that_runs_only_while_washing_gets_its_own_pair():
     """The washer's 2 kW heater and a 2 kW kettle on the same phase: filed
     by the phase they ran in, the heater ends up tied to Wash and the kettle
     apart from it, while a fridge that runs right through every wash is not
@@ -3664,46 +3666,46 @@ def _fridge_through_a_washer(days):
     return fleet
 
 
-def test_a_family_that_runs_in_a_value_at_chance_takes_its_runs_without_a_fragment():
+def test_a_signature_that_runs_in_a_value_at_chance_takes_its_runs_without_a_fragment():
     """An established fridge runs through the washer's rare phase at chance: its runs there join it at once, the
     way the judgement would after three more days - no pair is born in the value (Home's kiln through the
     washer's Dry, Wash and Rinse, 2026-10-25: nine fragments, none of them named)."""
     fleet = _fridge_through_a_washer(3)
-    sigs = fleet.main.pairs
-    fridge = [x for x in sigs if 50 < sum(x.power.values()) < 120 and x.count >= 3]
-    assert len(fridge) == 1 and not any(x.born_in for x in sigs), [(x.id, x.count, x.born_in) for x in sigs]
-    assert all(x.family for x in sigs)
+    pairs = fleet.main.pairs
+    fridge = [x for x in pairs if 50 < sum(x.power.values()) < 120 and x.count >= 3]
+    assert len(fridge) == 1 and not any(x.born_in for x in pairs), [(x.id, x.count, x.born_in) for x in pairs]
+    assert all(x.signature for x in pairs)
 
 
-def _hint_family(minority_hours, minority_len=470.0, n_rest=120, n_rare=12):
-    """A family whose runs are mostly short ones all day and a few long ones at ``minority_hours``."""
+def _hint_signature(minority_hours, minority_len=470.0, n_rest=120, n_rare=12):
+    """A signature whose runs are mostly short ones all day and a few long ones at ``minority_hours``."""
     det = D.Detector()
-    sig = D.Pair(id=1, phases="b", power={"b": 2060.0}, duration_s=150.0, pf=None, count=n_rest + n_rare,
-                      first_seen=T0, last_seen=T0 + 86400.0, family=1)
-    det.pairs.append(sig)
+    pair = D.Pair(id=1, phases="b", power={"b": 2060.0}, duration_s=150.0, pf=None, count=n_rest + n_rare,
+                      first_seen=T0, last_seen=T0 + 86400.0, signature=1)
+    det.pairs.append(pair)
     rnd = random.Random(2)
-    det.family_runs[1] = ([(140.0 + rnd.uniform(-30, 40), rnd.uniform(10, 21)) for _ in range(n_rest)]
+    det.signature_runs[1] = ([(140.0 + rnd.uniform(-30, 40), rnd.uniform(10, 21)) for _ in range(n_rest)]
                           + [(minority_len + rnd.uniform(-150, 300), minority_hours[k % len(minority_hours)] + rnd.uniform(0, 0.9))
                              for k in range(n_rare)])
-    return det, sig
+    return det, pair
 
 
-def test_a_minority_mode_of_length_that_keeps_to_a_few_hours_splits_its_family_in_the_repair():
+def test_a_minority_mode_of_length_that_keeps_to_a_few_hours_splits_its_signature_in_the_repair():
     """Home's Workshop boiler against Hiša's 2 kW element on one phase: 11 runs of 273-992 s at 12:00-15:00 among 134
     of about 140 s over the day. Length alone or the hour alone never splits (spec section 11)."""
-    det, sig = _hint_family([12.0, 13.0, 14.0])
+    det, pair = _hint_signature([12.0, 13.0, 14.0])
     D._hint_split(det)
-    assert sig.split_s is not None and 200.0 < sig.split_s < 400.0 and sig.split_side == -1, (sig.split_s, sig.split_side)
-    assert not sig.takes_len(470.0) and sig.takes_len(140.0)
+    assert pair.split_s is not None and 200.0 < pair.split_s < 400.0 and pair.split_side == -1, (pair.split_s, pair.split_side)
+    assert not pair.takes_len(470.0) and pair.takes_len(140.0)
 
 
-def test_one_hint_alone_does_not_split_a_family():
-    det, sig = _hint_family([6.0, 10.0, 14.0, 18.0, 22.0])        # long runs all over the day: the hour hint is missing
+def test_one_hint_alone_does_not_split_a_signature():
+    det, pair = _hint_signature([6.0, 10.0, 14.0, 18.0, 22.0])        # long runs all over the day: the hour hint is missing
     D._hint_split(det)
-    assert sig.split_s is None
-    det, sig = _hint_family([12.0, 13.0, 14.0], minority_len=150.0)   # at noon, but as long as the rest: the length hint is missing
+    assert pair.split_s is None
+    det, pair = _hint_signature([12.0, 13.0, 14.0], minority_len=150.0)   # at noon, but as long as the rest: the length hint is missing
     D._hint_split(det)
-    assert sig.split_s is None
+    assert pair.split_s is None
 
 
 def test_a_name_waiting_for_its_load_after_a_rebuild_still_has_its_entities():
@@ -3714,7 +3716,7 @@ def test_a_name_waiting_for_its_load_after_a_rebuild_still_has_its_entities():
                        {"name": "Pump", "phases": "a", "power": {"a": 850.0}, "duration_s": 120.0, "pf": None, "meter": "Mansarda"}])
     assert fleet.names() == {} and fleet.entity_names() == ["Kiln", "Pump"]
     fleet.main.pairs.append(D.Pair(id=1, phases="b", power={"b": 100.0}, duration_s=60.0, pf=None, count=3,
-                                             first_seen=T0, last_seen=T0, name="Fan", family=1))
+                                             first_seen=T0, last_seen=T0, name="Fan", signature=1))
     assert fleet.entity_names() == ["Fan", "Kiln", "Pump"]
 
 
@@ -3745,21 +3747,21 @@ def test_a_meter_set_on_the_settings_page_beats_its_own_classification():
         D.SUSTAIN_CADENCES_CHANGE = old
 
 
-def test_a_family_is_named_as_a_whole_and_survives_a_store():
+def test_a_signature_is_named_as_a_whole_and_survives_a_store():
     fleet = _fridge_through_a_washer(3)
     det = fleet.main
     big = max(det.pairs, key=lambda x: x.count)
     twin = D.Pair(id=999, phases=big.phases, power=dict(big.power), duration_s=big.duration_s, pf=big.pf, count=2,
-                       first_seen=big.first_seen, last_seen=big.last_seen, family=big.family)
-    det.pairs.append(twin)                      # a second pair of the same family
-    assert det.rename_family(big.family, "Fridge")
+                       first_seen=big.first_seen, last_seen=big.last_seen, signature=big.signature)
+    det.pairs.append(twin)                      # a second pair of the same signature
+    assert det.rename_signature(big.signature, "Fridge")
     assert big.name == twin.name == "Fridge"
     back = D.Detector.from_dict(det.to_dict())
-    assert {x.family for x in back.pairs if x.name == "Fridge"} == {big.family}
-    assert back.next_family == det.next_family
+    assert {x.signature for x in back.pairs if x.name == "Fridge"} == {big.signature}
+    assert back.next_signature == det.next_signature
 
 
-def test_a_library_stored_without_families_gets_them_and_one_name_is_one_family():
+def test_a_library_stored_without_signatures_gets_them_and_one_name_is_one_signature():
     fleet = _fridge_through_a_washer(3)
     det = fleet.main
     big = max(det.pairs, key=lambda x: x.count)
@@ -3771,8 +3773,8 @@ def test_a_library_stored_without_families_gets_them_and_one_name_is_one_family(
     for x in stored["signatures"]:
         x.pop("family", None)
     back = D.Detector.from_dict(stored)
-    assert all(x.family for x in back.pairs)
-    assert len({x.family for x in back.pairs if x.name == "Fridge"}) == 1
+    assert all(x.signature for x in back.pairs)
+    assert len({x.signature for x in back.pairs if x.name == "Fridge"}) == 1
 
 
 def _drifting_kiln(sizes, noise=30.0):
@@ -3788,7 +3790,7 @@ def _drifting_kiln(sizes, noise=30.0):
                                           pf=None, count=20, first_seen=T0, last_seen=T0))
         det.pair_home[str(i)] = {100 + i: 20.0}
     det._votes = None
-    det._assign_families()
+    det._assign_signatures()
     return det
 
 
@@ -3824,22 +3826,22 @@ def test_the_legs_of_one_pulse_stamped_a_millisecond_apart_stop_together():
     assert runs["ac"] >= 55 and runs["a"] + runs["c"] <= 3, runs
 
 
-def test_families_of_neighbouring_start_clusters_with_alike_signatures_are_one():
+def test_signatures_of_neighbouring_start_clusters_with_alike_pairs_are_one():
     det = _drifting_kiln([5764.0, 5837.0, 5914.0, 6039.0])
-    assert len({x.family for x in det.pairs}) == 1, [x.family for x in det.pairs]
+    assert len({x.signature for x in det.pairs}) == 1, [x.signature for x in det.pairs]
     det.rename(101, "Kiln")
     assert {x.name for x in det.pairs} == {"Kiln"}
 
 
-def test_families_of_start_clusters_further_apart_than_their_spread_stay_apart():
+def test_signatures_of_start_clusters_further_apart_than_their_spread_stay_apart():
     det = _drifting_kiln([5764.0, 6400.0])
-    assert len({x.family for x in det.pairs}) == 2
+    assert len({x.signature for x in det.pairs}) == 2
 
 
-def test_a_start_too_small_for_its_noise_does_not_join_families():
+def test_a_start_too_small_for_its_noise_does_not_join_signatures():
     """Steps a few noises tall: every cluster's spread reaches every look-alike, and nothing may be called one."""
     det = _drifting_kiln([5764.0, 5837.0], noise=400.0)
-    assert len({x.family for x in det.pairs}) == 2
+    assert len({x.signature for x in det.pairs}) == 2
 
 
 def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():
@@ -3878,20 +3880,20 @@ def test_an_all_day_load_born_in_a_rare_value_goes_back_to_its_twin():
 def test_a_load_keeps_its_energy_by_the_clock_hour_for_the_backfill():
     """Naming a load writes its past into the statistics, so each pair
     keeps its energy per clock hour for HOURLY_KEEP_S (2026-09-29)."""
-    sig = _sig(1, 600.0, 1800.0, 0, first_seen=T0, last_seen=T0)
+    pair = _pair(1, 600.0, 1800.0, 0, first_seen=T0, last_seen=T0)
     hour0 = int(T0 // 3600 * 3600)
     s = D.Run(phases="a", start=hour0 + 3000.0, end=hour0 + 4800.0, levels={"a": [(hour0 + 3000.0, 600.0)]})
-    sig._spread(s, timezone.utc)
-    assert {h: round(w) for h, w in sig.hourly.items()} == {hour0: 100, hour0 + 3600: 200}, sig.hourly
-    back = D.Pair.from_dict(json.loads(json.dumps(sig.to_dict())))
+    pair._spread(s, timezone.utc)
+    assert {h: round(w) for h, w in pair.hourly.items()} == {hour0: 100, hour0 + 3600: 200}, pair.hourly
+    back = D.Pair.from_dict(json.loads(json.dumps(pair.to_dict())))
     assert back.hourly == {hour0: 100.0, hour0 + 3600: 200.0}
     late = D.Run(phases="a", start=hour0 + D.HOURLY_KEEP_S + 7200.0, end=hour0 + D.HOURLY_KEEP_S + 7260.0,
                      levels={"a": [(hour0 + D.HOURLY_KEEP_S + 7200.0, 600.0)]})
-    sig._spread(late, timezone.utc)
-    assert hour0 not in sig.hourly and len(sig.hourly) == 1          # the old hours aged out
+    pair._spread(late, timezone.utc)
+    assert hour0 not in pair.hourly and len(pair.hourly) == 1          # the old hours aged out
     det = D.Detector()
-    sig.name = "Mat"
-    det.pairs.append(sig)
+    pair.name = "Mat"
+    det.pairs.append(pair)
     assert list(det.hourly_by_name("Mat").values()) == [10.0]
 
 
@@ -4005,8 +4007,8 @@ def _named_kettle():
         rows.append((t, 300.0))
         t += 5.0
     fleet.process({"b": rows}, {}, now_ts=t)
-    sig = max((x for x in fleet.main.pairs if 1300.0 < sum(x.power.values()) < 1700.0), key=lambda x: x.count)
-    assert fleet.rename(("", sig.id), "Kettle")
+    pair = max((x for x in fleet.main.pairs if 1300.0 < sum(x.power.values()) < 1700.0), key=lambda x: x.count)
+    assert fleet.rename(("", pair.id), "Kettle")
     return fleet, t
 
 
@@ -4054,7 +4056,7 @@ def test_open_starts_never_add_up_to_more_than_the_phase_carries():
     assert st.open_scale() == 1.0
 
 
-def test_a_named_loads_live_power_never_reads_far_above_its_signatures():
+def test_a_named_loads_live_power_never_reads_far_above_its_pairs():
     """Home's Inkubator read 574 W off four stacked open starts and a lumped stretch
     of energy, its pairs topping out at 75 W (2026-10-28, the owner: "a
     detected load should never be significantly above its pair group").
@@ -4086,10 +4088,10 @@ def test_an_open_start_stops_counting_after_the_usual_run_not_the_longest_ever_s
     fleet, t = _named_kettle()
     t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # on for 120 s, no stop yet
     fleet.main.order.clear()                               # its group's own length unknown
-    sig = next(s for s in fleet.main.pairs if s.name == "Kettle")
-    sig.runs = [(i * 1000.0, i * 1000.0 + 30.0) for i in range(20)] + [(30000.0, 32000.0)]
+    pair = next(s for s in fleet.main.pairs if s.name == "Kettle")
+    pair.runs = [(i * 1000.0, i * 1000.0 + 30.0) for i in range(20)] + [(30000.0, 32000.0)]
     assert fleet.main.live_runs(t2) == []                   # 120 s open against 2 x 30 s: stale
-    sig.runs = [(i * 1000.0, i * 1000.0 + 300.0) for i in range(21)]
+    pair.runs = [(i * 1000.0, i * 1000.0 + 300.0) for i in range(21)]
     assert len(fleet.main.live_runs(t2)) == 1               # the same start against runs of 300 s: live
     assert D._quantile([], 0.95) == 0.0 and D._quantile([1.0, 2.0, 3.0], 0.95) == 3.0
 
@@ -4116,8 +4118,8 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
     fleet = D.Fleet()
     sw = D.SWITCH_PREFIX + "climate.thermostat"
     fleet.switch_on = {sw: {T0: T0 + 300.0, T0 + 3600.0: None}}          # on for 5 min, and again from an hour on
-    mat = _sig(1, 635.0, 200.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
-    fridge = _sig(2, 600.0, 900.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 10})
+    mat = _pair(1, 635.0, 200.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 45, "Hiša": 50})
+    fridge = _pair(2, 600.0, 900.0, 100, phases="c", first_seen=T0, last_seen=T0, locations={sw: 10})
     fleet.main.pairs = [mat, fridge]
     run = lambda a, b: D.Run(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]})
     assert fleet._switched_off(run(T0 + 1000.0, T0 + 1200.0), 2.0) == [1]  # off throughout: not the mat
@@ -4130,15 +4132,15 @@ def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_f
 
 
 
-def test_a_signature_on_twice_at_once_counts_the_overlap_once():
+def test_a_pair_on_twice_at_once_counts_the_overlap_once():
     """One device never runs twice at once: Home's 635 W mat was credited
     1.96 kWh in one hour when other runs of its size overlapped its own."""
-    sig = _sig(1, 600.0, 1800.0, 0, phases="c", first_seen=T0, last_seen=T0)
+    pair = _pair(1, 600.0, 1800.0, 0, phases="c", first_seen=T0, last_seen=T0)
     hour0 = int(T0 // 3600 * 3600)
     for a, b in ((hour0, hour0 + 1800.0), (hour0 + 900.0, hour0 + 2700.0)):
-        sig.runs.append((a, b))                                     # as add() does, before spreading
-        sig._spread(D.Run(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]}), timezone.utc)
-    assert round(sig.hourly[hour0]) == 450, sig.hourly              # 45 minutes on, not 60
+        pair.runs.append((a, b))                                     # as add() does, before spreading
+        pair._spread(D.Run(phases="c", start=a, end=b, levels={"c": [(a, 600.0)]}), timezone.utc)
+    assert round(pair.hourly[hour0]) == 450, pair.hourly              # 45 minutes on, not 60
     assert D._uncovered(0, 10, [(2, 3), (1, 4), (6, 12)]) == [(0, 1), (4, 6)]
     assert D._uncovered(0, 10, []) == [(0, 10)] and D._uncovered(0, 10, [(-5, 20)]) == []
 
@@ -4280,29 +4282,29 @@ def test_a_slow_meters_silence_is_a_held_value():
     det = D.Detector()
     det.process({"a": sorted(rows)}, now_ts=t)
     assert det.pairs, "no run found at all"
-    sig = max(det.pairs, key=lambda x: x.count)
-    assert sig.count >= 18 and sig.duration_s < 1200, (sig.count, sig.duration_s)
+    pair = max(det.pairs, key=lambda x: x.count)
+    assert pair.count >= 18 and pair.duration_s < 1200, (pair.count, pair.duration_s)
 
 
 
 
-def test_a_device_files_a_run_into_a_signature_on_the_runs_own_phases():
+def test_a_device_files_a_run_into_a_pair_on_the_runs_own_phases():
     """A device whose starts on A and C are linked (a kiln's legs) has a
     pair per phase set; an A run never lands in the C one, whose power
     would then carry an 'a' entry it was never measured on (2026-09-30)."""
     det = D.Detector()
     for p in "ac":
         det.phases[p] = D.PhaseState(min_noise=10.0)
-    sig_c = _sig(1, 600.0, 100.0, 20, phases="c", last_seen=0.0)
-    det.pairs = [sig_c]
+    pair_c = _pair(1, 600.0, 100.0, 20, phases="c", last_seen=0.0)
+    det.pairs = [pair_c]
     det.next_id = 2
     det.edges = [D.StepGroup(id=1, phase="a", up=True, watts=650.0, count=30), D.StepGroup(id=2, phase="c", up=True, watts=600.0, count=30)]
     det.pair_home = {"2": {"1": 20.0}}             # the C starts went to the C pair
     run = D.Run(phases="a", start=1000.0, end=1100.0, levels={"a": [(1000.0, 650.0)]}, pair=(2, None))   # a run of that start on A alone
     det._file(run)
     got = det.pair_of(run)
-    assert got is not sig_c and got.phases == "a", (got.id, got.phases, got.power)
-    assert "a" not in sig_c.power
+    assert got is not pair_c and got.phases == "a", (got.id, got.phases, got.power)
+    assert "a" not in pair_c.power
 
 
 def test_rises_on_several_phases_within_the_window_are_one_event():
@@ -4335,8 +4337,8 @@ def test_rises_on_several_phases_within_the_window_are_one_event():
     assert ("abc", 2520.0) in patterns, patterns                # the compressor, one event of three legs
     assert ("a", 900.0) in patterns, patterns                   # the pump, alone on A
     assert not any(c.phase == "a" and 800 <= c.watts <= 880 for c in rises), patterns   # no per-phase 840 W cluster left
-    sigs = {(x.phases, round(sum(x.power.values()), -2)) for x in det.pairs if x.count >= 5}
-    assert ("abc", 2500.0) in sigs and ("a", 900.0) in sigs, sigs        # one three-phase pair, one single-phase
+    pairs = {(x.phases, round(sum(x.power.values()), -2)) for x in det.pairs if x.count >= 5}
+    assert ("abc", 2500.0) in pairs and ("a", 900.0) in pairs, pairs        # one three-phase pair, one single-phase
 
 
 def test_a_pump_and_a_heater_of_one_size_are_two_kinds_of_edge_by_their_reactive_angle():
@@ -4653,9 +4655,9 @@ def test_a_run_of_the_size_a_held_meters_run_holds_is_not_of_its_kind():
     grid = f.main.phases["c"]
     owned = D._Open(since=T0 - 10500.0, watts=254.0, var=None, levels=[(T0 - 10500.0, 254.0)], cluster=163, meter="Susilna")
     grid.open_edges = [owned]
-    home = _sig(136, 263.0, 600.0, 65, phases="c", first_seen=T0, last_seen=T0)
+    home = _pair(136, 263.0, 600.0, 65, phases="c", first_seen=T0, last_seen=T0)
     home.locations.update({"Mansarda": 7, "Vtičnice - pisarna": 2})       # as on the day: none of the plug's yet
-    other = _sig(140, 270.0, 600.0, 20, phases="c", first_seen=T0, last_seen=T0)
+    other = _pair(140, 270.0, 600.0, 20, phases="c", first_seen=T0, last_seen=T0)
     f.main.pairs = [home, other]
     f.main.pair_home = {"163": {136: 3.0}, "165": {136: 40.0}, "77": {140: 20.0}}
     run = D.Run(phases="c", start=T0, end=T0 + 9480.0, levels={"c": [(T0, 286.0)]}, pair=(165, None))
@@ -4780,15 +4782,15 @@ def test_an_owned_runs_size_is_what_its_meter_read_at_that_moment():
     assert f._meter_level("Plug", "c", T0 + 900.0, T0) == 250.0            # no readings: its steps since
 
 
-def test_a_meters_home_for_a_run_is_the_signature_of_its_kind():
+def test_a_meters_home_for_a_run_is_the_pair_of_its_kind():
     """Home's dehumidifier plug had more of its sessions in an 18 W Hiša
     pair (its fan alone) than in its own 263 W one, and its 20-hour
     runs, filed where the plug's word sent them, went with the fan (09-24).
     Asked for a run, the meter's home is the one of the run's kind."""
     f = _fleet_with_meters({"Susilna": 0.0})
-    own = _sig(139, 263.0, 600.0, 43, phases="c")
+    own = _pair(139, 263.0, 600.0, 43, phases="c")
     own.locations.update({"Susilna": 3, "Mansarda": 4})
-    fan = _sig(618, 18.0, 600.0, 83, phases="c")
+    fan = _pair(618, 18.0, 600.0, 83, phases="c")
     fan.locations.update({"Hiša": 59, "Susilna": 4})
     f.main.pairs = [own, fan]
     night = D.Run(phases="c", start=T0, end=T0 + 72000.0, levels={"c": [(T0, 270.0)]})
@@ -5110,10 +5112,10 @@ def test_a_meter_others_hang_under_reads_them_as_the_grid_reads_every_meter():
     assert f.views["Hiša"]._wait > 0.0 and f.views["Hiša"].meter_lag.get("Blaž PC")   # read behind the PC
     his = f.subs["Hiša"]
     assert not his._file_now and his.meter_stop is not None                 # its fleet files and asks for it
-    pc_at_his = [sig for sig in his.pairs if sig.locations.get("Blaž PC")]
-    assert pc_at_his and all(abs(sum(sig.power.values()) - 300.0) < 60.0 for sig in pc_at_his), \
-        [(sig.id, sig.power, sig.locations) for sig in his.pairs]
-    assert any(sig.locations.get("Blaž PC") for sig in f.main.pairs)
+    pc_at_his = [pair for pair in his.pairs if pair.locations.get("Blaž PC")]
+    assert pc_at_his and all(abs(sum(pair.power.values()) - 300.0) < 60.0 for pair in pc_at_his), \
+        [(pair.id, pair.power, pair.locations) for pair in his.pairs]
+    assert any(pair.locations.get("Blaž PC") for pair in f.main.pairs)
     back = D.Fleet.from_dict(json.loads(json.dumps(f.to_dict())))
     assert back._view_states["Hiša"]["phase_votes"] == f.views["Hiša"].phase_votes
     f.parents = {}
@@ -5133,7 +5135,7 @@ def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
     detected by both meters, shouldn't the reading collapse into a single
     device anyway?"): a load a meter holding several devices saw is that
     meter's own pair - the grid files its runs as that meter's
-    (Run.parent_signature) and grows no copy - so it is offered in that meter's
+    (Run.parent_pair) and grows no copy - so it is offered in that meter's
     list, and named there it is a named load like any other: its energy
     and its running are the meter's own sessions'."""
     f = _tree_fleet()
@@ -5227,7 +5229,7 @@ def _mansarda(name):
     """Mansarda's detector: one pair, #11, 95 W on its channel a, named ``name`` or not, and the run
     of it open since T0 + 100."""
     det = D.Detector()
-    det.pairs = [_sig(11, 95.0, phases="a", name=name)]
+    det.pairs = [_pair(11, 95.0, phases="a", name=name)]
     det.phases["a"] = D.PhaseState()
     det.phases["a"].open_edges = [_open(T0 + 100.0, 95.0)]
     return det
@@ -5235,7 +5237,7 @@ def _mansarda(name):
 
 def test_running_named_submeter_load_once():
     t = T0 + 160.0
-    grid = _sig(42, 95.0, phases="b", count=6)                     # the grid's unnamed twin of the fridge
+    grid = _pair(42, 95.0, phases="b", count=6)                     # the grid's unnamed twin of the fridge
     f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": _mansarda("Hladilnik")},
                        {"Mansarda": False}, rise=T0 + 100.0)
     f.main.pairs = [grid]
@@ -5252,7 +5254,7 @@ def test_running_unnamed_submeter_load_links_meter_id():
     t = T0 + 160.0
     f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": _mansarda(None)},
                        {"Mansarda": False}, rise=T0 + 100.0)
-    f.main.pairs = [_sig(42, 95.0, phases="b", count=6)]
+    f.main.pairs = [_pair(42, 95.0, phases="b", count=6)]
     rows = f.running(t)
     assert len(rows) == 1 and rows[0]["ref"] == ("Mansarda", 11), rows
     md = D.running_markdown(rows, LINK, offered={("Mansarda", 11)}, now=t)
@@ -5273,7 +5275,7 @@ def test_running_unmatched_meter_run():
     det.phases["a"].open_edges = []
     f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda"))], {"Mansarda": det}, {"Mansarda": False},
                        rise=T0 + 100.0)
-    f.main.pairs = [_sig(42, 95.0, phases="b", count=6, name="Hladilnik")]
+    f.main.pairs = [_pair(42, 95.0, phases="b", count=6, name="Hladilnik")]
     rows = f.running(t)
     assert len(rows) == 1 and rows[0]["name"] == "Hladilnik" and rows[0]["where"] == "Mansarda", rows
     assert rows[0]["ref"] == ("", 42)
@@ -5281,8 +5283,8 @@ def test_running_unmatched_meter_run():
 
 def test_running_same_name_merges():
     f = _running_fleet([("a", _open(T0, 1000.0)), ("c", _open(T0 + 600.0, 1000.0))])
-    f.main.pairs = [_sig(1, 1000.0, phases="a", name="Pec", dur=3600.0),
-                         _sig(2, 1000.0, phases="c", name="Pec", dur=3600.0)]
+    f.main.pairs = [_pair(1, 1000.0, phases="a", name="Pec", dur=3600.0),
+                         _pair(2, 1000.0, phases="c", name="Pec", dur=3600.0)]
     rows = f.running(T0 + 900.0)
     assert len(rows) == 1 and rows[0]["name"] == "Pec", rows
     assert rows[0]["watts"] == 2000.0 and rows[0]["phases"] == "ac" and rows[0]["since"] == T0
@@ -5295,7 +5297,7 @@ def test_named_loads_on_one_phase_are_on_independently():
     t = T0 + 700.0
     boiler, fridge = _open(T0, 2000.0), _open(T0 + 600.0, 95.0)
     f = _running_fleet([("a", boiler), ("a", fridge)])
-    f.main.pairs = [_sig(1, 2000.0, name="Bojler", dur=3600.0), _sig(2, 95.0, name="Hladilnik", dur=3600.0)]
+    f.main.pairs = [_pair(1, 2000.0, name="Bojler", dur=3600.0), _pair(2, 95.0, name="Hladilnik", dur=3600.0)]
 
     def agree(want):
         assert f.active_by_name(t) == want, f.active_by_name(t)
@@ -5314,7 +5316,7 @@ def test_running_refs_agree_with_rows():
     t = T0 + 160.0
     f = _running_fleet([("b", _open(T0 + 100.0, 95.0, "Mansarda")), ("a", _open(T0, 2000.0))],
                        {"Mansarda": _mansarda(None)}, {"Mansarda": False}, rise=T0 + 100.0)
-    f.main.pairs = [_sig(7, 2000.0, dur=3600.0)]
+    f.main.pairs = [_pair(7, 2000.0, dur=3600.0)]
     rows = f.running(t)
     assert f.running_refs(t) == set().union(*(r["refs"] for r in rows)) == {("Mansarda", 11), ("", 7)}
 
@@ -5510,7 +5512,7 @@ def test_a_meter_others_hang_under_is_never_guessed_one_device():
     nothing ran Hiša as one device; the Fleet asks it now."""
     f = D.Fleet()
     f.subs["Hiša"] = D.Detector()
-    f.subs["Hiša"].pairs = [_sig(1, 120.0, count=40), _sig(2, 900.0, count=5)]
+    f.subs["Hiša"].pairs = [_pair(1, 120.0, count=40), _pair(2, 900.0, count=5)]
     assert f.guess_one_device("Hiša") and f.holds_one_device("Hiša")          # its library looks like one
     f.parents = {"Blaž PC": "Hiša", "Hiša": None}
     assert not f.guess_one_device("Hiša") and not f.holds_one_device("Hiša")  # a meter inside it: several
@@ -5528,9 +5530,9 @@ def test_a_run_is_not_filed_as_a_meter_that_held_through_its_start():
     f.single = {"Hidrofor": True}
     f.subs["Hidrofor"].phases["a"].interval = 10.0
     f._now = T0 + 3600.0
-    home = _sig(31, 900.0, 70.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    home = _pair(31, 900.0, 70.0, 40, phases="c", first_seen=T0, last_seen=T0)
     home.locations["Hidrofor"] = 30
-    other = _sig(32, 1000.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    other = _pair(32, 1000.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0)
     f.main.pairs = [home, other]
     run = D.Run(phases="c", start=T0, end=T0 + 450.0, levels={"c": [(T0, 1064.0)]})
     assert f._held_homes(run) == [31]                                    # the plug held: not the hidrofor
@@ -5545,11 +5547,11 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     session decides which pair a run joins - and its energy places one
     it has no session for - where the meter holds one device, as the user
     declared it or, undeclared, as its library's shape says. A circuit's
-    session makes the run its own pair's (Run.parent_signature) and the grid
+    session makes the run its own pair's (Run.parent_pair) and the grid
     files nothing - unless the grid's pair for the run's device wears
     a name: a name stays where it was given."""
     f = _fleet_with_meters({"Plug": 0.0})
-    own = _sig(1, 300.0, 600.0, 40, first_seen=T0, last_seen=T0)
+    own = _pair(1, 300.0, 600.0, 40, first_seen=T0, last_seen=T0)
     f.subs["Plug"].pair_of = lambda s: own
     sub = D.Run("a", T0, T0 + 600.0, {"a": [(T0, 300.0)]})
     run = D.Run("c", T0, T0 + 600.0, {"c": [(T0, 300.0)]}, pair=(5, None))
@@ -5559,7 +5561,7 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     f.single = {"Plug": False}
     f._file_as(run, "Plug", sub)
     assert asked == [] and run.parent_pair == ("Plug", sub), (asked, run.parent_pair)       # the circuit's own
-    named = _sig(8, 300.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0, name="Kiln")
+    named = _pair(8, 300.0, 600.0, 40, phases="c", first_seen=T0, last_seen=T0, name="Kiln")
     f.main.pairs, f.main.pair_home, f.main._device_home = [named], {"5": {8: 3.0}}, None
     run.parent_pair = None
     f._file_as(run, "Plug", sub)
@@ -5568,7 +5570,7 @@ def test_a_meters_sessions_decide_identity_as_its_declaration_says():
     f._file_as(run, "Plug", sub)
     assert asked == [8, 77], asked
 
-def test_a_run_kept_out_of_its_meters_signature_does_not_move_where_the_device_lives():
+def test_a_run_kept_out_of_its_meters_pair_does_not_move_where_the_device_lives():
     """Home's hidrofor (09-30 12:29, 2026-10-04): a 998 W, eight-minute run
     its plug's session sent to the pump's pair was kept out of it and
     filed in a 1 kW phase-A one; the meter's identity followed it there, and
@@ -5577,25 +5579,25 @@ def test_a_run_kept_out_of_its_meters_signature_does_not_move_where_the_device_l
     it, and only one sent to a pair that is gone moves it."""
     f = _fleet_with_meters({"Plug": 0.0})
     f.single = {"Plug": True}
-    own = _sig(1, 900.0, 60.0, 40, first_seen=T0, last_seen=T0)
+    own = _pair(1, 900.0, 60.0, 40, first_seen=T0, last_seen=T0)
     f.subs["Plug"].pair_of = lambda s: own
     sub = D.Run("a", T0, T0 + 60.0, {"a": [(T0, 900.0)]})
-    pump = _sig(4, 900.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
-    other = _sig(25, 1000.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    pump = _pair(4, 900.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
+    other = _pair(25, 1000.0, 60.0, 40, phases="c", first_seen=T0, last_seen=T0)
     f.main.pairs = [pump, other]
     f.identity = {"Plug": {"1": 4}}
     went, asked = [25, 4, 25], []
 
     def place(m, name, prefer):                      # the filing's own say, the guards' included
         asked.append(prefer)
-        return f.main._sig(went.pop(0))
+        return f.main._pair(went.pop(0))
     f._place = place
     run = D.Run("c", T0, T0 + 60.0, {"c": [(T0, 900.0)]})
     f._file_as(run, "Plug", sub)                     # sent to #4, kept out of it, filed in #25
     assert f.identity["Plug"]["1"] == 4, f.identity
     f._file_as(run, "Plug", sub)                     # filed where it was sent
     assert f.identity["Plug"]["1"] == 4 and asked == [4, 4], (f.identity, asked)
-    f.main.pairs, f.main._by_sig = [other], None    # the pump's pair gone
+    f.main.pairs, f.main._by_pair = [other], None    # the pump's pair gone
     f._file_as(run, "Plug", sub)
     assert f.identity["Plug"]["1"] == 25, f.identity
 
@@ -5925,13 +5927,13 @@ def test_a_run_that_settles_to_its_meters_size_is_that_meters():
         run = [s for s in filed if abs(s.start - on) < 60 and "b" in s.phases]
         assert run, ("busy" if busy else "quiet", "no house run at the plug's start")
         run = max(run, key=lambda s: s.duration_s)
-        sig = fleet.main.pair_of(run)
+        pair = fleet.main.pair_of(run)
         # the plug's: filed under a pair located at it, or (the fold books the
         # blip's step down as the start's decay, so the run sits at the plug's own
         # size) owned by the plug's session
-        plugs = bool(sig is not None and sig.locations.get("Plug")) or (run.parent_pair is not None and run.parent_pair[0] == "Plug")
+        plugs = bool(pair is not None and pair.locations.get("Plug")) or (run.parent_pair is not None and run.parent_pair[0] == "Plug")
         assert abs(run.end - off) < 120 and abs(run.energy_wh - 265.0 * 20.0) < 300 and plugs, (
-            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), sig.locations if sig else None)
+            "busy" if busy else "quiet", round(run.duration_s / 3600, 2), round(run.energy_wh), pair.locations if pair else None)
 
 
 def _charger_day():
@@ -6176,8 +6178,8 @@ def test_a_thirteenth_run_on_a_phase_drops_the_oldest_unowned_not_the_meters():
     runs = [s for s in filed if abs(s.start - on) < 60 and s.duration_s > 3600.0]
     assert len(runs) == 1 and abs(runs[0].end - off) < 120 and abs(runs[0].energy_wh - 271.0 * 20.0) < 300, [
         (round(s.start - on), round(s.duration_s / 3600, 2), round(s.energy_wh)) for s in filed if s.duration_s > 600]
-    sig = fleet.main.pair_of(runs[0])
-    assert sig is not None and sig.locations.get("Plug"), sig.locations if sig else None
+    pair = fleet.main.pair_of(runs[0])
+    assert pair is not None and pair.locations.get("Plug"), pair.locations if pair else None
 
 
 def test_a_run_the_cap_drops_is_a_session_at_its_last_level():
@@ -6365,7 +6367,7 @@ def test_the_days_repair_gives_back_what_the_phase_never_drew():
     run and off its pair's hours, and what the phase carried stays."""
     det = D.Detector()
     det.phases["a"].noise = 10.0
-    loose, held = _sig(1, 1000.0), _sig(2, 500.0)
+    loose, held = _pair(1, 1000.0), _pair(2, 500.0)
     det.pairs = [loose, held]
     hour = int(T0 // 3600 * 3600) + 3600
     a = D.Run(phases="a", start=hour, end=hour + 3600, levels={"a": [(hour, 1000.0)]}, pair_id=1)
@@ -6609,21 +6611,21 @@ def test_an_inputs_state_at_the_step_splits_the_group_on_its_own():
         pass
 
 
-def test_the_daily_rewrite_splits_a_signature_by_length():
+def test_the_daily_rewrite_splits_a_pair_by_length():
     """The owner, 2026-10-23: length decides in the once-a-day rewrite, not live.
     A pair whose run memory holds four 60 s runs and six 600 s ones splits
     at their geometric middle; it keeps the side with more runs (the long ones),
     a 60 s run no longer files into it, and a twin of 60 s runs is not alike.
     Three short runs are too few (SPLIT_MIN_RUNS)."""
-    sig = D.Pair(id=1, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=10, first_seen=0.0, last_seen=0.0)
-    sig.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 4 else 600.0)) for k in range(10)]
-    assert sig.learn_split() and sig.split_side == 1 and 150.0 < sig.split_s < 250.0, (sig.split_s, sig.split_side)
+    pair = D.Pair(id=1, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=10, first_seen=0.0, last_seen=0.0)
+    pair.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 4 else 600.0)) for k in range(10)]
+    assert pair.learn_split() and pair.split_side == 1 and 150.0 < pair.split_s < 250.0, (pair.split_s, pair.split_side)
     short = D.Run(phases="a", start=0.0, end=60.0, levels={"a": [(0.0, 1900.0)]})
     long = D.Run(phases="a", start=0.0, end=600.0, levels={"a": [(0.0, 1900.0)]})
-    assert not sig.takes_run(short) and sig.takes_run(long)
+    assert not pair.takes_run(short) and pair.takes_run(long)
     twin = D.Pair(id=2, phases="a", power={"a": 1900.0}, duration_s=60.0, pf=None, count=4, first_seen=0.0, last_seen=0.0)
-    assert not sig.alike(twin, 25.0) and not twin.alike(sig, 25.0)
-    assert not sig.learn_split()                       # the same split again: unchanged
+    assert not pair.alike(twin, 25.0) and not twin.alike(pair, 25.0)
+    assert not pair.learn_split()                       # the same split again: unchanged
     few = D.Pair(id=3, phases="a", power={"a": 1900.0}, duration_s=400.0, pf=None, count=9, first_seen=0.0, last_seen=0.0)
     few.runs = [(k * 3600.0, k * 3600.0 + (60.0 if k < 3 else 600.0)) for k in range(9)]
     assert not few.learn_split() and few.split_s is None
@@ -6697,18 +6699,18 @@ def _fridge_day(hole, bump=None):
 
 class _Det:
     """What _recover_day reads of a Detector."""
-    def __init__(self, sig):
-        self.pairs, self.phases, self.tz_offset_s, self.recovered_log = [sig], {}, 0.0, []
-        self._sig = sig
+    def __init__(self, pair):
+        self.pairs, self.phases, self.tz_offset_s, self.recovered_log = [pair], {}, 0.0, []
+        self._pair = pair
 
     def pair_of(self, s):
-        return self._sig if s.pair_id == self._sig.id else None
+        return self._pair if s.pair_id == self._pair.id else None
 
 
-def _fridge_sig(hole):
-    sig = _sig(1, 50.0, dur=1200.0, count=300, phases="a")
-    sig.duration_mad = 20.0
-    sig.runs = [(T0 + k * 3300.0, T0 + k * 3300.0 + 1200.0) for k in range(12)]
+def _fridge_pair(hole):
+    pair = _pair(1, 50.0, dur=1200.0, count=300, phases="a")
+    pair.duration_mad = 20.0
+    pair.runs = [(T0 + k * 3300.0, T0 + k * 3300.0 + 1200.0) for k in range(12)]
     log = []
     for k in range(int(86400 // 3300) + 1):
         a = T0 + k * 3300.0
@@ -6716,42 +6718,42 @@ def _fridge_sig(hole):
             continue
         log.append(D.Run(phases="a", start=a, end=a + 1200.0, levels={"a": [(a, 50.0)]}, wh={"a": 50.0 * 1200.0 / 3600.0},
                          pair_id=1))
-    return sig, log
+    return pair, log
 
 
 def test_a_regular_cyclers_missed_cycles_are_found_again_in_the_days_readings():
     """The daily repair books the fridge's cycles back where its runs have a hole and the readings show them
     (Home, 24 Oct 2026: the day's fridge and freezer energy was a third of normal)."""
     hole = (36000.0, 54000.0)                                      # 10:00 - 15:00 of its day
-    sig, log = _fridge_sig(hole)
+    pair, log = _fridge_pair(hole)
     rows = _fridge_day(hole)
-    before = sum(sig.hourly.values())
-    det = _Det(sig)
+    before = sum(pair.hourly.values())
+    det = _Det(pair)
     D._recover_day(det, log, {"a": rows}, T0, T0 + 86400.0)
     found = det.recovered_log
     expect = [k for k in range(27) if hole[0] <= k * 3300.0 < hole[1] and k * 3300.0 + 1200.0 <= hole[1]]
     assert len(found) >= len(expect) - 1 and all(hole[0] - 60 <= r.start - T0 <= hole[1] + 60 for r in found), \
         [(round(r.start - T0), round(r.end - T0)) for r in found]
     assert all(abs(r.end - r.start - 1200.0) < 150.0 and abs(r.energy_wh - 16.7) < 4.0 for r in found), [(r.end - r.start, r.energy_wh) for r in found]
-    assert abs(sum(sig.recovered.values()) - sum(r.energy_wh for r in found)) < 1e-6
-    assert sig.count == 300 and len(sig.runs) == 12                  # what it learns is untouched
+    assert abs(sum(pair.recovered.values()) - sum(r.energy_wh for r in found)) < 1e-6
+    assert pair.count == 300 and len(pair.runs) == 12                  # what it learns is untouched
 
 
 def test_a_bump_of_another_size_or_length_is_not_booked_as_the_cyclers():
     hole = (36000.0, 54000.0)
     for bump in ((40000.0, 1200.0, 120.0), (40000.0, 300.0, 50.0)):  # twice its size / a quarter of its length
-        sig, log = _fridge_sig(hole)
+        pair, log = _fridge_pair(hole)
         rows = [(t, w - 50.0 if hole[0] <= t - T0 < hole[1] and (t - T0) % 3300.0 < 1200.0 else w) for t, w in _fridge_day(hole, bump)]
-        det = _Det(sig)
+        det = _Det(pair)
         D._recover_day(det, log, {"a": rows}, T0, T0 + 86400.0)
         assert not det.recovered_log, (bump, [(r.start - T0, r.end - T0) for r in det.recovered_log])
 
 
 def test_a_day_without_a_hole_books_nothing():
-    sig, log = _fridge_sig((0.0, 0.0))
-    det = _Det(sig)
+    pair, log = _fridge_pair((0.0, 0.0))
+    det = _Det(pair)
     D._recover_day(det, log, {"a": _fridge_day((0.0, 0.0))}, T0, T0 + 86400.0)
-    assert not det.recovered_log and not sig.recovered
+    assert not det.recovered_log and not pair.recovered
 
 
 def test_a_run_while_an_input_is_unavailable_has_no_context():
@@ -6789,14 +6791,14 @@ def test_a_library_fragment_born_in_a_value_goes_back_into_its_named_twin():
     nothing else - a fragment that has run three times, one already judged, one nothing is alike, a named one
     whose only twin is unnamed or named otherwise."""
     value = "sensor.washer=Rinse"
-    twin = _sig(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
-    small = _sig(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value)
-    unnamed = _sig(3, 59.0, 33.0, count=2, phases="c", born_in=value)
-    three = _sig(4, 60.0, 30.0, count=3, phases="c", name="Inkubator", born_in=value)
-    judged = _sig(5, 60.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value, born_judged=True)
-    far = _sig(6, 300.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value)
-    boiler = _sig(7, 500.0, 600.0, count=20, phases="c")
-    named_apart = _sig(8, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value)
+    twin = _pair(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
+    small = _pair(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value)
+    unnamed = _pair(3, 59.0, 33.0, count=2, phases="c", born_in=value)
+    three = _pair(4, 60.0, 30.0, count=3, phases="c", name="Inkubator", born_in=value)
+    judged = _pair(5, 60.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value, born_judged=True)
+    far = _pair(6, 300.0, 30.0, count=1, phases="c", name="Inkubator", born_in=value)
+    boiler = _pair(7, 500.0, 600.0, count=20, phases="c")
+    named_apart = _pair(8, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value)
     det = D.Detector()
     det.pairs = [twin, small, unnamed, three, judged, far, boiler, named_apart]
     runs = sum(s.count for s in det.pairs)
@@ -6805,7 +6807,7 @@ def test_a_library_fragment_born_in_a_value_goes_back_into_its_named_twin():
     assert twin.count == 53 and twin.name == "Inkubator" and not twin.born_in
     assert value in twin.takes_in
     assert sum(s.count for s in det.pairs) == runs
-    assert det._sig(2) is None and det._current(2) == 1 and det._current(3) == 1
+    assert det._pair(2) is None and det._current(2) == 1 and det._current(3) == 1
 
 
 def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_round_without_it():
@@ -6815,11 +6817,11 @@ def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_rou
     into its twin (retake_fragments' search), or - no twin of its name - is ordinary again; one that ran in enough of
     them still waits, and nothing happens before the value has come round often enough, nor after a filing."""
     value = "sensor.washer=Rinse"
-    twin = _sig(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
-    stuck = _sig(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value, ep_seen=1.0)
-    covered = _sig(3, 59.0, 33.0, count=2, phases="c", born_in=value, ep_seen=2.0)
-    boiler = _sig(4, 500.0, 600.0, count=20, phases="c")
-    named_apart = _sig(5, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value, ep_seen=1.0)
+    twin = _pair(1, 60.0, 30.0, count=50, phases="c", name="Inkubator")
+    stuck = _pair(2, 61.0, 28.0, count=1, phases="c", name="Inkubator", born_in=value, ep_seen=1.0)
+    covered = _pair(3, 59.0, 33.0, count=2, phases="c", born_in=value, ep_seen=2.0)
+    boiler = _pair(4, 500.0, 600.0, count=20, phases="c")
+    named_apart = _pair(5, 505.0, 600.0, count=1, phases="c", name="Boiler", born_in=value, ep_seen=1.0)
     fleet = D.Fleet()
     det = fleet.subs["Hiša"] = D.Detector()
     det.pairs = [twin, stuck, covered, boiler, named_apart]
@@ -6839,7 +6841,7 @@ def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_rou
 def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loading():
     value = "sensor.washer=Rinse"
     det = D.Detector()
-    det.pairs = [_sig(1, 60.0, 30.0, count=50, phases="c"), _sig(2, 61.0, 28.0, count=1, phases="c", born_in=value)]
+    det.pairs = [_pair(1, 60.0, 30.0, count=50, phases="c"), _pair(2, 61.0, 28.0, count=1, phases="c", born_in=value)]
     stored = det.to_dict()
     assert stored["fragments_retaken"] is True
     assert len(D.Detector.from_dict(stored).pairs) == 2          # a library that says so is left as it is
@@ -6933,29 +6935,29 @@ def test_a_run_its_meter_shows_on_is_never_another_loads_close_hint():
 
 
 def _stop_shared(*groups, runs=((0.0, 100.0),), watts=850.0, **kw):
-    """A detector with one pair per ``(start, stop, pf, dur)``, each its own family, its runs closing on that
+    """A detector with one pair per ``(start, stop, pf, dur)``, each its own signature, its runs closing on that
     start/stop pair of step groups - the hidrofor's rises over one fall."""
     det = D.Detector()
     det._votes = {}
     for i, (start, stop, pf, dur) in enumerate(groups, 1):
-        sig = _sig(i, watts, dur=dur, count=10, pf=pf, runs=list(runs) if i == 1 else [(1000.0 * i, 1000.0 * i + dur)], **kw)
-        sig.family = det._new_family()
-        det.pairs.append(sig)
+        pair = _pair(i, watts, dur=dur, count=10, pf=pf, runs=list(runs) if i == 1 else [(1000.0 * i, 1000.0 * i + dur)], **kw)
+        pair.signature = det._new_signature()
+        det.pairs.append(pair)
         det._votes[i] = {-(start * D.PAIR_ID_BASE + stop): 10.0}
     return det
 
 
-def test_pairs_closing_on_one_fall_group_are_one_signature():
-    """The hidrofor (Home, 2026-11-02): three rise groups and one fall group are three pairs, one signature."""
+def test_pairs_closing_on_one_fall_group_are_one_pair():
+    """The hidrofor (Home, 2026-11-02): three rise groups and one fall group are three pairs, one pair."""
     det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.97, 260.0), (3, 9, 0.88, 50.0))
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 1
+    assert len({s.signature for s in det.pairs}) == 1
 
 
 def test_pairs_with_different_fall_groups_stay_apart():
     det = _stop_shared((1, 9, 0.93, 150.0), (2, 8, 0.93, 150.0))
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
 
 
 def test_pairs_that_ran_at_once_are_never_joined():
@@ -6964,30 +6966,30 @@ def test_pairs_that_ran_at_once_are_never_joined():
     det.pairs[0].runs = [(0.0, 100.0), (500.0, 600.0), (900.0, 950.0)]
     det.pairs[1].runs = [(50.0, 150.0), (550.0, 650.0), (920.0, 980.0)]
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
 
 
 def test_pairs_with_far_apart_lengths_or_power_factors_are_not_joined():
     det = _stop_shared((1, 9, 0.93, 20.0), (2, 9, 0.93, 150.0))
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
     det = _stop_shared((1, 9, 0.55, 150.0), (2, 9, 0.99, 150.0))
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
 
 
 def test_a_stop_group_a_pair_barely_closes_on_does_not_join_it():
     det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.93, 150.0))
     det._votes[2] = {-(2 * D.PAIR_ID_BASE + 9): 2.0, -(2 * D.PAIR_ID_BASE + 7): 20.0}
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
 
 
 def test_pairs_of_a_few_tens_of_watts_are_not_joined_on_a_shared_stop():
     """A stop that small is shared by every look-alike, and says nothing about one device (Home, 2026-11-03)."""
     det = _stop_shared((1, 9, 0.93, 150.0), (2, 9, 0.93, 150.0), watts=35.0)
     det._join_shared_stops()
-    assert len({s.family for s in det.pairs}) == 2
+    assert len({s.signature for s in det.pairs}) == 2
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@
                 "name": "Detected loads"
             },
             "signature_library": {
-                "name": "Signature library"
+                "name": "Pair library"
             },
             "unknown_load_power": {
                 "name": "Unknown load power"
@@ -354,7 +354,7 @@
             },
             "reset_detection": {
                 "title": "Reset load detection?",
-                "description": "The signature library is forgotten and the last ten days of the meter are read again from scratch. Names you have given are kept: each is handed back to whatever the rebuild finds that looks like it, and where nothing matches - which is what a genuinely changed site looks like - the name does not return. It runs on its own and takes a while. Do this after a change to the meter, a rewired phase, or an update that changes how loads are found.",
+                "description": "The pair library is forgotten and the last ten days of the meter are read again from scratch. Names you have given are kept: each is handed back to whatever the rebuild finds that looks like it, and where nothing matches - which is what a genuinely changed site looks like - the name does not return. It runs on its own and takes a while. Do this after a change to the meter, a rewired phase, or an update that changes how loads are found.",
                 "menu_options": {
                     "reset_confirmed": "Yes, forget everything",
                     "overview": "← Cancel"
@@ -711,7 +711,7 @@
     "services": {
         "reset_detection": {
             "name": "Reset load detection",
-            "description": "Forget every detected signature and start the meter's backfill again. For when the meter changed, or a phase was rewired, and the library describes a site that no longer exists. Names you have given are kept and handed back to whatever the backfill finds that looks like them - so where the site really has changed, and nothing matches, a name simply does not return - unless you ask for the names to go too.",
+            "description": "Forget every detected pair and start the meter's backfill again. For when the meter changed, or a phase was rewired, and the library describes a site that no longer exists. Names you have given are kept and handed back to whatever the backfill finds that looks like them - so where the site really has changed, and nothing matches, a name simply does not return - unless you ask for the names to go too.",
             "fields": {
                 "forget_names": {
                     "name": "Forget the names too",
@@ -725,11 +725,11 @@
             "fields": {
                 "load_id": {
                     "name": "Load",
-                    "description": "The detected load's family id - the \"family\" each signature carries in the diagnostics. The name goes to every signature of the family. Either this or the signature id."
+                    "description": "The detected load's signature id - the \"family\" each pair carries in the diagnostics (the stored key keeps its old name). The name goes to every pair of the signature. Either this or the pair id."
                 },
                 "signature_id": {
-                    "name": "Signature",
-                    "description": "One of the load's signature ids instead - the # the detected loads sensor and the cards show. Its whole family takes the name."
+                    "name": "Pair",
+                    "description": "One of the load's pair ids instead - the # the detected loads sensor and the cards show. Its whole signature takes the name."
                 },
                 "meter": {
                     "name": "Meter",

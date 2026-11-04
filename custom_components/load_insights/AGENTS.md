@@ -200,7 +200,7 @@ Benched on Home 15-25 Oct (SLICE=6, the seven input entities of production, `dat
 
 | dial | value | what it does | kind | valid range | tested |
 |---|---|---|---|---|---|
-| `MAX_SIGNATURES` | 200 | soft cap on the library; only unprotected signatures are evicted | budget | 100–500 | not tested; Home sits right at it |
+| `MAX_PAIRS` | 200 | soft cap on the library; only unprotected pairs are evicted | budget | 100–500 | not tested; Home sits right at it |
 | `ESTABLISHED_EVIDENCE` | 0.5 | evidence at which a signature is never evicted | policy | 0.3–0.7 | not tested |
 | `ESTABLISHED_HORIZON_S` | 400 days | ...while seen within this | policy | — | not tested |
 | `YOUNG_COUNT` | 3 | sightings under which a new signature is protected... | policy | 2–5 | not tested |

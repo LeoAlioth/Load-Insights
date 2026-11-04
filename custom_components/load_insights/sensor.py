@@ -96,7 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             registry.async_remove(ent.entity_id)
     entities += [e for d in heat for e in (HeatIndexSensor(coordinator, entry, d), HeatScorecardSensor(coordinator, entry, d))]
     detection: DetectionRunner = entry.runtime_data.runner
-    entities += [DetectedLoadsSensor(detection, entry), SignatureLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+    entities += [DetectedLoadsSensor(detection, entry), PairLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
     entities += _base_loads(hass, entry, detection)
     device_names = {d.label.casefold() for d in site.devices}
@@ -530,7 +530,7 @@ class _DetectionBase(CoordinatorEntity, SensorEntity):
 class DetectedLoadsSensor(_DetectionBase):
     """State: how many unexplained loads are on right now. Attributes: which,
     the last sessions, and where the backfill stands. The pair library is
-    SignatureLibrarySensor's: moved off this sensor, which is rewritten every
+    PairLibrarySensor's: moved off this sensor, which is rewritten every
     pass, because its 0.5 MB went to every connected dashboard each time."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -579,7 +579,7 @@ class DetectedLoadsSensor(_DetectionBase):
             # depends on the clock, so a dashboard joins the two
             "running_ids": sorted(running),
             # every load on now, once, as rows for the Load Insights card (frontend/load-insights-card.js): ``meter``
-            # and ``id`` are its pair ("" the grid's) - what Name a load takes as meter and signature_id
+            # and ``id`` are its pair ("" the grid's) - what Name a load takes as meter and signature_id (a pair id)
             "running": [
                 {"name": r["name"], "meter": r["ref"][0] if r["ref"] else None,
                  "id": r["ref"][1] if r["ref"] else None, "watts": round(r["watts"]),
@@ -616,14 +616,14 @@ class DetectedLoadsSensor(_DetectionBase):
         }
 
 
-class SignatureLibrarySensor(_DetectionBase):
+class PairLibrarySensor(_DetectionBase):
     """State: how many pairs the detector holds. Attributes: every
     pair in words and figures, and each sub-meter's own.
 
     Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
     pass and its pairs were 0.5 MB - every pass, to every connected
     dashboard and phone, and into the state machine. Nothing here depends on
-    the clock (``signature_rows``), so a pass that filed nothing writes nothing.
+    the clock (``pair_rows``), so a pass that filed nothing writes nothing.
     Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT

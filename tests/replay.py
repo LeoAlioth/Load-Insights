@@ -466,7 +466,7 @@ def run(args, transform=None, say=print):
     """Replay the exports ``args`` (see parse) through a Fleet, as production
     would have read them; ``transform`` may rebuild the series first.
     Returns the Fleet, every session its house detector filed or a meter's
-    pair took (Run.parent_signature), in order, and each sub-meter's series as
+    pair took (Run.parent_pair), in order, and each sub-meter's series as
     the Fleet was fed it, its phases summed."""
     series = read_csv(args.csv, args.keep_coarse, say)
     if transform:
@@ -624,7 +624,7 @@ def run(args, transform=None, say=print):
     def wire(fleet):
         """What the runner sets on a Fleet it has just made or loaded, and the
         bench's two hooks: every session the house files, and every one a
-        meter's pair takes (Run.parent_signature). Called again after a restart."""
+        meter's pair takes (Run.parent_pair). Called again after a restart."""
         fleet.wait_cap_s = D.METER_WAIT_CAP_S      # as production's default; METER_WAIT_CAP_S=0 to judge at once
         fleet.parents = dict(p.split("=", 1) for p in args.parent)
         fleet.horizon_skip = set()
@@ -741,15 +741,15 @@ def main() -> int:
     detector = run(args)[0].main
     # The detector's OWN measured noise, which is what production passes.
     print()
-    print(f"{len(detector.pairs)} signatures from "
+    print(f"{len(detector.pairs)} pairs from "
           f"{sum(s.count for s in detector.pairs)} sessions")
     for phase, state in detector.phases.items():
         if state.baseline is not None:
             print(f"   phase {phase.upper()}: idle {state.baseline:.0f} W, "
                   f"noise {state.noise:.0f} W, {len(state.open_edges)} still open")
     print()
-    for sig in sorted(detector.pairs, key=lambda s: -s.energy_wh)[:args.top]:
-        print(f"  {sig.describe(timezone.utc)}")
+    for pair in sorted(detector.pairs, key=lambda s: -s.energy_wh)[:args.top]:
+        print(f"  {pair.describe(timezone.utc)}")
     return 0
 
 

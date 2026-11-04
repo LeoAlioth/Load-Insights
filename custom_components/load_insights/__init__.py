@@ -13,7 +13,7 @@ from homeassistant.helpers.debounce import Debouncer
 
 from .const import (
     CONF_NAME,
-    CONF_SIGNATURE_REVISION,
+    CONF_PAIR_REVISION,
     DEFAULT_NAME,
     DOMAIN,
     SERVICE_BACKFILL_STATISTICS,
@@ -99,40 +99,41 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
             await entry.runtime_data.runner.async_reset(forget_names=bool(call.data.get("forget_names", False)))
 
     async def _name_load(call) -> None:
-        """Name a load by its family id, for one the naming page does not offer yet -
+        """Name a load by its signature id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
         the page's bar (2026-09-28). An empty name clears it. The name goes to every
-        pair of the family (2026-10-26) - given as the family id (load_id) or as any
-        of its pairs' ids (signature_id, the # the sensor and the cards show; the
+        pair of the signature (2026-10-26) - given as the signature id (the field
+        ``load_id``) or as any of its pairs' ids (the field ``signature_id``: the field names are
+        the ones old automations use, but it takes a pair id, the # the sensor and the cards show; the
         two id spaces overlap, so the field says which, 2026-10-30)."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
         meter = (call.data.get("meter") or "").strip()
-        family = call.data.get("signature_id") is None
-        if family and call.data.get("load_id") is None:
-            raise ServiceValidationError("Give the load's family id (load_id) or one of its signature ids (signature_id)")
-        ref = (meter, int(call.data["load_id"] if family else call.data["signature_id"]))
+        by_signature = call.data.get("signature_id") is None
+        if by_signature and call.data.get("load_id") is None:
+            raise ServiceValidationError("Give the load's signature id (load_id) or one of its pair ids (signature_id)")
+        ref = (meter, int(call.data["load_id"] if by_signature else call.data["signature_id"]))
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
         runner = runner_of(entry)
         if runner is None:
             # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        sig = runner.fleet.family_head(ref) if family else runner.fleet.pair(ref)
-        was = sig.name if sig is not None else None
+        pair = runner.fleet.signature_head(ref) if by_signature else runner.fleet.pair(ref)
+        was = pair.name if pair is not None else None
         names_before = set(runner.fleet.names())
-        if not await runner.async_rename(ref, name, family=family):
+        if not await runner.async_rename(ref, name, signature=by_signature):
             raise ServiceValidationError(
-                f"No detected load has {'family' if family else 'signature'} id {ref[1]}"
+                f"No detected load has {'signature' if by_signature else 'pair'} id {ref[1]}"
                 + (f" on {ref[0]}" if ref[0] else " under no meter")
-                + (". A family the detector has since joined into another no longer has its id" if family
-                   else ". A signature merged into another is named as what it became; one forgotten is gone"))
+                + (". A signature the detector has since joined into another no longer has its id" if by_signature
+                   else ". A pair merged into another is named as what it became; one forgotten is gone"))
         if set(runner.fleet.names()) == names_before:
             return      # the same names, so the same entities and links: no reload (2026-10-23)
         # what the naming page's Done does: the entities follow the names,
         # and so do the inputs linked to the load
-        rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+        rev = int(entry.options.get(CONF_PAIR_REVISION, 0)) + 1
         hass.config_entries.async_update_entry(
-            entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
+            entry, options=relink({**entry.options, CONF_PAIR_REVISION: rev}, was, name))
 
     async def _backfill_statistics(call) -> None:
         """Write the hours detection saw of a named load over its energy

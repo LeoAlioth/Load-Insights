@@ -55,10 +55,10 @@ def main(argv: list) -> None:
         hisa = self.subs.get("Hiša") if hasattr(self, "subs") else None
         if hisa is None:
             return
-        for sig in hisa.pairs:
-            if not sig.name and sig.count >= 3 and sig.phases in ("c", "Z") \
-                    and 10 <= sig.watts <= 100 and 10 <= sig.duration_s <= 60:
-                hisa.rename(sig.id, "Inkubator")
+        for pair in hisa.pairs:
+            if not pair.name and pair.count >= 3 and pair.phases in ("c", "Z") \
+                    and 10 <= pair.watts <= 100 and 10 <= pair.duration_s <= 60:
+                hisa.rename(pair.id, "Inkubator")
         live = sum(w for n, _, w in hisa.live_runs(now) if n == "Inkubator")
         ceiling = self.live_ceiling().get("Inkubator", 0.0)
         st["ink_passes"] += 1

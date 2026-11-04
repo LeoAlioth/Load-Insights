@@ -208,7 +208,7 @@ class LoadInsightsCard extends HTMLElement {
     const hiddenCount = c.mode === "running" ? 0 : this._hidden().size;
     const source = c.mode === "running" ? det : lib;
     const body = !source
-      ? `<div class="empty">Load Insights' ${c.mode === "running" ? "detected loads" : "signature library"} sensor was not found.</div>`
+      ? `<div class="empty">Load Insights' ${c.mode === "running" ? "detected loads" : "pair library"} sensor was not found.</div>`
       : ["unavailable", "unknown"].includes(source.state)
         ? `<div class="empty">Load Insights is starting - its loads show once it has read its history.</div>`
         : rows.length === 0

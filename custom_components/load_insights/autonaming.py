@@ -128,7 +128,7 @@ class AutoNamer:
     def _owner_names(self) -> List[Tuple[str, Tuple[str, int], object]]:
         """(name, ref, pair) of every named pair."""
         r = self._runner
-        return [(sig.name, (meter, sig.id), sig) for meter, det in r.fleet.detectors() for sig in det.pairs if sig.name]
+        return [(pair.name, (meter, pair.id), pair) for meter, det in r.fleet.detectors() for pair in det.pairs if pair.name]
 
     async def _name(self) -> bool:
         r = self._runner
@@ -148,29 +148,29 @@ class AutoNamer:
         from .detection import MIN_COUNT_TO_NAME, NAMING_MIN_WH   # detection imports this module
         rows = r.fleet.namable(r.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH)
         for group in rows.values():
-            for ref, sig in group:
-                facts[A.key_of(ref)] = A.facts_of(ref, sig)
+            for ref, pair in group:
+                facts[A.key_of(ref)] = A.facts_of(ref, pair)
         mine: Dict[str, Tuple[Tuple[str, int], object]] = {}
-        for name, ref, sig in self._owner_names():
+        for name, ref, pair in self._owner_names():
             if name in self.marks:
-                facts[A.key_of(ref)] = A.facts_of(ref, sig)
-                mine[A.key_of(ref)] = (ref, sig)
+                facts[A.key_of(ref)] = A.facts_of(ref, pair)
+                mine[A.key_of(ref)] = (ref, pair)
         today = dt_util.now().date().isoformat()
         self.cands = A.tick(self.cands, facts, today)
         # 3. a name whose load has not cleared for a week is taken back (never on one bad day)
-        for key, (ref, sig) in list(mine.items()):
+        for key, (ref, pair) in list(mine.items()):
             c = self.cands.get(key)
             if c is not None and A.lapsed(c):
                 _LOGGER.info("Auto-name %s taken back from %s: the load has not cleared the bar for %d days",
-                             sig.name, key, A.DAYS_TO_REVOKE)
-                gone = sig.name
+                             pair.name, key, A.DAYS_TO_REVOKE)
+                gone = pair.name
                 await r.async_rename(ref, None)
                 self.cands.pop(key, None)
                 if gone not in r.fleet.names():
                     self.marks.pop(gone, None)
                 changed = True
         # 4. new names
-        owned = [(n, A.descriptor(A.facts_of(ref, sig))) for n, ref, sig in self._owner_names() if n not in self.marks]
+        owned = [(n, A.descriptor(A.facts_of(ref, pair))) for n, ref, pair in self._owner_names() if n not in self.marks]
         taken = set(r.fleet.names()) | set(self.marks) | {o.get("name") for _, det in r.fleet.detectors() for o in det.orphan_names}
         taken |= set(r.all_submeters) | {t.name for t in self.tombs if t.name}
         taken |= {d.label for d in await self._devices()}
@@ -239,10 +239,10 @@ class AutoNamer:
         if meters:
             home = meters.pop()
         else:
-            sigs = [s for s in r.fleet.main.pairs if ("", s.id) in set(refs)]
-            if not sigs:
+            pairs = [s for s in r.fleet.main.pairs if ("", s.id) in set(refs)]
+            if not pairs:
                 return None
-            head = max(sigs, key=lambda s: s.count)
+            head = max(pairs, key=lambda s: s.count)
             home = most_specific(head.locations, head.count, r.fleet.parents)
         return (r.all_submeters.get(home) or {}).get("energy")
 

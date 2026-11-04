@@ -468,11 +468,11 @@ def _truth(rows: list) -> tuple:
     return sum(max(0.0, w - floor) * d for w, d in held) / 3600.0, floor, floor * span / 3600.0
 
 
-def _own(per_sig: dict, names) -> dict:
+def _own(per_pair: dict, names) -> dict:
     """pair -> the load among ``names`` holding the most of its energy,
     where that is at least half of it."""
     out = {}
-    for sid, row in per_sig.items():
+    for sid, row in per_pair.items():
         best = max((n for n in names if n in row), key=row.get, default=None)
         if best is not None and row[best] >= 0.5 * row["total"]:
             out[sid] = best
@@ -484,25 +484,25 @@ def _rates(truth_wh: float, attributed_wh: float, correct_wh: float) -> tuple:
     return correct_wh / truth_wh, ((attributed_wh - correct_wh) / attributed_wh if attributed_wh else None)
 
 
-def _table(per_sig: dict, truth: dict, floors: dict, names: list, small=(), scope=None) -> tuple:
+def _table(per_pair: dict, truth: dict, floors: dict, names: list, small=(), scope=None) -> tuple:
     """One truth set's scorecard, and which load owns which pair. A load
     under 50 Wh over the replay is not scored, unless it is one of ``small``;
-    one in ``scope`` (load -> (what it says of itself, per_sig over fewer
+    one in ``scope`` (load -> (what it says of itself, per_pair over fewer
     sessions)) is scored over those alone, its pairs owned as they
     decide: a meter whose history begins late over what it covers, a
     heuristic truth over the sessions it can judge."""
-    owner = _own(per_sig, names)
+    owner = _own(per_pair, names)
     loads, tot = {}, {"truth": 0.0, "of": 0.0, "in": 0.0, "sof": 0.0, "sin": 0.0}
     for n in names:
         if n not in truth or not (truth[n] >= 50.0 or n in small and truth[n] > 0):
             continue
-        note, sig_e = (scope or {}).get(n, ({}, per_sig))
-        own = owner if sig_e is per_sig else _own(sig_e, names)
-        mine = [(sid, sig_e[sid]) for sid, m in own.items() if m == n]
+        note, pair_e = (scope or {}).get(n, ({}, per_pair))
+        own = owner if pair_e is per_pair else _own(pair_e, names)
+        mine = [(sid, pair_e[sid]) for sid, m in own.items() if m == n]
         right, of = sum(r[n] for _, r in mine), sum(r["total"] for _, r in mine)
         cap, imp = _rates(truth[n], of, right)
         # share-credited: each pair L holds energy in, weighted by L's share of it
-        held = [r for r in sig_e.values() if r.get(n, 0.0) > 0]
+        held = [r for r in pair_e.values() if r.get(n, 0.0) > 0]
         s_of, s_in = sum(r[n] for r in held), sum(r[n] * r[n] / r["total"] for r in held)
         s_cap, s_imp = _rates(truth[n], s_of, s_in)
         floor = floors.get(n, (0.0, 0.0))
@@ -722,7 +722,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
     def sid_of(s):
         # the pair it stands in now, merges followed; one since evicted
         # still counts - its runs were detected and their energy written
-        if s.parent_pair:                     # a meter's own pair's (Run.parent_signature): "Mansarda#11"
+        if s.parent_pair:                     # a meter's own pair's (Run.parent_pair): "Mansarda#11"
             name, own = s.parent_pair
             while own.parent_pair:            # ...or the meter's own run is a meter's inside it
                 name, own = own.parent_pair
@@ -738,7 +738,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         """(per pair: its energy, runs and each load's share; each
         load's credited sessions; Wh below the quality gate) over the sessions
         ``keep`` keeps."""
-        per_sig: dict = {}
+        per_pair: dict = {}
         credited = collections.defaultdict(list)
         gated = 0.0
         # a meter's energy is credited ONCE: two runs of one load overlapping in
@@ -757,7 +757,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
             if s.quality < gate:
                 gated += s.energy_wh
                 continue
-            row = per_sig.setdefault(sid, {"total": 0.0, "n": 0})
+            row = per_pair.setdefault(sid, {"total": 0.0, "n": 0})
             row["total"] += s.energy_wh
             row["n"] += 1
             for name, rows in devices.items():
@@ -777,8 +777,8 @@ def energy(site: str, folder: str, dials: list) -> dict:
                 credited[name].append(s)
             if id(s) in run_wh:       # the fridges as one load, too
                 row[FRIDGES] = row.get(FRIDGES, 0.0) + min(sum(wh for _, wh in run_wh[id(s)]), s.energy_wh)
-        return per_sig, credited, gated
-    per_sig, credited, gated = attribute()
+        return per_pair, credited, gated
+    per_pair, credited, gated = attribute()
     # a meter of EXTRA_SUBS is scored from its first reading - Home's fan and
     # blinds from 22 Sep; the fridges over the sessions credited a run the
     # finder found - it finds about half of them (2026-10-02: 46 of the 126
@@ -792,18 +792,18 @@ def energy(site: str, folder: str, dials: list) -> dict:
         truth[FRIDGES], floors[FRIDGES], tables["fridges"] = sum(truth[n] for n in runs), (0.0, 0.0), [FRIDGES]
     small = set(B.EXTRA_SUBS.get(site, {})) | {CEILING}
     res = {"site": site, "folder": folder, "dials": tag, "mode": B.SUBS,
-           "detected_kwh": sum(r["total"] for r in per_sig.values()) / 1000.0, "gated_kwh": gated / 1000.0,
-           "signatures": len(per_sig), "tables": {}, "owners": {},
+           "detected_kwh": sum(r["total"] for r in per_pair.values()) / 1000.0, "gated_kwh": gated / 1000.0,
+           "signatures": len(per_pair), "tables": {}, "owners": {},
            "rest": None if rest is None else dict(zip(("main_kwh", "meters_kwh", "rest_kwh", "away"), rest)),
            "pairing": _pairing(log, credited)}
     for k, names in tables.items():
-        res["tables"][k], res["owners"][k] = _table(per_sig, truth, floors, names, small, scope)
+        res["tables"][k], res["owners"][k] = _table(per_pair, truth, floors, names, small, scope)
     own = res["owners"]["devices"]
     res["sessions"] = [[s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 3), sid, own.get(sid)]
                        for s, sid in zip(filed, sids)]
     res["session_closes"] = [[c[0] for c in getattr(s, "closes", ())] for s in filed]   # how each session's run was closed, aligned with "sessions"
     res["bounds"] = sorted(log["bounds"])
-    _print_run(res, per_sig, by_id)
+    _print_run(res, per_pair, by_id)
     if out_path:
         res["owners"] = {k: {str(sid): n for sid, n in v.items()} for k, v in res["owners"].items()}
         with open(out_path, "w", encoding="utf-8") as f:
@@ -824,30 +824,30 @@ def _kinds(st: dict) -> str:
     return ", ".join(f"{k} {100 * v:.1f} %" for k, v in st["kinds"].items())
 
 
-def _print_run(res: dict, per_sig: dict, by_id: dict) -> None:
+def _print_run(res: dict, per_pair: dict, by_id: dict) -> None:
     total = res["detected_kwh"] * 1000.0
-    print(f"  {res['dials']}   {res['signatures']} signatures with energy, {res['detected_kwh']:.0f} kWh detected in all"
+    print(f"  {res['dials']}   {res['signatures']} pairs with energy, {res['detected_kwh']:.0f} kWh detected in all"
           + (f", {res['gated_kwh']:.0f} kWh more left unattributed below the quality gate" if res["gated_kwh"] else ""))
     # the pairs holding most of the detected energy: a blob here is
     # energy no name will ever fit
-    for sid, row in sorted(per_sig.items(), key=lambda kv: -kv[1]["total"])[:5]:
-        sig = by_id.get(sid)
-        what = (f"{sig.phases.upper()} {sum(sig.power.values()):.0f} W ~{sig.duration_s/60:.0f} min" if sig is not None else "evicted")
+    for sid, row in sorted(per_pair.items(), key=lambda kv: -kv[1]["total"])[:5]:
+        pair = by_id.get(sid)
+        what = (f"{pair.phases.upper()} {sum(pair.power.values()):.0f} W ~{pair.duration_s/60:.0f} min" if pair is not None else "evicted")
         devs = " ".join(f"{k}:{v/row['total']:.0%}" for k, v in sorted(row.items(), key=lambda kv: -kv[1] if isinstance(kv[1], float) else 0)
                         if k not in ("total", "n") and v >= 0.02 * row["total"])
         print(f"     #{sid}: {row['n']} runs, {row['total']/1000:.1f} kWh ({row['total']/max(total, 1e-9):.0%}), {what}  {devs}")
     for k, tab in res["tables"].items():
         print(f"  {k}: {'load':20s} {'truth kWh':>9s} {'floor kWh':>9s} {'attrib kWh':>10s} {'right kWh':>9s} "
-              f"{'capture':>7s} {'impurity':>8s}  signatures (id, runs, kWh, share)   holds most")
+              f"{'capture':>7s} {'impurity':>8s}  pairs (id, runs, kWh, share)   holds most")
         for name, g in sorted(tab["loads"].items(), key=lambda kv: -kv[1]["truth_kwh"]):
-            sigs = " ".join(f"#{sid}:{n}x{kwh}kWh@{sh:.0%}" for sid, n, kwh, sh in g["sigs"][:4])
+            pairs = " ".join(f"#{sid}:{n}x{kwh}kWh@{sh:.0%}" for sid, n, kwh, sh in g["sigs"][:4])
             # ...and where the rest of its energy went: the pairs holding
             # most of it, whether or not it is their majority
-            went = sorted(((row.get(name, 0.0), sid, row) for sid, row in per_sig.items() if row.get(name, 0.0) > 0),
+            went = sorted(((row.get(name, 0.0), sid, row) for sid, row in per_pair.items() if row.get(name, 0.0) > 0),
                           key=lambda x: x[0], reverse=True)[:3]   # ids mix numbers and "gone N"
             went_s = " ".join(f"#{sid}:{e/1000:.2f}kWh={e/row['total']:.0%}of{row['n']}" for e, sid, row in went)
             print(f"  {'':{len(k) + 1}s} {name:20s} {g['truth_kwh']:9.2f} {g['floor_kwh']:9.2f} {g['attributed_kwh']:10.2f} "
-                  f"{g['correct_kwh']:9.2f} {_pct(g['capture']):>7s} {_pct(g['impurity']):>8s}  {sigs}   {went_s}")
+                  f"{g['correct_kwh']:9.2f} {_pct(g['capture']):>7s} {_pct(g['impurity']):>8s}  {pairs}   {went_s}")
         print(f"  {'':{len(k) + 1}s} {'all':20s} {tab['truth_kwh']:9.2f} {'':9s} {tab['attributed_kwh']:10.2f} "
               f"{tab['attributed_kwh'] - tab['wrong_kwh']:9.2f} {_pct(tab['capture']):>7s} {_pct(tab['impurity']):>8s}"
               f"   capture weighted by energy, impurity pooled")
@@ -929,7 +929,7 @@ def compare(a: list, b: list, bounds: list) -> list:
         if abs(x[3] - y[3]) > 0.01 + 1e-4 * abs(x[3]):
             what.append(("size", f"{x[3]:.1f} -> {y[3]:.1f} Wh"))
         if twin[x[4]] != y[4]:
-            what.append(("signature", f"signature -> #{y[4]} ({y[5] or '-'}), where most of #{x[4]}'s went to #{twin[x[4]]}"))
+            what.append(("signature", f"pair -> #{y[4]} ({y[5] or '-'}), where most of #{x[4]}'s went to #{twin[x[4]]}"))
         if what:
             out.append(diff(x, y, what))
     out += [diff(x, None, [("only A", "")]) for x in still]
@@ -969,15 +969,15 @@ def _worklist(title: str, diffs: list, n: tuple) -> list:
     out = [f"{title}: {sm['differ']} sessions differ, of {n[0]} / {n[1]}, {sm['kwh']:.2f} kWh",
            "   " + ", ".join(f"{k} {c} ({e:.2f} kWh)" for k, (c, e) in sm["kinds"].items()),
            f"   {'kind':9s} {'start (local)':14s} {'ph':3s} {'kWh':>7s} {'W':>6s} {'min':>6s}  "
-           f"{'signature (owner)':26s} {'pass boundary':>13s}  what differs"]
+           f"{'pair (owner)':26s} {'pass boundary':>13s}  what differs"]
     for d in diffs:
         s = d["a"] or d["b"]
         when = datetime.fromtimestamp(s[1]).strftime("%m-%d %H:%M:%S")
         dur = s[2] - s[1]
-        sig = f"#{s[4]}" + (f" ({s[5]})" if s[5] else "")
+        pair = f"#{s[4]}" + (f" ({s[5]})" if s[5] else "")
         near = "-" if d["near_s"] is None else f"{d['near_s']:+.0f} s"
         out.append(f"   {d['kind']:9s} {when:14s} {s[0].upper():3s} {d['kwh']:7.3f} {s[3] * 3600 / max(dur, 1e-9):6.0f} "
-                   f"{dur / 60:6.1f}  {sig:26s} {near:>13s}  {d['what']}")
+                   f"{dur / 60:6.1f}  {pair:26s} {near:>13s}  {d['what']}")
     return out
 
 
@@ -1307,14 +1307,14 @@ def check() -> None:
     assert floor == 5.0 and round(wh, 2) == 27.78 and round(floor_wh, 2) == 1.39
     # the owner's boiler: 10 kWh used, its pair 9.5 kWh of which 9 its own -
     # capture 90 %, impurity 5.3 %; a pair nobody holds half of is nobody's
-    per_sig = {1: {"total": 9500.0, "n": 40, "Boiler": 9000.0, "Pump": 300.0},
+    per_pair = {1: {"total": 9500.0, "n": 40, "Boiler": 9000.0, "Pump": 300.0},
                2: {"total": 1000.0, "n": 5, "Boiler": 400.0, "Pump": 450.0}}
-    tab, owner = _table(per_sig, {"Boiler": 10000.0, "Pump": 2000.0}, {}, ["Boiler", "Pump"])
+    tab, owner = _table(per_pair, {"Boiler": 10000.0, "Pump": 2000.0}, {}, ["Boiler", "Pump"])
     b = tab["loads"]["Boiler"]
     assert owner == {1: "Boiler"} and round(b["capture"], 3) == 0.9 and round(b["impurity"], 3) == 0.053
     assert tab["loads"]["Pump"]["capture"] == 0.0 and tab["loads"]["Pump"]["impurity"] is None
     assert round(tab["capture"], 2) == 0.75 and round(tab["impurity"], 3) == 0.053   # 9 of 12; 0.5 of 9.5
-    assert _own(per_sig, ["Pump"]) == {}          # a truth set without the boiler: still nobody's
+    assert _own(per_pair, ["Pump"]) == {}          # a truth set without the boiler: still nobody's
     # share-credited: each pair by the load's share of it - 9000^2/9500 + 400^2/1000 right of 9400
     assert round(b["capture_share"], 4) == 0.8686 and round(b["impurity_share"], 4) == 0.0759
     p = tab["loads"]["Pump"]                      # nobody's pair #2 still credits it its 45 %

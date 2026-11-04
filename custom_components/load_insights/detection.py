@@ -241,7 +241,7 @@ STORAGE_VERSION = 1
 #     mixture only (joins at 2 widths), runs filed and merged by their start
 #     and stop groups' pair (pair_home) - groups, devices and pairs all
 #     differ from 22's.
-DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Signatures (2026-10-26) did not bump it: a stored library loads into signatures (Detector._assign_signatures), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
 # pair worth 30 Wh over ten days is noise with a shape, and a list full
@@ -1030,7 +1030,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         pairs' hours have aged out (Pair.age) and others not, and
         a name's meter would be written short of them, every hour. None
         before anything is filed."""
-        seen = min((h for _, det in self.fleet.detectors() for sig in det.pairs for h in sig.hourly),
+        seen = min((h for _, det in self.fleet.detectors() for pair in det.pairs for h in pair.hourly),
                    default=None)
         if seen is None:
             return None
@@ -1108,9 +1108,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         named = len(self.fleet.names())
         out = []
         for where, rows in self.fleet.namable(self.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH).items():
-            ref = {id(sig): r for r, sig in rows}
-            heirs = {id(sig) for r, sig in rows if self.fleet.predecessor_of(r) is not None}
-            worth = [sig for _, sig in rows]
+            ref = {id(pair): r for r, pair in rows}
+            heirs = {id(pair) for r, pair in rows if self.fleet.predecessor_of(r) is not None}
+            worth = [pair for _, pair in rows]
             shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
                                      NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=lambda x: id(x) in heirs)
             if shown:
@@ -1137,10 +1137,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.async_update_listeners()
         return name
 
-    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], family: bool = False) -> bool:
-        """Name the pair (meter, id) - the grid's under "" - or clear it (``family``: ref's id is a
-        family's), and persist at once; the caller bumps the entry so the entities follow. Either way the
-        name goes to the whole family: a family is named, not a pair.
+    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], signature: bool = False) -> bool:
+        """Name the pair (meter, id) - the grid's under "" - or clear it (``signature``: ref's id is a
+        signature's), and persist at once; the caller bumps the entry so the entities follow. Either way the
+        name goes to the whole signature: a signature is named, not a pair.
 
         Without telling the entities: the bump's reload is what makes the
         name's sensors. Told here, the sensor platform added them too, and
@@ -1155,7 +1155,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         (AGENTS.md, 2026-10-02)."""
         async with self._lock:
             before = self.fleet.names()
-            if not (self.fleet.rename_family(ref, name) if family else self.fleet.rename(ref, name)):
+            if not (self.fleet.rename_signature(ref, name) if signature else self.fleet.rename(ref, name)):
                 return False
             self._carry_vanished(before)
             await self._persist(force=True)      # a user action, written at once

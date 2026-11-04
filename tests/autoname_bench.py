@@ -56,7 +56,7 @@ def main() -> None:
         if path.exists():
             d = json.loads(path.read_text())
             names = {r: n for n, refs in d["named_loads"].items() for r in refs if isinstance(r, int)}
-            print(f"=== {site}: live export, {len(d['signatures'])} signatures, named {sorted(d['named_loads'])}")
+            print(f"=== {site}: live export, {len(d['signatures'])} pairs, named {sorted(d['named_loads'])}")
             clearing, hand = [], []
             for s in d["signatures"]:
                 f = facts_from_export(s, names)
@@ -76,7 +76,7 @@ def main() -> None:
             rows = [(facts_from_lib(s), s) for s in d["sigs"]]
             clearing = [(f, A.recognise(f)) for f, _ in rows]
             clearing = [(f, v) for f, v in clearing if v.kind]
-            print(f"=== {site}: ten-day replay, {len(rows)} signatures (every meter)")
+            print(f"=== {site}: ten-day replay, {len(rows)} pairs (every meter)")
             for f, v in clearing:
                 print(f"  CLEARS {v.kind:7} {line(f)}")
             print(f"  -> {len(clearing)} clear the bar")

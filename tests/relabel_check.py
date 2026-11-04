@@ -43,7 +43,7 @@ def main(argv):
     ids_new = {tuple(r[:5]): r[5] for r in rows}
     moved = [k for k in a & b if ids_old[k] != ids_new[k]]
     print(f"{len(old)} saved, {len(rows)} now; only saved {len(a - b)}, only now {len(b - a)}, "
-          f"same session in another signature {len(moved)}")
+          f"same session in another pair {len(moved)}")
     for k in sorted(a - b)[:10]:
         print("  only saved", k)
     for k in sorted(b - a)[:10]:
