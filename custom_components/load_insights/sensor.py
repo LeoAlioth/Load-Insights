@@ -371,14 +371,12 @@ class DeviceForecastSensor(ForecastPowerSensor):
         self._energy = device.energy
         self._device = device
         self._attr_unique_id = device_uid(entry.entry_id, device.energy)
-        # Its own device, named after the dashboard's device and hanging off
-        # the site's. Putting the forecast ON the real device (by reusing that
-        # device's identifiers) is nicer and was tried on 2026-09-17: it
-        # produced nine unnamed devices instead of merging, so it is out until
-        # it can be tested against a live registry rather than reasoned about.
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        # One device per load, hanging off the site's: the forecast sensors share the
+        # detected load's device (same key, same name), so a load is one entry in the list
+        # instead of two with one name (the owner, 2026-11-03). Putting them on the real
+        # device by reusing ITS identifiers was tried on 2026-09-17 and produced nine
+        # unnamed devices instead of merging; this reuses only our own key.
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     def _forecast(self) -> Optional[Forecast]:
         data: Optional[InsightsData] = self.coordinator.data
@@ -445,9 +443,7 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
         self._attr_has_entity_name = True
         self._attr_translation_key = "named_load_room"          # the same name and icon
         self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_room"
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -484,9 +480,7 @@ class DeviceRateSensor(CoordinatorEntity, SensorEntity):
         self._attr_has_entity_name = True
         self._attr_translation_key = "device_rate"
         self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_rate"
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1144,7 +1138,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         super().__init__(runner, entry, "named_load_power")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "power", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1170,7 +1164,7 @@ class NamedLoadRoom(_DetectionBase):
         super().__init__(runner, entry, "named_load_room")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "room", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1198,7 +1192,7 @@ class NamedLoadRate(_DetectionBase):
         super().__init__(runner, entry, "named_load_rate")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "rate", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1231,7 +1225,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         super().__init__(runner, entry, "named_load_energy")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
         self._reading: Optional[float] = None
         self._seen: Optional[float] = None
 
