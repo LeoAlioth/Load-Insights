@@ -57,7 +57,7 @@ from .const import (
     NAMING_MAX_STALE_S,
     CONF_INPUT_ENTITIES,
     CONF_INPUT_LINKS,
-    CONF_SIGNATURE_REVISION,
+    CONF_PAIR_REVISION,
     CONF_NAME,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_WEATHER_ENTITY,
@@ -202,12 +202,12 @@ def _group_title(where: str, hass=None) -> str:
     return where
 
 
-def _helpers(hass, sig, edges=()) -> list:
+def _helpers(hass, pair, edges=()) -> list:
     """(input, what it says about this load) for each input that helped find
     it - so an input added for the whole site can be linked to the load it
     turned out to explain once it is named (2026-09-28)."""
     out = []
-    story = edge_story(edges, sig)
+    story = edge_story(edges, pair)
     said = {}
     for role, verb in (("start", "Starts"), ("stop", "Stops")):
         for eid, seen in ((story.get(role) or {}).get("signals") or {}).items():
@@ -221,7 +221,7 @@ def _helpers(hass, sig, edges=()) -> list:
                                             f"{role}s")
     for eid, lines in said.items():
         out.append((eid, "; ".join(lines)))
-    tied = sig.strongest_input()
+    tied = pair.strongest_input()
     if tied is not None:
         eid, value, share, lift = tied
         out.append((eid, f"Runs while {_friendly(hass, eid)} is {value}: {share:.0%} of its runs, "
@@ -663,14 +663,14 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
                         "count": str(len(shown)),
                         "hidden": str(waiting + max(0, len(candidates) - len(shown)))}
         options = []
-        for index, (ref, sig) in enumerate(shown):
+        for index, (ref, pair) in enumerate(shown):
             # Two lines: a menu row's own label is cut at the dialog's width,
             # so it carries only what tells one load from another, and the rest
             # goes in the row's description, which wraps (2026-09-23: the
             # page "does not fit all the text").
-            label, rest = sig.menu_row(tz, now_ts, ref in running)
-            if sig.name:
-                label = f"{sig.name} — {label}"
+            label, rest = pair.menu_row(tz, now_ts, ref in running)
+            if pair.name:
+                label = f"{pair.name} — {label}"
             maybe = same_device_phrase([by_ref[r] for r in partners.get(ref, []) if r in by_ref])
             if maybe:
                 rest += f" · {maybe}"
@@ -713,8 +713,8 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
     async def async_step_naming_done(self, user_input: dict[str, Any] | None = None):
         """Apply: the names were written as they were given, and this is what
         rebuilds the entities behind them."""
-        rev = int(self.config_entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
-        options = {**dict(self.config_entry.options), CONF_SIGNATURE_REVISION: rev}
+        rev = int(self.config_entry.options.get(CONF_PAIR_REVISION, 0)) + 1
+        options = {**dict(self.config_entry.options), CONF_PAIR_REVISION: rev}
         # the inputs linked to a load follow its name, and the ones ticked
         # when it was named are linked to it now
         pending = self._pending_links or {}
@@ -741,8 +741,8 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         if runner is None:
             return None, None, None
         ref = self._naming_selected
-        sig = runner.fleet.pair(ref) if ref is not None else None
-        return runner, (ref if sig is not None else None), sig
+        pair = runner.fleet.pair(ref) if ref is not None else None
+        return runner, (ref if pair is not None else None), pair
 
     async def async_step_naming_detail(self, user_input: dict[str, Any] | None = None):
         """The load that was picked, and what can be done with it.
@@ -751,37 +751,37 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         the list used to mean submitting an empty name box. As a menu, back is
         a row like any other (2026-09-23: "when i click on an entry i
         would like a back button"), and naming is one click further in."""
-        runner, ref, sig = self._picked()
+        runner, ref, pair = self._picked()
         if runner is None:
             return self.async_abort(reason="no_detection")
-        if sig is None:
+        if pair is None:
             return await self.async_step_naming_list()
-        detail = sig.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents, ref[0] or None)
-        helped = _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
+        detail = pair.detail(dt_util.DEFAULT_TIME_ZONE, runner.parents, ref[0] or None)
+        helped = _helpers(self.hass, pair, runner.fleet._det(ref[0]).edges)
         if helped:
             detail += "\n\n**Helped by**\n" + "\n".join(f"- {text}" for _, text in helped)
-        if sig.name:
+        if pair.name:
             auto = " It was named automatically; naming it yourself or forgetting it ends that." \
-                if sig.name in runner.autonamer.marks else ""
-            detail = f"Named **{sig.name}**.{auto}\n\n{detail}"
+                if pair.name in runner.autonamer.marks else ""
+            detail = f"Named **{pair.name}**.{auto}\n\n{detail}"
         options = ["naming_name"]
         # A named load whose behaviour changed leaves its name on a
         # fingerprint nothing matches, while what replaced it sits here
         # unnamed. Offer the move where the user is already standing.
         was = runner.fleet.predecessor_of(ref)
-        if was is not None and not sig.name:
+        if was is not None and not pair.name:
             options.append("naming_adopt")
             quiet = _since(was.last_seen)
             detail = (f"**{was.name}** has not run {quiet}, and this looks like what it became "
                       f"- it was {_fmt_w(was.watts)} over {_fmt_s(was.duration_s)}, this is "
-                      f"{_fmt_w(sig.watts)} over {_fmt_s(sig.duration_s)}, on the same phases.\n\n"
+                      f"{_fmt_w(pair.watts)} over {_fmt_s(pair.duration_s)}, on the same phases.\n\n"
                       f"{detail}")
-        if sig.name:
+        if pair.name:
             options.append("naming_forget")
         options.append("naming_list")             # back to the list
         return self.async_show_menu(
             step_id="naming_detail", menu_options=options,
-            description_placeholders={"detail": detail, "name": sig.name or "",
+            description_placeholders={"detail": detail, "name": pair.name or "",
                                       "was": was.name if was is not None else ""})
 
     async def async_step_naming_name(self, user_input: dict[str, Any] | None = None):
@@ -790,17 +790,17 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         hold one: the load is named exactly as that meter, which makes it
         that device (see insights.named) without a typo in the way (the owner,
         2026-09-29)."""
-        runner, ref, sig = self._picked()
-        if runner is None or sig is None:
+        runner, ref, pair = self._picked()
+        if runner is None or pair is None:
             return await self.async_step_naming_list()
         inputs = set(self.config_entry.options.get(CONF_INPUT_ENTITIES) or [])
-        helped = [(eid, text) for eid, text in _helpers(self.hass, sig, runner.fleet._det(ref[0]).edges)
+        helped = [(eid, text) for eid, text in _helpers(self.hass, pair, runner.fleet._det(ref[0]).edges)
                   if eid in inputs]
         if user_input is not None:
             name = chosen_name(user_input.get("name"), user_input.get("same_as_meter"))
             if not name:
                 return await self.async_step_naming_detail()
-            was = sig.name
+            was = pair.name
             await runner.async_rename(ref, name)
             # the options are written by Done, which rebuilds the entities too
             pending = self._links()
@@ -808,8 +808,8 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
             pending["link"] += [(eid, name) for eid in user_input.get("link_inputs") or []]
             self._naming_selected = None
             return await self.async_step_naming_list()
-        head, rest = sig.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
-        fields = {vol.Optional("name", description={"suggested_value": sig.name or ""}): selector.TextSelector()}
+        head, rest = pair.menu_row(dt_util.DEFAULT_TIME_ZONE, dt_util.utcnow().timestamp())
+        fields = {vol.Optional("name", description={"suggested_value": pair.name or ""}): selector.TextSelector()}
         meters = runner.device_meters()
         if meters:
             fields[vol.Optional("same_as_meter")] = selector.SelectSelector(selector.SelectSelectorConfig(
@@ -830,9 +830,9 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         )
 
     async def async_step_naming_forget(self, user_input: dict[str, Any] | None = None):
-        runner, ref, sig = self._picked()
-        if runner is not None and sig is not None:
-            was = sig.name
+        runner, ref, pair = self._picked()
+        if runner is not None and pair is not None:
+            was = pair.name
             await runner.async_rename(ref, None)
             self._links()["relink"].append((was, None))
         self._naming_selected = None
@@ -841,8 +841,8 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
     async def async_step_naming_adopt(self, user_input: dict[str, Any] | None = None):
         # the name moves here and leaves the old fingerprint, which keeps its
         # history but stops answering to a name nothing matches any more
-        runner, ref, sig = self._picked()
-        if runner is not None and sig is not None:
+        runner, ref, pair = self._picked()
+        if runner is not None and pair is not None:
             await runner.async_adopt(ref)
         self._naming_selected = None
         return await self.async_step_naming_list()
@@ -1064,9 +1064,9 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         targets = await self._link_targets()
         runner = runner_of(self.config_entry)
         meter = {}
-        for (where, _), sig in runner.named() if runner is not None else ():      # biggest first
-            at = most_specific(sig.locations, sig.count, runner.parents)
-            meter.setdefault(sig.name, where if at == "main" and where else at)   # a meter's own: that meter
+        for (where, _), pair in runner.named() if runner is not None else ():      # biggest first
+            at = most_specific(pair.locations, pair.count, runner.parents)
+            meter.setdefault(pair.name, where if at == "main" and where else at)   # a meter's own: that meter
         places = {}
         for t in targets:
             if not t.startswith(LOAD_PREFIX):

@@ -131,13 +131,13 @@ def _detection(runner) -> dict:
                                     "levels": len(o.levels)} for o in st.open_edges]}
                    for p, st in det.phases.items()},
         "signatures": [
-            {**_jsonable(sig.to_dict()),
-             "location": most_specific(sig.locations, sig.count, parents),
-             "where": describe_location(sig.locations, sig.count, parents, sig.phases),
-             "where_confidence": location_confidence(sig.locations, sig.count, parents),
-             "evidence": sig.evidence, "regular": sig.regular, "guess": sig.guess().to_dict(),
-             "edge_story": edge_story(det.edges, sig)}
-            for sig in sorted(det.pairs, key=lambda x: (-x.evidence, -x.count))
+            {**_jsonable(pair.to_dict()),
+             "location": most_specific(pair.locations, pair.count, parents),
+             "where": describe_location(pair.locations, pair.count, parents, pair.phases),
+             "where_confidence": location_confidence(pair.locations, pair.count, parents),
+             "evidence": pair.evidence, "regular": pair.regular, "guess": pair.guess().to_dict(),
+             "edge_story": edge_story(det.edges, pair)}
+            for pair in sorted(det.pairs, key=lambda x: (-x.evidence, -x.count))
         ],
         "recent_sessions": det.recent[-60:],
         # the edge library: every kind of step the house meter takes, and

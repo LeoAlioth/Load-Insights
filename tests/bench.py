@@ -466,18 +466,18 @@ def attrib(site: str, folder: str, dials) -> None:
     labels = label(filed, _labels_from(folder, site, fed))
     per = collections.defaultdict(lambda: [0, 0])
     for i, name in labels.items():
-        sig = det.pair_of(filed[i])
+        pair = det.pair_of(filed[i])
         per[name][0] += 1
-        if sig and sig.location in HOME_OF[site].get(name, ()):
+        if pair and pair.location in HOME_OF[site].get(name, ()):
             per[name][1] += 1
     credit = collections.Counter()
-    for sig in det.pairs:
-        for m, n in sig.locations.items():
+    for pair in det.pairs:
+        for m, n in pair.locations.items():
             credit[m] += n
     where = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
-        sig = det.pair_of(filed[i])
-        where[name][sig.location if sig else "-"] += 1
+        pair = det.pair_of(filed[i])
+        where[name][pair.location if pair else "-"] += 1
     print(f"  {tag:44s} placed right: " + "  ".join(
         f"{n.split()[0]}:{b}/{a}" for n, (a, b) in sorted(per.items(), key=lambda x: -x[1][0]) if a >= 20))
     print(f"  {'':44s} credited: " + "  ".join(f"{m}:{n}" for m, n in credit.most_common()))
@@ -504,7 +504,7 @@ def score(site: str, folder: str, dials) -> None:
     per = "  ".join(f"{n.split()[0]}:{v[0]*100:.0f}%={round(v[0]*v[1])}/{v[1]}x{v[2]}"
                     for n, v in sorted(big.items(), key=lambda x: -x[1][1]))
     iv = "/".join(f"{st.interval:.1f}" for st in det.phases.values() if st.interval)
-    print(f"  {tag:44s} iv {iv:13s} sigs {r['clusters']:3d}  purity {r['purity']*100:5.1f}%"
+    print(f"  {tag:44s} iv {iv:13s} pairs {r['clusters']:3d}  purity {r['purity']*100:5.1f}%"
           f"  wconc {wc*100:5.1f}%   {per}")
 
 
@@ -573,7 +573,7 @@ def kiln(folder: str, dials) -> None:
     print(f"  {tag:44s} kiln {raw} pulses in {len(fires)} firings: full-size {n['full']:4d}"
           f" ({n['glued']} over 90 s)   ladder {n['ladder']:3d}"
           f"   single-leg {n['single'] + n['single long']:3d} ({n['single long']} over 90 s)"
-          f"   top signature x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
+          f"   top pair x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
 
 
 FRIDGE_POWER = "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"
@@ -691,7 +691,7 @@ def fridge(folder: str, dials) -> None:
     det = fleet.main
     truth = _fridge_runs(folder)
     at = _near(filed)
-    hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
+    hit, ratio, per_pair = collections.Counter(), [], collections.defaultdict(collections.Counter)
     for t0, t1, step, kind in truth:
         near = [f for f in at(t0, 30) if 30 <= _peak(f) <= 130]
         if not near:
@@ -699,8 +699,8 @@ def fridge(folder: str, dials) -> None:
         f = min(near, key=lambda f: abs(f.start - t0))
         hit[kind] += 1
         ratio.append((f.end - f.start) / (t1 - t0))
-        sig = det.pair_of(f)
-        per_sig[kind][sig.id if sig else None] += 1
+        pair = det.pair_of(f)
+        per_pair[kind][pair.id if pair else None] += 1
     n = collections.Counter(k for *_, k in truth)
     days = (truth[-1][0] - truth[0][0]) / 86400 if len(truth) > 1 else 1
     top = lambda c: ", ".join(f"#{i}:{k}" for i, k in c.most_common(3))  # noqa: E731
@@ -708,13 +708,13 @@ def fridge(folder: str, dials) -> None:
           f"  caught A {hit['A']} B {hit['B']} ? {hit['?']}"
           f"  length filed/true median {st.median(ratio) if ratio else 0:.2f}"
           f" (within 25 %: {sum(0.75 <= r <= 1.25 for r in ratio)}/{len(ratio)})")
-    print(f"  {'':44s} signatures  A: {top(per_sig['A'])}   B: {top(per_sig['B'])}   ?: {top(per_sig['?'])}")
+    print(f"  {'':44s} pairs  A: {top(per_pair['A'])}   B: {top(per_pair['B'])}   ?: {top(per_pair['?'])}")
     # how cleanly the two fridges are apart: each pair's majority kind
     # among its A and B runs, over all of them
-    sids = set(per_sig["A"]) | set(per_sig["B"])
-    both = sum(per_sig["A"][i] + per_sig["B"][i] for i in sids)
-    kept = sum(max(per_sig["A"][i], per_sig["B"][i]) for i in sids)
-    print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a signature of their own kind)")
+    sids = set(per_pair["A"]) | set(per_pair["B"])
+    both = sum(per_pair["A"][i] + per_pair["B"][i] for i in sids)
+    kept = sum(max(per_pair["A"][i], per_pair["B"][i]) for i in sids)
+    print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a pair of their own kind)")
 
 
 def inputs_bench(folder: str, dials) -> None:
@@ -725,7 +725,7 @@ def inputs_bench(folder: str, dials) -> None:
     fleet, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     det = fleet.main
     bar = 0.7                                  # const.DEFAULT_MIN_EVIDENCE
-    print(f"  {tag}   signatures {len(det.pairs)}, over the naming bar {sum(s.evidence >= bar for s in det.pairs)}")
+    print(f"  {tag}   pairs {len(det.pairs)}, over the naming bar {sum(s.evidence >= bar for s in det.pairs)}")
     for name in STAGES:
         share = det.input_time.get(name) or {}
         total = sum(share.values()) or 1.0
@@ -751,9 +751,9 @@ def surge(site: str, folder: str, dials) -> None:
     labels = label(filed, subs)
     bydev = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
-        sig = det.pair_of(filed[i])
-        if sig:
-            bydev[name][sig.id] += 1
+        pair = det.pair_of(filed[i])
+        if pair:
+            bydev[name][pair.id] += 1
     byid = {s.id: s for s in det.pairs}
     print(f"  [{tag}]")
     for name, c in sorted(bydev.items()):

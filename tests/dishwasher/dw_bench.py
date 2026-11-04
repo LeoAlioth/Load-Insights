@@ -35,13 +35,13 @@ def inside(s, ivs):
     return sum(max(0.0, min(s.end, b) - max(s.start, a)) for a, b in ivs) / d
 
 
-def corr(sig):
+def corr(pair):
     """Report-only: how tied a pair's runs are to its fed devices' states.
     Per input, the bits by which the states its runs fell in beat their share of
     the time (sum of n_v/N * log2(n_v / e_v), n = its runs per state, e = the
     runs chance would put there); the best input and state are named. 0 = none."""
     best = (0.0, "", "")
-    for name, row in (getattr(sig, "inputs", None) or {}).items():
+    for name, row in (getattr(pair, "inputs", None) or {}).items():
         n, e = row.get("n") or {}, row.get("e") or {}
         N = sum(n.values())
         if N < 3:
@@ -87,32 +87,32 @@ def main(dials):
     rows = [(s, classify(s), sid_of(s)) for s in filed if s.energy_wh > 0 and max(s.power_by_phase().values(), default=0.0) >= 1200.0
             and s.phases == "a" and (sid_of(s).startswith("Mansarda#") or "#" not in sid_of(s))]
     rows = [r for r in rows if r[2].startswith("Mansarda#") or r[2].isdigit()]
-    per_sig = collections.defaultdict(collections.Counter)
+    per_pair = collections.defaultdict(collections.Counter)
     for s, cls, sid in rows:
-        per_sig[sid][cls] += 1
+        per_pair[sid][cls] += 1
     out = {"dials": dials, "sessions_c": len(rows)}
     for cls in ("dishwasher", "sock_eater"):
         ivs = truth[cls]
         hit = [x for x in ivs if any(c == cls and s.end >= x["start"] - SLACK and s.start <= x["end"] + SLACK for s, c, _ in rows)]
-        sigs = collections.Counter(sid for s, c, sid in rows if c == cls)
-        n = sum(sigs.values())
-        best = sigs.most_common(1)[0] if sigs else (None, 0)
-        pure = (best[1] / sum(per_sig[best[0]].values())) if best[0] else 0.0
+        pairs = collections.Counter(sid for s, c, sid in rows if c == cls)
+        n = sum(pairs.values())
+        best = pairs.most_common(1)[0] if pairs else (None, 0)
+        pure = (best[1] / sum(per_pair[best[0]].values())) if best[0] else 0.0
         out[cls] = {"bursts": len(ivs), "bursts_hit": len(hit), "sessions": n,
-                    "in_best_signature": best[1], "best": best[0], "best_signature_purity": round(pure, 2),
+                    "in_best_pair": best[1], "best": best[0], "best_pair_purity": round(pure, 2),
                     "concentration": round(best[1] / n, 2) if n else 0.0,
-                    "signatures_used": len(sigs)}
+                    "pairs_used": len(pairs)}
     print(json.dumps(out, indent=1))
-    def sig_obj(sid):
+    def pair_obj(sid):
         if "#" in str(sid):
             name, _, i = str(sid).partition("#")
             d = fleet.subs.get(name)
             return next((x for x in (d.pairs if d else []) if str(x.id) == i), None)
         return by_id.get(int(sid)) if str(sid).isdigit() else None
-    print("signatures holding any dishwasher/sock-eater session (corr = bits tied to a device state, report only):")
-    for sid, c in sorted(per_sig.items(), key=lambda kv: -sum(kv[1].values())):
+    print("pairs holding any dishwasher/sock-eater session (corr = bits tied to a device state, report only):")
+    for sid, c in sorted(per_pair.items(), key=lambda kv: -sum(kv[1].values())):
         if c["dishwasher"] or c["sock_eater"]:
-            o = sig_obj(sid); cb = corr(o) if o else (0.0, "", "")
+            o = pair_obj(sid); cb = corr(o) if o else (0.0, "", "")
             print(f"  {sid:>14}  dw {c['dishwasher']:3d}  se {c['sock_eater']:3d}  oven {c['oven']:3d}  other {c['other']:3d}   corr {cb[0]:.2f} bits  {cb[1]} {cb[2]}")
 
 

@@ -196,7 +196,7 @@ NAMING_START_ROWS = 6
 NAMING_ROWS_PER_NAME = 4
 # Bumped whenever a pair is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
-CONF_SIGNATURE_REVISION = "signature_revision"
+CONF_PAIR_REVISION = "signature_revision"
 
 SERVICE_RESET_DETECTION = "reset_detection"
 SERVICE_NAME_LOAD = "name_load"

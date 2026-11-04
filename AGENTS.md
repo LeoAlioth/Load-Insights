@@ -80,13 +80,13 @@ around them are dimensionless *counts* of those measurements:
 | `PhaseState.noise` | median deviation while idle - and the array, where it is in the reading, holding still (exp12) |
 | `PhaseState.interval` | its cadence: the 10th percentile of the gaps after a reading that moved (`CADENCE_GAPS`), stored with the phase |
 | `PhaseState.q_quantum` | `V x dI` from the amps behind the power factor |
-| `Signature.pf_mad` / `power_mad` / `duration_mad` | spread across sightings |
+| `Pair.pf_mad` / `power_mad` / `duration_mad` | spread across sightings |
 
 `PF_MIN_QUANTA`, `ENERGY_MIN_QUANTA`, `NOISE_REL_FLOOR_FACTOR` and friends are
 counts, not watts. The same value means 23 VA at Kozolec's 0.1 A Victron and
 2.4 VA at Home's 0.01 A SolarEdge, and neither site is configured.
 
-Legitimately policy, and fine as plain constants: `MAX_SIGNATURES`,
+Legitimately policy, and fine as plain constants: `MAX_PAIRS`,
 `NAMING_START_ROWS`, `DEFAULT_MIN_EVIDENCE`, `YOUNG_COUNT`. These say what to
 put in front of a person, not what an instrument can do.
 
@@ -124,8 +124,8 @@ against it, not against memory.
 
 - **Personal project, not Ixtlan work.** Skip the work-context logging for this repo; never add entries for it to `/Volumes/Razvijam/work-context.md` or `open-tickets.md`.
 - **Words.** Call the main detector meter the **grid meter**, never "house" (Hiša is the house circuit at Home).
-- **Terms (the owner, 2026-10-23). The classes carry them (`Run`, `StepGroup`, `StepGroup.owner`, `Run.parent_signature`, since the steps-and-claims work); two older names remain in method and field names: the detector's "step" (`_classify_step`, `_step_meter`, `declared`) is an edge in these terms, and the grid's phase keys stay `a/b/c` (they are also the config fields), shown as X/Y/Z by `display_phase`.**
-  - *Rename status (2026-11-02):* the terms below are the agreed ones. The code, tests and card still say "signature" for the pair and "family" for the detector's own joins until the rename refactor lands (dev/TODO.md); the behaviour change (signatures joined from pairs, families only by name) follows it.
+- **Terms (the owner, 2026-10-23). The classes carry them (`Run`, `StepGroup`, `StepGroup.owner`, `Run.parent_pair`, since the steps-and-claims work); two older names remain in method and field names: the detector's "step" (`_classify_step`, `_step_meter`, `declared`) is an edge in these terms, and the grid's phase keys stay `a/b/c` (they are also the config fields), shown as X/Y/Z by `display_phase`.**
+  - *Rename status (2026-11-04):* done in code, tests and card text (`Pair`, `Detector.pairs`, `pair_rows`, `Pair.signature` - the detector's own join, once called family -, `Fleet.rename_signature`, `MAX_PAIRS`). **Stored keys and HA-facing names kept on purpose**, so old data and dashboards read: the saved `signatures` list (the pairs) and a pair's `family` key, the sensor attribute `signatures` and the library sensor's `signature_library` id, the service fields `signature_id` (takes a PAIR id) and `load_id` (takes a SIGNATURE id), the option `signature_revision`. Slovenian strings were renamed by the assistant (par, podpis) and want the owner's review. The behaviour change (signatures joined from pairs, families only by name) is still to come.
   - **reading**: one sensor's value at one time; several values the same sensor sends a few hundredths of a second apart are one reading.
   - **edge**: one meter's own change between readings. **rise / fall** is its direction.
   - **step**: the edges several meters saw of one change, joined into one object on the shared system phases. A step with one edge is a step too. A step records the change on every system phase (an untouched phase reads about zero), so there is no separate multi-phase step; the phases it touches are its phase set (the owner, 2026-10-23: this stays whatever the bench shows). A detected step feeds a named signature's power figures.

@@ -53,7 +53,7 @@ def test_andrejs_fridge_clears_though_it_runs_only_at_night():
     assert A.recognise(f).kind == A.FRIDGE_KIND
 
 
-def test_kozolecs_fridges_split_over_many_signatures_do_not():
+def test_kozolecs_fridges_split_over_many_pairs_do_not():
     # replay #33: 56 W, 43 min, evidence 0.5, an interval of 3 h with a 2 h jitter - one fragment of two fridges
     f = fridge(ref=("", 33), watts=56.0, duration_s=2564.0, interval_s=11332.0, count=81, span_days=15.3,
                evidence=0.5, interval_mad=6911.0)
@@ -160,7 +160,7 @@ def test_an_existing_name_is_never_overwritten_or_reused():
     assert A.decide({"#2": g}, ready_cands({"#2": g}), {}, [], PATTERNS, ["Fridge 1"]) == [("#2", "Fridge 2", "fridge")]
 
 
-def test_a_metered_signature_is_never_named():
+def test_a_metered_pair_is_never_named():
     f = fridge(metered=True)
     assert A.decide({"#1": f}, ready_cands({"#1": f}), {}, [], PATTERNS, []) == []
 
@@ -189,12 +189,12 @@ def test_a_load_the_owner_already_named_claims_its_split_pieces():
     assert A.decide(h, ready_cands(h), {}, [], PATTERNS, [], [("Le Hottie", A.descriptor(heater(watts=1700.0)))]) == []
 
 
-def test_facts_of_reads_a_signature():
+def test_facts_of_reads_a_pair():
     from types import SimpleNamespace as NS
     g = C.Guess(C.HEATER, 0.85, appliance=C.WATER_TANK)
-    sig = NS(phases="a", watts=1800.0, duration_s=120.0, interval_s=None, count=12, first_seen=0.0, last_seen=86400.0 * 6,
+    pair = NS(phases="a", watts=1800.0, duration_s=120.0, interval_s=None, count=12, first_seen=0.0, last_seen=86400.0 * 6,
              evidence=0.8, hour_wh=[1] * 24, day_wh=[1] * 7, level_count=1.0, interval_mad=None, name=None, guess=lambda: g)
-    f = A.facts_of(("", 5), sig)
+    f = A.facts_of(("", 5), pair)
     assert f.span_days == 6.0 and f.guess_kind == C.HEATER and f.appliance == C.WATER_TANK and f.ref == ("", 5)
     assert A.recognise(f).kind == A.HEATER_KIND
 

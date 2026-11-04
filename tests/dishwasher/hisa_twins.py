@@ -7,11 +7,11 @@ B._apply(["SUBS=prod", "HOUSE=prod", "SLICE=0", *sys.argv[1:]])
 fleet, filed, _ = B._run(W.FOLDER, "home")
 det = fleet.subs["Hiša"]
 D = B.D
-sigs = [s for s in det.pairs if s.phases == "c" and 50 <= sum(s.power.values()) <= 70 and s.count >= 5]
-big = max(sigs, key=lambda s: s.count)
+pairs = [s for s in det.pairs if s.phases == "c" and 50 <= sum(s.power.values()) <= 70 and s.count >= 5]
+big = max(pairs, key=lambda s: s.count)
 noise = det.phases["c"].noise
 print(f"twin #{big.id} runs {big.count:.0f} {sum(big.power.values()):.0f} W ~{big.duration_s:.0f} s mad {big.power_mad:.1f} split {big.split_s} pf {big.pf}")
-for s in sorted(sigs, key=lambda s: -s.count):
+for s in sorted(pairs, key=lambda s: -s.count):
     if s is big:
         continue
     born = s.born_in or big.born_in

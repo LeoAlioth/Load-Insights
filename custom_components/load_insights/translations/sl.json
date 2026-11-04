@@ -58,7 +58,7 @@
                 "name": "Zaznani porabniki"
             },
             "signature_library": {
-                "name": "Knjižnica podpisov"
+                "name": "Knjižnica parov"
             },
             "unknown_load_power": {
                 "name": "Moč neznanih porabnikov"
@@ -711,7 +711,7 @@
     "services": {
         "reset_detection": {
             "name": "Ponastavi zaznavanje porabnikov",
-            "description": "Pozabi vse zaznane podpise in znova začni zaledno branje števca. Za primer, ko je bil števec zamenjan ali faza prevezana in knjižnica opisuje stanje, ki ga ni več. Dana imena se ohranijo in se vrnejo temu, kar zaledno branje najde in je podobno - kjer se je stanje res spremenilo in se nič ne ujema, se ime pač ne vrne - razen če zahtevate, naj gredo tudi imena.",
+            "description": "Pozabi vse zaznane pare in znova začni zaledno branje števca. Za primer, ko je bil števec zamenjan ali faza prevezana in knjižnica opisuje stanje, ki ga ni več. Dana imena se ohranijo in se vrnejo temu, kar zaledno branje najde in je podobno - kjer se je stanje res spremenilo in se nič ne ujema, se ime pač ne vrne - razen če zahtevate, naj gredo tudi imena.",
             "fields": {
                 "forget_names": {
                     "name": "Pozabi tudi imena",
@@ -725,11 +725,11 @@
             "fields": {
                 "load_id": {
                     "name": "Breme",
-                    "description": "Oznaka družine zaznanega bremena - \"family\", ki jo ima vsak podpis v diagnostiki. Ime dobijo vsi podpisi družine. Ali ta ali oznaka podpisa."
+                    "description": "Oznaka podpisa zaznanega bremena - \"family\", ki jo ima vsak par v diagnostiki (shranjeni ključ je ostal star). Ime dobijo vsi pari podpisa. Ali ta ali oznaka para."
                 },
                 "signature_id": {
-                    "name": "Podpis",
-                    "description": "Namesto tega oznaka enega od podpisov bremena - # iz senzorja zaznanih bremen in kartic. Ime dobi vsa njegova družina."
+                    "name": "Par",
+                    "description": "Namesto tega oznaka enega od parov bremena - # iz senzorja zaznanih bremen in kartic. Ime dobi ves njegov podpis."
                 },
                 "meter": {
                     "name": "Števec",

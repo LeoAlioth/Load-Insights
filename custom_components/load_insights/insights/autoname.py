@@ -355,14 +355,14 @@ def key_of(ref: Tuple[str, int]) -> str:
     return f"{ref[0]}#{ref[1]}"
 
 
-def facts_of(ref: Tuple[str, int], sig) -> Facts:
+def facts_of(ref: Tuple[str, int], pair) -> Facts:
     """The Facts of a ``Pair`` (duck-typed: this module imports no detector)."""
-    g = sig.guess()
-    return Facts(ref=ref, phases=sig.phases, watts=float(sig.watts), duration_s=float(sig.duration_s),
-                 interval_s=sig.interval_s, count=sig.count, span_days=max(0.0, sig.last_seen - sig.first_seen) / 86400.0,
-                 evidence=sig.evidence, hour_wh=list(sig.hour_wh), day_wh=list(sig.day_wh),
-                 level_count=sig.level_count, interval_mad=sig.interval_mad, guess_kind=g.kind,
-                 guess_confidence=g.confidence, appliance=g.appliance, named=sig.name)
+    g = pair.guess()
+    return Facts(ref=ref, phases=pair.phases, watts=float(pair.watts), duration_s=float(pair.duration_s),
+                 interval_s=pair.interval_s, count=pair.count, span_days=max(0.0, pair.last_seen - pair.first_seen) / 86400.0,
+                 evidence=pair.evidence, hour_wh=list(pair.hour_wh), day_wh=list(pair.day_wh),
+                 level_count=pair.level_count, interval_mad=pair.interval_mad, guess_kind=g.kind,
+                 guess_confidence=g.confidence, appliance=g.appliance, named=pair.name)
 
 
 def reconcile(marks: Dict[str, dict], present: Iterable[str]) -> Tuple[Dict[str, dict], List[Tombstone]]:
