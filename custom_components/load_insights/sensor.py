@@ -6,11 +6,17 @@ from datetime import datetime
 from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED, get_instance
+from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    EVENT_RECORDER_5MIN_STATISTICS_GENERATED,
+    MATCH_ALL,
+    PERCENTAGE,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
