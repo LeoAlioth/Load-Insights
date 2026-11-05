@@ -13,7 +13,7 @@ from homeassistant.helpers.debounce import Debouncer
 
 from .const import (
     CONF_NAME,
-    CONF_SIGNATURE_REVISION,
+    CONF_PAIR_REVISION,
     DEFAULT_NAME,
     DOMAIN,
     SERVICE_BACKFILL_STATISTICS,
@@ -41,48 +41,99 @@ def _loaded(hass: HomeAssistant) -> ConfigEntry | None:
     return next(iter(hass.config_entries.async_loaded_entries(DOMAIN)), None)
 
 
+# The cards in frontend/: the naming / running card (2026-10-31) and the forecast card (2026-11-01, spec in
+# Load Juggler's docs/plans/2026-11-01/dashboard-cards.md).
+CARD_FILES = ("load-insights-card.js", "load-insights-forecast-card.js")
+
+
+async def _ensure_lovelace_resource(hass: HomeAssistant, url: str) -> None:
+    """Keep one Lovelace resource (a module) for ``url``, its ``?v=`` hash updated to this build's.
+
+    A resource, not frontend.add_extra_js_url: HA's frontend (2026.10) swaps in a scoped custom-element registry
+    polyfill after the extra modules have run, and forgets what they defined ("Custom element doesn't exist");
+    resources load after it, like every HACS card (2026-11-02). A copy of Load Juggler's - change both."""
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+    data = hass.data.get(LOVELACE_DATA)
+    if data is None or data.resource_mode != "storage":
+        _LOGGER.warning("Dashboard resources are kept in YAML - add %s (type module) by hand", url)
+        return
+    resources = data.resources
+    await resources.async_get_info()  # loads the stored list before it is read
+    base = url.split("?")[0]
+    mine = [item for item in resources.async_items() if item.get("url", "").split("?")[0] == base]
+    if not mine:
+        await resources.async_create_item({"res_type": "module", "url": url})
+    elif mine[0]["url"] != url or mine[0].get("type") != "module":
+        await resources.async_update_item(mine[0]["id"], {"res_type": "module", "url": url})
+
+
+async def _register_card(hass: HomeAssistant) -> None:
+    """Serve the Load Insights cards and keep each a dashboard resource (the owner, 2026-10-31), so they need no
+    resource added by hand. Each URL carries a hash of its file: a new build's card replaces a cached one."""
+    import hashlib
+    from pathlib import Path
+
+    from homeassistant.components.http import StaticPathConfig
+
+    folder = Path(__file__).parent / "frontend"
+    digests = await hass.async_add_executor_job(
+        lambda: {name: hashlib.sha1((folder / name).read_bytes()).hexdigest()[:10] for name in CARD_FILES}
+    )
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(f"/load_insights/{name}", str(folder / name), False) for name in CARD_FILES]
+    )
+    for name, digest in digests.items():
+        await _ensure_lovelace_resource(hass, f"/load_insights/{name}?v={digest}")
+
+
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Register the services once, whatever entries come and go."""
+    try:
+        await _register_card(hass)
+    except Exception:  # noqa: BLE001 - a card that will not load must not stop the integration
+        _LOGGER.exception("Load Insights card not registered")
 
     async def _reset_detection(call) -> None:
         if (entry := _loaded(hass)) is not None:
             await entry.runtime_data.runner.async_reset(forget_names=bool(call.data.get("forget_names", False)))
 
     async def _name_load(call) -> None:
-        """Name a load by its family id, for one the naming page does not offer yet -
+        """Name a load by its signature id, for one the naming page does not offer yet -
         Kozolec's fridge, whose runs the detector measures too loosely to clear
         the page's bar (2026-09-28). An empty name clears it. The name goes to every
-        signature of the family (2026-10-26) - given as the family id (load_id) or as any
-        of its signatures' ids (signature_id, the # the sensor and the cards show; the
+        pair of the signature (2026-10-26) - given as the signature id (the field
+        ``load_id``) or as any of its pairs' ids (the field ``signature_id``: the field names are
+        the ones old automations use, but it takes a pair id, the # the sensor and the cards show; the
         two id spaces overlap, so the field says which, 2026-10-30)."""
         # a meter's own load by the meter's name - Mansarda's #11 - the grid's with none
         meter = (call.data.get("meter") or "").strip()
-        family = call.data.get("signature_id") is None
-        if family and call.data.get("load_id") is None:
-            raise ServiceValidationError("Give the load's family id (load_id) or one of its signature ids (signature_id)")
-        ref = (meter, int(call.data["load_id"] if family else call.data["signature_id"]))
+        by_signature = call.data.get("signature_id") is None
+        if by_signature and call.data.get("load_id") is None:
+            raise ServiceValidationError("Give the load's signature id (load_id) or one of its pair ids (signature_id)")
+        ref = (meter, int(call.data["load_id"] if by_signature else call.data["signature_id"]))
         name = (call.data.get("name") or "").strip() or None
         entry = _loaded(hass)
         runner = runner_of(entry)
         if runner is None:
             # a rename's reload takes a minute; a call landing in it is not a wrong id (2026-10-23)
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        sig = runner.fleet.family_head(ref) if family else runner.fleet.signature(ref)
-        was = sig.name if sig is not None else None
+        pair = runner.fleet.signature_head(ref) if by_signature else runner.fleet.pair(ref)
+        was = pair.name if pair is not None else None
         names_before = set(runner.fleet.names())
-        if not await runner.async_rename(ref, name, family=family):
+        if not await runner.async_rename(ref, name, signature=by_signature):
             raise ServiceValidationError(
-                f"No detected load has {'family' if family else 'signature'} id {ref[1]}"
+                f"No detected load has {'signature' if by_signature else 'pair'} id {ref[1]}"
                 + (f" on {ref[0]}" if ref[0] else " under no meter")
-                + (". A family the detector has since joined into another no longer has its id" if family
-                   else ". A signature merged into another is named as what it became; one forgotten is gone"))
+                + (". A signature the detector has since joined into another no longer has its id" if by_signature
+                   else ". A pair merged into another is named as what it became; one forgotten is gone"))
         if set(runner.fleet.names()) == names_before:
             return      # the same names, so the same entities and links: no reload (2026-10-23)
         # what the naming page's Done does: the entities follow the names,
         # and so do the inputs linked to the load
-        rev = int(entry.options.get(CONF_SIGNATURE_REVISION, 0)) + 1
+        rev = int(entry.options.get(CONF_PAIR_REVISION, 0)) + 1
         hass.config_entries.async_update_entry(
-            entry, options=relink({**entry.options, CONF_SIGNATURE_REVISION: rev}, was, name))
+            entry, options=relink({**entry.options, CONF_PAIR_REVISION: rev}, was, name))
 
     async def _backfill_statistics(call) -> None:
         """Write the hours detection saw of a named load over its energy

@@ -6,11 +6,17 @@ from datetime import datetime
 from typing import Any, Optional
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import EVENT_RECORDER_5MIN_STATISTICS_GENERATED, get_instance
+from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    EVENT_RECORDER_5MIN_STATISTICS_GENERATED,
+    MATCH_ALL,
+    PERCENTAGE,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -26,9 +32,10 @@ from .insights.heatnudge import parse_devices
 from .insights.planning import rate_from_wh, room_to_absorb
 
 from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsData
-from .detection import DetectionRunner, base_load_label, base_load_uid, device_uid, load_uid, loaded
+from .detection import (DetectionRunner, base_load_entities, base_load_label, base_load_uid, device_uid, load_uid,
+                        loaded)
 from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
-                              signature_rows, suggest_levels)
+                              pair_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -53,7 +60,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     # one keeps its entity, unavailable. Read from the dashboard itself, as
     # the first refresh does, rather than from that refresh: setup no longer
     # waits for it (2026-09-29), and each shows unavailable until it lands.
-    site = SiteModel.from_prefs((await async_get_manager(hass)).data)
+    # less this entry's own base loads (detection.base_load_entities), whose leftover device sensors go
+    based = base_load_entities(hass, entry.entry_id)
+    site = SiteModel.from_prefs((await async_get_manager(hass)).data, ignore=based)
+    for energy in based:
+        for suffix in ("", "_room", "_rate"):
+            _forget(hass, "sensor", device_uid(entry.entry_id, energy) + suffix)
     # The state of charge is only forecastable where the Energy dashboard
     # gives a battery SOC and a capacity (or a capacity sensor is set). A site with no battery was
     # getting the sensor anyway, permanently unavailable (the owner,
@@ -90,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             registry.async_remove(ent.entity_id)
     entities += [e for d in heat for e in (HeatIndexSensor(coordinator, entry, d), HeatScorecardSensor(coordinator, entry, d))]
     detection: DetectionRunner = entry.runtime_data.runner
-    entities += [DetectedLoadsSensor(detection, entry), SignatureLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
+    entities += [DetectedLoadsSensor(detection, entry), PairLibrarySensor(detection, entry), UnknownLoadPowerSensor(detection, entry)]
     entities += [BaseLoadSensor(detection, entry)]
     entities += _base_loads(hass, entry, detection)
     device_names = {d.label.casefold() for d in site.devices}
@@ -365,14 +377,12 @@ class DeviceForecastSensor(ForecastPowerSensor):
         self._energy = device.energy
         self._device = device
         self._attr_unique_id = device_uid(entry.entry_id, device.energy)
-        # Its own device, named after the dashboard's device and hanging off
-        # the site's. Putting the forecast ON the real device (by reusing that
-        # device's identifiers) is nicer and was tried on 2026-09-17: it
-        # produced nine unnamed devices instead of merging, so it is out until
-        # it can be tested against a live registry rather than reasoned about.
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        # One device per load, hanging off the site's: the forecast sensors share the
+        # detected load's device (same key, same name), so a load is one entry in the list
+        # instead of two with one name (the owner, 2026-11-03). Putting them on the real
+        # device by reusing ITS identifiers was tried on 2026-09-17 and produced nine
+        # unnamed devices instead of merging; this reuses only our own key.
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     def _forecast(self) -> Optional[Forecast]:
         data: Optional[InsightsData] = self.coordinator.data
@@ -439,9 +449,7 @@ class DeviceRoomSensor(CoordinatorEntity, SensorEntity):
         self._attr_has_entity_name = True
         self._attr_translation_key = "named_load_room"          # the same name and icon
         self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_room"
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -478,9 +486,7 @@ class DeviceRateSensor(CoordinatorEntity, SensorEntity):
         self._attr_has_entity_name = True
         self._attr_translation_key = "device_rate"
         self._attr_unique_id = device_uid(entry.entry_id, device.energy) + "_rate"
-        self._attr_device_info = _child_device(
-            entry, f"device_{device.energy}", device.label, "Device forecast"
-        )
+        self._attr_device_info = _child_device(entry, f"load_{device.label}", device.label, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -529,8 +535,8 @@ class _DetectionBase(CoordinatorEntity, SensorEntity):
 
 class DetectedLoadsSensor(_DetectionBase):
     """State: how many unexplained loads are on right now. Attributes: which,
-    the last sessions, and where the backfill stands. The signature library is
-    SignatureLibrarySensor's: moved off this sensor, which is rewritten every
+    the last sessions, and where the backfill stands. The pair library is
+    PairLibrarySensor's: moved off this sensor, which is rewritten every
     pass, because its 0.5 MB went to every connected dashboard each time."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -575,21 +581,29 @@ class DetectedLoadsSensor(_DetectionBase):
             # a one-figure inverter's phases on the grid's, from its voltages: "X (L1)" per phase
             "inverter_phases": {n: {c.upper(): display_phase(p) for c, p in m.items() if p in PHASES}
                                 for n, m in self._runner.fleet.inverter_phases.items()},
-            # which signatures are running now: the library (Signature library sensor) holds nothing that
+            # which pairs are running now: the library (Pair library sensor) holds nothing that
             # depends on the clock, so a dashboard joins the two
             "running_ids": sorted(running),
-            # what each sub-meter has on now; its signatures are in the library sensor's "meters"
+            # every load on now, once, as rows for the Load Insights card (frontend/load-insights-card.js): ``meter``
+            # and ``id`` are its pair ("" the grid's) - what Name a load takes as meter and signature_id (a pair id)
+            "running": [
+                {"name": r["name"], "meter": r["ref"][0] if r["ref"] else None,
+                 "id": r["ref"][1] if r["ref"] else None, "watts": round(r["watts"]),
+                 "phases": r["phases"].upper(), "since": iso(r["since"]), "where": r["where"], "tag": r["tag"]}
+                for r in rows
+            ],
+            # what each sub-meter has on now; its pairs are in the library sensor's "meters"
             "meters_active": {name: [{"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"])}
                                      for a in d.active(now)]
                               for name, d in self._runner.fleet.subs.items()},
             "meter_hierarchy": self._runner.parents,
             "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
-            # names whose signature a reset took, still looking for the load
+            # names whose pair a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
             # names detection gave by itself (insights/autoname.py), told from the owner's
             "auto_named": {n: m.get("kind") for n, m in sorted(self._runner.autonamer.marks.items())},
-            "looks_like_one_device": suggest_levels(det.signatures, det.recent),
+            "looks_like_one_device": suggest_levels(det.pairs, det.recent),
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
@@ -608,14 +622,14 @@ class DetectedLoadsSensor(_DetectionBase):
         }
 
 
-class SignatureLibrarySensor(_DetectionBase):
-    """State: how many signatures the detector holds. Attributes: every
-    signature in words and figures, and each sub-meter's own.
+class PairLibrarySensor(_DetectionBase):
+    """State: how many pairs the detector holds. Attributes: every
+    pair in words and figures, and each sub-meter's own.
 
     Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
-    pass and its signatures were 0.5 MB - every pass, to every connected
+    pass and its pairs were 0.5 MB - every pass, to every connected
     dashboard and phone, and into the state machine. Nothing here depends on
-    the clock (``signature_rows``), so a pass that filed nothing writes nothing.
+    the clock (``pair_rows``), so a pass that filed nothing writes nothing.
     Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -627,7 +641,7 @@ class SignatureLibrarySensor(_DetectionBase):
 
     @property
     def native_value(self) -> int:
-        return len(self._runner.detector.signatures)
+        return len(self._runner.detector.pairs)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -635,11 +649,11 @@ class SignatureLibrarySensor(_DetectionBase):
         tz = dt_util.DEFAULT_TIME_ZONE
         parents = self._runner.parents
         return {
-            "signatures": signature_rows(det.signatures, tz, parents),
+            "signatures": pair_rows(det.pairs, tz, parents),
             "meters": {
                 name: {
                     "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
-                                   for x in sorted(d.signatures, key=lambda y: -y.count)],
+                                   for x in sorted(d.pairs, key=lambda y: -y.count)],
                     "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
                     "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
                 }
@@ -717,7 +731,7 @@ class BatterySocForecastSensor(_GridBase):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 0
-    _unrecorded_attributes = frozenset({"detailedForecast"})
+    _unrecorded_attributes = frozenset({"detailedForecast", "history"})
 
     @property
     def available(self) -> bool:
@@ -735,11 +749,21 @@ class BatterySocForecastSensor(_GridBase):
         if not g or not g.battery_modelled:
             return {}
         socs = [h.soc for h in g.hours if h.soc is not None]
+        data: InsightsData = self.coordinator.data
+        capacity = data.site.battery_capacity_kwh or None
+
+        def row(when: str, soc: float) -> dict[str, Any]:
+            """One hour: the SOC and, with a known capacity, the kWh left in the pack."""
+            out = {"period_start": when, "soc": round(soc, 1)}
+            if capacity:
+                out["stored_kwh"] = round(soc / 100 * capacity, 2)
+            return out
+
         return {
-            "detailedForecast": [
-                {"period_start": h.when.isoformat(), "soc": round(h.soc, 1)}
-                for h in g.hours if h.soc is not None
-            ],
+            "detailedForecast": [row(h.when.isoformat(), h.soc) for h in g.hours if h.soc is not None],
+            # the last 48 h as they happened (the sensor's statistics), same shape - what a chart draws as the actual line
+            "history": [row(dt_util.utc_from_timestamp(ts).isoformat(), soc) for ts, soc in data.soc_history],
+            "capacity_kwh": round(capacity, 2) if capacity else None,
             "minimum": round(min(socs), 1) if socs else None,
             "maximum": round(max(socs), 1) if socs else None,
         }
@@ -991,6 +1015,9 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
         for p in (sorted(det.phases) if key in split and len(det.phases) > 1 else [None]):
             for kind in ("power", "energy"):
                 keep.add(_base_uid(entry, key, p, kind))
+            # whether it is offered goes by the meter's own floor, not what is left once the meters inside it are
+            # taken off - that is 0 in some hours (Delavnica's while Sušilna's dehumidifier runs), and a reload then
+            # would remove the entity and its dashboard row
             w, _ = runner.fleet.base_load(meter, p)
             if w is None or w >= BASE_LOAD_MIN_W:
                 out += [BaseLoadPower(runner, entry, meter, key, p), BaseLoadEnergy(runner, entry, meter, key, p)]
@@ -1000,7 +1027,7 @@ def _base_loads(hass: HomeAssistant, entry: ConfigEntry, runner: DetectionRunner
     # under the same unique ids its own had, so its history carries on
     rem = runner.remainder_meter()
     if rem is not None and rem[1] in keys:
-        w, _ = runner.remainder_base_load()
+        w, _ = runner.fleet.base_load("")          # the grid's own floor, as above
         if w is None or w >= BASE_LOAD_MIN_W:
             keep |= {_base_uid(entry, rem[1], None, kind) for kind in ("power", "energy")}
             out += [BaseLoadPower(runner, entry, rem[0], rem[1], None, True),
@@ -1032,7 +1059,11 @@ class _BaseLoad(_DetectionBase):
     def _base(self):
         if self._remainder:
             return self._runner.remainder_base_load()
-        return self._runner.fleet.base_load(self._meter, self._phase)
+        return self._runner.base_load(self._meter, self._phase)
+
+    def _cap(self) -> Optional[float]:
+        """Never above what the meter draws now less what the meters inside it draw now (the owner, 2026-10-31)."""
+        return self._runner.base_load_cap(self._meter, self._phase, self._remainder)
 
 
 class BaseLoadPower(_PowerW, _BaseLoad):
@@ -1042,7 +1073,10 @@ class BaseLoadPower(_PowerW, _BaseLoad):
     @property
     def native_value(self) -> Optional[float]:
         w, _ = self._base()
-        return None if w is None else round(w)
+        if w is None:
+            return None
+        cap = self._cap()
+        return round(w if cap is None else min(w, cap))
 
 
 class BaseLoadEnergy(_BaseLoad, RestoreSensor):
@@ -1069,8 +1103,15 @@ class BaseLoadEnergy(_BaseLoad, RestoreSensor):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        self._reading, self._seen = carry_reading(self._reading, self._seen, self._total(),
-                                                  not self._runner.refiling)
+        total = self._total()
+        counted = total
+        if self._seen is not None and self._runner.caught_up:
+            # a pass's gain never more than the cap over the hours it read (BaseLoadPower's cap, as energy)
+            cap, hours = self._cap(), (self._runner.last_pass or {}).get("hours")
+            if cap is not None and hours:
+                counted = self._seen + min(max(0.0, total - self._seen), cap * hours / 1000.0)
+        self._reading, _ = carry_reading(self._reading, self._seen, counted, not self._runner.refiling)
+        self._seen = total
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
@@ -1103,7 +1144,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         super().__init__(runner, entry, "named_load_power")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "power", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1129,7 +1170,7 @@ class NamedLoadRoom(_DetectionBase):
         super().__init__(runner, entry, "named_load_room")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "room", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1157,7 +1198,7 @@ class NamedLoadRate(_DetectionBase):
         super().__init__(runner, entry, "named_load_rate")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "rate", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1190,7 +1231,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         super().__init__(runner, entry, "named_load_energy")
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "energy", name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
         self._reading: Optional[float] = None
         self._seen: Optional[float] = None
 

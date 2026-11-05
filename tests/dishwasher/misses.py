@@ -22,7 +22,7 @@ for cls in ("dishwasher", "sock_eater"):
     print(f"== {cls}: {len(missed)} of {len(truth[cls])} bursts with no 1.2 kW+ run on a")
     for x in missed:
         a, b = x["start"], x["end"]
-        near_g = [(f(s.start), round(s.duration_s), s.phases, round(s.max_w), "own" if s.parent_signature else "-") for s in filed
+        near_g = [(f(s.start), round(s.duration_s), s.phases, round(s.max_w), "own" if s.parent_pair else "-") for s in filed
                   if s.end >= a - 120 and s.start <= b + 120 and s.max_w >= 300]
         near_m = [(f(s.start), round(s.duration_s), s.phases, round(s.max_w)) for s in msess if s.end >= a - 120 and s.start <= b + 120 and s.max_w >= 300]
         print(f"  {f(a)} - {f(b)} {b - a:5.0f}s {x.get('watts', '')}  grid:", near_g[:4], " mansarda:", near_m[:4])

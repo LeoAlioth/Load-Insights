@@ -1,4 +1,4 @@
-"""What kind of load a signature might be, and how sure that is."""
+"""What kind of load a pair might be, and how sure that is."""
 import sys
 from pathlib import Path
 

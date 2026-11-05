@@ -39,15 +39,15 @@ bench's own:
     EXTRA=folder another folder of CSVs read beside FOLDER (Home's fans and
                  blinds in data/history/home-extra)
 
-score   purity (does one signature hold one device) and concentration (does
-        one device land in one signature), per device with the ABSOLUTE size
+score   purity (does one pair hold one device) and concentration (does
+        one device land in one pair), per device with the ABSOLUTE size
         of its dominant cluster beside the share: a share can rise because
         sessions were removed, a dominant cluster that grows cannot.
 kiln    what a setting does to Home's kiln, which has no sub-meter and so is
         invisible to `score`. Against the pulses the grid meter itself shows,
         counts what was filed inside the firings: full-size A+C sessions, the
         spurious ladder of smaller A+C ones, and sessions on one leg only.
-surge   for each metered device, whether its dominant signature carries a
+surge   for each metered device, whether its dominant pair carries a
         motor's starting surge - checked against what the device physically is.
 attrib  with production's meters fed in: how many of each device's sessions
         are placed at its own meter, and what each meter was credited with
@@ -60,7 +60,7 @@ lengths how far session lengths sit from the real ones: kiln pulses timed off
         the grid meter, pump runs off the pump's own meter.
 fridge  Kozolec's two fridges, which have no meter: their runs taken off the
         house reading, each tagged by how it starts, against what was filed -
-        caught, how long, and over how many signatures.
+        caught, how long, and over how many pairs.
 """
 from __future__ import annotations
 
@@ -418,9 +418,9 @@ def label(sessions, subs):
 
 
 def _score(assign, labels):
-    """Purity (of a signature's labelled sessions, the share of its majority
+    """Purity (of a pair's labelled sessions, the share of its majority
     device) and, per device, its concentration: (share in its main
-    signature, sessions, signatures). Concentration, not a count of
+    pair, sessions, pairs). Concentration, not a count of
     fragments: the boiler in 24 clusters sounds like a disaster, but 383 of
     its 489 sessions in ONE of them is the row its owner would name; the
     rest is a tail of real behaviour (2026-09-22)."""
@@ -456,7 +456,7 @@ HOME_OF = {
 
 def attrib(site: str, folder: str, dials) -> None:
     """For each metered device: of its labelled sessions, how many went into a
-    signature PLACED at its own meter (or the circuit around it) - and how
+    pair PLACED at its own meter (or the circuit around it) - and how
     many main-meter sessions each production meter was credited with."""
     global SUBS
     SUBS = "prod"
@@ -466,18 +466,18 @@ def attrib(site: str, folder: str, dials) -> None:
     labels = label(filed, _labels_from(folder, site, fed))
     per = collections.defaultdict(lambda: [0, 0])
     for i, name in labels.items():
-        sig = det.signature_of(filed[i])
+        pair = det.pair_of(filed[i])
         per[name][0] += 1
-        if sig and sig.location in HOME_OF[site].get(name, ()):
+        if pair and pair.location in HOME_OF[site].get(name, ()):
             per[name][1] += 1
     credit = collections.Counter()
-    for sig in det.signatures:
-        for m, n in sig.locations.items():
+    for pair in det.pairs:
+        for m, n in pair.locations.items():
             credit[m] += n
     where = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
-        sig = det.signature_of(filed[i])
-        where[name][sig.location if sig else "-"] += 1
+        pair = det.pair_of(filed[i])
+        where[name][pair.location if pair else "-"] += 1
     print(f"  {tag:44s} placed right: " + "  ".join(
         f"{n.split()[0]}:{b}/{a}" for n, (a, b) in sorted(per.items(), key=lambda x: -x[1][0]) if a >= 20))
     print(f"  {'':44s} credited: " + "  ".join(f"{m}:{n}" for m, n in credit.most_common()))
@@ -495,7 +495,7 @@ def score(site: str, folder: str, dials) -> None:
     fleet, filed, subs = _run(folder, site)
     det = fleet.main
     subs = _labels_from(folder, site, subs)
-    assign = {i: det.signature_of(s).id for i, s in enumerate(filed) if det.signature_of(s)}
+    assign = {i: det.pair_of(s).id for i, s in enumerate(filed) if det.pair_of(s)}
     labels = label(filed, subs)
     r = _score(assign, labels)
     big = {n: v for n, v in r["concentration"].items() if v[1] >= MIN_SESSIONS}
@@ -504,7 +504,7 @@ def score(site: str, folder: str, dials) -> None:
     per = "  ".join(f"{n.split()[0]}:{v[0]*100:.0f}%={round(v[0]*v[1])}/{v[1]}x{v[2]}"
                     for n, v in sorted(big.items(), key=lambda x: -x[1][1]))
     iv = "/".join(f"{st.interval:.1f}" for st in det.phases.values() if st.interval)
-    print(f"  {tag:44s} iv {iv:13s} sigs {r['clusters']:3d}  purity {r['purity']*100:5.1f}%"
+    print(f"  {tag:44s} iv {iv:13s} pairs {r['clusters']:3d}  purity {r['purity']*100:5.1f}%"
           f"  wconc {wc*100:5.1f}%   {per}")
 
 
@@ -544,10 +544,10 @@ def _firings(pulses: list) -> list:
 
 def kiln(folder: str, dials) -> None:
     """Scored by what the detector FILED inside the kiln's firings, against the
-    pulses the raw meter shows. Counting signatures in a power band instead -
+    pulses the raw meter shows. Counting pairs in a power band instead -
     what this printed until 2026-09-23 - also caught Home's other 3 kW loads
     on one phase (two of them, 2.5 and 5 min long, run on days the kiln never
-    fired) and depended on which signatures the library happened to keep."""
+    fired) and depended on which pairs the library happened to keep."""
     tag = _apply(dials)
     fleet, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     det = fleet.main
@@ -568,12 +568,12 @@ def kiln(folder: str, dials) -> None:
             n["single long" if long else "single"] += 1
     raw = sum(1 for t in pulses if inside(t))
     tot = lambda s: sum(s.power.values())  # noqa: E731
-    full = [s for s in det.signatures if set(s.power) == {"a", "c"} and 5400 <= tot(s) <= 6400]
+    full = [s for s in det.pairs if set(s.power) == {"a", "c"} and 5400 <= tot(s) <= 6400]
     top = max(full, key=lambda s: s.count) if full else None
     print(f"  {tag:44s} kiln {raw} pulses in {len(fires)} firings: full-size {n['full']:4d}"
           f" ({n['glued']} over 90 s)   ladder {n['ladder']:3d}"
           f"   single-leg {n['single'] + n['single long']:3d} ({n['single long']} over 90 s)"
-          f"   top signature x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
+          f"   top pair x{top.count if top else 0} {top.duration_s if top else 0:4.1f} s")
 
 
 FRIDGE_POWER = "sensor.multiplus_ii_48_15000_200_100_id_276_output_power_l1"
@@ -683,7 +683,7 @@ def _kitchen_fridge_runs(folder: str) -> list:
 def fridge(folder: str, dials) -> None:
     """What the detector filed for Kozolec's two fridges, against their runs
     in the raw reading: how many it caught at the right moment, how long it
-    thought they ran against how long they did, and how many signatures they
+    thought they ran against how long they did, and how many pairs they
     were spread over - ideally two, one per fridge."""
     import statistics as st
     tag = _apply(dials)
@@ -691,7 +691,7 @@ def fridge(folder: str, dials) -> None:
     det = fleet.main
     truth = _fridge_runs(folder)
     at = _near(filed)
-    hit, ratio, per_sig = collections.Counter(), [], collections.defaultdict(collections.Counter)
+    hit, ratio, per_pair = collections.Counter(), [], collections.defaultdict(collections.Counter)
     for t0, t1, step, kind in truth:
         near = [f for f in at(t0, 30) if 30 <= _peak(f) <= 130]
         if not near:
@@ -699,8 +699,8 @@ def fridge(folder: str, dials) -> None:
         f = min(near, key=lambda f: abs(f.start - t0))
         hit[kind] += 1
         ratio.append((f.end - f.start) / (t1 - t0))
-        sig = det.signature_of(f)
-        per_sig[kind][sig.id if sig else None] += 1
+        pair = det.pair_of(f)
+        per_pair[kind][pair.id if pair else None] += 1
     n = collections.Counter(k for *_, k in truth)
     days = (truth[-1][0] - truth[0][0]) / 86400 if len(truth) > 1 else 1
     top = lambda c: ", ".join(f"#{i}:{k}" for i, k in c.most_common(3))  # noqa: E731
@@ -708,13 +708,13 @@ def fridge(folder: str, dials) -> None:
           f"  caught A {hit['A']} B {hit['B']} ? {hit['?']}"
           f"  length filed/true median {st.median(ratio) if ratio else 0:.2f}"
           f" (within 25 %: {sum(0.75 <= r <= 1.25 for r in ratio)}/{len(ratio)})")
-    print(f"  {'':44s} signatures  A: {top(per_sig['A'])}   B: {top(per_sig['B'])}   ?: {top(per_sig['?'])}")
-    # how cleanly the two fridges are apart: each signature's majority kind
+    print(f"  {'':44s} pairs  A: {top(per_pair['A'])}   B: {top(per_pair['B'])}   ?: {top(per_pair['?'])}")
+    # how cleanly the two fridges are apart: each pair's majority kind
     # among its A and B runs, over all of them
-    sids = set(per_sig["A"]) | set(per_sig["B"])
-    both = sum(per_sig["A"][i] + per_sig["B"][i] for i in sids)
-    kept = sum(max(per_sig["A"][i], per_sig["B"][i]) for i in sids)
-    print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a signature of their own kind)")
+    sids = set(per_pair["A"]) | set(per_pair["B"])
+    both = sum(per_pair["A"][i] + per_pair["B"][i] for i in sids)
+    kept = sum(max(per_pair["A"][i], per_pair["B"][i]) for i in sids)
+    print(f"  {'':44s} fridge purity {kept / max(both, 1):.0%} ({kept}/{both} A/B runs in a pair of their own kind)")
 
 
 def inputs_bench(folder: str, dials) -> None:
@@ -725,12 +725,12 @@ def inputs_bench(folder: str, dials) -> None:
     fleet, filed, _ = _run(folder, "home" if SUBS != "lab" else None)
     det = fleet.main
     bar = 0.7                                  # const.DEFAULT_MIN_EVIDENCE
-    print(f"  {tag}   signatures {len(det.signatures)}, over the naming bar {sum(s.evidence >= bar for s in det.signatures)}")
+    print(f"  {tag}   pairs {len(det.pairs)}, over the naming bar {sum(s.evidence >= bar for s in det.pairs)}")
     for name in STAGES:
         share = det.input_time.get(name) or {}
         total = sum(share.values()) or 1.0
         print(f"    {name}: time " + ", ".join(f"{v} {t / total:.1%}" for v, t in sorted(share.items(), key=lambda kv: -kv[1])[:8]))
-        tied = [(s, s.input_of(name)) for s in det.signatures]
+        tied = [(s, s.input_of(name)) for s in det.pairs]
         tied = [(s, g) for s, g in tied if g]
         for s, (value, sh, lift) in sorted(tied, key=lambda x: -x[1][2])[:12]:
             was = D.INPUT_EVIDENCE
@@ -751,10 +751,10 @@ def surge(site: str, folder: str, dials) -> None:
     labels = label(filed, subs)
     bydev = collections.defaultdict(collections.Counter)
     for i, name in labels.items():
-        sig = det.signature_of(filed[i])
-        if sig:
-            bydev[name][sig.id] += 1
-    byid = {s.id: s for s in det.signatures}
+        pair = det.pair_of(filed[i])
+        if pair:
+            bydev[name][pair.id] += 1
+    byid = {s.id: s for s in det.pairs}
     print(f"  [{tag}]")
     for name, c in sorted(bydev.items()):
         if sum(c.values()) < 20:
@@ -841,7 +841,7 @@ MAT_THERMOSTAT = "climate.termostat_kopalnica:hvac_action"
 
 def mat(folder: str, dials) -> None:
     """Home's floor mat against its thermostat's heating (no sub-meter): the
-    signature holding the most runs that start 5.5 s after the thermostat goes
+    pair holding the most runs that start 5.5 s after the thermostat goes
     on, its hours counted once, and how many of them the thermostat was NOT
     heating for - the over-report the owner would rather not have (2026-09-30:
     "capturing 80 % of actual energy ... is much preferred over assigning 20 %
@@ -855,7 +855,7 @@ def mat(folder: str, dials) -> None:
     def aligned(t):
         i = bisect.bisect_left(starts, t - 15)
         return i < len(starts) and abs(starts[i] - t) <= 15
-    by = collections.Counter(det.signature_of(s).id for s in filed if det.signature_of(s) and aligned(s.start))
+    by = collections.Counter(det.pair_of(s).id for s in filed if det.pair_of(s) and aligned(s.start))
     if not by or not heat:
         print(f"  {tag:44s} mat: nothing starts with the thermostat")
         return
@@ -871,7 +871,7 @@ def mat(folder: str, dials) -> None:
             else:
                 out.append([a, b])
         return out
-    runs = union((s.start, s.end) for s in filed if det.signature_of(s) and det.signature_of(s).id == sid)
+    runs = union((s.start, s.end) for s in filed if det.pair_of(s) and det.pair_of(s).id == sid)
     warm = union(heat)
     counted = sum(b - a for a, b in runs) / 3600
     heating = sum(b - a for a, b in warm) / 3600

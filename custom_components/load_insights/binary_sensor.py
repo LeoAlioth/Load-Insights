@@ -37,7 +37,7 @@ def _running_uid(entry_id: str, name: str) -> str:
 class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     """On while a running load is filed under this name, read one load at a
     time from the grid meter's runs (Fleet.running) - the same answer as the
-    dashboard's list, whatever else shares its phase. Signatures that share a
+    dashboard's list, whatever else shares its phase. Pairs that share a
     name are one device, so the entity is per NAME."""
 
     _attr_has_entity_name = True
@@ -49,7 +49,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
         self._name = name
         self._attr_translation_key = "named_load_running"
         self._attr_unique_id = _running_uid(entry.entry_id, name)
-        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Detected load")
+        self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
 
     @property
     def is_on(self) -> bool:
@@ -59,13 +59,13 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         fleet = self._runner.fleet
         refs = fleet.names().get(self._name, [])
-        sigs = [s for s in (fleet.signature(r) for r in refs) if s is not None]
+        pairs = [s for s in (fleet.pair(r) for r in refs) if s is not None]
         return {
             # the grid's by id, a meter's as "Mansarda#11"; its phases are its own meter's
             "signatures": [ref_label(r) for r in refs],
             "watts": round(fleet.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0)),
-            "sessions_seen": sum(s.count for s in sigs),
-            "phases": "".join(sorted({p for s in sigs for p in s.phases})).upper(),
+            "sessions_seen": sum(s.count for s in pairs),
+            "phases": "".join(sorted({p for s in pairs for p in s.phases})).upper(),
         }
 
 

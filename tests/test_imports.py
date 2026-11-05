@@ -33,7 +33,7 @@ INHERITED = {
 
 
 def _scope(tree):
-    out = set(dir(builtins))
+    out = set(dir(builtins)) | {"__file__"}       # a module's own path, set on every module
     for n in ast.walk(tree):
         if isinstance(n, (ast.Import, ast.ImportFrom)):
             out |= {(a.asname or a.name).split(".")[0] for a in n.names}
@@ -108,7 +108,7 @@ def test_no_test_is_written_where_nothing_will_run_it():
 
 
 def test_every_way_the_library_is_thrown_away_carries_the_names():
-    """Two paths discard the signature library - the reset the user asks for
+    """Two paths discard the pair library - the reset the user asks for
     and the generation bump they never see - and both must carry names and
     their meter readings across. A third path added later would take a user's
     named devices, their energy sensors and their place on the Energy

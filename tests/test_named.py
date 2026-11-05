@@ -83,10 +83,10 @@ def test_a_half_hour_zone_is_put_onto_whole_hours():
     assert [(r["start"], r["sum"]) for r in rows] == [(NOW - 2 * H, 0.1), (NOW - H, 0.2)]
 
 
-def test_a_shared_name_is_the_sum_of_its_signatures():
+def test_a_shared_name_is_the_sum_of_its_pairs():
     det = D.Detector()
     for i, hourly in enumerate(({NOW - 2 * H: 100.0, NOW - H: 50.0}, {NOW - H: 25.0}), 1):
-        det.signatures.append(D.Signature(id=i, phases="a", power={"a": 100.0}, duration_s=60.0, pf=None,
+        det.pairs.append(D.Pair(id=i, phases="a", power={"a": 100.0}, duration_s=60.0, pf=None,
                                           count=1, first_seen=0, last_seen=0, name="Fridge", hourly=hourly))
     rows, _, _ = named.plan_rewrite(det.hourly_by_name("Fridge"), NOW - 3 * H, _hours(0.0, start=NOW - H), [])
     assert [(r["start"], r["sum"]) for r in rows] == [(NOW - 2 * H, 0.1), (NOW - H, 0.175)]
@@ -108,18 +108,18 @@ def test_a_meter_is_rewritten_from_the_first_hour_it_is_off():
     assert named.first_change(rows, gap) == NOW - 3 * H
 
 
-def _fleet(*sigs):
+def _fleet(*pairs):
     """A grid and Hiša's fleet: (meter, id, name[, successor]) each."""
     fleet = D.Fleet()
     fleet.subs["Hiša"] = D.Detector()
-    for meter, i, name, *heir in sigs:
-        (fleet.subs[meter] if meter else fleet.main).signatures.append(_sig(i, name, successor_id=(heir or [None])[0]))
+    for meter, i, name, *heir in pairs:
+        (fleet.subs[meter] if meter else fleet.main).pairs.append(_pair(i, name, successor_id=(heir or [None])[0]))
     return fleet
 
 
-def _sig(i, name=None, count=12, wh=600.0, **kw):
+def _pair(i, name=None, count=12, wh=600.0, **kw):
     """A load seen ``count`` times, ``wh`` in all, repeating exactly: evidence 1.0."""
-    return D.Signature(id=i, phases="a", power={"a": 100.0}, duration_s=60.0, pf=None, count=count,
+    return D.Pair(id=i, phases="a", power={"a": 100.0}, duration_s=60.0, pf=None, count=count,
                        first_seen=0, last_seen=0, name=name, hour_wh=[wh / 24] * 24, **kw)
 
 
@@ -146,11 +146,11 @@ def test_a_name_left_without_its_loads_vanishes_into_the_name_they_wear():
 
 def test_an_adoption_brings_the_old_loads_hours():
     det = D.Detector()
-    det.signatures += [_sig(9, "Washer", successor_id=10, hourly={NOW - 2 * H: 300.0, NOW - H: 100.0}),
-                       _sig(10, hourly={NOW - H: 50.0, NOW: 80.0}, older={NOW - 20 * 86400: 40.0})]
-    det.signatures[0].older = {NOW - 30 * 86400: 70.0}         # named since the carry was due
+    det.pairs += [_pair(9, "Washer", successor_id=10, hourly={NOW - 2 * H: 300.0, NOW - H: 100.0}),
+                       _pair(10, hourly={NOW - H: 50.0, NOW: 80.0}, older={NOW - 20 * 86400: 40.0})]
+    det.pairs[0].older = {NOW - 30 * 86400: 70.0}         # named since the carry was due
     assert det.adopt(10) == "Washer"
-    old, heir = det.signatures
+    old, heir = det.pairs
     assert heir.hourly == {NOW - 2 * H: 300.0, NOW - H: 150.0, NOW: 80.0} and old.hourly == {}
     assert heir.older == {NOW - 30 * 86400: 70.0, NOW - 20 * 86400: 40.0} and old.older == {}
     assert det.hourly_by_name("Washer") == heir.hourly
@@ -209,41 +209,41 @@ def test_a_carry_then_the_hourly_check_run_twice_write_the_same():
 def test_an_hour_ageing_out_is_kept_only_by_a_confident_unnamed_load():
     now = NOW + 30 * 86400
     old, recent = now - 12 * 86400, now - 86400
-    for sig, kept in ((_sig(1), True), (_sig(2, name="Kiln"), False), (_sig(3, count=5), False),
-                      (_sig(4, wh=400.0), False), (_sig(5, count=12, power_mad=50.0, duration_mad=60.0), False)):
-        sig.hourly = {old: 50.0, recent: 20.0}
-        sig.age(now)
-        assert sig.hourly == {recent: 20.0}
-        assert sig.older == ({old: 50.0} if kept else {}), sig.id
-    sig = _sig(6, older={now - 366 * 86400: 5.0, now - 364 * 86400: 6.0})
-    sig.age(now)
-    assert sig.older == {now - 364 * 86400: 6.0}                       # a year, and no more
+    for pair, kept in ((_pair(1), True), (_pair(2, name="Kiln"), False), (_pair(3, count=5), False),
+                      (_pair(4, wh=400.0), False), (_pair(5, count=12, power_mad=50.0, duration_mad=60.0), False)):
+        pair.hourly = {old: 50.0, recent: 20.0}
+        pair.age(now)
+        assert pair.hourly == {recent: 20.0}
+        assert pair.older == ({old: 50.0} if kept else {}), pair.id
+    pair = _pair(6, older={now - 366 * 86400: 5.0, now - 364 * 86400: 6.0})
+    pair.age(now)
+    assert pair.older == {now - 364 * 86400: 6.0}                       # a year, and no more
 
 
 def test_swallow_and_prune_keep_the_older_hours_right():
-    a, b = _sig(1, older={NOW - 20 * 86400: 10.0}), _sig(2, older={NOW - 20 * 86400: 5.0, NOW - 15 * 86400: 1.0})
+    a, b = _pair(1, older={NOW - 20 * 86400: 10.0}), _pair(2, older={NOW - 20 * 86400: 5.0, NOW - 15 * 86400: 1.0})
     a.swallow(b)
     assert a.older == {NOW - 20 * 86400: 15.0, NOW - 15 * 86400: 1.0}
     fleet = D.Fleet()
-    fleet.main.signatures += [_sig(1, "Kiln"), _sig(2, count=1, older={NOW - 20 * 86400: 10.0})]
+    fleet.main.pairs += [_pair(1, "Kiln"), _pair(2, count=1, older={NOW - 20 * 86400: 10.0})]
     stored = fleet.older_to_dict()
     assert stored == {"": {"2": {str(NOW - 20 * 86400): 10.0}}}
-    cap, D.MAX_SIGNATURES = D.MAX_SIGNATURES, 1
+    cap, D.MAX_PAIRS = D.MAX_PAIRS, 1
     try:
         fleet.main._prune(NOW)
     finally:
-        D.MAX_SIGNATURES = cap
-    assert [s.id for s in fleet.main.signatures] == [1] and fleet.older_to_dict() == {}   # gone with it
+        D.MAX_PAIRS = cap
+    assert [s.id for s in fleet.main.pairs] == [1] and fleet.older_to_dict() == {}   # gone with it
     fleet.load_older(stored)                                           # a store from before: nothing to attach to
-    assert fleet.main.signatures[0].older == {}
+    assert fleet.main.pairs[0].older == {}
     fleet.main._moved[2] = 1                                           # ...or merged into another since
     fleet.load_older(stored)
-    assert fleet.main.signatures[0].older == {NOW - 20 * 86400: 10.0}
+    assert fleet.main.pairs[0].older == {NOW - 20 * 86400: 10.0}
 
 
 def test_naming_a_load_carries_its_older_hours_once():
     fleet = _fleet(("Hiša", 14, None))
-    fleet.subs["Hiša"].signatures[0].older = {NOW - 20 * 86400: 300.0, NOW - 20 * 86400 + H: 200.0}
+    fleet.subs["Hiša"].pairs[0].older = {NOW - 20 * 86400: 300.0, NOW - 20 * 86400 + H: 200.0}
     assert fleet.take_older("Heater") == {}
     fleet.rename(("Hiša", 14), "Heater")
     older = fleet.take_older("Heater")

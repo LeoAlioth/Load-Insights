@@ -6,7 +6,7 @@ One replay at SLICE=6 with the last LIVE days (3 by default) in one-minute
 passes. After every pass, over every detector: the most open starts on one
 phase, open starts sharing a step group (owned and not), open starts older
 than 3x their group's usual length, and - at Home with the meters fed - the
-Inkubator's live power (Hiša's phase-C 10-100 W, 10-60 s signatures named so,
+Inkubator's live power (Hiša's phase-C 10-100 W, 10-60 s pairs named so,
 as the 2026-10-28 trace did) against its ceiling. The closes by kind are the
 scorecard's pairing line.
 """
@@ -55,10 +55,10 @@ def main(argv: list) -> None:
         hisa = self.subs.get("Hiša") if hasattr(self, "subs") else None
         if hisa is None:
             return
-        for sig in hisa.signatures:
-            if not sig.name and sig.count >= 3 and sig.phases in ("c", "Z") \
-                    and 10 <= sig.watts <= 100 and 10 <= sig.duration_s <= 60:
-                hisa.rename(sig.id, "Inkubator")
+        for pair in hisa.pairs:
+            if not pair.name and pair.count >= 3 and pair.phases in ("c", "Z") \
+                    and 10 <= pair.watts <= 100 and 10 <= pair.duration_s <= 60:
+                hisa.rename(pair.id, "Inkubator")
         live = sum(w for n, _, w in hisa.live_runs(now) if n == "Inkubator")
         ceiling = self.live_ceiling().get("Inkubator", 0.0)
         st["ink_passes"] += 1

@@ -87,22 +87,22 @@ def overview_text(hass: HomeAssistant, entry: ConfigEntry) -> str:
         return "\n".join(lines)
 
     det = runner.detector
-    sigs = det.signatures
-    sessions = sum(s.count for s in sigs)
-    named = [s for s in sigs if s.name]
+    pairs = det.pairs
+    sessions = sum(s.count for s in pairs)
+    named = [s for s in pairs if s.name]
     lines.append(f"**Load detection** - {'caught up' if runner.caught_up else 'still reading history'}, "
                  f"last run {_when(runner.last_run)}.")
     if not runner.caught_up:
         lines.append(f"- Read up to {_when(runner.last_processed)}; it keeps going on its own.")
-    lines.append(f"- {len(sigs)} signatures from {sessions} sessions, {len(named)} named.")
-    changed = [s for s in sigs if s.name and s.successor_id is not None]
+    lines.append(f"- {len(pairs)} pairs from {sessions} sessions, {len(named)} named.")
+    changed = [s for s in pairs if s.name and s.successor_id is not None]
     if changed:
         one = changed[0]
         lines.append(f"- **{one.name}** has not run lately and a similar load has - open Name "
                      f"detected loads to move the name across"
                      + (f" ({len(changed)} named loads in that position)." if len(changed) > 1 else "."))
-    worth = [s for s in sigs if s.count >= 2 and most_specific(s.locations, s.count, runner.parents) == "main"]
-    lines.append(f"- {len(worth)} worth naming; {len(sigs) - len(worth)} are either one-offs or "
+    worth = [s for s in pairs if s.count >= 2 and most_specific(s.locations, s.count, runner.parents) == "main"]
+    lines.append(f"- {len(worth)} worth naming; {len(pairs) - len(worth)} are either one-offs or "
                  f"already accounted for by a device's own meter.")
     running = det.active(dt_util.utcnow().timestamp())
     if running:

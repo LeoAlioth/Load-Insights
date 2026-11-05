@@ -63,7 +63,7 @@ def plan_key(sensor: str, side: str, what: str) -> str:
 
 # Detection: the meter's raw per-phase readings. Active power is the one
 # that matters most; PF (or reactive power), current and voltage refine the
-# signatures where the meter publishes them. All optional, per phase.
+# pairs where the meter publishes them. All optional, per phase.
 CONF_DETECTION = "detection"            # the main meter's fields, flat: power_a, pf_b, ...
 # Inside that same dict, the GRID connection's per-phase power and how it
 # relates to the load reading. Two readings of one site are not
@@ -77,7 +77,7 @@ CONF_GRID_DEVICE = "grid_device"
 # amps with another meter's watts is not a power factor - it is a
 # subtraction artefact. Home did exactly that: the load reading was a
 # template of house consumption while the volts and amps came off the grid
-# meter, and the reactive power derived from the pair turned 121 signatures
+# meter, and the reactive power derived from the pair turned 121 pairs
 # into 199 in a single day (2026-09-18). The load's own set has no prefix.
 GRID_PREFIX = "grid_"
 # Inverters, as a LIST from the start: one site already has two - a SolarEdge
@@ -153,12 +153,12 @@ DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
 PREFETCH_MAX_MIN = 15         # a pass this short reads every meter in one recorder query (detection._prefetch)
 # How long the detector's state may sit in memory unwritten. The snapshot is
-# the whole signature library - well over a hundred kilobytes - and writing
+# the whole pair library - well over a hundred kilobytes - and writing
 # it every pass is what makes the polling interval expensive rather than the
 # detection itself, which costs under a millisecond per pass. An hour caps
 # what an ungraceful shutdown can lose; a clean one always writes.
 SAVE_MAX_INTERVAL_S = 3600.0
-# The year of hours confident unnamed loads keep (Signature.older) is written
+# The year of hours confident unnamed loads keep (Pair.older) is written
 # daily: it only changes as hours age out of the library's window, and losing
 # a day of them to a crash only shortens what a later name is carried.
 HISTORY_SAVE_INTERVAL_S = 86400.0
@@ -168,7 +168,7 @@ HISTORY_SAVE_INTERVAL_S = 86400.0
 # Past this it shows them anyway: a detector wedged days back should still
 # offer what it has rather than nothing at all.
 NAMING_MAX_STALE_S = 3600.0
-# How sure the detector must be that a signature is a real repeating load
+# How sure the detector must be that a pair is a real repeating load
 # before it is offered for naming. A house makes far more shapes than it has
 # appliances, and a list of two hundred is a list nobody reads (the owner,
 # 2026-09-18). Evidence is the score: how often it has been seen and how
@@ -176,7 +176,7 @@ NAMING_MAX_STALE_S = 3600.0
 # was a setting nobody could judge a value for.
 # 0.7, not 0.5: evidence is 0.5*seen + 0.3*tight_power + 0.2*tight_duration,
 # so anything seen five times already scores 0.5 and a bar there filters
-# nothing at all - 153 of home's 153 namable signatures cleared it. At 0.7 it
+# nothing at all - 153 of home's 153 namable pairs cleared it. At 0.7 it
 # asks for a load that also REPEATS tightly, which is 99 at home and 13 at
 # Kozolec (measured over ten days, 2026-09-18).
 DEFAULT_MIN_EVIDENCE = 0.7
@@ -191,12 +191,12 @@ NAMING_MIN_ROWS = 5
 # person has already done (2026-09-22). A static bar cannot do this: set
 # high it hides a big house's real loads for ever, set low it opens with two
 # hundred rows and is put down unread. Nothing is lost either way - the library
-# holds every signature and the page says how many are waiting.
+# holds every pair and the page says how many are waiting.
 NAMING_START_ROWS = 6
 NAMING_ROWS_PER_NAME = 4
-# Bumped whenever a signature is named, so the entry reloads and the named
+# Bumped whenever a pair is named, so the entry reloads and the named
 # load's entities appear. The names themselves live with the detector.
-CONF_SIGNATURE_REVISION = "signature_revision"
+CONF_PAIR_REVISION = "signature_revision"
 
 SERVICE_RESET_DETECTION = "reset_detection"
 SERVICE_NAME_LOAD = "name_load"
