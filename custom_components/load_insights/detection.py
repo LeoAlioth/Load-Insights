@@ -10,12 +10,17 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, get_instance, history
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import COMPRESSED_STATE_LAST_UPDATED, COMPRESSED_STATE_STATE, UnitOfEnergy
+from homeassistant.const import (
+    COMPRESSED_STATE_LAST_UPDATED,
+    COMPRESSED_STATE_STATE,
+    EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
+    UnitOfEnergy,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
