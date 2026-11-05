@@ -1,5 +1,23 @@
 # Release Notes
 
+## 0.5.1
+
+### New Features
+
+- **A Load Insights card: name a load where you see it.** A dashboard card that comes with the integration (no resource to add): `type: custom:load-insights-card`, with `mode: to_name` for the loads waiting for a name (power, phases, how long and how often it runs, where, how certain, when it last ran, what it may be) or `mode: running` for what is on right now. Every unnamed row has a name field and a *Name* button; the field offers the names already in use, and picking one joins the load to it. The card's editor sets how many rows it shows and filters them by size, run length (or for running loads, how long they have been on), runs a day, certainty, how recently seen, and for running loads named or unnamed only; sorts by certainty, size, run length, runs a day or most recent. The loads to name that are running right now - on the grid or inside any meter - head the list in a section of their own, the rest under *Seen in the last 24 h* (the window is an option). The detected loads sensor carries a `running` list for it.
+
+- **A Forecast card for the dashboard.** `type: custom:load-insights-forecast-card` comes with the integration too: one chart with a dropdown to pick the forecast - what actually happened as bars, the forecast as a dotted line and its likely range as a band, 36 hours back and ahead (both options). It draws the chart itself, so it needs no other card from HACS. It lists every forecast by default, so a new one appears by itself; `include` shows only the ones you list, in your order, `exclude` all but those. The *Battery SOC forecast* is drawn as a level - the kWh left in the pack (its percentage without a capacity) as a dotted line, and what the pack actually held over the last 48 hours as a line - and a forecast with nothing to draw says so instead of showing an empty chart. For this the Battery SOC forecast sensor's hours carry `stored_kwh` beside `soc`, and it has the pack's `capacity_kwh` and a `history` of the last 48 hours, read from the battery sensor's statistics.
+
+### Fixes
+
+- **Works on Home Assistant 2026.11.** Load Insights did not set up after updating to 2026.11 (an import error in the log): 2026.11 stopped offering two recorder event names where Load Insights read them. They are now read from where Home Assistant has always defined them, so older versions keep working too.
+- **One device per load.** A named load appeared twice in the device list under the same name - a *Detected load* device with its running and power sensors and a *Device forecast* device with its forecast, room and rate sensors. They are now one device, *Load*, holding all of them. The sensors move over on the first reload and the emptied forecast devices are removed; an area or a name you gave one of those devices is not carried to the merged one.
+- **A named load sits under its meter on the Energy dashboard.** Every named load, named by hand or by itself, went onto the dashboard at the top level, beside the meter that measures it - Fridge 2, a load of the Skrinja & Omara plug, sat next to Hiša. It now goes in under the meter it lives in: the plug or circuit whose own library holds the name, or for a load only the grid sees, the meter its biggest signature was seen in. Entries Load Insights made before are moved; entries you made yourself, and a parent you set by hand where Load Insights knows none, are left alone.
+- **No forecast or planning sensors for a base load.** A base load on the Energy dashboard was taken for a device, so it got a forecast, a *Room to absorb today* and an *Absorption rate* that never had a value; the forecasts now leave Load Insights' own base loads out, and those sensors are removed.
+- **A base load no longer counts the meters inside it a second time.** A circuit's base load is now its lowest reading less the base loads of the meters inside it, never below 0, and never more than the circuit draws right now less what those meters draw right now. It counted their always-on draw a second time - Delavnica's held the Server UPS's ~95 W, Mansarda's the EcoFlow and the kitchen fridge - so the Energy dashboard's devices added up to more than the house drew (1.2 kWh over the workshop in one morning). The grid's own base load is now the part no meter covers.
+
+---
+
 ## 0.5.0
 
 ### New Features

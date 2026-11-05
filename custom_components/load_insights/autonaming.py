@@ -79,7 +79,7 @@ class AutoNamer:
             "tombs": [t.to_dict() for t in self.tombs], "added": self.added, "declined": self.declined})
 
     def reset(self, forget_names: bool) -> None:
-        """A detection reset: signature ids mean nothing any more, so the
+        """A detection reset: pair ids mean nothing any more, so the
         candidates go. Our names are carried like any other (orphan names) unless
         ``forget_names``, which drops them and their marks too; tombstones stay
         (they describe loads, not ids)."""
@@ -126,9 +126,9 @@ class AutoNamer:
             await self._save()
 
     def _owner_names(self) -> List[Tuple[str, Tuple[str, int], object]]:
-        """(name, ref, signature) of every named signature."""
+        """(name, ref, pair) of every named pair."""
         r = self._runner
-        return [(sig.name, (meter, sig.id), sig) for meter, det in r.fleet.detectors() for sig in det.signatures if sig.name]
+        return [(pair.name, (meter, pair.id), pair) for meter, det in r.fleet.detectors() for pair in det.pairs if pair.name]
 
     async def _name(self) -> bool:
         r = self._runner
@@ -148,29 +148,29 @@ class AutoNamer:
         from .detection import MIN_COUNT_TO_NAME, NAMING_MIN_WH   # detection imports this module
         rows = r.fleet.namable(r.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH)
         for group in rows.values():
-            for ref, sig in group:
-                facts[A.key_of(ref)] = A.facts_of(ref, sig)
+            for ref, pair in group:
+                facts[A.key_of(ref)] = A.facts_of(ref, pair)
         mine: Dict[str, Tuple[Tuple[str, int], object]] = {}
-        for name, ref, sig in self._owner_names():
+        for name, ref, pair in self._owner_names():
             if name in self.marks:
-                facts[A.key_of(ref)] = A.facts_of(ref, sig)
-                mine[A.key_of(ref)] = (ref, sig)
+                facts[A.key_of(ref)] = A.facts_of(ref, pair)
+                mine[A.key_of(ref)] = (ref, pair)
         today = dt_util.now().date().isoformat()
         self.cands = A.tick(self.cands, facts, today)
         # 3. a name whose load has not cleared for a week is taken back (never on one bad day)
-        for key, (ref, sig) in list(mine.items()):
+        for key, (ref, pair) in list(mine.items()):
             c = self.cands.get(key)
             if c is not None and A.lapsed(c):
                 _LOGGER.info("Auto-name %s taken back from %s: the load has not cleared the bar for %d days",
-                             sig.name, key, A.DAYS_TO_REVOKE)
-                gone = sig.name
+                             pair.name, key, A.DAYS_TO_REVOKE)
+                gone = pair.name
                 await r.async_rename(ref, None)
                 self.cands.pop(key, None)
                 if gone not in r.fleet.names():
                     self.marks.pop(gone, None)
                 changed = True
         # 4. new names
-        owned = [(n, A.descriptor(A.facts_of(ref, sig))) for n, ref, sig in self._owner_names() if n not in self.marks]
+        owned = [(n, A.descriptor(A.facts_of(ref, pair))) for n, ref, pair in self._owner_names() if n not in self.marks]
         taken = set(r.fleet.names()) | set(self.marks) | {o.get("name") for _, det in r.fleet.detectors() for o in det.orphan_names}
         taken |= set(r.all_submeters) | {t.name for t in self.tombs if t.name}
         taken |= {d.label for d in await self._devices()}
@@ -203,7 +203,8 @@ class AutoNamer:
         rates: Dict[str, str] = {}
         parents: Dict[str, str] = {}
         if self.dashboard:
-            for name in sorted(r.fleet.names()):
+            refs_by_name = r.fleet.names()
+            for name in sorted(refs_by_name):
                 if not r.metered_device(name):
                     entity = r.energy_entity(name)
                     if not entity:
@@ -211,6 +212,8 @@ class AutoNamer:
                     wanted[entity] = name
                     if rate := r.power_entity(name):
                         rates[entity] = rate
+                    if parent := self._home_meter(refs_by_name[name]):
+                        parents[entity] = parent
             for entity, name, rate, parent in self._base_loads():
                 wanted[entity], parents[entity] = name, parent
                 if rate:
@@ -222,6 +225,26 @@ class AutoNamer:
             _LOGGER.info("Energy dashboard device list written (auto-named loads: %s)",
                          ", ".join(sorted(wanted.values())) or "none")
         return written or moved
+
+    def _home_meter(self, refs) -> Optional[str]:
+        """The energy statistic of the meter a named load lives in, for its Energy dashboard entry's parent (the
+        owner, 2026-11-01: Fridge 2, a pair of the Skrinja & Omara plug's own library, sat at the top level):
+        the one meter whose own library holds the name; for a name only the grid holds, the meter its biggest
+        pair was seen in (most_specific); None when that is no meter or several."""
+        from .insights.detect import most_specific      # detection imports this module
+        r = self._runner
+        meters = {m for m, _ in refs if m}
+        if len(meters) > 1:
+            return None
+        if meters:
+            home = meters.pop()
+        else:
+            pairs = [s for s in r.fleet.main.pairs if ("", s.id) in set(refs)]
+            if not pairs:
+                return None
+            head = max(pairs, key=lambda s: s.count)
+            home = most_specific(head.locations, head.count, r.fleet.parents)
+        return (r.all_submeters.get(home) or {}).get("energy")
 
     def _base_loads(self) -> List[Tuple[str, str, Optional[str], str]]:
         """(energy entity, name, power entity, the meter's statistic) of each sub-meter's base load - the

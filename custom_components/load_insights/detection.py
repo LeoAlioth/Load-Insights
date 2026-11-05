@@ -10,12 +10,17 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
-from homeassistant.components.recorder import EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, get_instance, history
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.recorder import statistics as rec_stats
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import COMPRESSED_STATE_LAST_UPDATED, COMPRESSED_STATE_STATE, UnitOfEnergy
+from homeassistant.const import (
+    COMPRESSED_STATE_LAST_UPDATED,
+    COMPRESSED_STATE_STATE,
+    EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
+    UnitOfEnergy,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -108,6 +113,16 @@ def device_uid(entry_id: str, energy: str) -> str:
     return f"{entry_id}_device_{energy.replace('.', '_')}"
 
 
+def base_load_entities(hass: HomeAssistant, entry_id: str) -> frozenset:
+    """The entity ids of this entry's base load sensors (base_load_uid). They go on the Energy dashboard so its
+    Sankeys show them, but they are a meter's floor worked out here, not a device: the forecasts leave them
+    out - a forecast, a room to absorb and an absorption rate of a base load never had a value (the owner,
+    2026-10-31)."""
+    prefix = f"{entry_id}_baseload_"
+    return frozenset(e.entity_id for e in er.async_get(hass).entities.values()
+                     if e.platform == DOMAIN and (e.unique_id or "").startswith(prefix))
+
+
 def base_load_uid(entry_id: str, key: str, phase: Optional[str], kind: str) -> str:
     """A meter's base load entity's unique id: ``key`` its energy statistic (BASE_LOAD_GRID for the grid),
     ``phase`` its phase or None for the whole, ``kind`` "power" or "energy"."""
@@ -176,7 +191,7 @@ STORAGE_VERSION = 1
 # 9 = a level must hold for SUSTAIN_INTERVALS of the reading's own measured
 #     sample interval, so transitional samples no longer found levels, and a
 #     merge may admit ALIKE_MAD_SHARE of the pair's spread. Both change which
-#     sessions and signatures exist at all.
+#     sessions and pairs exist at all.
 # 10 = a summed house reading keeps only the last of each burst of readings
 #     (COMBINE_SETTLE_S), so a third of Home's sessions - built on phantom
 #     sums against a stale partner - no longer exist.
@@ -192,19 +207,19 @@ STORAGE_VERSION = 1
 #     longer fed in as a reading, once a minute on every phase.
 # 14 = a three-phase sub-meter's channels are mapped onto the grid
 #     connection's phases from the data, and a one-device meter decides which
-#     signature a matched session joins - so which sessions share a signature,
-#     and where signatures are placed, both change.
+#     pair a matched session joins - so which sessions share a pair,
+#     and where pairs are placed, both change.
 # 15 = edges are clustered by where their sizes pile up, pairs and links are
 #     accepted above chance, and runs are filed by device rather than by how
-#     alike their power looks: every cluster, pair and signature differs.
+#     alike their power looks: every cluster, pair and pair differs.
 # 16 = a start is an all-phase event: rises on several phases within the
 #     window are one cluster carrying a phase pattern, a device is its start
 #     cluster (the link table is gone), and a run is filed on its own phases
-#     only - every start cluster, device and signature differs.
+#     only - every start cluster, device and pair differs.
 # 17 = a step's place is part of its kind (the innermost meter that saw all
 #     of it), a house step its meters stepped with is booked as their shares,
 #     a run bigger than the whole reading is closed, and noise is learned from
-#     how the reading moves - every cluster, run and signature differs.
+#     how the reading moves - every cluster, run and pair differs.
 # 18 = a meter's step is its own detector's, weighed against the grid's over
 #     both spans; a level is confirmed, a silence held and a span started over
 #     three of the meter's cadence (how often it writes while its value
@@ -214,14 +229,14 @@ STORAGE_VERSION = 1
 # 19 = one gap measure for every meter (its interval is its moving gaps'
 #     tenth percentile, persisted), an unseen stop fitted only to what fell
 #     short since a run started, a meter's step the other way split out of
-#     a grid step that netted it, a held meter's signatures avoided when
+#     a grid step that netted it, a held meter's pairs avoided when
 #     filing, and the level left on the reading after a multi-close - which
 #     steps are declared, and how runs close and file, differ.
 # 20 = a pass is only a pause: every meter read on one clock, the grid its
 #     meters' learned lag behind them; every decision on that clock and each
 #     session filed when it becomes decidable, not at a pass's end; a meter's
 #     latency learned from the steps it shares with the grid; device merges
-#     after every filing, never into a signature a run was kept out of - the
+#     after every filing, never into a pair a run was kept out of - the
 #     same history read at any slicing files the same library, which differs
 #     from one built in passes.
 # 23 = the run lifecycle (2026-10-28/29): a fall closes the run it most
@@ -229,12 +244,12 @@ STORAGE_VERSION = 1
 #     of a multi-phase run only on a fall across them; a second rise never
 #     ends the first without a fall or the readings), steps grouped by the
 #     mixture only (joins at 2 widths), runs filed and merged by their start
-#     and stop groups' pair (pair_home) - groups, devices and signatures all
+#     and stop groups' pair (pair_home) - groups, devices and pairs all
 #     differ from 22's.
-DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Families (2026-10-26) did not bump it: a stored library loads into families (Detector._assign_families), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
+DETECTOR_GENERATION = 23      # the run lifecycle (2026-10-29). 22: a value that came once and stayed no longer splits a load (2026-10-25). Signatures (2026-10-26) did not bump it: a stored library loads into signatures (Detector._assign_signatures), and a rebuild now reads only the recorder's 4 days, which would drop the older library. Before that: steps and claims (2026-10-23): states key the step groups, falls placed, Run.placed
 MIN_COUNT_TO_NAME = 2          # a load seen once is not offered for naming
 # What a load has actually USED is the reason to bother naming it: a
-# signature worth 30 Wh over ten days is noise with a shape, and a list full
+# pair worth 30 Wh over ten days is noise with a shape, and a list full
 # of those is why the naming page ran to a hundred and eighty rows.
 NAMING_MIN_WH = 50.0
 # How many of a current reading's own changes to remember while confirming
@@ -346,7 +361,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
     """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
-    query is large; the detector's state, sessions and signatures persist in
+    query is large; the detector's state, sessions and pairs persist in
     .storage so a restart resumes where it stopped.
 
     A coordinator for its schedule and its listeners, never for data: a pass
@@ -411,7 +426,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
         # the hours confident unnamed loads keep past the window
-        # (Signature.older), apart from the library they would swell
+        # (Pair.older), apart from the library they would swell
         self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
         # every grouped step of the last ten days, with its voltages (run lifecycle, Task 8c):
         # several MB at Home, so a store of its own, written as rarely as the older hours
@@ -793,16 +808,86 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return name, meter["energy"], sorted(n for n, m in self.submeters.items() if not m.get("parent"))
 
     def remainder_base_load(self) -> Tuple[Optional[float], float]:
-        """(W, Wh) of the remainder meter's base load: the grid's less the read top-level meters' beside it
-        (Fleet.base_load) - W None while the grid's is not learned, never below 0."""
-        rem = self.remainder_meter()
-        w, wh = self.fleet.base_load("")
-        if rem is None:
+        """(W, Wh) of the remainder meter's base load: what no read meter covers - the grid's base load
+        (base_load("")), every read meter taken off, the ones inside the unread remainder too (the owner,
+        2026-10-31: "the submeters should always be subtracted"; Delavnica's is the grid's, as he said).
+        W None while the grid's is not learned, never below 0."""
+        if self.remainder_meter() is None:
             return None, 0.0
-        for name in rem[2]:
-            mw, mwh = self.fleet.base_load(name)
-            w = None if w is None else w - (mw or 0.0)
-            wh -= mwh
+        return self.base_load("")
+
+    def _now_w(self, meter: str, phase: Optional[str] = None) -> Optional[float]:
+        """What a meter ("" the grid) - or one phase of it - reads now: its phases' settled levels."""
+        det = self.fleet.main if not meter else self.fleet.subs.get(meter)
+        if det is None:
+            return None
+        levels = [st.level for p, st in det.phases.items() if (phase is None or p == phase) and st.level is not None]
+        return sum(levels) if levels else None
+
+    def _inner_now(self, meter: str, phase: Optional[str], inner: str) -> float:
+        """What inner meter ``inner`` draws now of ``meter``'s phase ``phase`` (all of it with None), a channel on
+        several phases shared out evenly."""
+        if phase is None:
+            return self._now_w(inner) or 0.0
+        target = set(self.fleet.phase_map(meter).get(phase, phase) if meter else phase)
+        det, out = self.fleet.subs.get(inner), 0.0
+        for c in (det.phases if det is not None else {}):
+            sys = self.fleet.phase_map(inner).get(c, "")
+            if sys:
+                out += (self._now_w(inner, c) or 0.0) * len(set(sys) & target) / len(sys)
+        return out
+
+    def base_load_cap(self, meter: str, phase: Optional[str] = None, remainder: bool = False) -> Optional[float]:
+        """The most a base load may read now (the owner, 2026-10-31): what its meter draws now less what the
+        meters inside it draw now - the remainder's: the grid's less the meters beside it and inside it. None
+        while the meter has no reading."""
+        if remainder:
+            if self.remainder_meter() is None:
+                return None
+            meter, phase = "", None                    # the remainder is what no read meter covers: the grid's
+        now = self._now_w(meter, phase)
+        if now is None:
+            return None
+        return max(0.0, now - sum(self._inner_now(meter, phase, n) for n in self._inside(meter)))
+
+    def _read_parent(self, name: str) -> str:
+        """The nearest read meter ``name`` hangs under on the Energy dashboard ("" the grid): a meter inside one
+        detection does not read (Delavnica) is inside that one's parent - the Server, Centralna and the rest of
+        the workshop's meters are inside the grid's base load, not beside it."""
+        parent, seen = (self.submeters.get(name) or {}).get("parent"), {name}
+        while parent and parent not in self.submeters and parent not in seen:
+            seen.add(parent)
+            parent = (self.all_submeters.get(parent) or {}).get("parent")
+        return parent if parent in self.submeters else ""
+
+    def _inside(self, meter: str) -> List[str]:
+        """The read meters directly inside ``meter`` ("" the grid), a meter inside an unread one counted under the
+        nearest read meter above it (_read_parent)."""
+        return sorted(n for n in self.submeters if n != meter and self._read_parent(n) == meter)
+
+    def base_load(self, meter: str, phase: Optional[str] = None) -> Tuple[Optional[float], float]:
+        """(W, Wh) of a meter's base load as a load of its own: its lowest reading (Fleet.base_load) less the
+        base loads of the meters directly inside it, never below 0 - each of those is a device or a circuit
+        of its own, and its always-on draw was counted twice: Delavnica's held the Server UPS's ~95 W and
+        Centralna's pumps, Mansarda's the EcoFlow and the kitchen fridge (the owner, 2026-10-31: "the
+        submeters should always be subtracted"). One phase of a meter (``phase``) less what each inner
+        meter's channels carry on that phase, a channel on several phases shared out evenly."""
+        w, wh = self.fleet.base_load(meter, phase)
+        for inner in self._inside(meter):
+            if phase is None:
+                iw, iwh = self.fleet.base_load(inner)
+            else:
+                target = set(self.fleet.phase_map(meter).get(phase, phase) if meter else phase)
+                det, iw, iwh = self.fleet.subs.get(inner), 0.0, 0.0
+                for c in (det.phases if det is not None else {}):
+                    sys = self.fleet.phase_map(inner).get(c, "")
+                    if not sys:
+                        continue
+                    share = len(set(sys) & target) / len(sys)
+                    cw, cwh = self.fleet.base_load(inner, c)
+                    iw, iwh = iw + (cw or 0.0) * share, iwh + cwh * share
+            w = None if w is None else w - (iw or 0.0)
+            wh -= iwh
         return (None if w is None else max(w, 0.0)), wh
 
     def base_load_keys(self) -> set:
@@ -848,8 +933,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
         Before that window, first, what the meter is owed from elsewhere,
         once: the history of the names that vanished into this one
-        (``carries``) and the hours its signatures kept from before they were
-        named (Signature.older) - see plan_carry.
+        (``carries``) and the hours its pairs kept from before they were
+        named (Pair.older) - see plan_carry.
 
         Not ``force``d - the hourly check, a named load's sensor added - it
         writes only where the meter is off what detection saw, from the first
@@ -947,10 +1032,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
     def _covered_from(self) -> Optional[int]:
         """The first whole hour of the statistics' window: the first hour the
         library read, never further back than HOURLY_KEEP_S - before it some
-        signatures' hours have aged out (Signature.age) and others not, and
+        pairs' hours have aged out (Pair.age) and others not, and
         a name's meter would be written short of them, every hour. None
         before anything is filed."""
-        seen = min((h for _, det in self.fleet.detectors() for sig in det.signatures for h in sig.hourly),
+        seen = min((h for _, det in self.fleet.detectors() for pair in det.pairs for h in pair.hourly),
                    default=None)
         if seen is None:
             return None
@@ -1014,23 +1099,23 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
-        waiting)``, each offered row ``((meter, id), signature)`` - the grid's
+        waiting)``, each offered row ``((meter, id), pair)`` - the grid's
         id under "" - the loads under no meter first as ``"main"``, then the
         meters by how much their loads use.
 
         Split by where each load lives, so the page can be taken one circuit
         at a time (2026-09-25: "any way of splitting the detected loads
         early would help with organisation and naming"), and a meter's list
-        is its own detector's signatures (Fleet.namable). Named loads have a
+        is its own detector's pairs (Fleet.namable). Named loads have a
         page of their own (``named``). Each group gets the length
         offer_for_naming earns it, and ``waiting`` is how many more cleared
         the bar than that length fits."""
         named = len(self.fleet.names())
         out = []
         for where, rows in self.fleet.namable(self.holds_one_device, MIN_COUNT_TO_NAME, NAMING_MIN_WH).items():
-            ref = {id(sig): r for r, sig in rows}
-            heirs = {id(sig) for r, sig in rows if self.fleet.predecessor_of(r) is not None}
-            worth = [sig for _, sig in rows]
+            ref = {id(pair): r for r, pair in rows}
+            heirs = {id(pair) for r, pair in rows if self.fleet.predecessor_of(r) is not None}
+            worth = [pair for _, pair in rows]
             shown = offer_for_naming(worth, named, DEFAULT_MIN_EVIDENCE, NAMING_MIN_ROWS,
                                      NAMING_START_ROWS, NAMING_ROWS_PER_NAME, is_heir=lambda x: id(x) in heirs)
             if shown:
@@ -1040,12 +1125,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return out
 
     def named(self) -> list:
-        """Every named load as ``((meter, id), signature)``, biggest first, wherever it was seen."""
-        return sorted((((m, s.id), s) for m, det in self.fleet.detectors() for s in det.signatures if s.name),
+        """Every named load as ``((meter, id), pair)``, biggest first, wherever it was seen."""
+        return sorted((((m, s.id), s) for m, det in self.fleet.detectors() for s in det.pairs if s.name),
                       key=lambda r: -r[1].energy_wh)
 
     async def async_adopt(self, ref: Tuple[str, int]) -> Optional[str]:
-        """Move a predecessor's name onto the signature (meter, id) - the
+        """Move a predecessor's name onto the pair (meter, id) - the
         grid's under "" - and persist, between passes, as async_rename."""
         async with self._lock:
             before = self.fleet.names()
@@ -1057,10 +1142,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.async_update_listeners()
         return name
 
-    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], family: bool = False) -> bool:
-        """Name the signature (meter, id) - the grid's under "" - or clear it (``family``: ref's id is a
-        family's), and persist at once; the caller bumps the entry so the entities follow. Either way the
-        name goes to the whole family: a family is named, not a signature.
+    async def async_rename(self, ref: Tuple[str, int], name: Optional[str], signature: bool = False) -> bool:
+        """Name the pair (meter, id) - the grid's under "" - or clear it (``signature``: ref's id is a
+        signature's), and persist at once; the caller bumps the entry so the entities follow. Either way the
+        name goes to the whole signature: a signature is named, not a pair.
 
         Without telling the entities: the bump's reload is what makes the
         name's sensors. Told here, the sensor platform added them too, and
@@ -1075,7 +1160,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         (AGENTS.md, 2026-10-02)."""
         async with self._lock:
             before = self.fleet.names()
-            if not (self.fleet.rename_family(ref, name) if family else self.fleet.rename(ref, name)):
+            if not (self.fleet.rename_signature(ref, name) if signature else self.fleet.rename(ref, name)):
                 return False
             self._carry_vanished(before)
             await self._persist(force=True)      # a user action, written at once
@@ -1225,7 +1310,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         Everything except the NAMES, unless ``forget_names``. They are the
         one thing in the library the user put there by hand, and the backfill
         re-learns everything else in minutes. Each is carried across as a
-        description and handed back to the first rebuilt signature that looks
+        description and handed back to the first rebuilt pair that looks
         like it; where the site really has changed - the reason to do this by
         hand - nothing matches and the name does not return. The owner
         (2026-09-30) would rather drop them than have a stale one land on the
@@ -1233,7 +1318,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
         Between passes, never under one: a pass running when this lands
         finishes by recording that it has processed up to now, and the ten
-        days are never re-read (Home, 2026-09-29: one signature, from the
+        days are never re-read (Home, 2026-09-29: one pair, from the
         minute of the reset)."""
         async with self._lock:
             orphans = self.fleet.name_descriptors() if self.fleet and not forget_names else []
@@ -1390,7 +1475,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         minus P squared is not a reactive power, it is the two circuits'
         difference wearing the units of one. Home was configured exactly that
         way - house-consumption templates for the watts, grid meter for the
-        volts and amps - and it cost 78 phantom signatures in a single day.
+        volts and amps - and it cost 78 phantom pairs in a single day.
 
         A power-factor entity needs no current, so it counts as coherent on
         its own as long as it sits with the power."""

@@ -1,6 +1,6 @@
-"""Auto-naming (INS-21): the bar on real signatures, hysteresis, markers and tombstones, numbering, the dashboard list.
+"""Auto-naming (INS-21): the bar on real pairs, hysteresis, markers and tombstones, numbering, the dashboard list.
 
-The Facts below are real signatures from the live exports of 2026-10-20 (Home,
+The Facts below are real pairs from the live exports of 2026-10-20 (Home,
 Kozolec, Andrej's site) and the ten-day replays; `tests/autoname_bench.py` runs
 the whole table.
 """
@@ -53,7 +53,7 @@ def test_andrejs_fridge_clears_though_it_runs_only_at_night():
     assert A.recognise(f).kind == A.FRIDGE_KIND
 
 
-def test_kozolecs_fridges_split_over_many_signatures_do_not():
+def test_kozolecs_fridges_split_over_many_pairs_do_not():
     # replay #33: 56 W, 43 min, evidence 0.5, an interval of 3 h with a 2 h jitter - one fragment of two fridges
     f = fridge(ref=("", 33), watts=56.0, duration_s=2564.0, interval_s=11332.0, count=81, span_days=15.3,
                evidence=0.5, interval_mad=6911.0)
@@ -160,7 +160,7 @@ def test_an_existing_name_is_never_overwritten_or_reused():
     assert A.decide({"#2": g}, ready_cands({"#2": g}), {}, [], PATTERNS, ["Fridge 1"]) == [("#2", "Fridge 2", "fridge")]
 
 
-def test_a_metered_signature_is_never_named():
+def test_a_metered_pair_is_never_named():
     f = fridge(metered=True)
     assert A.decide({"#1": f}, ready_cands({"#1": f}), {}, [], PATTERNS, []) == []
 
@@ -170,7 +170,7 @@ def test_what_the_owner_removed_or_renamed_is_never_made_again():
              "Heater 1": {"kind": "heater", "descriptor": A.descriptor(heater())}}
     kept, tombs = A.reconcile(marks, ["Heater 1", "Kitchen fridge"])     # Fridge 1 was renamed away
     assert list(kept) == ["Heater 1"] and [t.name for t in tombs] == ["Fridge 1"]
-    again = {"#1": fridge(ref=("", 7), watts=70.0)}                       # the same fridge, a new signature
+    again = {"#1": fridge(ref=("", 7), watts=70.0)}                       # the same fridge, a new pair
     assert A.decide(again, ready_cands(again), kept, tombs, PATTERNS, []) == []
     other = {"#2": fridge(ref=("", 8), watts=250.0)}                      # another size is not buried
     assert [n for _, n, _ in A.decide(other, ready_cands(other), kept, tombs, PATTERNS, [])] == ["Fridge 1"]
@@ -189,12 +189,12 @@ def test_a_load_the_owner_already_named_claims_its_split_pieces():
     assert A.decide(h, ready_cands(h), {}, [], PATTERNS, [], [("Le Hottie", A.descriptor(heater(watts=1700.0)))]) == []
 
 
-def test_facts_of_reads_a_signature():
+def test_facts_of_reads_a_pair():
     from types import SimpleNamespace as NS
     g = C.Guess(C.HEATER, 0.85, appliance=C.WATER_TANK)
-    sig = NS(phases="a", watts=1800.0, duration_s=120.0, interval_s=None, count=12, first_seen=0.0, last_seen=86400.0 * 6,
+    pair = NS(phases="a", watts=1800.0, duration_s=120.0, interval_s=None, count=12, first_seen=0.0, last_seen=86400.0 * 6,
              evidence=0.8, hour_wh=[1] * 24, day_wh=[1] * 7, level_count=1.0, interval_mad=None, name=None, guess=lambda: g)
-    f = A.facts_of(("", 5), sig)
+    f = A.facts_of(("", 5), pair)
     assert f.span_days == 6.0 and f.guess_kind == C.HEATER and f.appliance == C.WATER_TANK and f.ref == ("", 5)
     assert A.recognise(f).kind == A.HEATER_KIND
 
@@ -267,6 +267,27 @@ def test_a_hand_named_load_goes_on_the_dashboard_with_its_power_and_a_rename_mov
     assert A.plan_dashboard(mine, {}, [], [], {})[0] is None
 
 
+def test_a_named_load_goes_under_the_meter_it_lives_in_and_ours_are_moved_there():
+    """The owner, 2026-11-01: Fridge 2, a pair of the Skrinja & Omara
+    plug's own library, sat at the top level of the Energy dashboard. A named
+    load goes in under its meter; one of ours already listed is moved under it;
+    the owner's own entries, and a parent set by hand on one of ours where we
+    know none, are never touched."""
+    fridge = {"stat_consumption": "sensor.fridge_2_energy", "name": "Fridge 2"}
+    mine = {"stat_consumption": "sensor.plug_energy", "name": "Plug"}
+    hand = {"stat_consumption": "sensor.heater_energy", "name": "Heater", "included_in_stat": "sensor.hisa_energy"}
+    wanted = {"sensor.fridge_2_energy": "Fridge 2", "sensor.heater_energy": "Heater", "sensor.kettle_energy": "Kettle"}
+    parents = {"sensor.fridge_2_energy": "sensor.skrinja_energy", "sensor.kettle_energy": "sensor.mansarda_energy"}
+    new, added, _ = A.plan_dashboard([fridge, mine, hand], wanted,
+                                     ["sensor.fridge_2_energy", "sensor.heater_energy"], [], {}, parents)
+    by = {d["stat_consumption"]: d for d in new}
+    assert by["sensor.fridge_2_energy"]["included_in_stat"] == "sensor.skrinja_energy"     # ours, moved
+    assert "included_in_stat" not in by["sensor.plug_energy"]                               # the owner's
+    assert by["sensor.heater_energy"]["included_in_stat"] == "sensor.hisa_energy"           # set by hand, kept
+    assert by["sensor.kettle_energy"]["included_in_stat"] == "sensor.mansarda_energy"       # new, under its meter
+    assert A.plan_dashboard(new, wanted, added, [], {}, parents)[0] is None                 # nothing more to do
+
+
 def test_a_meters_base_load_sits_under_its_meter_and_goes_with_the_option():
     meter = [{"stat_consumption": "sensor.hisa_energy", "stat_rate": "sensor.hisa_power", "name": "Hiša"}]
     wanted = {"sensor.hisa_base_load_energy": "Hiša base load"}
@@ -289,7 +310,8 @@ def test_both_switches_are_options_on_by_default_and_translated():
     assert "get(CONF_AUTONAME, True)" in named and "get(CONF_AUTONAME_DASHBOARD, True)" in named
     # the dashboard switch covers every named load and does not depend on auto-naming (2026-10-25)
     assert "self.enabled and" not in named.split("def dashboard")[1].split("# ----")[0]
-    assert "for name in sorted(r.fleet.names())" in named and "sorted(self.marks)" not in named
+    assert "refs_by_name = r.fleet.names()" in named and "for name in sorted(refs_by_name)" in named
+    assert "sorted(self.marks)" not in named
     for lang in ("en", "sl"):
         t = json.loads((BASE / "translations" / f"{lang}.json").read_text(encoding="utf-8"))
         step = t["options"]["step"]["detection"]
@@ -303,11 +325,13 @@ def test_both_switches_are_options_on_by_default_and_translated():
     assert sl["exceptions"]["autoname_heater"]["message"] == "Grelnik {n}"
 
 
-def test_the_remainder_meters_base_load_is_the_grids_less_the_meters_beside_it():
-    """Home's Delavnica, grid + PV - Hiša - Mansarda - the EVBox, is not read
-    (the owner, 2026-10-30: its timing spikes are no measurement); its base
-    load is the grid's less those three's, and the meters inside it (Klima)
-    are not taken off. Two ignored top-level meters: no remainder at all."""
+def test_a_base_load_is_its_meters_less_the_meters_inside_it():
+    """The owner, 2026-10-31: "the submeters should always be subtracted" - a
+    meter's base load counted the always-on draw of the meters inside it a
+    second time (Delavnica's held the Server UPS's ~95 W, Mansarda's the
+    EcoFlow). Home's Delavnica, grid + PV - Hiša - Mansarda - the EVBox, is not
+    read; its base load is the grid's less those three's and less the meters
+    inside it (Klima). Two ignored top-level meters: no remainder at all."""
     import ast
     import types
     from typing import List, Optional, Tuple
@@ -315,21 +339,43 @@ def test_the_remainder_meters_base_load_is_the_grids_less_the_meters_beside_it()
     cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "DetectionRunner")
     ns = {"List": List, "Optional": Optional, "Tuple": Tuple}
     for fn in cls.body:
-        if isinstance(fn, ast.FunctionDef) and fn.name in ("remainder_meter", "remainder_base_load"):
+        if isinstance(fn, ast.FunctionDef) and fn.name in ("remainder_meter", "remainder_base_load", "_inside", "base_load",
+                                                           "_now_w", "_inner_now", "base_load_cap", "_read_parent"):
             exec(compile(ast.Module([fn], []), "detection.py", "exec"), ns)
     bases = {"": (900.0, 9000.0), "Hiša": (300.0, 3000.0), "Mansarda": (150.0, 1500.0),
-             "Polnilnica": (5.0, 50.0), "Klima": (20.0, 200.0)}
-    fleet = types.SimpleNamespace(base_load=lambda name, phase=None: bases[name])
+             "Polnilnica": (5.0, 50.0), "Klima": (20.0, 200.0), "Skrinja": (165.0, 1650.0)}
+    fleet = types.SimpleNamespace(base_load=lambda name, phase=None: bases[name], subs={}, phase_map=lambda n: {})
     subs = {"Hiša": {"energy": "h"}, "Mansarda": {"energy": "m"}, "Polnilnica": {"energy": "p"},
-            "Klima": {"energy": "k", "parent": "Delavnica"}}
+            "Klima": {"energy": "k", "parent": "Delavnica"}, "Skrinja": {"energy": "s", "parent": "Hiša"}}
     every = {**subs, "Delavnica": {"energy": "d", "ignored": True}}
     r = types.SimpleNamespace(all_submeters=every, submeters=subs, fleet=fleet)
-    r.remainder_meter = types.MethodType(ns["remainder_meter"], r)
+    for name in ("remainder_meter", "_inside", "_read_parent", "base_load"):
+        setattr(r, name, types.MethodType(ns[name], r))
     assert r.remainder_meter() == ("Delavnica", "d", ["Hiša", "Mansarda", "Polnilnica"])
-    assert ns["remainder_base_load"](r) == (445.0, 4450.0)
+    assert ns["remainder_base_load"](r) == (425.0, 4250.0)            # 900 - 300 - 150 - 5 - Klima's 20
+    # Klima is inside Delavnica, which is not read: it is inside the grid's base load as well, so the grid's
+    # is Delavnica's (the owner: "shouldn't Delavnica's inner meters also get subtracted?")
+    assert ns["base_load"](r, "") == (425.0, 4250.0)
+    assert ns["base_load"](r, "Hiša") == (135.0, 1350.0)              # Hiša less the freezers inside it
+    assert ns["base_load"](r, "Mansarda") == (150.0, 1500.0)          # nothing metered inside it
+    bases["Skrinja"] = (400.0, 4000.0)
+    assert ns["base_load"](r, "Hiša")[0] == 0.0                       # never below 0
+    # ...and never above what the meter draws now less what the meters inside it draw now (the owner,
+    # 2026-10-31): Hiša reading 400 W with its freezers at 330 W leaves 70 W at most
+    det = lambda **lv: types.SimpleNamespace(phases={p: types.SimpleNamespace(level=w) for p, w in lv.items()})
+    fleet.main = det(a=600.0, b=500.0, c=400.0)
+    fleet.subs = {"Hiša": det(a=150.0, c=250.0), "Mansarda": det(a=200.0), "Polnilnica": det(a=0.0),
+                  "Klima": det(a=30.0), "Skrinja": det(a=330.0)}
+    for name in ("_now_w", "_inner_now"):
+        setattr(r, name, types.MethodType(ns[name], r))
+    assert ns["base_load_cap"](r, "Hiša") == 70.0
+    assert ns["base_load_cap"](r, "Mansarda") == 200.0
+    assert ns["base_load_cap"](r, "", None, True) == 1500.0 - 400.0 - 200.0 - 0.0 - 30.0   # the remainder's
+    assert ns["base_load_cap"](r, "") == ns["base_load_cap"](r, "", None, True)             # = the grid's
+    fleet.subs["Skrinja"] = det(a=500.0)
+    assert ns["base_load_cap"](r, "Hiša") == 0.0                       # never below 0
     every["Garage"] = {"energy": "g", "ignored": True}
     assert r.remainder_meter() is None and ns["remainder_base_load"](r) == (None, 0.0)
-
 
 def test_the_runner_asks_the_namer_only_after_history_is_read():
     named = (BASE / "autonaming.py").read_text(encoding="utf-8")

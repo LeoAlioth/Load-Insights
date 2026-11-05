@@ -8,9 +8,9 @@ and go in between; the pairing is by size, most recent first. Sessions that
 start and end together on several phases are one multi-phase session - a
 two-phase kiln is 3 kW on A and 3 kW on C, and nothing else has that shape.
 
-Closed sessions are matched to SIGNATURES: phase set, dominant power per
+Closed sessions are matched to PAIRS: phase set, dominant power per
 phase (within ~10 % or the noise), duration within a factor, power factor
-when known. No match makes a new signature. Signatures carry counts, typical
+when known. No match makes a new pair. Pairs carry counts, typical
 duration and repeat interval, and an hour-of-day histogram - the material
 the naming page describes them with and the forecast will later schedule.
 
@@ -192,7 +192,7 @@ SUSTAIN_SECONDS = 5.0          # ...and this long, until the reading's own inter
 # Measured on the bench against the old rule (2026-09-23, one-call replay):
 #   Home     purity 76.6 -> 78.7 %, held out 75.0 -> 78.6 %; hidrofor held out
 #            208 -> 213, and the pump's runs filed cleanly 236 -> 247
-#   the kiln full-size 399 -> 397, single-leg 158 -> 141, main signature x321 -> x335
+#   the kiln full-size 399 -> 397, single-leg 158 -> 141, main pair x321 -> x335
 #   Kozolec  boiler 499 / 337 -> 500 / 339; its Scala2 (which ramps) 140 / 75 -> 121 / 67
 # ^ SUSTAIN_AGREE: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # ...but a load that WANDERS never agrees with itself for long, and would hold
@@ -213,7 +213,7 @@ SUSTAIN_AGREE_REL = 0.15
 # level, 1 at the first reading more than half-way to the new one. The first
 # is fooled by a load that sags before it stops - Home's hidrofor then ends a
 # reading early - the second treats a start and a stop alike. On top of
-# SUSTAIN_AGREE (2026-09-23): the kiln single-leg 141 -> 118, main signature
+# SUSTAIN_AGREE (2026-09-23): the kiln single-leg 141 -> 118, main pair
 # x335 -> x384; Home held out hidrofor 213 -> 220, workshop boiler 29 -> 38;
 # Kozolec's boiler unchanged and its Scala2 held out 67 -> 53. The kiln's
 # session LENGTHS were already right - 42.0 s against 42.0 s timed off the
@@ -260,7 +260,7 @@ CORROBORATE_MIN_NOISES = 20.0
 # AGENTS.md). Only a partner that has actually CLOSED counts here - see
 # Detector._corroborate. Swept on the 6-hour-sliced bench (2026-09-23):
 #   Home     purity 77.6 -> 78.6 %, held out 79.7 -> 80.6 %; hidrofor 493 -> 500
-#   the kiln main signature x385 -> x397, single-leg 116 -> 112, ladder 18 -> 23
+#   the kiln main pair x385 -> x397, single-leg 116 -> 112, ladder 18 -> 23
 #   Kozolec  identical, as a single-phase site must be
 # ^ CORROBORATED_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A meter's interval - its cadence - is how often it writes WHILE ITS VALUE MOVES: the gaps
@@ -634,15 +634,15 @@ LAG_PERCENTILE = 0.95
 # "off" the moment (the edge card's median +5.8 s) is chance in 87 %: spread
 # evenly over the 120 s either side looked in, the children ~62 W (2026-10-14).
 # A run is filed by its DEVICE - the component of edge clusters its start
-# belongs to - into the signature most of the device's runs went to, or a new
-# one for a device not seen before; signatures whose runs are one device's are
-# one signature. No run is filed, and no two signatures merged, because their
+# belongs to - into the pair most of the device's runs went to, or a new
+# one for a device not seen before; pairs whose runs are one device's are
+# one pair. No run is filed, and no two pairs merged, because their
 # power looks alike: that was a second grouping beside the devices, and the
 # one that undid what the edges knew (2026-09-30: "is this old layer even
 # necessary still? ... this will clean up a lot of redundant code"). A
 # sub-meter's word, the switch gate and a rare input value still decide first.
 # Against filing by likeness: Home 82.6 / 64.6 -> 82.4 / 68.7 % with 98
-# signatures for 199, the floor mat's hours outside its thermostat's heating
+# pairs for 199, the floor mat's hours outside its thermostat's heating
 # 10.3 -> 2.7 (precision 95 %, caught 58 %), Kozolec 98.5 / 93.1 (2026-09-30).
 # ^ DEVICE_FILING: the name this note goes by elsewhere
 # C - pairing by them: a fall first closes an open run its cluster's accepted
@@ -686,7 +686,7 @@ SETTLED_SHARE = 0.35
 # no dial): it waits for the meter's own session (Fleet._ready_at) and pairs with it on
 # time alone (_session_pairs), and a piece of it the grid opened again inside the
 # meter's run is its too (Fleet._owned, _decide). Benched 2026-10-23 as a two-level
-# dial, both levels kept: the dishwasher's runs 8 signatures -> 6, its best 3 -> 6 runs;
+# dial, both levels kept: the dishwasher's runs 8 pairs -> 6, its best 3 -> 6 runs;
 # Home fed 65.6 / 10.8 against 66.1 / 10.7, the plugs held (the owner: stays).
 GAIN_RING = 200               # budget: log ratios the gain's median is read from
 # (2) shipped 2026-10-22, no dial: a run's slow changes are part of its steps (edges.py
@@ -717,7 +717,7 @@ HELD_DROPS = 8
 # start. Clusters were joined into devices through links (a pair's rise and
 # fall, legs, one fall closing several rises) until 2026-09-30, when the
 # union-find chained Home's pump into the compressor and then into everything
-# that ever stopped beside either - and a run goes to the signature most runs
+# that ever stopped beside either - and a run goes to the pair most runs
 # of its device went to.
 # Run length and how often a load runs are what a load DOES, not what it is:
 # they raise or lower the confidence in a device and its guess, and play no part
@@ -775,13 +775,13 @@ PHASE_BALANCE_MIN = 0.4
 # A run measured over this many samples is as well measured as it needs to be
 WELL_SAMPLED = 12.0
 # How many sightings a running mean is allowed to average over. Without a
-# cap the update (mean*n + new) / (n+1) makes a signature OSSIFY: at ten
+# cap the update (mean*n + new) / (n+1) makes a pair OSSIFY: at ten
 # sightings a new one moves the mean by 9%, at three hundred by 0.3%, so a
 # load that genuinely changes - a kiln on a different programme, an element
 # replaced - can never drag its own fingerprint across. Long before it does,
 # the new sessions stop matching and found a sibling instead, which is the
 # succession problem arriving by a different road. Capped, a mature
-# signature keeps following change at a fixed rate: about 1% per sighting,
+# pair keeps following change at a fixed rate: about 1% per sighting,
 # so a real shift is tracked over a few dozen runs rather than never.
 # count itself keeps counting - this bounds the WEIGHT, not the history
 # (2026-09-18, who picked 100 over the 50 I proposed).
@@ -807,33 +807,50 @@ INRUSH_SAMPLES = 2.0
 SHAPE_SETTLED_S = 80.0           # how soon after its start a load has settled - see SETTLE_SHARE
 
 MATCH_POWER_REL = 0.10
-# How much of two signatures' OWN measured wander may widen the band that
+# How much of two pairs' OWN measured wander may widen the band that
 # admits them to a merge. 0 was the historical behaviour - power_mad computed
 # and never read here - and above 0.20 the anti-walk guarantee breaks (the
 # 400 W -> 25 W ladder returns). Against the old sustain it looked useless at
 # Kozolec; on top of SUSTAIN_INTERVALS it wins at both sites on days it was
 # never tuned on: Home's NASA station 22 -> 35 in its dominant cluster, both
-# hidrofors up, purity unchanged. A wandering load's signatures carry a big
+# hidrofors up, purity unchanged. A wandering load's pairs carry a big
 # spread, and admitting some of it lets its fragments meet (2026-09-23).
 ALIKE_MAD_SHARE = 0.10
 MATCH_DURATION_FACTOR = 3.0
-# The daily rewrite's length split (Signature.learn_split): runs on each side of
-# the largest gap in a signature's run memory, at least. A count (RUN_MEMORY is 12).
+# The daily rewrite's length split (Pair.learn_split): runs on each side of
+# the largest gap in a pair's run memory, at least. A count (RUN_MEMORY is 12).
 SPLIT_MIN_RUNS = 4
-# Families of one phase set whose start clusters sit within this many of the clusters' own spread (watts_mad)
-# of each other, and whose signatures are alike, are one family: a load whose start size drifts - the kiln's
-# 5.76 -> 6.05 kW over a firing - is cut into neighbouring clusters, each with signatures of its own
+# Signatures of one phase set whose start clusters sit within this many of the clusters' own spread (watts_mad)
+# of each other, and whose pairs are alike, are one signature: a load whose start size drifts - the kiln's
+# 5.76 -> 6.05 kW over a firing - is cut into neighbouring clusters, each with pairs of its own
 # (_join_neighbours). A count of measured spreads, not watts.
-FAMILY_REACH_MADS = 3.0
+SIGNATURE_REACH_MADS = 3.0
 # ...and only for a start at least this many noises (of its phases together) tall: below that the clusters'
 # spread is the noise's, the spread reaches every look-alike, and the join would make blobs out of loads
-# nobody could tell apart (Home, 2026-10-26: 14 families of 17-22 W steps made one). Also a count.
-FAMILY_REACH_NOISES = 50.0
-# The daily repair's hints that a family is two loads (_hint_split; spec
-# docs/specs/2026-10-26-signature-families.md section 11): its runs' lengths
+# nobody could tell apart (Home, 2026-10-26: 14 signatures of 17-22 W steps made one). Also a count.
+SIGNATURE_REACH_NOISES = 50.0
+# Pairs that closed on the same stop (fall) group, on the same phases, are one pair when their power factors,
+# lengths and sizes are alike - loosely, since a load's rises differ (the hidrofor's three) and only the fall is
+# steady - and their runs never overlapped (_join_shared_stops; the owner, 2026-11-02). A pair counts for a stop
+# group when at least JOIN_STOP_MIN_RUNS of its runs closed there and they are JOIN_STOP_MIN_SHARE of all its
+# runs. JOIN_STOP_MIN_RUNS very high turns the rule off. The power-factor gap is this many times the usual
+# tolerance, lengths may differ by JOIN_LEN_FACTOR, per-phase watts by JOIN_POWER_FACTOR; more than
+# JOIN_OVERLAP_MAX run overlaps (of the RUN_MEMORY windows each) keeps two pairs apart: one device is never two at once.
+JOIN_STOP_MIN_RUNS = 3
+JOIN_STOP_MIN_SHARE = 0.2
+# ...and the pair at least this many noises (of its phases together) tall: a stop of a few tens of watts is shared by
+# every look-alike and its power factor and length say nothing (Home, 2026-11-03: a 35 W, 0.23-factor load of
+# Blaževa Soba joined with the office plug's 23 W ones). Also a count of noises, not watts.
+JOIN_STOP_NOISES = 15.0
+JOIN_PF_LOOSE = 2.0
+JOIN_LEN_FACTOR = 4.0
+JOIN_POWER_FACTOR = 1.25
+JOIN_OVERLAP_MAX = 1
+# The daily repair's hints that a signature is two loads (_hint_split; spec
+# docs/specs/2026-10-26-pair-signatures.md section 11): its runs' lengths
 # fall in two modes at least MATCH_DURATION_FACTOR apart AND the rarer mode
 # sits in a few hours of the day the other does not. Counts and shares, no
-# watts or seconds. A family remembers its last HINT_KEEP runs' (length,
+# watts or seconds. A signature remembers its last HINT_KEEP runs' (length,
 # start hour) and is read once it has HINT_MIN_RUNS of them.
 HINT_KEEP = 400
 HINT_MIN_RUNS = 30
@@ -930,23 +947,23 @@ PHASE_SET_MIN = 0.1
 # the sub-meter - they are quieter but SLOWER, and the kiln on its circuit's
 # 3EM gave 236 full-size sessions against 409 on the house - but session by
 # session: the house meter's session keeps its TIMING, and a sub-meter
-# session that is the same load decides WHICH signature it joins (the one
-# that sub-meter signature's sessions went to before, when it fits there).
+# session that is the same load decides WHICH pair it joins (the one
+# that sub-meter pair's sessions went to before, when it fits there).
 # House sessions wait to be filed until every sub-meter fast enough to have
 # seen them has reported past their end. 0 files at once, as before.
 # Measured with production's meters fed in (bench SUBS=prod, 2026-09-23),
 # against the same with this off: Kozolec's Scala2 pump 128 -> 195 sessions in
-# its main signature (held out 53 -> 61) at unchanged purity; Home purity
-# 78.6 / 80.6 -> 79.1 / 80.7 %; the kiln's main signature x397 -> x392, the
+# its main pair (held out 53 -> 61) at unchanged purity; Home purity
+# 78.6 / 80.6 -> 79.1 / 80.7 %; the kiln's main pair x397 -> x392, the
 # small price of filing later. Almost all of it comes from SUB_METER_IDENTITY:
 # a session partner is rarely there in time, and when it is, the house's own
 # choice agrees with it all but 65 times in 1338.
 # ^ SUB_OVERRIDE: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A house session whose ENERGY a device meter accounts for - the meter too slow
 # or too coarse to have a session of its own for it - joins the house
-# signature most of that meter's sessions went to, when it fits there. Only
+# pair most of that meter's sessions went to, when it fits there. Only
 # for a meter that holds one device: one whose own library puts at least
-# SUB_DEVICE_SHARE of its sightings in a single signature (Home's hidrofor
+# SUB_DEVICE_SHARE of its sightings in a single pair (Home's hidrofor
 # plug 99 %, its Hiša circuit 55 %). 0 is off.
 # ^ SUB_METER_IDENTITY: always on, as the 2026-09-30 ablation found (AGENTS.md)
 SUB_DEVICE_SHARE = 0.5
@@ -967,10 +984,10 @@ METER_PHASES_MIN = 20
 SWITCH_PREFIX = "switch:"
 # A load placed at a switch is powered through it - Home's floor mat through
 # its thermostat's relay - so a run the switch was off for throughout cannot
-# be it, however well its size fits: that run goes to the next signature that
+# be it, however well its size fits: that run goes to the next pair that
 # fits, or starts its own. Other 600 W runs on phase C were filed into the mat
 # and counted: 32 of its 91 hours over 18-27 Sep fell outside the thermostat's
-# heating (2026-09-29). A signature counts as switched once at least this
+# heating (2026-09-29). A pair counts as switched once at least this
 # share of its runs started and stopped with the switch - whichever meter wins
 # its placement: the mat's credits split 1274 thermostat to 1253 Hiša. The mat
 # is credited 45 % of its runs, look-alikes 2-12 %; at 0.3 it went from 91.1 to
@@ -998,10 +1015,10 @@ INPUT_MIN_LIFT = 3.0
 # How long a value's share of the time is remembered over.
 INPUT_TIME_TAU_S = 14 * 86400.0
 # A setting's RARER values - a washer in its wash phase, not "Unavailable"
-# most of the day - keep their own signatures: a run while one is in force
-# joins only signatures born in it (or twins that took them back, below), and
+# most of the day - keep their own pairs: a run while one is in force
+# joins only pairs born in it (or twins that took them back, below), and
 # a run outside joins none of them. The washer's heater, 1.8 kW on A, shared
-# its signature with every other 1.8 kW thing on A, so it could never be
+# its pair with every other 1.8 kW thing on A, so it could never be
 # seen to run in the wash phase (2026-09-29). 0 is off.
 # ^ INPUT_SPLIT: always on, as the 2026-09-30 ablation found (AGENTS.md)
 # A value this rare or rarer - its share of the time - is one runs are
@@ -1011,21 +1028,21 @@ INPUT_RARE_SHARE = 0.25
 # unavailable and unknown): no value is in force, so a run made then has no
 # context. Dropping those rows carried the last value on - the Sock Eater's
 # Rinse through the 19 hours of 27-28 Oct it was unavailable, making every
-# pulse of Home's Inkubator a run "in Rinse" and 262 of them a signature of
+# pulse of Home's Inkubator a run "in Rinse" and 262 of them a pair of
 # their own (2026-10-28).
 INPUT_DOWN = "unavailable"
-# A signature born in a setting's value with this many runs or fewer, never judged, is a fragment: see
+# A pair born in a setting's value with this many runs or fewer, never judged, is a fragment: see
 # Detector.retake_fragments.
 FRAGMENT_MAX_RUNS = 2
 # An input's CONTINUOUS state at a step - not only a change near it - is part of
 # the step's group, judged one input at a time against the state's share of the
 # time (Detector._by_state): while the washer is Running, a 2 kW step is not the
 # dishwasher's. Every state, not only the rare ones (the owner, 2026-10-23: the
-# Sock Eater's signatures splitting by its cycle phase is expected and welcome).
+# Sock Eater's pairs splitting by its cycle phase is expected and welcome).
 # The key's name is the input's with this suffix.
 STATE_SUFFIX = "@"
 INPUT_SPLIT_MIN_TIME_S = 86400.0
-# A born-in signature that is chance - a fridge running through a wash -
+# A born-in pair that is chance - a fridge running through a wash -
 # goes back into its twin once it has INPUT_MIN_RUNS runs, unless the two
 # together would run in the value this many times chance.
 INPUT_SPLIT_LIFT = 3.0
@@ -1036,7 +1053,7 @@ INPUT_SPLIT_LIFT = 3.0
 # read as 7 times chance; its episodes read 1 in 12 (2026-09-29).
 INPUT_MIN_EPISODES = 3
 INPUT_MIN_COVERAGE = 0.5
-# Each signature's energy by the clock hour it was used in, for as long as
+# Each pair's energy by the clock hour it was used in, for as long as
 # the backfill reaches: when a load is named, its meter's history is written
 # into Home Assistant's statistics from this, so the Energy dashboard shows
 # the ten days it was already seen rather than starting at the naming
@@ -1045,7 +1062,7 @@ HOURLY_KEEP_S = 11 * 86400.0
 # ...and past that, for a year, the hours of an unnamed load confident enough
 # to be named one day - seen this often, using this much in all, with the
 # naming page's evidence bar (DEFAULT_MIN_EVIDENCE) - so naming it brings its
-# year onto its meter, not ten days (2026-10-04). Signature.older,
+# year onto its meter, not ten days (2026-10-04). Pair.older,
 # stored apart from the library; a named load's history is its meter's.
 OLDER_MIN_COUNT = 10
 OLDER_MIN_WH = 500.0
@@ -1075,10 +1092,10 @@ REPAIR_FLOOR_SHARE = 0.1
 # ...and booked again the other way: a regular cycler (a fridge, a freezer) whose runs the day's log shows a
 # hole in - more than RECOVER_GAP_FACTOR of its own periods between two starts - is looked for in the day's
 # readings (_recover_day): its own step pair, size and length, in what no run was booked on. Found cycles are
-# booked on its hours (Signature.recovered) and kept out of what it learns. 0 is off. The owner, 2026-10-26:
+# booked on its hours (Pair.recovered) and kept out of what it learns. 0 is off. The owner, 2026-10-26:
 # regular intervals only; the readings decide, nothing is booked on expectation alone.
 RECOVER_ON = 1
-RECOVER_MIN_RUNS = 20          # a signature's runs before it is looked for
+RECOVER_MIN_RUNS = 20          # a pair's runs before it is looked for
 RECOVER_MIN_GAPS = 6           # start-to-start gaps its runs of the day need to say what its period is
 RECOVER_REGULAR = 0.35         # its period: the median gap; regular when the median miss from it is within this share
 RECOVER_GAP_FACTOR = 2.0       # a gap between starts this many periods long has a missed cycle in it
@@ -1102,7 +1119,7 @@ def pf_tolerance(a_mad: float, b_mad: float) -> float:
     when they overlap - so a well-resolved pair still gets the tight 0.15 and
     a badly-resolved one simply stops constraining anything."""
     return MATCH_PF_TOL + a_mad + b_mad
-MAX_SIGNATURES = 200
+MAX_PAIRS = 200
 # Eviction tiers. ESTABLISHED: evidence at least this (three tight sightings,
 # or five of any kind) and seen inside the horizon - never evicted. YOUNG:
 # fewer than this many sightings and inside the grace period - protected so
@@ -1111,18 +1128,18 @@ MAX_SIGNATURES = 200
 # The horizon is deliberately longer than a year. It was 30 days, which
 # quietly said "a load that has not run this month is not a load" - and a
 # kiln fired twice a year, or a pump that only runs in a wet spring, has a
-# strong signature and deserves to be measured and tracked exactly as well
+# strong pair and deserves to be measured and tracked exactly as well
 # as the kettle. Evidence is the gate; age is only the backstop for an
 # appliance that has genuinely left the house (2026-09-18). One-offs
 # are excluded by evidence, not by age: they never reach 0.5.
 ESTABLISHED_EVIDENCE = 0.5
 ESTABLISHED_HORIZON_S = 400 * 86400.0
 YOUNG_COUNT = 3
-# A NAMED signature is never evicted, so when its load CHANGES - a kiln put on
+# A NAMED pair is never evicted, so when its load CHANGES - a kiln put on
 # a different programme, an element replaced - the name stays attached to a
 # fingerprint nothing matches any more while the successor sits unnamed. The
 # name should follow the load. Detecting that is guesswork, so it is never
-# done silently: a named signature gone quiet this long, with an unnamed one
+# done silently: a named pair gone quiet this long, with an unnamed one
 # on the same phases of a similar shape, records a HINT for the naming page
 # to offer. Nothing is renamed without the user (2026-09-18).
 SUCCESSOR_QUIET_S = 7 * 86400.0
@@ -1198,21 +1215,21 @@ LIVE_STALE_FACTOR = 3.0
 # yet one mis-paired fragment run of 1,653 s kept a start that never closed
 # counted for 55 minutes (2026-10-28). The LIVE_STALE_QUANTILE-th of the
 # lengths its runs remember is what a run of the name is, and a name that
-# remembers none falls back to its signatures' own lengths.
+# remembers none falls back to its pairs' own lengths.
 LIVE_STALE_QUANTILE = 0.95
-# And a name never reads more than what one of its signatures draws, with room
+# And a name never reads more than what one of its pairs draws, with room
 # for the parts of one appliance that run together (a washer's heater and drum
 # motor): a pulse load read 574 W off four stacked open starts and one lumped
-# stretch of energy, against a signature group that tops out at 75 W
+# stretch of energy, against a pair group that tops out at 75 W
 # (2026-10-28, the owner: "a detected load should never be significantly above
-# its signature group"). The ceiling of a signature is the higher of its mean
+# its pair group"). The ceiling of a pair is the higher of its mean
 # and the top of its level range.
 LIVE_CAP_FACTOR = 1.25
-# How many of its OWN run windows each signature remembers, so "these two are
+# How many of its OWN run windows each pair remembers, so "these two are
 # never on at once" can be asked about a load that runs every few days. It
 # was asked of the rolling session list, which a busy house burns through in
 # about two hours - 40 sessions spanning 2.1 h and holding 11 of Home's 199
-# signatures - so the kiln, last fired 8.6 days ago, could never be compared
+# pairs - so the kiln, last fired 8.6 days ago, could never be compared
 # with anything (2026-09-22).
 RUN_MEMORY = 12
 # The widest a device's settings may span before they are two devices. See
@@ -1313,21 +1330,21 @@ class Run:
     # A starting surge too short to become a LEVEL of its own. PhaseState
     # catches it while the readings are still separate - see _declare_surge.
     surge_w: float = 0.0
-    # Which signature took this session. It used to be looked up in ``recent``,
+    # Which pair took this session. It used to be looked up in ``recent``,
     # a DISPLAY list capped at 200 - so a backfill slice that filed more than
     # that lost the answer for all but the last few, and with it every
     # location. Backfill is exactly when a load's place should be established
-    # (2026-09-18: 173 signatures at Kozolec, every one of them "main",
+    # (2026-09-18: 173 pairs at Kozolec, every one of them "main",
     # on a site where the boiler and the car charger have their own meters).
-    signature_id: Optional[int] = None
+    pair_id: Optional[int] = None
     # (start cluster, stop cluster) of the edges that opened and closed it
     pair: Optional[Tuple[Optional[int], Optional[int]]] = None
     # ...and a run merged across phases, every leg's
     legs: List[tuple] = field(default_factory=list)
     # (meter, its own session) where a meter holding several devices saw this
-    # run of its parent's: the run is that session's signature's, and the
+    # run of its parent's: the run is that session's pair's, and the
     # parent files none of its own - see Fleet._file_as
-    parent_signature: Optional[tuple] = None
+    parent_pair: Optional[tuple] = None
     # phase -> Wh it drew, where its meter followed it (PhaseState._close,
     # Fleet._meter_wh); a phase without is booked at its levels
     wh: Dict[str, float] = field(default_factory=dict)
@@ -1415,8 +1432,8 @@ class Run:
                 "samples": self.samples, "low": self.low, "high": self.high,
                 "levels": {ph: [list(x) for x in lv] for ph, lv in self.levels.items()},
                 "pair": list(self.pair) if self.pair else None, "legs": [list(x) for x in self.legs],
-                "wh": dict(self.wh), "quality": self.quality, "signature_id": self.signature_id, "placed": self.placed,
-                "owner": [self.parent_signature[0], self.parent_signature[1].to_dict()] if self.parent_signature and isinstance(self.parent_signature[1], Run) else None}
+                "wh": dict(self.wh), "quality": self.quality, "signature_id": self.pair_id, "placed": self.placed,
+                "owner": [self.parent_pair[0], self.parent_pair[1].to_dict()] if self.parent_pair and isinstance(self.parent_pair[1], Run) else None}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Run":
@@ -1428,8 +1445,8 @@ class Run:
                    levels={ph: [tuple(x) for x in lv] for ph, lv in d["levels"].items()},
                    pair=tuple(d["pair"]) if d.get("pair") else None,
                    legs=[tuple(x) for x in d.get("legs") or []], wh=dict(d.get("wh") or {}), placed=d.get("placed") or "",
-                   quality=d.get("quality", 1.0), signature_id=d.get("signature_id"),
-                   parent_signature=(d["owner"][0], cls.from_dict(d["owner"][1])) if d.get("owner") else None)
+                   quality=d.get("quality", 1.0), pair_id=d.get("signature_id"),
+                   parent_pair=(d["owner"][0], cls.from_dict(d["owner"][1])) if d.get("owner") else None)
 
 
 # ------------------------------------------------------------------ per-phase tracker
@@ -1462,13 +1479,13 @@ def _trim(value, places: int):
 
     A watt-hour figure written as 276.1825572400394 spends fifteen digits on
     a quantity the energy meter publishes to two decimal places of a
-    kilowatt-hour. Over a library of two hundred signatures that is a third
+    kilowatt-hour. Over a library of two hundred pairs that is a third
     of the stored state, rewritten every pass (2026-09-18).
 
     Energy is trimmed to whole watt-hours rather than integers on the way
     in: what is stored is what a restart restores, and an energy total that
     steps DOWN reads as a meter reset to Home Assistant's statistics. At one
-    decimal a restart costs the biggest signature here 0.14 Wh out of
+    decimal a restart costs the biggest pair here 0.14 Wh out of
     38.7 kWh, which is three ten-thousandths of a per cent.
     """
     return round(value, places) if isinstance(value, float) and TRIM else value
@@ -1733,7 +1750,7 @@ def without_window_start(series: Dict[str, list], start_ts: float) -> Dict[str, 
     answers with the state as of the start, stamped the start: a copy of the
     last reading, not a reading. At one-minute ticks that put a repeat on
     every phase every minute, and replaying ten days that way cost Home 2
-    points of purity (78.5 -> 76.8 %) and 26 extra signatures; without the
+    points of purity (78.5 -> 76.8 %) and 26 extra pairs; without the
     copies it scored as one call did (2026-09-23). A real reading landing on
     the same microsecond is not a case worth keeping."""
     return {k: [r for r in rows if r[0] != start_ts] for k, rows in series.items()}
@@ -1804,7 +1821,7 @@ def energy_between(rows: Sequence[Tuple[float, float]], start: float, end: float
 
 
 def ref_label(ref: Tuple[str, int]):
-    """A signature's (meter, id) as the sensors show it: the grid's its id,
+    """A pair's (meter, id) as the sensors show it: the grid's its id,
     as it always was, a meter's "Mansarda#11"."""
     return f"{ref[0]}#{ref[1]}" if ref[0] else ref[1]
 
@@ -1838,15 +1855,15 @@ def running_markdown(rows: List[dict], link: str, offered=frozenset(), cap: int 
     return "\n".join(lines[:cap] + ([f"- … {len(lines) - cap} more"] if len(lines) > cap else []))
 
 
-def _described(orphan: dict) -> "Signature":
-    """A carried name's description as a signature to compare with (alike)."""
-    return Signature(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
+def _described(orphan: dict) -> "Pair":
+    """A carried name's description as a pair to compare with (alike)."""
+    return Pair(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
                      duration_s=orphan.get("duration_s") or 0.0, pf=orphan.get("pf"), count=1,
                      first_seen=0.0, last_seen=0.0)
 
 
 def names_in_store(raw: dict) -> List[dict]:
-    """Every named signature in a stored library, as a description.
+    """Every named pair in a stored library, as a description.
 
     Deliberately hand-rolled rather than going through ``Fleet.from_dict``:
     this runs precisely when the stored shape is one the current detector has
@@ -1859,16 +1876,16 @@ def names_in_store(raw: dict) -> List[dict]:
     """
     def named(det: dict, tag: dict) -> list:
         out: list = []
-        for sig in det.get("signatures") or []:
-            name = sig.get("name")
+        for pair in det.get("signatures") or []:
+            name = pair.get("name")
             if not name:
                 continue
-            power = sig.get("power")
+            power = pair.get("power")
             out.append({"name": name,
-                        "phases": sig.get("phases") or "",
+                        "phases": pair.get("phases") or "",
                         "power": dict(power) if isinstance(power, dict) else {},
-                        "duration_s": sig.get("duration_s") or 0.0,
-                        "pf": sig.get("pf"), **tag})
+                        "duration_s": pair.get("duration_s") or 0.0,
+                        "pf": pair.get("pf"), **tag})
         return out + [{**o, **tag} for o in det.get("orphan_names") or [] if isinstance(o, dict) and o.get("name")]
     try:
         fleet = raw.get("fleet") or {}
@@ -2104,7 +2121,7 @@ class PhaseState:
     goes quiet between loads, and a house main never does: the kettle starts
     while the fridge is running, so the excursion that opened at breakfast
     closed at midnight. The owner's home meter proved it (2026-09-17): 76
-    signatures from 160 sessions, 61 % of them seen once, the longest single
+    pairs from 160 sessions, 61 % of them seen once, the longest single
     "load" 155 hours and 778 kWh, and four with NEGATIVE power because the
     sun pushed the grid meter below its own floor.
 
@@ -2752,7 +2769,7 @@ class PhaseState:
         found a load, at the grid as at a plug - Home with its meters fed,
         ten days, energy impurity 24.7 % confirmed over the lag against 12.9
         over three repeat intervals (the hidrofor's runs split over two
-        signatures, Susilna's meter claiming runs not its own). What waits
+        pairs, Susilna's meter claiming runs not its own). What waits
         on another meter - the horizon, a house session's wait, the meters'
         tolerances - waits for the lag (Fleet._declare_lag). SUSTAIN_SECONDS
         until a repeat interval is measured."""
@@ -3338,7 +3355,7 @@ class PhaseState:
         # against that pair's length; the best at FALL_NOTHING_MIN or more
         # closes, the newest of a tie. Before, swept
         # 2026-09-23: newest-that-passes beat best-fit at both sites (Kozolec's
-        # boiler 89.2 -> 79.0 % in one signature with best-fit) - size alone,
+        # boiler 89.2 -> 79.0 % in one pair with best-fit) - size alone,
         # with no order or age behind it.
         #
         # First what a one-device meter below says: its device stopped here,
@@ -3722,7 +3739,7 @@ class PhaseState:
         # 23 VA at 230 V - so a 62 W load's whole apparent power is under
         # three quanta, sqrt(S^2 - P^2) clamps to zero on 7 % of samples and
         # reads PF 1.00, and 63 % of all samples came out at unity. Believing
-        # that split the library into 86 signatures where suppressing it
+        # that split the library into 86 pairs where suppressing it
         # gives 24 (2026-09-22).
         stop_q = self.stop_q if self.stop_q is not None else QUALITY_UNSEEN_STOP
         agree = abs(o.watts - watts) / max(o.watts, abs(watts), 1e-9)
@@ -3815,9 +3832,9 @@ class PhaseState:
         return st
 
 
-# ------------------------------------------------------------------ signatures
+# ------------------------------------------------------------------ pairs
 @dataclass
-class Signature:
+class Pair:
     id: int
     phases: str
     power: Dict[str, float]              # running mean watts per phase
@@ -3837,12 +3854,12 @@ class Signature:
     # back from a born-in twin that turned out to be chance
     born_in: Optional[str] = None
     takes_in: List[str] = field(default_factory=list)
-    # the family it belongs to - one load, as one meter sees it, seen through
-    # every setting's value: the signatures of one start cluster on one set of
-    # phases (Detector._join_families). Every signature has one; most have
-    # it to themselves. A family is named, not a signature (the owner, 2026-10-26).
-    family: int = 0
-    # signatures its first run was kept out of - a switch that was off, a
+    # the signature it belongs to - one load, as one meter sees it, seen through
+    # every setting's value: the pairs of one start cluster on one set of
+    # phases (Detector._join_signatures). Every pair has one; most have
+    # it to themselves. A signature is named, not a pair (the owner, 2026-10-26).
+    signature: int = 0
+    # pairs its first run was kept out of - a switch that was off, a
     # one-device meter that held through its start - which it is never
     # merged into for sharing their device (Detector._merge_devices)
     apart: List[int] = field(default_factory=list)
@@ -3867,7 +3884,7 @@ class Signature:
 
     @property
     def location(self) -> str:
-        """The meter that saw most of this signature's sessions, or "main"
+        """The meter that saw most of this pair's sessions, or "main"
         when none did. ``most_specific`` refines this with the hierarchy."""
         if not self.locations:
             return "main"
@@ -3881,7 +3898,7 @@ class Signature:
     day_wh: List[float] = field(default_factory=lambda: [0.0] * 7)
     level_count: float = 1.0
     name: Optional[str] = None
-    # an unnamed signature that may be what this named one BECAME
+    # an unnamed pair that may be what this named one BECAME
     successor_id: Optional[int] = None
     # Energy inherited from a fingerprint whose name moved here. Kept apart
     # from hour_wh on purpose: the METER wants the appliance's whole history
@@ -3908,7 +3925,7 @@ class Signature:
     runs: List[Tuple[float, float]] = field(default_factory=list)
     # The daily rewrite's length split (the owner, 2026-10-23: length decides in
     # the once-a-day rewrite, which sees the runs' lengths and spacing, never in
-    # the live filing): seconds, with the side this signature keeps (+1 the longer
+    # the live filing): seconds, with the side this pair keeps (+1 the longer
     # runs, -1 the shorter); a run on the other side is filed apart - see
     # takes_run and Fleet._split_by_length. None: no split found.
     split_s: Optional[float] = None
@@ -3916,17 +3933,17 @@ class Signature:
     # how far the start towers over the run, averaged - see INRUSH_RATIO. A
     # motor does this and nothing else in a house does, so it is evidence
     # rather than noise once it is kept out of the power (2026-09-22:
-    # "that spike is a very good device signature, but it has to be taken
+    # "that spike is a very good device pair, but it has to be taken
     # into account properly to not show as separate loads").
     inrush_w: float = 0.0
     duration_mad: float = 0.0
     interval_mad: Optional[float] = None
 
-    def alike(self, other: "Signature", noise_w: float, inputs: bool = True) -> bool:
-        """Would these two be the same signature if they arrived now?
+    def alike(self, other: "Pair", noise_w: float, inputs: bool = True) -> bool:
+        """Would these two be the same pair if they arrived now?
 
-        The same test as ``matches``, between two signatures rather than a
-        signature and a session."""
+        The same test as ``matches``, between two pairs rather than a
+        pair and a session."""
         if self.phases != other.phases or self is other:
             return False
         if self.name and other.name and self.name != other.name:
@@ -3942,10 +3959,10 @@ class Signature:
             if lift is None or lift >= INPUT_SPLIT_LIFT:
                 return False
         # NOT widened by power_mad, unlike matches() - and the difference is
-        # the whole point. Against a SESSION the mad is what the signature
+        # the whole point. Against a SESSION the mad is what the pair
         # learned from its own sightings, and a single observation cannot
         # chain, so consulting it lets a genuinely variable load stop being
-        # cut into pieces. Between two SIGNATURES the mad is partly damage
+        # cut into pieces. Between two PAIRS the mad is partly damage
         # from earlier merges, and letting it widen admission is the walk
         # feeding itself: each merge grows the mad, a bigger mad admits a
         # longer stride, and the 400 W to 25 W ladder comes back at a slower
@@ -3964,7 +3981,7 @@ class Signature:
             spread = max(spread, flat)
         # Merging is TRANSITIVE, and that is the trap. Each merge re-centres
         # the band on the new mean, so A can reach B, the pair can reach C,
-        # and the walk carries on as far as you let it: ten signatures from
+        # and the walk carries on as far as you let it: ten pairs from
         # 400 W down to 25 W collapsed into one that called itself 94 W and
         # described none of them. Relative tolerances only make the stride
         # proportional - they do not stop the walking. So the merged pool
@@ -3985,8 +4002,8 @@ class Signature:
             return False
         return True
 
-    def swallow(self, other: "Signature") -> None:
-        """Take another signature's sightings into this one, by weight."""
+    def swallow(self, other: "Pair") -> None:
+        """Take another pair's sightings into this one, by weight."""
         for mine, theirs in ((self.hourly, other.hourly), (self.older, other.older), (self.recovered, other.recovered)):
             for hour, wh in theirs.items():
                 mine[hour] = mine.get(hour, 0.0) + wh
@@ -4019,10 +4036,10 @@ class Signature:
             self.power[ph] = (self.power.get(ph, 0.0) * a + other.power.get(ph, 0.0) * b) / n
         # The gap BETWEEN the two means is part of the merged spread, and
         # averaging the two deviations alone throws it away: fold two tight
-        # signatures 300 W apart together and the result claimed its
+        # pairs 300 W apart together and the result claimed its
         # sightings sat within a few watts of each other. That number feeds
         # tightness, which feeds evidence, which feeds the confidence the
-        # user is shown - so a merge made a signature look BETTER measured
+        # user is shown - so a merge made a pair look BETTER measured
         # the further apart the things it merged (2026-09-21).
         mid_w = sum(self.power.values())
         legs = max(len(self.phases), 1)
@@ -4131,24 +4148,24 @@ class Signature:
         share, lift = n / runs, n / max(row["e"].get(value, 0.0), 1e-9)
         return (value, share, lift) if share >= INPUT_MIN_SHARE and lift >= INPUT_MIN_LIFT else None
 
-    def input_lift(self, other: "Signature", born: str) -> Optional[float]:
+    def input_lift(self, other: "Pair", born: str) -> Optional[float]:
         """How many times chance the two together run in ``born``, or None
         before the born-in one has INPUT_MIN_RUNS runs."""
         setting, _, value = born.partition("=")
         n = e = 0.0
         runs = 0.0
-        for sig in (self, other):
-            row = sig.inputs.get(setting) or {}
+        for pair in (self, other):
+            row = pair.inputs.get(setting) or {}
             n += (row.get("n") or {}).get(value, 0.0)
             e += (row.get("e") or {}).get(value, 0.0)
-            if sig.born_in == born:
+            if pair.born_in == born:
                 runs += sum((row.get("n") or {}).values())
         if e <= 0 or (runs < INPUT_MIN_RUNS and n + e < INPUT_MIN_RUNS):
             return None                   # too few runs seen AND too few expected to say
         # A value that came once and stayed (a fan left on 33 %) lines up with a load's runs perfectly: every
         # run since is in it, none before. That is a regime change, not the value's doing - only a twin that ran
         # on, outside the value, after the fragment began shows the value matters. A twin that stopped before
-        # the fragment began is the same load (Home's fridge and freezer, 791 signatures, 2026-10-25).
+        # the fragment began is the same load (Home's fridge and freezer, 791 pairs, 2026-10-25).
         for frag, twin in ((self, other), (other, self)):
             if frag.born_in == born and twin.born_in != born and twin.last_seen < frag.first_seen:
                 return 1.0
@@ -4159,7 +4176,7 @@ class Signature:
         return self.born_in == context or (context is not None and context in self.takes_in)
 
     def takes_run(self, s: "Run") -> bool:
-        """Is ``s`` on this signature's side of its length split (split_s)? Always, with none."""
+        """Is ``s`` on this pair's side of its length split (split_s)? Always, with none."""
         return self.takes_len(s.duration_s)
 
     def takes_len(self, duration_s: float) -> bool:
@@ -4171,7 +4188,7 @@ class Signature:
         """The daily rewrite: the largest gap in the run memory's log-lengths,
         both sides at least SPLIT_MIN_RUNS runs and their medians at least
         MATCH_DURATION_FACTOR apart, becomes the split; the side with more
-        runs is this signature's. True when a split was set or changed."""
+        runs is this pair's. True when a split was set or changed."""
         lens = sorted(max(b - a, 1.0) for a, b in self.runs)
         if len(lens) < 2 * SPLIT_MIN_RUNS:
             return False
@@ -4371,7 +4388,7 @@ class Signature:
         """Put a session's energy into every hour and day it occupied.
 
         A run from 23:50 to 03:00 belongs to four hours and two days, not to
-        the one it began in. And only the part of it this signature was not
+        the one it began in. And only the part of it this pair was not
         already on for: one device never runs twice at once, and a second
         run over the first is another device of its size. Counting both put
         1.96 kWh in one hour into Home's 635 W floor mat, more than the whole
@@ -4437,7 +4454,7 @@ class Signature:
     def detail(self, tz, parents: Optional[Dict[str, Optional[str]]] = None, meter: Optional[str] = None) -> str:
         """Markdown for the naming form, once one is picked: what it is, when
         it runs, where it is, and how sure each of those is - a ``meter``'s
-        own signature inside that meter, its phases the meter's channels."""
+        own pair inside that meter, its phases the meter's channels."""
         lines = [f"**{self.describe(tz)}**", ""]
         bars = hour_histogram(self.hour_wh)
         if bars:
@@ -4493,14 +4510,14 @@ class Signature:
                 "interval_mad": _trim(self.interval_mad, 1),
                 "inputs": {n: {k: {v: _trim(x, 3) for v, x in d.items()} for k, d in row.items()} for n, row in self.inputs.items()},
                 "born_in": self.born_in, "takes_in": list(self.takes_in), "apart": list(self.apart),
-                "family": self.family, "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
+                "family": self.signature, "born_ep": self.born_ep, "ep_seen": self.ep_seen, "last_ep": self.last_ep,
                 "born_judged": self.born_judged,
                 "hourly": {str(h): _trim(wh, 1) for h, wh in self.hourly.items() if wh >= 0.05 * TRIM},
                 "recovered": {str(h): _trim(wh, 1) for h, wh in self.recovered.items() if wh >= 0.05 * TRIM},
                 "edges": {role: {str(c): _trim(n, 2) for c, n in used.items()} for role, used in self.edges.items()}}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Signature":
+    def from_dict(cls, d: dict) -> "Pair":
         return cls(id=d["id"], phases=d["phases"], power=dict(d["power"]), duration_s=d["duration_s"], pf=d.get("pf"),
                    count=d["count"], first_seen=d["first_seen"], last_seen=d["last_seen"], interval_s=d.get("interval_s"),
                    hour_wh=list(d.get("hour_wh") or [0.0] * 24),
@@ -4515,7 +4532,7 @@ class Signature:
                    low=d.get("low"), high=d.get("high"),
                    interval_mad=d.get("interval_mad"),
                    inputs={n: {k: dict(v) for k, v in row.items()} for n, row in (d.get("inputs") or {}).items()},
-                   born_in=d.get("born_in"), family=int(d.get("family") or 0),
+                   born_in=d.get("born_in"), signature=int(d.get("family") or 0),
                    takes_in=list(d.get("takes_in") or []), apart=list(d.get("apart") or []), born_ep=d.get("born_ep", 0.0),
                    ep_seen=d.get("ep_seen", 0.0), last_ep=d.get("last_ep"),
                    born_judged=d.get("born_judged", False),
@@ -5114,7 +5131,7 @@ def lag_window(hist: Sequence[float]) -> Optional[Tuple[float, float]]:
     return mean - half, mean + half
 
 
-def edge_story(edges: Sequence[StepGroup], sig: "Signature") -> Dict[str, dict]:
+def edge_story(edges: Sequence[StepGroup], pair: "Pair") -> Dict[str, dict]:
     """What a device's starts and stops look like, from the edge clusters its
     runs used: per role, how many runs, the mean step, and for each input what
     it did at that edge in what share of them and how long before or after the
@@ -5122,7 +5139,7 @@ def edge_story(edges: Sequence[StepGroup], sig: "Signature") -> Dict[str, dict]:
     by_id = {c.id: c for c in edges}
     out = {}
     for role in ("start", "stop"):
-        used = [(by_id[c], n) for c, n in (sig.edges.get(role) or {}).items() if c in by_id]
+        used = [(by_id[c], n) for c, n in (pair.edges.get(role) or {}).items() if c in by_id]
         total = sum(n for _, n in used)
         if total <= 0:
             continue
@@ -5156,26 +5173,26 @@ def edge_story(edges: Sequence[StepGroup], sig: "Signature") -> Dict[str, dict]:
 class Detector:
     phases: Dict[str, PhaseState] = field(default_factory=lambda: {p: PhaseState() for p in PHASES})
     held: List[Run] = field(default_factory=list)          # closed, waiting for a partner phase
-    signatures: List[Signature] = field(default_factory=list)
-    recent: List[dict] = field(default_factory=list)           # last sessions with their signature id
+    pairs: List[Pair] = field(default_factory=list)
+    recent: List[dict] = field(default_factory=list)           # last sessions with their pair id
     filed_n: int = field(default=0, metadata=DERIVED)   # sessions filed so far, each recent one's "n" - see live_runs
     # ids a merge has retired, so a session filed before it still resolves to
-    # the signature that swallowed it
+    # the pair that swallowed it
     _moved: Dict[int, int] = field(default_factory=dict)
-    # Names whose signature is gone - after a reset, or after an upgrade that
+    # Names whose pair is gone - after a reset, or after an upgrade that
     # could not read the old library. They hold enough of a description to be
-    # recognised again, and are handed back to the first signature that looks
+    # recognised again, and are handed back to the first pair that looks
     # like them (see _reclaim).
     orphan_names: List[dict] = field(default_factory=list)
     next_id: int = 1
-    # the next family id, and what each family has seen of each rare value it
-    # ran through: family -> "setting=value" -> {"born": the value's episode
-    # count when the family first ran in it, "seen": episodes it ran in, "last":
+    # the next signature id, and what each signature has seen of each rare value it
+    # ran through: signature -> "setting=value" -> {"born": the value's episode
+    # count when the signature first ran in it, "seen": episodes it ran in, "last":
     # the last one's start} - see Detector._splits
-    next_family: int = 1
-    # family -> the last HINT_KEEP runs' (length s, start hour of the local day), for the daily repair's hints
-    family_runs: Dict[int, List[Tuple[float, float]]] = field(default_factory=dict)
-    family_eps: Dict[int, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    next_signature: int = 1
+    # signature -> the last HINT_KEEP runs' (length s, start hour of the local day), for the daily repair's hints
+    signature_runs: Dict[int, List[Tuple[float, float]]] = field(default_factory=dict)
+    signature_eps: Dict[int, Dict[str, Dict[str, float]]] = field(default_factory=dict)
     tz_offset_s: float = 0.0
     # number -> sorted [(ts, value)], each held until the next: a step
     # records the value in force (StepGroup.values); fed by the fleet, not persisted
@@ -5242,18 +5259,18 @@ class Detector:
     _order_ver: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    _by_sig: Optional[Dict[int, "Signature"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _by_pair: Optional[Dict[int, "Pair"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # device (device_of: the start and stop groups' pair, or a start with no
-    # partner yet) -> {signature id: runs filed there}: what a run is filed by,
+    # partner yet) -> {pair id: runs filed there}: what a run is filed by,
     # devices are merged by, and an open run is named by (start_homes) - see DEVICE_FILING (the owner, 2026-10-29: filing by
     # the pair had looked a device up here while the runs were counted by start,
-    # so no run ever found its device's signature - every one founded a new one
+    # so no run ever found its device's pair - every one founded a new one
     # and the start's merge folded them back, a washer's Wash-born heater lost
     # into a kettle's)
     pair_home: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
     # what _merge_devices keeps between filings, so a pass judges only the
-    # devices whose signatures changed: pair_home's votes by the signature
-    # they count for now (devices in pair_home order), each signature's
+    # devices whose pairs changed: pair_home's votes by the pair
+    # they count for now (devices in pair_home order), each pair's
     # device, each device's place in pair_home, the devices to judge again
     # and whether all of them are. None: built again from pair_home.
     _votes: Optional[Dict[int, Dict[int, float]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -5393,7 +5410,7 @@ class Detector:
 
     def finish(self, samples, latest: float, oldest: Optional[float] = None) -> List[Run]:
         """A pass's end: what it released, filed or for the fleet to file.
-        The edges a signature's are told from (Fleet._edges_of) are kept
+        The edges a pair's are told from (Fleet._edges_of) are kept
         SWITCH_MEMORY_S before the oldest run still to be filed - ``oldest``,
         as the fleet knows it, or this detector's own - not before the pass's
         first reading, which dropped a long run's start edge in short passes."""
@@ -5590,18 +5607,18 @@ class Detector:
         check.instant = instant
         return check
 
-    def signature_of(self, s: Run) -> Optional["Signature"]:
-        """The signature a just-filed session went into.
+    def pair_of(self, s: Run) -> Optional["Pair"]:
+        """The pair a just-filed session went into.
 
         From the session itself. Reading it back out of ``recent`` worked only
         while a pass filed fewer sessions than that list keeps."""
-        if s.signature_id is None:
+        if s.pair_id is None:
             return None
-        sid = self._current(s.signature_id)
-        return next((x for x in self.signatures if x.id == sid), None)
+        sid = self._current(s.pair_id)
+        return next((x for x in self.pairs if x.id == sid), None)
 
     def _current(self, sid: int) -> int:
-        """The signature ``sid`` is now: the one each merge since moved it
+        """The pair ``sid`` is now: the one each merge since moved it
         into, followed until it stops."""
         if sid not in self._moved:
             return sid
@@ -5648,7 +5665,7 @@ class Detector:
         return (best[1], best[2]) if best else None
 
     def _file(self, s: Run, prefer: Optional[int] = None, avoid: Sequence[int] = ()) -> None:
-        """File a closed session into the library. ``prefer`` is a signature
+        """File a closed session into the library. ``prefer`` is a pair
         a sub-meter's own detection says this load belongs to; it wins over
         the best-scoring one whenever it fits at all (see SUB_OVERRIDE)."""
         tz = timezone.utc if not self.tz_offset_s else timezone(__import__("datetime").timedelta(seconds=self.tz_offset_s))
@@ -5665,33 +5682,33 @@ class Detector:
             # own meter saw it run. Asking it to look alike too sent the rest
             # elsewhere - Home 79.8 / 76.0 % that way, 86.0 / 85.4 trusted,
             # Kozolec 98.3 / 94.1 and 99.8 / 98.9 (2026-09-30)
-            want = self._sig(prefer)
+            want = self._pair(prefer)
             if want is not None and want.id not in avoid and self._takes(want, context) and want.phases == s.phases and want.takes_run(s):
                 best = want
         if device is not None and device < 0:
             self._promote(_pair_start(device))
         if best is None and device is not None:
-            best = self._device_signature(device, context, avoid, s.phases, s)
+            best = self._device_pair(device, context, avoid, s.phases, s)
         if best is None:
-            best = Signature(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
+            best = Pair(id=self.next_id, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s,
                              pf=s.pf, count=0, first_seen=s.start, last_seen=s.start, level_count=float(s.level_count),
                              born_in=context, apart=sorted({self._current(x) for x in avoid}))
             if context:
                 setting, _, value = context.partition("=")
                 best.born_ep = (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0
             self.next_id += 1
-            self.signatures.append(best)
-            # one more of its device's family, when the device has one (a value the family runs in on its own
-            # - Detector._splits); else a family of its own
-            fam = self._device_family(device, s.phases) if device is not None else 0
-            if fam and not any(self._fits(m, s) for m in self.signatures if m.family == fam):
+            self.pairs.append(best)
+            # one more of its device's signature, when the device has one (a value the signature runs in on its own
+            # - Detector._splits); else a signature of its own
+            fam = self._device_signature(device, s.phases) if device is not None else 0
+            if fam and not any(self._fits(m, s) for m in self.pairs if m.signature == fam):
                 # a start cluster shared with another load's starts (Home's Hidrofor surge-high starts of 960-1056 W
-                # and a 1 kW heater's): a run that looks like none of the family's signatures is no member of it,
-                # or the family's name covered the other load's energy (Hidrofor's, by family: 20.2 % impure, 10.4
-                # per signature; 12.6 with this, 2026-10-27)
+                # and a 1 kW heater's): a run that looks like none of the signature's pairs is no member of it,
+                # or the signature's name covered the other load's energy (Hidrofor's, by signature: 20.2 % impure, 10.4
+                # per pair; 12.6 with this, 2026-10-27)
                 fam = 0
-            best.family = fam or self._new_family()
-            best.name = next((m.name for m in self.family_of(best) if m.name and m is not best), None)
+            best.signature = fam or self._new_signature()
+            best.name = next((m.name for m in self.signature_of(best) if m.name and m is not best), None)
             best.absorb(s, tz)
             best.count = 1
         else:
@@ -5703,15 +5720,15 @@ class Detector:
             total = sum((self.input_time.get(name) or {}).values())
             if i >= 0 and total > 0 and rows[i][1] != INPUT_DOWN:
                 best.note_input(name, rows[i][1], {v: t / total for v, t in self.input_time[name].items()}, s.start)
-        if best.family:
-            rows = self.family_runs.setdefault(best.family, [])
+        if best.signature:
+            rows = self.signature_runs.setdefault(best.signature, [])
             rows.append((s.duration_s, ((s.start + self.tz_offset_s) % 86400.0) / 3600.0))
             del rows[:-HINT_KEEP]
-        if context and best.family:
-            row = self.family_eps.setdefault(best.family, {}).get(context)
+        if context and best.signature:
+            row = self.signature_eps.setdefault(best.signature, {}).get(context)
             if row is None:
                 setting, _, value = context.partition("=")
-                row = self.family_eps[best.family][context] = {
+                row = self.signature_eps[best.signature][context] = {
                     "born": (self.input_episodes.get(setting) or {}).get(value, 1.0) - 1.0, "seen": 0.0, "last": -1.0}
             if row["last"] != episode:
                 row["seen"] += 1.0
@@ -5719,7 +5736,7 @@ class Detector:
         if context and best.born_in == context and best.last_ep != episode:
             best.ep_seen += 1.0
             best.last_ep = episode
-        s.signature_id = best.id
+        s.pair_id = best.id
         self._touch(best.id)
         if self._day_from is not None:
             self._day_log.append(s)
@@ -5735,16 +5752,16 @@ class Detector:
                             "start": s.start, "end": s.end, "phases": s.phases, "kwh": round(s.energy_wh / 1000.0, 3),
                             "max_w": round(s.max_w), "levels": s.level_count, "signature": best.id})
         self.recent = self.recent[-MAX_RECENT_SESSIONS:]
-        for sig in self._judge_born():
-            self._touch(sig.id)
+        for pair in self._judge_born():
+            self._touch(pair.id)
         if self.orphan_names:
-            # a name lands on a signature as it stands after this filing
-            for sig in self.signatures:
-                self._reclaim(sig, noise)
+            # a name lands on a pair as it stands after this filing
+            for pair in self.pairs:
+                self._reclaim(pair, noise)
         self._prune(s.end)
 
-    def _judge_born(self, daily: bool = False) -> List["Signature"]:
-        """A born-in signature that has seen its value come round
+    def _judge_born(self, daily: bool = False) -> List["Pair"]:
+        """A born-in pair that has seen its value come round
         INPUT_MIN_EPISODES times belongs to it if it ran in enough of them,
         and is ordinary again - running in that value now and then - if not.
         ``daily`` (Fleet._repair, once a day): one that ran in too few of them
@@ -5752,66 +5769,66 @@ class Detector:
         ones judged."""
         judged = []
         moved: Dict[int, int] = {}
-        for sig in self.signatures:
-            if not sig.born_in or sig.born_judged or sig.id in moved:
+        for pair in self.pairs:
+            if not pair.born_in or pair.born_judged or pair.id in moved:
                 continue
-            setting, _, value = sig.born_in.partition("=")
-            since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - sig.born_ep
+            setting, _, value = pair.born_in.partition("=")
+            since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - pair.born_ep
             if since < INPUT_MIN_EPISODES:
                 continue
             # an alike ordinary twin that runs through the value at chance
             # (pair lift < INPUT_SPLIT_LIFT) takes the fragment back: a load
             # stepping all day runs in EVERY episode of every value, so
             # coverage alone judged Hiša's 60 W incubator born of Spin, Paused,
-            # Dry and End Of Cycle (lifts 1.1-2.3; 20 signatures of one load
+            # Dry and End Of Cycle (lifts 1.1-2.3; 20 pairs of one load
             # with the washer's states fed, 7 without, 2026-10-23). Twins are
             # found with the born-in gate of alike aside, since the lift is
             # decided here; while a twin's lift cannot be measured yet the
             # judgement waits
-            noise = max((self.phases[p].noise for p in sig.phases if p in self.phases), default=MIN_NOISE_W)
-            born, sig.born_in = sig.born_in, None
-            twins = [o for o in self.signatures if not o.born_in and o.id not in moved and o.alike(sig, noise)]
-            sig.born_in = born
-            lifts = [(sig.input_lift(o, born), o) for o in twins]
+            noise = max((self.phases[p].noise for p in pair.phases if p in self.phases), default=MIN_NOISE_W)
+            born, pair.born_in = pair.born_in, None
+            twins = [o for o in self.pairs if not o.born_in and o.id not in moved and o.alike(pair, noise)]
+            pair.born_in = born
+            lifts = [(pair.input_lift(o, born), o) for o in twins]
             taken = [o for lift, o in lifts if lift is not None and lift < INPUT_SPLIT_LIFT]
             if taken:
                 twin = max(taken, key=lambda o: o.count)
-                twin.swallow(sig)
-                moved[sig.id] = twin.id
+                twin.swallow(pair)
+                moved[pair.id] = twin.id
                 judged.append(twin)
                 continue
             if any(lift is None for lift, _ in lifts):
                 # a fragment's lift is None until it has INPUT_MIN_RUNS runs, and a named load is never pruned:
-                # Home's library held 312 born-in signatures of two runs or fewer, never judged (2026-10-28). Once a
+                # Home's library held 312 born-in pairs of two runs or fewer, never judged (2026-10-28). Once a
                 # day one that ran in too few of its value's episodes - the coverage test below - goes back into
                 # its twin (retake_fragments'), or is ordinary again
-                if not daily or sig.ep_seen / since >= INPUT_MIN_COVERAGE:
+                if not daily or pair.ep_seen / since >= INPUT_MIN_COVERAGE:
                     continue
-                twin = self._fragment_twin(sig, moved)
+                twin = self._fragment_twin(pair, moved)
                 if twin is not None:
-                    twin.swallow(sig)
-                    moved[sig.id] = twin.id
+                    twin.swallow(pair)
+                    moved[pair.id] = twin.id
                     judged.append(twin)
                     continue
-            if sig.ep_seen / since >= INPUT_MIN_COVERAGE:
-                sig.born_judged = True
+            if pair.ep_seen / since >= INPUT_MIN_COVERAGE:
+                pair.born_judged = True
             else:
-                sig.takes_in = sorted(set(sig.takes_in) | {sig.born_in})
-                sig.born_in = None
-            judged.append(sig)
+                pair.takes_in = sorted(set(pair.takes_in) | {pair.born_in})
+                pair.born_in = None
+            judged.append(pair)
         self._absorb(moved)
         return judged
 
     def retake_fragments(self) -> int:
-        """Once, on a library stored before ``fragments_retaken`` existed: the signatures born in a setting's value
+        """Once, on a library stored before ``fragments_retaken`` existed: the pairs born in a setting's value
         that have run FRAGMENT_MAX_RUNS times or fewer and were never judged go into their alike ordinary twin, the
         one with the most runs and the same name (an unnamed fragment: any). ``_judge_born`` waits for ever on
-        them - ``input_lift`` answers None below INPUT_MIN_RUNS - and a named load's signatures are never pruned:
+        them - ``input_lift`` answers None below INPUT_MIN_RUNS - and a named load's pairs are never pruned:
         Home's Inkubator had 275 of them, 266 of one or two runs, from a washer phase carried through 19 hours of
-        its integration being unavailable (2026-10-28; 453 -> 169 signatures, no run lost, on that library).
+        its integration being unavailable (2026-10-28; 453 -> 169 pairs, no run lost, on that library).
         Returns how many were taken back."""
         moved: Dict[int, int] = {}
-        for frag in list(self.signatures):
+        for frag in list(self.pairs):
             if not frag.born_in or frag.born_judged or frag.count > FRAGMENT_MAX_RUNS or frag.id in moved:
                 continue
             twin = self._fragment_twin(frag, moved)
@@ -5821,36 +5838,36 @@ class Detector:
         self._absorb(moved)
         return len(moved)
 
-    def _fragment_twin(self, frag: "Signature", moved: Dict[int, int]) -> Optional["Signature"]:
+    def _fragment_twin(self, frag: "Pair", moved: Dict[int, int]) -> Optional["Pair"]:
         """The alike ordinary twin a born-in fragment goes back into, the born gate of alike aside: at least
         YOUNG_COUNT runs, of its own name (an unnamed fragment: any), the one with the most runs - or None."""
         noise = max((self.phases[p].noise for p in frag.phases if p in self.phases), default=MIN_NOISE_W)
         born, frag.born_in = frag.born_in, None
-        twins = [o for o in self.signatures if o is not frag and not o.born_in and o.id not in moved
+        twins = [o for o in self.pairs if o is not frag and not o.born_in and o.id not in moved
                  and o.count >= YOUNG_COUNT and (not frag.name or o.name == frag.name) and o.alike(frag, noise)]
         frag.born_in = born
         return max(twins, key=lambda o: o.count, default=None)
 
     def _absorb(self, moved: Dict[int, int]) -> None:
-        """Drop the signatures swallowed into others (other id -> keeper id)
+        """Drop the pairs swallowed into others (other id -> keeper id)
         and repoint what referred to them."""
         if not moved:
             return
         for other_id, keep_id in moved.items():
-            other, keep = self._sig(other_id), self._sig(keep_id)
-            if other is not None and keep is not None and other.family and keep.family and other.family != keep.family:
-                self._merge_family(other.family, keep.family)      # one signature of two families makes them one
-        self.signatures = [x for x in self.signatures if x.id not in moved]
+            other, keep = self._pair(other_id), self._pair(keep_id)
+            if other is not None and keep is not None and other.signature and keep.signature and other.signature != keep.signature:
+                self._merge_signature(other.signature, keep.signature)      # one pair of two signatures makes them one
+        self.pairs = [x for x in self.pairs if x.id not in moved]
         for r in self.recent:
             if r.get("signature") in moved:
                 r["signature"] = moved[r["signature"]]
         for s in self.held:
-            if s.signature_id in moved:
-                s.signature_id = moved[s.signature_id]
+            if s.pair_id in moved:
+                s.pair_id = moved[s.pair_id]
         self._moved.update(moved)
         for other_id, keep_id in moved.items():
             self._fold(other_id, keep_id)
-        self._by_sig, self._device_home = None, None
+        self._by_pair, self._device_home = None, None
 
     def classify(self, ph: str, since: float, watts: float, var: Optional[float], surge: float) -> Optional[int]:
         """Which cluster a fall belongs to, at once. A rise gets its cluster
@@ -6457,7 +6474,7 @@ class Detector:
     def resolve_rise(self, o: "_Open") -> None:
         """A run is closing before its event window passed: form its event now
         from what has risen beside it so far, so the run has its start
-        cluster (a start without one is a device of nobody and a signature
+        cluster (a start without one is a device of nobody and a pair
         of its own - hundreds of them from short runs, 2026-09-30).
 
         Forming it can cut a single-phase rise into the meters' shares, and a
@@ -6780,7 +6797,7 @@ class Detector:
         cluster at this size has seen more steps than the plain one there, or
         nowhere. A meter misses a step now and then - a late report, a reading
         at the window's edge - and each miss founded a plain cluster beside the
-        located one: Home went from 241 signatures to 279 (2026-10-01). A load
+        located one: Home went from 241 pairs to 279 (2026-10-01). A load
         no meter watches stays plain wherever the plain cluster is the bigger.
         Never a meter that HELD its value through the step - nothing written
         but its old level, the recorder keeping only changes: an unmetered
@@ -6829,78 +6846,133 @@ class Detector:
         expected = p * sum(w for b, w in h.items() if lo <= b <= hi)
         return above_chance(n, expected)
 
-    # ------------------------------------------------ families
-    def family_of(self, sig: "Signature") -> List["Signature"]:
-        """Every signature of ``sig``'s family (itself, when it has none yet)."""
-        return [x for x in self.signatures if x.family == sig.family] if sig.family else [sig]
+    # ------------------------------------------------ signatures
+    def signature_of(self, pair: "Pair") -> List["Pair"]:
+        """Every pair of ``pair``'s signature (itself, when it has none yet)."""
+        return [x for x in self.pairs if x.signature == pair.signature] if pair.signature else [pair]
 
-    def _new_family(self) -> int:
-        self.next_family += 1
-        return self.next_family - 1
+    def _new_signature(self) -> int:
+        self.next_signature += 1
+        return self.next_signature - 1
 
-    def _assign_families(self) -> None:
-        """Give every signature a family: one of its own, joined with those of its start cluster that are
-        otherwise alike (_join_families). What a library stored before families gets on load."""
-        fresh = [x for x in self.signatures if not x.family]
+    def _assign_signatures(self) -> None:
+        """Give every pair a signature: one of its own, joined with those of its start cluster that are
+        otherwise alike (_join_signatures). What a library stored before signatures gets on load."""
+        fresh = [x for x in self.pairs if not x.signature]
         for x in fresh:
-            x.family = self._new_family()
-        if self.signatures:
-            self._join_families()          # also for a library that has families: the neighbour join is new
+            x.signature = self._new_signature()
+        if self.pairs:
+            self._join_signatures()          # also for a library that has signatures: the neighbour join is new
 
-    def _join_families(self) -> None:
-        """One family per start cluster and phase set: the signatures a setting's values split one load into.
-        And the several signatures one name sits on, when they are otherwise alike."""
+    def _join_signatures(self) -> None:
+        """One signature per start cluster and phase set: the pairs a setting's values split one load into.
+        And the several pairs one name sits on, when they are otherwise alike."""
         if self._votes is None:
             self._rebuild_votes()
-        by: Dict[Tuple[int, str], List["Signature"]] = {}
-        for sig in self.signatures:
-            home = self._home.get(sig.id)
+        by: Dict[Tuple[int, str], List["Pair"]] = {}
+        for pair in self.pairs:
+            home = self._home.get(pair.id)
             if home is not None:
-                by.setdefault((home, sig.phases), []).append(sig)
-        for sigs in by.values():
-            sigs.sort(key=lambda x: (not x.name, -x.count))
-            for other in sigs[1:]:
-                self._join(sigs[0], other)
-        named: Dict[Tuple[str, str], List["Signature"]] = {}
-        for sig in self.signatures:
-            if sig.name:
-                named.setdefault((sig.name, sig.phases), []).append(sig)
-        for sigs in named.values():
-            sigs.sort(key=lambda x: -x.count)
-            noise = max((self.phases[p].noise for p in sigs[0].phases if p in self.phases), default=MIN_NOISE_W)
-            for other in sigs[1:]:
-                if sigs[0].alike(other, noise, inputs=False):
-                    self._join(sigs[0], other)
+                by.setdefault((home, pair.phases), []).append(pair)
+        for pairs in by.values():
+            pairs.sort(key=lambda x: (not x.name, -x.count))
+            for other in pairs[1:]:
+                self._join(pairs[0], other)
+        named: Dict[Tuple[str, str], List["Pair"]] = {}
+        for pair in self.pairs:
+            if pair.name:
+                named.setdefault((pair.name, pair.phases), []).append(pair)
+        for pairs in named.values():
+            pairs.sort(key=lambda x: -x.count)
+            noise = max((self.phases[p].noise for p in pairs[0].phases if p in self.phases), default=MIN_NOISE_W)
+            for other in pairs[1:]:
+                if pairs[0].alike(other, noise, inputs=False):
+                    self._join(pairs[0], other)
         self._join_neighbours()
+        self._join_shared_stops()
 
     def _join_neighbours(self) -> None:
-        """One family from the signatures of start clusters that neighbour each other (FAMILY_REACH_MADS) on the
-        same phase set, direction and meter, when the signatures are alike: a start size that drifts is cut into
-        clusters side by side, and each cluster's runs make signatures of their own (Home's kiln, 2026-10-26:
-        seven two-phase clusters from 5.76 to 6.05 kW, seven families, one of them named). Nearest pairs first;
+        """One signature from the pairs of start clusters that neighbour each other (SIGNATURE_REACH_MADS) on the
+        same phase set, direction and meter, when the pairs are alike: a start size that drifts is cut into
+        clusters side by side, and each cluster's runs make pairs of their own (Home's kiln, 2026-10-26:
+        seven two-phase clusters from 5.76 to 6.05 kW, seven signatures, one of them named). Nearest pairs first;
         _join still refuses a pair kept apart on purpose, split by length or named differently."""
-        by: Dict[Tuple[str, str], List[Tuple[float, float, "Signature"]]] = {}
-        for sig in self.signatures:
-            home = self._home.get(sig.id)
+        by: Dict[Tuple[str, str], List[Tuple[float, float, "Pair"]]] = {}
+        for pair in self.pairs:
+            home = self._home.get(pair.id)
             c = self.cluster(home) if home is not None else None
-            if c is not None and c.up and c.watts >= FAMILY_REACH_NOISES * sum(
+            if c is not None and c.up and c.watts >= SIGNATURE_REACH_NOISES * sum(
                     (self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in c.phase):
-                by.setdefault((c.phase, c.owner), []).append((c.watts, c.watts_mad, sig))
+                by.setdefault((c.phase, c.owner), []).append((c.watts, c.watts_mad, pair))
         for rows in by.values():
             pairs = sorted(((abs(w1 - w2), a, b) for i, (w1, m1, a) in enumerate(rows) for w2, m2, b in rows[i + 1:]
-                            if a.family != b.family and abs(w1 - w2) <= FAMILY_REACH_MADS * max(m1, m2)),
+                            if a.signature != b.signature and abs(w1 - w2) <= SIGNATURE_REACH_MADS * max(m1, m2)),
                            key=lambda x: x[0])
             for _, a, b in pairs:
                 noise = max((self.phases[p].noise for p in a.phases if p in self.phases), default=MIN_NOISE_W)
-                if a.family != b.family and a.alike(b, noise, inputs=False):
+                if a.signature != b.signature and a.alike(b, noise, inputs=False):
                     self._join(a, b)
 
-    def _join(self, keep: "Signature", other: "Signature") -> bool:
-        """Put ``other``'s family into ``keep``'s, unless the two were kept apart on purpose: named apart, a run
-        kept out of the other, or split by length. The name goes to every member."""
-        if keep.family == other.family:
+    def _stops_of(self, sid: int) -> Dict[int, float]:
+        """The stop groups, after the daily joins, that pair ``sid``'s runs closed on, with how many each."""
+        out: Dict[int, float] = {}
+        for d, n in ((self._votes or {}).get(sid) or {}).items():
+            if d < 0:
+                stop = self._final((-d) % PAIR_ID_BASE)
+                out[stop] = out.get(stop, 0.0) + n
+        return out
+
+    @staticmethod
+    def _overlaps(a: "Pair", b: "Pair") -> int:
+        """In how many of their remembered run windows two pairs ran at once."""
+        return sum(1 for s1, e1 in a.runs for s2, e2 in b.runs if s1 < e2 and s2 < e1)
+
+    def _loosely_alike(self, a: "Pair", b: "Pair") -> bool:
+        """Alike enough to be one pair when they share a stop group (JOIN_*): the same phases, power
+        factors within a loose tolerance, lengths and per-phase watts within a factor, never running at once."""
+        if a.phases != b.phases or a is b:
             return False
-        fa, fb = self.family_of(keep), self.family_of(other)
+        if a.pf is not None and b.pf is not None and \
+                abs(a.pf - b.pf) > JOIN_PF_LOOSE * pf_tolerance(a.pf_mad, b.pf_mad):
+            return False
+        lo, hi = sorted((max(a.duration_s, 1.0), max(b.duration_s, 1.0)))
+        if hi / lo > JOIN_LEN_FACTOR:
+            return False
+        for ph in a.phases:
+            x, y = sorted((max(a.power.get(ph, 0.0), 1.0), max(b.power.get(ph, 0.0), 1.0)))
+            if y / x > JOIN_POWER_FACTOR:
+                return False
+        return self._overlaps(a, b) <= JOIN_OVERLAP_MAX
+
+    def _join_shared_stops(self) -> None:
+        """One signature (a pair, in the owner's terms of 2026-11-02) from the pairs whose runs closed on the
+        same stop group on the same phases, when they are loosely alike: the hidrofor's three rise groups share
+        one fall group of 808 W. Larger pairs first; _join still refuses a pair kept apart on purpose."""
+        if self._votes is None:
+            self._rebuild_votes()
+        by: Dict[Tuple[int, str], List["Pair"]] = {}
+        for pair in self.pairs:
+            noise = sum((self.phases[p].noise or MIN_NOISE_W) if p in self.phases else MIN_NOISE_W for p in pair.phases)
+            if sum(pair.power.values()) < JOIN_STOP_NOISES * noise:
+                continue
+            stops = self._stops_of(pair.id)
+            total = sum(stops.values())
+            for stop, n in stops.items():
+                if n >= JOIN_STOP_MIN_RUNS and n >= JOIN_STOP_MIN_SHARE * total:
+                    by.setdefault((stop, pair.phases), []).append(pair)
+        for pairs in by.values():
+            pairs.sort(key=lambda x: -x.count)
+            for i, other in enumerate(pairs):
+                for keep in pairs[:i]:
+                    if keep.signature != other.signature and self._loosely_alike(keep, other) and self._join(keep, other):
+                        break
+
+    def _join(self, keep: "Pair", other: "Pair") -> bool:
+        """Put ``other``'s signature into ``keep``'s, unless the two were kept apart on purpose: named apart, a run
+        kept out of the other, or split by length. The name goes to every member."""
+        if keep.signature == other.signature:
+            return False
+        fa, fb = self.signature_of(keep), self.signature_of(other)
         if len({m.name for m in fa + fb if m.name}) > 1:
             return False
         for a in fa:
@@ -6908,41 +6980,41 @@ class Detector:
                 if (a.id in {self._current(x) for x in b.apart} or b.id in {self._current(x) for x in a.apart}
                         or not a.takes_len(b.duration_s) or not b.takes_len(a.duration_s)):
                     return False
-        self._merge_family(other.family, keep.family)
+        self._merge_signature(other.signature, keep.signature)
         return True
 
-    def _merge_family(self, gone: int, keep: int) -> None:
-        """Every member of family ``gone`` is ``keep``'s now, with the name and what it has seen of the values."""
-        name = next((m.name for m in self.signatures if m.family in (gone, keep) and m.name), None)
-        for m in self.signatures:
-            if m.family == gone:
-                m.family = keep
-        for m in self.signatures:
-            if m.family == keep and m.name != name:
+    def _merge_signature(self, gone: int, keep: int) -> None:
+        """Every member of signature ``gone`` is ``keep``'s now, with the name and what it has seen of the values."""
+        name = next((m.name for m in self.pairs if m.signature in (gone, keep) and m.name), None)
+        for m in self.pairs:
+            if m.signature == gone:
+                m.signature = keep
+        for m in self.pairs:
+            if m.signature == keep and m.name != name:
                 m.name = name
                 self._touch(m.id)
-        if gone in self.family_runs:
-            rows = self.family_runs.setdefault(keep, [])
-            rows.extend(self.family_runs.pop(gone))
+        if gone in self.signature_runs:
+            rows = self.signature_runs.setdefault(keep, [])
+            rows.extend(self.signature_runs.pop(gone))
             del rows[:-HINT_KEEP]
-        eps = self.family_eps.setdefault(keep, {})
-        for ctx, row in (self.family_eps.pop(gone, None) or {}).items():
+        eps = self.signature_eps.setdefault(keep, {})
+        for ctx, row in (self.signature_eps.pop(gone, None) or {}).items():
             mine = eps.get(ctx)
             if mine is None:
                 eps[ctx] = row
             else:
                 mine["born"], mine["seen"], mine["last"] = min(mine["born"], row["born"]), max(mine["seen"], row["seen"]), max(mine["last"], row["last"])
 
-    def _splits(self, sig: "Signature", context: str) -> bool:
-        """Does the family of ``sig`` run in the value ``context`` names as it does not elsewhere - so that the
-        runs made in it want a signature of their own? Judged on the family's runs together, at the time it is
-        asked: the same measure as input_of and _judge_born, pooled. A family that has not run enough to say
+    def _splits(self, pair: "Pair", context: str) -> bool:
+        """Does the signature of ``pair`` run in the value ``context`` names as it does not elsewhere - so that the
+        runs made in it want a pair of their own? Judged on the signature's runs together, at the time it is
+        asked: the same measure as input_of and _judge_born, pooled. A signature that has not run enough to say
         (INPUT_MIN_RUNS) splits, as before; one that runs in the value at chance, or in too few of its
         episodes (a kiln firing through one afternoon's washing), does not: the washer's cycle phase is
         everything to the washer's heater and nothing to the kiln."""
         setting, _, value = context.partition("=")
         n = e = runs = 0.0
-        for m in self.family_of(sig):
+        for m in self.signature_of(pair):
             row = m.inputs.get(setting) or {}
             n += (row.get("n") or {}).get(value, 0.0)
             e += (row.get("e") or {}).get(value, 0.0)
@@ -6951,46 +7023,46 @@ class Detector:
             return True
         if n <= 0 or e <= 0 or n / e < INPUT_SPLIT_LIFT:
             return False
-        eps = (self.family_eps.get(sig.family) or {}).get(context) if sig.family else None
+        eps = (self.signature_eps.get(pair.signature) or {}).get(context) if pair.signature else None
         if not eps:
             return False
         since = (self.input_episodes.get(setting) or {}).get(value, 0.0) - eps["born"]
         return since >= INPUT_MIN_EPISODES and eps["seen"] / since >= INPUT_MIN_COVERAGE
 
-    def _takes(self, sig: "Signature", context: Optional[str]) -> bool:
-        """May ``sig`` take a run made in ``context`` (None: in no rare value)? An ordinary one takes it unless its
-        family splits on the value; one born in the value only once the family does, or it has been judged to belong."""
-        if sig.born_in is None:
-            return context is None or context in sig.takes_in or not self._splits(sig, context)
-        return sig.born_in == context and (sig.born_judged or self._splits(sig, context))
+    def _takes(self, pair: "Pair", context: Optional[str]) -> bool:
+        """May ``pair`` take a run made in ``context`` (None: in no rare value)? An ordinary one takes it unless its
+        signature splits on the value; one born in the value only once the signature does, or it has been judged to belong."""
+        if pair.born_in is None:
+            return context is None or context in pair.takes_in or not self._splits(pair, context)
+        return pair.born_in == context and (pair.born_judged or self._splits(pair, context))
 
-    def _fits(self, sig: "Signature", run: "Run") -> bool:
-        """Does a run look like what ``sig`` has learned - its size within the match tolerance on every phase, its
-        length within MATCH_DURATION_FACTOR? Asked of a run its family's signature takes in a rare value it has no
-        signature for: the family takes only what looks like it (a washer's phase made some of Home's Hidrofor
+    def _fits(self, pair: "Pair", run: "Run") -> bool:
+        """Does a run look like what ``pair`` has learned - its size within the match tolerance on every phase, its
+        length within MATCH_DURATION_FACTOR? Asked of a run its signature's pair takes in a rare value it has no
+        pair for: the signature takes only what looks like it (a washer's phase made some of Home's Hidrofor
         runs another load's)."""
-        noise = max((self.phases[p].noise for p in sig.phases if p in self.phases), default=MIN_NOISE_W)
+        noise = max((self.phases[p].noise for p in pair.phases if p in self.phases), default=MIN_NOISE_W)
         pw = run.power_by_phase()
-        for ph in sig.phases:
-            mine, theirs = sig.power.get(ph, 0.0), pw.get(ph, 0.0)
-            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise) + ALIKE_MAD_SHARE * sig.power_mad:
+        for ph in pair.phases:
+            mine, theirs = pair.power.get(ph, 0.0), pw.get(ph, 0.0)
+            if abs(mine - theirs) > max(MATCH_POWER_REL * max(mine, theirs), noise) + ALIKE_MAD_SHARE * pair.power_mad:
                 return False
-        return sig.duration_s / MATCH_DURATION_FACTOR <= run.duration_s <= sig.duration_s * MATCH_DURATION_FACTOR
+        return pair.duration_s / MATCH_DURATION_FACTOR <= run.duration_s <= pair.duration_s * MATCH_DURATION_FACTOR
 
-    def _device_family(self, device: int, phases: str) -> int:
-        """The family of the signature most of this device's runs went to on ``phases``, or 0."""
+    def _device_signature(self, device: int, phases: str) -> int:
+        """The signature of the pair most of this device's runs went to on ``phases``, or 0."""
         votes = self._device_home.get(device) if self._device_home is not None else None
         best = max(((n, sid) for sid, n in (votes or {}).items()
-                    if (x := self._sig(self._current(sid))) is not None and x.phases == phases and x.family), default=None)
-        return self._sig(self._current(best[1])).family if best else 0
+                    if (x := self._pair(self._current(sid))) is not None and x.phases == phases and x.signature), default=None)
+        return self._pair(self._current(best[1])).signature if best else 0
 
     def _promote(self, start: int) -> None:
         """A start group filed as a device alone (device_of) has learned its
         stop partner: its record moves, once, to the pair with its strongest
-        partner, so the signature its runs went to becomes the pair's - one
+        partner, so the pair its runs went to becomes the pair's - one
         load, not two devices either side of the run its stop group became
         known (the owner, 2026-10-29). A later partner inherits nothing: a run
-        of its pair takes the signature only where it fits it."""
+        of its pair takes the pair only where it fits it."""
         rec = self.pair_home.get(str(start))
         if not rec:
             return
@@ -7002,13 +7074,13 @@ class Detector:
             into[sid] = into.get(sid, 0.0) + n
         self._device_home, self._votes = None, None
 
-    def _device_signature(self, device: int, context: Optional[str], avoid: Sequence[int],
-                          phases: str, run: Optional["Run"] = None) -> Optional["Signature"]:
-        """The signature most of this device's runs went to, of those on the
+    def _device_pair(self, device: int, context: Optional[str], avoid: Sequence[int],
+                          phases: str, run: Optional["Run"] = None) -> Optional["Pair"]:
+        """The pair most of this device's runs went to, of those on the
         run's own ``phases`` that take runs in ``context`` and are not
         ``avoid``ed, whatever its runs' powers - None for a device not seen
         yet. See DEVICE_FILING. On its own phases: a device whose legs link
-        across phases filed an A run into a C signature, whose power then
+        across phases filed an A run into a C pair, whose power then
         carried all three phases (Home, ten days, 2026-09-30)."""
         if self._device_home is None:
             self._device_home = {}
@@ -7018,56 +7090,56 @@ class Detector:
                     pooled[sid] = pooled.get(sid, 0.0) + n
         cands = []
         for sid, n in (self._device_home.get(device) or {}).items():
-            sig = self._sig(self._current(sid))
-            if sig is not None and sig.id not in avoid and self._takes(sig, context) and sig.phases == phases and (run is None or sig.takes_run(run)) \
-                    and (run is None or sig.files_in(context) or self._fits(sig, run)):
-                cands.append((n, sig.id, sig))
+            pair = self._pair(self._current(sid))
+            if pair is not None and pair.id not in avoid and self._takes(pair, context) and pair.phases == phases and (run is None or pair.takes_run(run)) \
+                    and (run is None or pair.files_in(context) or self._fits(pair, run)):
+                cands.append((n, pair.id, pair))
         return max(cands)[2] if cands else None
 
-    def _sig(self, sid: int) -> Optional["Signature"]:
-        if self._by_sig is None or sid not in self._by_sig:
-            self._by_sig = {x.id: x for x in self.signatures}
-        return self._by_sig.get(sid)
+    def _pair(self, sid: int) -> Optional["Pair"]:
+        if self._by_pair is None or sid not in self._by_pair:
+            self._by_pair = {x.id: x for x in self.pairs}
+        return self._by_pair.get(sid)
 
     def _merge_devices(self) -> int:
-        """Signatures whose runs came from one device are one - see
+        """Pairs whose runs came from one device are one - see
         DEVICE_FILING. A named pair of them with different names stays apart,
         as do two filed in different values of a setting or on different
-        phases, and one born of a run kept out of the other (Signature.apart).
+        phases, and one born of a run kept out of the other (Pair.apart).
         After every filing: once a pass, a minute's pass merged what a
         six-hour one had not yet.
 
         Judged again only where something changed since the last pass: a
-        device whose signatures were filed into, judged born, named, merged
+        device whose pairs were filed into, judged born, named, merged
         or moved to it - and all of them after _prune ordered the library
-        again, since who survives a tie is the earlier in it. Two signatures
+        again, since who survives a tie is the earlier in it. Two pairs
         neither of which changed were judged the last time one did, by the
         same votes, and the merge order is the full walk's: devices as the
-        library lists their first signature (a Home replay walked ~160
-        signatures and ~600 votes 29,000 times for six merges, 2026-10-02)."""
+        library lists their first pair (a Home replay walked ~160
+        pairs and ~600 votes 29,000 times for six merges, 2026-10-02)."""
         if self._votes is None:
             self._rebuild_votes()
-        by_dev: Dict[int, List["Signature"]] = {}
-        for sig in self.signatures:
-            home = self._home.get(sig.id)
+        by_dev: Dict[int, List["Pair"]] = {}
+        for pair in self.pairs:
+            home = self._home.get(pair.id)
             if home is not None:
-                by_dev.setdefault(home, []).append(sig)
+                by_dev.setdefault(home, []).append(pair)
         judge = None if self._rejudge_all else self._rejudge
         self._rejudge, self._rejudge_all = set(), False
         moved: Dict[int, int] = {}
-        for dev, sigs in by_dev.items():
-            if len(sigs) < 2 or (judge is not None and dev not in judge):
+        for dev, pairs in by_dev.items():
+            if len(pairs) < 2 or (judge is not None and dev not in judge):
                 continue
-            sigs.sort(key=lambda x: (not x.name, -x.count))     # a named one survives
-            keep = sigs[0]
-            for other in sigs[1:]:
+            pairs.sort(key=lambda x: (not x.name, -x.count))     # a named one survives
+            keep = pairs[0]
+            for other in pairs[1:]:
                 if other.phases != keep.phases:
                     continue
                 if other.name and keep.name and other.name != keep.name:
                     continue
                 if (keep.id in {self._current(x) for x in other.apart}
                         or other.id in {self._current(x) for x in keep.apart}):
-                    continue                  # one's run was kept out of the other - see Signature.apart
+                    continue                  # one's run was kept out of the other - see Pair.apart
                 if not keep.takes_len(other.duration_s) or not other.takes_len(keep.duration_s):
                     continue                  # the daily rewrite split them by length
                 if other.born_in != keep.born_in:
@@ -7087,7 +7159,7 @@ class Detector:
         return len(moved)
 
     def _rebuild_votes(self) -> None:
-        """pair_home's votes by the signature each counts for now - what
+        """pair_home's votes by the pair each counts for now - what
         _merge_devices walked every pass - and every device to judge."""
         votes: Dict[int, Dict[int, float]] = {}
         for k, home in self.pair_home.items():
@@ -7101,7 +7173,7 @@ class Detector:
         self._rejudge_all = True
 
     def _touch(self, sid: int) -> None:
-        """This signature changed in what _merge_devices reads: judge its device again."""
+        """This pair changed in what _merge_devices reads: judge its device again."""
         home = self._home.get(sid)
         if home is not None:
             self._rejudge.add(home)
@@ -7128,7 +7200,7 @@ class Detector:
         self._rehome(sid, row)
 
     def _fold(self, other_id: int, keep_id: int) -> None:
-        """A merged signature's votes count for its keeper now - see _current."""
+        """A merged pair's votes count for its keeper now - see _current."""
         if self._votes is None:
             return
         self._touch(other_id)
@@ -7154,7 +7226,7 @@ class Detector:
         mixture grouping (the owner, 2026-10-29: "a device should be a pair of
         the start and stop group") the pair of its start group and its stop
         group, each followed through its daily joins: the stop is the reliable
-        signature (the hidrofor's rise group is 51 W wide to hold its inrush
+        pair (the hidrofor's rise group is 51 W wide to hold its inrush
         scatter, its falls sit at 808 +- 17 W). A run with no stop of its own, or
         one closed by a fall group that is no partner of its start's, is its
         start's strongest partner pair's; a start with no partner yet is a
@@ -7229,12 +7301,12 @@ class Detector:
         return None
 
     def _link_successors(self, now: float) -> None:
-        """Point a named signature that has gone quiet at what may have
+        """Point a named pair that has gone quiet at what may have
         replaced it.
 
         A load that drifts is followed by the running mean, and one that
         changes in a step founds a sibling - after which the named original
-        goes unseen forever, because named signatures are never evicted. The
+        goes unseen forever, because named pairs are never evicted. The
         name should follow the load, but deciding that a 2.4 kW run IS the
         3 kW one you called "Kiln" is a judgement, not a measurement, so this
         only records the candidate and the naming page offers it.
@@ -7242,7 +7314,7 @@ class Detector:
         Deliberately narrow: same phases, a real history behind the
         candidate, and within half the power. A wrong guess here puts a
         person's name on someone else's load."""
-        for named in self.signatures:
+        for named in self.pairs:
             if not named.name:
                 continue
             quiet_after = SUCCESSOR_QUIET_S
@@ -7254,7 +7326,7 @@ class Detector:
                 named.successor_id = None
                 continue
             best, best_gap = None, None
-            for other in self.signatures:
+            for other in self.pairs:
                 if (other.name or other.phases != named.phases
                         or other.count < SUCCESSOR_MIN_COUNT
                         or other.last_seen <= named.last_seen):
@@ -7271,7 +7343,7 @@ class Detector:
         """Keep the library to its cap, in tiers.
 
         A NAMED load is never evicted, which the old ordering had exactly
-        backwards: it sorted named signatures to the front and then kept the
+        backwards: it sorted named pairs to the front and then kept the
         tail, so the ones the user had taken the trouble to name were the
         first to go.
 
@@ -7279,11 +7351,11 @@ class Detector:
         is over a year - is never evicted either. Its history is its claim on
         the library, and pausing does not forfeit it: a load that runs twice
         a year is rare, not stale. Replayed over ten real days at home, the kiln
-        reached 299 runs at evidence 0.81 - the best-evidenced signature in
+        reached 299 runs at evidence 0.81 - the best-evidenced pair in
         the library - and was thrown out during a twelve-hour pause.
 
-        A YOUNG signature - seen once or twice, inside the grace period - is
-        protected so that it CAN become established. A signature seen once
+        A YOUNG pair - seen once or twice, inside the grace period - is
+        protected so that it CAN become established. A pair seen once
         is always the weakest, so on a full library it was pruned in the same
         call that created it, and a new load could only survive if it had
         already been seen twice - which it never had. 2,705 created, 2,355
@@ -7293,11 +7365,11 @@ class Detector:
         this protected by RECENCY instead, and 195 of 200 slots filled with
         recently-seen junk while the paused kiln was one of the five left to
         choose from. Recency is not a claim; evidence is."""
-        if len(self.signatures) <= MAX_SIGNATURES:
+        if len(self.pairs) <= MAX_PAIRS:
             return
-        now = now if now is not None else max(s.last_seen for s in self.signatures)
-        tiers: Dict[int, List[Signature]] = {0: [], 1: [], 2: [], 3: []}
-        for s in self.signatures:
+        now = now if now is not None else max(s.last_seen for s in self.pairs)
+        tiers: Dict[int, List[Pair]] = {0: [], 1: [], 2: [], 3: []}
+        for s in self.pairs:
             age = now - s.last_seen
             if s.name:
                 tiers[0].append(s)
@@ -7314,16 +7386,16 @@ class Detector:
         # bounds it in practice is reality (a house has so many loads), the
         # thirty-day horizon, and the grace period on the young.
         keep = tiers[0] + tiers[1] + tiers[2]
-        room = MAX_SIGNATURES - len(keep)
+        room = MAX_PAIRS - len(keep)
         tiers[3].sort(key=lambda x: (x.evidence, x.count, x.last_seen))
         keep += tiers[3][-room:] if room > 0 else []
-        self.signatures = keep
-        self._by_sig = None          # or _sig hands back one just evicted, and a run filed there is no one's
+        self.pairs = keep
+        self._by_pair = None          # or _pair hands back one just evicted, and a run filed there is no one's
         self._rejudge_all = True     # the order decides a merge's survivor - see _merge_devices
 
     # ------------------------------------------------ query
     def active(self, now_ts: float) -> List[dict]:
-        """What is on right now, per phase group, with the best signature guess."""
+        """What is on right now, per phase group, with the best pair guess."""
         out = []
         for ph, st in self.phases.items():
             a = st.active(now_ts)
@@ -7346,21 +7418,21 @@ class Detector:
             m["phases"] = "".join(sorted(m["phases"]))
             if m["signature"] is None:
                 m["signature"] = self._guess(m["phases"], m["watts"], now_ts - m["since"], per_phase=None)
-            sig = next((x for x in self.signatures if x.id == m["signature"]), None) if m["signature"] else None
-            m["name"] = sig.name if sig else None
+            pair = next((x for x in self.pairs if x.id == m["signature"]), None) if m["signature"] else None
+            m["name"] = pair.name if pair else None
         return merged
 
     def _guess(self, phases: str, watts: float, elapsed: float, per_phase=None) -> Optional[int]:
         best, best_d = None, None
-        for sig in self.signatures:
-            if sig.phases != phases:
+        for pair in self.pairs:
+            if pair.phases != phases:
                 continue
-            total = sum(sig.power.values())
+            total = sum(pair.power.values())
             tol = max(MATCH_POWER_REL * max(total, watts), MIN_NOISE_W)
-            if abs(total - watts) <= tol and elapsed <= sig.duration_s * MATCH_DURATION_FACTOR + 60:
+            if abs(total - watts) <= tol and elapsed <= pair.duration_s * MATCH_DURATION_FACTOR + 60:
                 d = abs(total - watts)
                 if best_d is None or d < best_d:
-                    best, best_d = sig.id, d
+                    best, best_d = pair.id, d
         return best
 
     def unknown_power(self, now_ts: float) -> float:
@@ -7370,22 +7442,22 @@ class Detector:
         """hour start (epoch s) -> Wh the load NAMED so used in it, as far back
         as HOURLY_KEEP_S - what backfills its meter's statistics."""
         out: Dict[int, float] = {}
-        for sig in self.signatures:
-            if sig.name == name:
-                for hour, wh in sig.hourly.items():
+        for pair in self.pairs:
+            if pair.name == name:
+                for hour, wh in pair.hourly.items():
                     out[hour] = out.get(hour, 0.0) + wh
         return dict(sorted(out.items()))
 
     def energy_by_name(self) -> Dict[str, float]:
         """Watt-hours each NAME has used over everything ever seen of it.
 
-        Signatures sharing a name are one device, so their energy adds. It
+        Pairs sharing a name are one device, so their energy adds. It
         starts again from the ten days a reset rebuilds; the published meter
         counts only what it gains - see named.carry_reading."""
         out: Dict[str, float] = {}
-        for sig in self.signatures:
-            if sig.name:
-                out[sig.name] = out.get(sig.name, 0.0) + sig.energy_wh
+        for pair in self.pairs:
+            if pair.name:
+                out[pair.name] = out.get(pair.name, 0.0) + pair.energy_wh
         return out
 
     def live_runs(self, now_ts: float) -> List[Tuple[str, float, float]]:
@@ -7393,9 +7465,9 @@ class Detector:
         LIVE_NAME_SHARE - leaving out one open longer than LIVE_STALE_FACTOR
         times the longest run its name is known for."""
         lengths: Dict[str, List[float]] = {}
-        for sig in self.signatures:
-            if sig.name:
-                lengths.setdefault(sig.name, []).extend([b - a for a, b in sig.runs] or [sig.duration_s])
+        for pair in self.pairs:
+            if pair.name:
+                lengths.setdefault(pair.name, []).extend([b - a for a, b in pair.runs] or [pair.duration_s])
         longest = {name: _quantile(sorted(lens), LIVE_STALE_QUANTILE) for name, lens in lengths.items()}
         out = []
         for st in self.phases.values():
@@ -7410,7 +7482,7 @@ class Detector:
         return out
 
     def start_homes(self, cluster: Optional[int]) -> Dict[int, float]:
-        """{signature id: runs filed there} of the runs that started with
+        """{pair id: runs filed there} of the runs that started with
         ``cluster``, followed through its joins: its own record while it had no
         partner and every pair it starts (pair_home) - what an open run, with
         no stop yet, is known by (start_name, Fleet._held_homes)."""
@@ -7433,8 +7505,8 @@ class Detector:
             return None
         by: Dict[Optional[str], float] = {}
         for sid, n in home.items():
-            sig = self._sig(self._current(int(sid)))
-            key = sig.name if sig is not None else None
+            pair = self._pair(self._current(int(sid)))
+            key = pair.name if pair is not None else None
             by[key] = by.get(key, 0.0) + n
         total = sum(by.values())
         name, n = max(((k, v) for k, v in by.items() if k), key=lambda kv: kv[1], default=(None, 0.0))
@@ -7445,17 +7517,17 @@ class Detector:
         out = []
         for r in self.recent:
             if int(r.get("n") or 0) > n:
-                sig = self._sig(self._current(r["signature"]))
-                if sig is not None and sig.name:
-                    out.append((sig.name, r["start"], float(r.get("wh", r["kwh"] * 1000.0))))
+                pair = self._pair(self._current(r["signature"]))
+                if pair is not None and pair.name:
+                    out.append((pair.name, r["start"], float(r.get("wh", r["kwh"] * 1000.0))))
         return out
 
     def names(self) -> Dict[str, List[int]]:
-        """name -> the signature ids filed under it."""
+        """name -> the pair ids filed under it."""
         out: Dict[str, List[int]] = {}
-        for sig in self.signatures:
-            if sig.name:
-                out.setdefault(sig.name, []).append(sig.id)
+        for pair in self.pairs:
+            if pair.name:
+                out.setdefault(pair.name, []).append(pair.id)
         return out
 
     def name_descriptors(self) -> List[dict]:
@@ -7468,9 +7540,9 @@ class Detector:
         # ...and the names still waiting from the last reset: one reset on
         # top of another dropped every name whose load had not run in between
         # (Home, 2026-09-29: the floor mat, the kiln and the washer)
-        return [{"name": sig.name, "phases": sig.phases, "power": dict(sig.power),
-                 "duration_s": sig.duration_s, "pf": sig.pf}
-                for sig in self.signatures if sig.name] + [dict(o) for o in self.orphan_names]
+        return [{"name": pair.name, "phases": pair.phases, "power": dict(pair.power),
+                 "duration_s": pair.duration_s, "pf": pair.pf}
+                for pair in self.pairs if pair.name] + [dict(o) for o in self.orphan_names]
 
     def carry_names(self, descriptors: List[dict]) -> None:
         """Take names into a fresh library."""
@@ -7478,74 +7550,74 @@ class Detector:
 
     def awaited(self, s: Run) -> bool:
         """Does a name a reset carries look like this run - so that filed
-        here, its signature takes the name back (_reclaim)?"""
+        here, its pair takes the name back (_reclaim)?"""
         if not self.orphan_names:
             return False
         noise = max((self.phases[p].noise for p in s.phases if p in self.phases), default=MIN_NOISE_W)
-        probe = Signature(id=-1, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s, pf=s.pf,
+        probe = Pair(id=-1, phases=s.phases, power=s.power_by_phase(), duration_s=s.duration_s, pf=s.pf,
                           count=1, first_seen=s.start, last_seen=s.start)
         return any(_described(o).alike(probe, noise) for o in self.orphan_names)
 
-    def device_signature(self, s: Run) -> Optional["Signature"]:
-        """The signature this run's device would take it into, filed now -
-        None for a device not seen yet (see _device_signature)."""
+    def device_pair(self, s: Run) -> Optional["Pair"]:
+        """The pair this run's device would take it into, filed now -
+        None for a device not seen yet (see _device_pair)."""
         device = self.device_of(s)
         if device is None:
             return None
         found = self._input_context(s)
-        return self._device_signature(device, found[0] if found else None, (), s.phases)
+        return self._device_pair(device, found[0] if found else None, (), s.phases)
 
-    def _reclaim(self, sig: "Signature", noise_w: float) -> None:
-        """Give a rebuilt signature back the name a reset took from it.
+    def _reclaim(self, pair: "Pair", noise_w: float) -> None:
+        """Give a rebuilt pair back the name a reset took from it.
 
-        The same test that decides two signatures are one load decides this,
+        The same test that decides two pairs are one load decides this,
         so a name only returns to something that looks like what wore it. If
         the site really did change - the reason to reset by hand - nothing
         matches and the name simply never comes back, which is the right
         answer rather than a special case."""
-        if sig.name or not self.orphan_names:
+        if pair.name or not self.orphan_names:
             return
         for i, orphan in enumerate(self.orphan_names):
-            if _described(orphan).alike(sig, noise_w):
-                for m in self.family_of(sig):
+            if _described(orphan).alike(pair, noise_w):
+                for m in self.signature_of(pair):
                     m.name = orphan.get("name")
                     self._touch(m.id)
                 self.orphan_names.pop(i)
                 return
 
-    def rename(self, signature_id: int, name: Optional[str]) -> bool:
-        signature_id = self._current(signature_id)      # a signature merged away is named as what it became
-        for sig in self.signatures:
-            if sig.id == signature_id:
+    def rename(self, pair_id: int, name: Optional[str]) -> bool:
+        pair_id = self._current(pair_id)      # a pair merged away is named as what it became
+        for pair in self.pairs:
+            if pair.id == pair_id:
                 name = (name or "").strip() or None
-                for m in self.family_of(sig):       # a family is named, not a signature
+                for m in self.signature_of(pair):       # a signature is named, not a pair
                     m.name = name
                     self._touch(m.id)
                 return True
         return False
 
-    def family_head(self, family: int) -> Optional["Signature"]:
-        """The family's biggest signature - what stands for it - or None for a family that is gone."""
-        return max((x for x in self.signatures if x.family == family), key=lambda x: x.count, default=None)
+    def signature_head(self, signature: int) -> Optional["Pair"]:
+        """The signature's biggest pair - what stands for it - or None for a signature that is gone."""
+        return max((x for x in self.pairs if x.signature == signature), key=lambda x: x.count, default=None)
 
-    def rename_family(self, family: int, name: Optional[str]) -> bool:
-        """Name a family (None clears it): every signature of it wears the name."""
-        head = self.family_head(family)
+    def rename_signature(self, signature: int, name: Optional[str]) -> bool:
+        """Name a signature (None clears it): every pair of it wears the name."""
+        head = self.signature_head(signature)
         return head is not None and self.rename(head.id, name)
 
-    def predecessor_of(self, signature_id: int) -> Optional["Signature"]:
-        """The named signature that thinks this one is what it became.
+    def predecessor_of(self, pair_id: int) -> Optional["Pair"]:
+        """The named pair that thinks this one is what it became.
 
         The naming page asks this of whatever the user is looking at, so the
         offer appears where they are already standing rather than on a dead
         entry they have no reason to open."""
-        for sig in self.signatures:
-            if sig.name and sig.successor_id == signature_id:
-                return sig
+        for pair in self.pairs:
+            if pair.name and pair.successor_id == pair_id:
+                return pair
         return None
 
-    def adopt(self, signature_id: int) -> Optional[str]:
-        """Move a name onto the signature that replaced its load.
+    def adopt(self, pair_id: int) -> Optional[str]:
+        """Move a name onto the pair that replaced its load.
 
         The old fingerprint keeps its own history - a kiln that drew 5.9 kW
         really did draw it - but stops carrying a name nothing matches any
@@ -7555,11 +7627,11 @@ class Detector:
         should still describe this behaviour rather than an average of two.
         Its hours by the clock come along too, so the name's statistics keep
         the old fingerprint's days (insights.named.plan_rewrite)."""
-        old = self.predecessor_of(signature_id)
+        old = self.predecessor_of(pair_id)
         if old is None or not old.name:
             return None
         name = old.name
-        heir = next((s for s in self.signatures if s.id == signature_id), None)
+        heir = next((s for s in self.pairs if s.id == pair_id), None)
         if heir is None:
             return None
         heir.carried_wh += old.energy_wh
@@ -7567,20 +7639,20 @@ class Detector:
             for hour, wh in theirs.items():
                 mine[hour] = mine.get(hour, 0.0) + wh
             theirs.clear()
-        for m in self.family_of(old):
+        for m in self.signature_of(old):
             m.name = None
             self._touch(m.id)
         old.successor_id = None
-        self.rename(signature_id, name)
+        self.rename(pair_id, name)
         return name
 
     # ------------------------------------------------ storage
     def to_dict(self) -> dict:
         return {"phases": {p: st.to_dict() for p, st in self.phases.items()}, "held": [s.to_dict() for s in self.held],
-                "signatures": [s.to_dict() for s in self.signatures], "recent": self.recent, "next_id": self.next_id,
-                "next_family": self.next_family,
-                "family_runs": {str(f): [[_trim(a, 1), _trim(h, 2)] for a, h in rows] for f, rows in self.family_runs.items()},
-                "family_eps": {str(f): {c: dict(row) for c, row in eps.items()} for f, eps in self.family_eps.items()},
+                "signatures": [s.to_dict() for s in self.pairs], "recent": self.recent, "next_id": self.next_id,
+                "next_family": self.next_signature,
+                "family_runs": {str(f): [[_trim(a, 1), _trim(h, 2)] for a, h in rows] for f, rows in self.signature_runs.items()},
+                "family_eps": {str(f): {c: dict(row) for c, row in eps.items()} for f, eps in self.signature_eps.items()},
                 "tz_offset_s": self.tz_offset_s, "orphan_names": self.orphan_names,
                 "input_time": {n: {v: _trim(t, 1) for v, t in row.items()} for n, row in self.input_time.items()},
                 "input_until": dict(self.input_until),
@@ -7630,13 +7702,13 @@ class Detector:
             return det
         det.phases = {p: PhaseState.from_dict((d.get("phases") or {}).get(p)) for p in PHASES}
         det.held = [Run.from_dict(x) for x in d.get("held") or []]
-        det.signatures = [Signature.from_dict(x) for x in d.get("signatures") or []]
+        det.pairs = [Pair.from_dict(x) for x in d.get("signatures") or []]
         det.recent = list(d.get("recent") or [])
         det.filed_n = max([0] + [int(r.get("n") or 0) for r in det.recent])
         det.next_id = d.get("next_id", 1)
-        det.next_family = d.get("next_family", 1)
-        det.family_runs = {int(f): [(float(a), float(h)) for a, h in rows] for f, rows in (d.get("family_runs") or {}).items()}
-        det.family_eps = {int(f): {c: {k: float(x) for k, x in row.items()} for c, row in eps.items()}
+        det.next_signature = d.get("next_family", 1)
+        det.signature_runs = {int(f): [(float(a), float(h)) for a, h in rows] for f, rows in (d.get("family_runs") or {}).items()}
+        det.signature_eps = {int(f): {c: {k: float(x) for k, x in row.items()} for c, row in eps.items()}
                           for f, eps in (d.get("family_eps") or {}).items()}
         det.tz_offset_s = d.get("tz_offset_s", 0.0)
         det.orphan_names = [x for x in (d.get("orphan_names") or []) if x.get("name")]
@@ -7679,7 +7751,7 @@ class Detector:
                          for ph, rows in (d.get("day_rows") or {}).items()}
         det._clock = d.get("clock")
         det._moved = {int(k): int(v) for k, v in (d.get("moved") or {}).items()}
-        det._assign_families()
+        det._assign_signatures()
         if "rejudge_all" in d:
             # the devices _merge_devices still has to judge again: a full walk after a restart would
             # merge what the pass-by-pass one had left apart
@@ -7732,7 +7804,7 @@ class Fleet:
     meter sees only its own subpanel or circuit. A main-meter
     session that a downstream meter also saw - same start, same end, same
     phases, same size - is located there; one that none saw is upstream of
-    them all. Locations accumulate per signature, so the answer sharpens
+    them all. Locations accumulate per pair, so the answer sharpens
     with every session."""
     main: Detector = field(default_factory=Detector)
     subs: Dict[str, Detector] = field(default_factory=dict)
@@ -7762,7 +7834,7 @@ class Fleet:
     # the readings' clock all meters are read on: the meters' own, the grid
     # wait_cap_s behind them (see process); how far every meter's readings reach
     _now: float = field(default=0.0, repr=False, compare=False)
-    _aged_to: float = field(default=0.0, repr=False, compare=False)   # the hour Signature.age last swept to
+    _aged_to: float = field(default=0.0, repr=False, compare=False)   # the hour Pair.age last swept to
     # sub-meter sessions waiting to vote on their channel's phase: (when, meter, past the patience, session) - see _vote_blocked
     _unvoted: List[tuple] = field(default_factory=list, repr=False, compare=False)
     # house sessions handed over lately, (when, session): what a meter's session votes against
@@ -7855,7 +7927,7 @@ class Fleet:
     views: Dict[str, "Fleet"] = field(default_factory=dict, repr=False, compare=False)
     reference: bool = field(default=True, repr=False, compare=False, metadata=DERIVED)
     _view_states: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
-    # meter -> its signature id -> the house signature its sessions joined
+    # meter -> its pair id -> the house pair its sessions joined
     identity: Dict[str, Dict[str, int]] = field(default_factory=dict)
     # the start of the first day not yet repaired, on the readings' clock -
     # see _repair; stored with the day's runs and readings, so a restart mid-day
@@ -7973,15 +8045,15 @@ class Fleet:
         for name, det in self.subs.items():
             if name not in self.views:
                 det.finish(sub_samples.get(name) or {}, end)
-        # once an hour, every signature's hours age as a run filed now would
+        # once an hour, every pair's hours age as a run filed now would
         # age them: one that stopped running still lets its hours go - into
         # older, kept for naming it one day - rather than keeping its last
         # days in hourly, before the statistics' window, until it runs again
         if self._now // 3600 > self._aged_to // 3600:
             self._aged_to = self._now
             for _, det in self.detectors():
-                for sig in det.signatures:
-                    sig.age(self._now)
+                for pair in det.pairs:
+                    pair.age(self._now)
 
     def _units(self) -> List[Tuple[str, "Fleet"]]:
         """The grid's fleet under "", then each meter's others hang under, by name."""
@@ -8124,17 +8196,17 @@ class Fleet:
             if log:
                 _cap_day(det, log, rows, a, b)
                 _recover_day(det, log, rows, a, b)
-            # ...the born-in signatures waiting for ever on a lift (Detector._judge_born)
-            for sig in det._judge_born(daily=True):
-                det._touch(sig.id)
-            # ...and the length split each signature's run memory shows (the owner,
+            # ...the born-in pairs waiting for ever on a lift (Detector._judge_born)
+            for pair in det._judge_born(daily=True):
+                det._touch(pair.id)
+            # ...and the length split each pair's run memory shows (the owner,
             # 2026-10-23: length decides here, with the runs' lengths in view, not live)
-            for sig in det.signatures:
-                if sig.learn_split() and det._home.get(sig.id) is not None:
-                    det._rejudge.add(det._home[sig.id])      # its device's merges are judged again (_merge_devices)
+            for pair in det.pairs:
+                if pair.learn_split() and det._home.get(pair.id) is not None:
+                    det._rejudge.add(det._home[pair.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
             det.mix_daily()                  # the groups' one-or-two tests and joins (run lifecycle)
-            det._join_families()             # the families a drifting start size cut apart (_join_neighbours)
+            det._join_signatures()             # the signatures a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:
         """How far behind the meters inside it a meter is read: its own
@@ -8660,7 +8732,7 @@ class Fleet:
 
     def _decide(self, m: Run) -> None:
         """File a house session done waiting (_ready_at), with its sub-meter
-        partner's say in which signature it joins - see SUB_OVERRIDE - or
+        partner's say in which pair it joins - see SUB_OVERRIDE - or
         else a one-device meter's energy's; placed where a meter saw it, if
         one did (_locate)."""
         main_iv = self._interval("")
@@ -8685,7 +8757,7 @@ class Fleet:
         self._owned = [row for row in self._owned if self._now - row[2] < 2.0 * MATCH_PATIENCE_S]
         for name, s, _ in self._owned:
             # every meter alike: _file_as decides what the pair means (a plug's
-            # identity signature, a 3EM's own signature)
+            # identity pair, a 3EM's own pair)
             tol, gain, mp = self._pair_tol(name, main_iv), self.gain(name, "p"), self.phase_map(name)
             mapped = {p for c in s.phases for p in (mp.get(c) or "")}
             if mapped and not set(m.phases) <= mapped:
@@ -8731,16 +8803,16 @@ class Fleet:
                  for a, b in ((old, new), (SWITCH_PREFIX + old, SWITCH_PREFIX + new))]
         for det in [self.main, *self.subs.values()]:
             det._rejudge_all = True              # born_in and takes_in are read by _merge_devices
-            for sig in det.signatures:
+            for pair in det.pairs:
                 for a, b in pairs:
-                    if a in sig.locations:
-                        sig.locations[b] = sig.locations.get(b, 0) + sig.locations.pop(a)
-                    if a in sig.inputs:
-                        sig.inputs[b] = sig.inputs.pop(a)
+                    if a in pair.locations:
+                        pair.locations[b] = pair.locations.get(b, 0) + pair.locations.pop(a)
+                    if a in pair.inputs:
+                        pair.inputs[b] = pair.inputs.pop(a)
                     # "setting=value" markers name the setting's entity
-                    if sig.born_in and sig.born_in.startswith(a + "="):
-                        sig.born_in = b + sig.born_in[len(a):]
-                    sig.takes_in = [b + t[len(a):] if t.startswith(a + "=") else t for t in sig.takes_in]
+                    if pair.born_in and pair.born_in.startswith(a + "="):
+                        pair.born_in = b + pair.born_in[len(a):]
+                    pair.takes_in = [b + t[len(a):] if t.startswith(a + "=") else t for t in pair.takes_in]
             for a, b in pairs:
                 for held in (det.numbers, det.inputs, det.input_time, det.input_until, det.lag_hist):
                     if a in held:
@@ -8836,22 +8908,22 @@ class Fleet:
         return [(role, e) for role, e in out if e is not None]
 
     def _file_main(self, m: Run, prefer: Optional[int] = None, avoid: Sequence[int] = ()) -> None:
-        """File a house session, and note on its signature which edges it
+        """File a house session, and note on its pair which edges it
         started, stepped and stopped with - see EDGE_LAG_REACH_S."""
         found = self._edges_of(m)
         for name in self.main.inputs:
             self._count_input_time(name, self._now)    # up to the clock, not the pass's end
         self.main._file(m, prefer=prefer, avoid=list(avoid) + self._held_homes(m))
         self.main._merge_devices()           # as each is filed, as a meter's own detector does
-        sig = self.main.signature_of(m)
-        if sig is None:
+        pair = self.main.pair_of(m)
+        if pair is None:
             return
         for role, edge in found:
-            used = sig.edges.setdefault(role, {})
+            used = pair.edges.setdefault(role, {})
             used[edge[1]] = used.get(edge[1], 0.0) + 1.0
 
     def _held_homes(self, m: Run) -> List[int]:
-        """Signatures placed at a meter that held its value through ``m``'s
+        """Pairs placed at a meter that held its value through ``m``'s
         start on a channel that may carry its phase - it did not start ``m``.
         The switch gate's test (SWITCH_GATE), with a meter's silence for the
         switch being off: a 2.3 kW load's last 1,064 W step and an unmetered
@@ -8861,16 +8933,16 @@ class Fleet:
         not start it either, as a plug that held did not (the unify audit,
         2026-10-03). See Fleet._meter_held."""
         held = {name for name in self.subs if any(self._meter_held(name, ph, m.start, True) for ph in m.phases)}
-        out = [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
-               and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in held)] if held else []
+        out = [pair.id for pair in self.main.pairs if pair.count >= YOUNG_COUNT
+               and any(pair.locations.get(name, 0) >= SWITCH_GATE * pair.count for name in held)] if held else []
         # ...and a run of the size of a run a meter holds open on its phase -
         # one the meter's own step started, since before this one - while that
         # meter held through this start: the level is that run's already, this
         # run another load of its size, not of the meter's run's kind - kept
-        # out of the signatures that run's device went to and those placed at
+        # out of the pairs that run's device went to and those placed at
         # the meter, however few of the meter's runs they hold. Home's
         # dehumidifier (Susilna's plug, 254-313 W from 20:00 to 16:00) shared
-        # its 263 W signature with 60 runs it never started - a 270 W workshop
+        # its 263 W pair with 60 runs it never started - a 270 W workshop
         # load cycling, a ramping one under Mansarda, a 400 W load's return
         # from a 6 s dip - 3.6 kWh: the plug, guessed a strip by its library,
         # was never asked above; its 20-hour runs, filed at their end, carried
@@ -8884,12 +8956,12 @@ class Fleet:
                         and self._meter_held(o.meter, ph, m.start, True)):
                     continue
                 homes = {self.main._current(int(sid)) for sid in self.main.start_homes(o.cluster)}
-                homes |= {sig.id for sig in self.main.signatures if sig.locations.get(o.meter, 0)}
+                homes |= {pair.id for pair in self.main.pairs if pair.locations.get(o.meter, 0)}
                 out += [sid for sid in sorted(homes) if sid not in out]
         return out
 
     def _switched_off(self, m: Run, main_iv: float) -> List[int]:
-        """Signatures placed at a switch that was off throughout ``m`` - see
+        """Pairs placed at a switch that was off throughout ``m`` - see
         SWITCH_GATE."""
         if not self.switch_on:
             return []
@@ -8900,23 +8972,23 @@ class Fleet:
                           for on, until in spans.items())}
         if not off:
             return []
-        return [sig.id for sig in self.main.signatures if sig.count >= YOUNG_COUNT
-                and any(sig.locations.get(name, 0) >= SWITCH_GATE * sig.count for name in off)]
+        return [pair.id for pair in self.main.pairs if pair.count >= YOUNG_COUNT
+                and any(pair.locations.get(name, 0) >= SWITCH_GATE * pair.count for name in off)]
 
-    def _place(self, m: Run, name: Optional[str], prefer: Optional[int]) -> Optional["Signature"]:
-        """File a house session - ``prefer`` the signature a meter's word
+    def _place(self, m: Run, name: Optional[str], prefer: Optional[int]) -> Optional["Pair"]:
+        """File a house session - ``prefer`` the pair a meter's word
         says it joins - and credit it to the meter ``name`` that saw it, if
         any, and to the switch whose on-period it is. The switch is read
         before filing: filing moves the locations it is read from."""
         main_iv = self._interval("")
         switch = self._switch_for(m, main_iv) if self.switch_on else None
         self._file_main(m, prefer=prefer, avoid=self._switched_off(m, main_iv))
-        sig = self.main.signature_of(m)
-        if sig is not None:
+        pair = self.main.pair_of(m)
+        if pair is not None:
             for where in (name, switch):
                 if where is not None:
-                    sig.locations[where] = sig.locations.get(where, 0) + 1
-        return sig
+                    pair.locations[where] = pair.locations.get(where, 0) + 1
+        return pair
 
     def _meter_single(self, name: str) -> bool:
         return self.holds_one_device(name)
@@ -8937,33 +9009,33 @@ class Fleet:
         """A meter other meters hang under holds several by definition (Home's
         Delavnica, Kozolec's Inverter); otherwise the library's shape, once it
         has something to say: at least METER_PHASES_MIN sightings, most of them
-        one signature. A young meter - one renamed on the Energy dashboard
+        one pair. A young meter - one renamed on the Energy dashboard
         starts again - holds several until it has shown otherwise, since hiding
         a meter's loads is the costly mistake (Kozolec's Inverter, three
         sightings in, looked like one). The runner asked the first part
         itself, so a bench replay with no declarations ran Home's Hiša - 52 %
-        of its 10,125 sightings one signature - as one device (2026-10-03)."""
+        of its 10,125 sightings one pair - as one device (2026-10-03)."""
         if any(p == name for p in self.parents.values()):
             return False
         det = self.subs.get(name)
-        counts = [s.count for s in det.signatures] if det else []
+        counts = [s.count for s in det.pairs] if det else []
         return sum(counts) >= METER_PHASES_MIN and max(counts) >= SUB_DEVICE_SHARE * sum(counts)
 
     def meter_phases(self) -> Dict[str, str]:
         """meter -> the phases its one device runs on, for every one-device
         meter old enough to say: the phase sets it has been credited at least
         METER_PHASES_MIN sightings of, together. Read off the locations the
-        house signatures already carry, so there is nothing new to keep."""
+        house pairs already carry, so there is nothing new to keep."""
         seen: Dict[str, Dict[str, int]] = {}
         one: Dict[str, bool] = {}            # holds_one_device, asked once per meter rather than per location
-        for sig in self.main.signatures:
-            for name, n in sig.locations.items():
+        for pair in self.main.pairs:
+            for name, n in pair.locations.items():
                 if n and (name in self.subs or name in self.switch_on):
                     if name not in one:
                         one[name] = self.holds_one_device(name)
                     if one[name]:
                         row = seen.setdefault(name, {})
-                        row[sig.phases] = row.get(sig.phases, 0) + n
+                        row[pair.phases] = row.get(pair.phases, 0) + n
         out = {}
         for name, row in seen.items():
             known = "".join(sorted({p for ph, n in row.items() if n >= METER_PHASES_MIN for p in ph}))
@@ -8972,17 +9044,17 @@ class Fleet:
         return out
 
     def _meter_home(self, name: str, m: Optional[Run] = None) -> Optional[int]:
-        """The house signature most of this meter's sessions went to - of
+        """The house pair most of this meter's sessions went to - of
         those on ``m``'s phases drawing what ``m`` drew, when asked for it:
         Home's dehumidifier plug had more of its sessions in an 18 W Hiša
-        signature (its fan running alone) than in its own 263 W one, and its
+        pair (its fan running alone) than in its own 263 W one, and its
         20-hour runs, one a night, were filed with the fan (2026-10-03)."""
-        sigs = self.main.signatures
+        pairs = self.main.pairs
         if m is not None:
             w = sum(m.power_by_phase().values())
-            sigs = [s for s in sigs if s.phases == m.phases
+            pairs = [s for s in pairs if s.phases == m.phases
                     and abs(sum(s.power.values()) - w) <= MATCH_EDGE_REL * max(w, sum(s.power.values()))]
-        best = max(sigs, key=lambda s: s.locations.get(name, 0), default=None)
+        best = max(pairs, key=lambda s: s.locations.get(name, 0), default=None)
         return best.id if best is not None and best.locations.get(name, 0) else None
 
     def _ready_at(self, m: Run, main_iv: float) -> float:
@@ -9016,38 +9088,38 @@ class Fleet:
 
     def _file_as(self, m: Run, name: str, s: Run) -> None:
         """File the house's session ``m`` as the sub-meter session ``s`` says:
-        a one-device meter's sessions pick the signature its device's went
+        a one-device meter's sessions pick the pair its device's went
         to (identity). A meter holding several is where the load lives (the owner,
         2026-10-03: "if a same load is detected by both meters, shouldn't the
         reading collapse into a single device anyway?"): it saw the load on
-        its own circuit, so the run is its session's signature's (``owner``)
+        its own circuit, so the run is its session's pair's (``owner``)
         and this library grows no copy of it - unless the user named the
-        signature the run's device files into here, or a name a reset carries
+        pair the run's device files into here, or a name a reset carries
         looks like the run: a name stays where it was given."""
         det = self.subs.get(name)
-        sub_sig = det.signature_of(s) if det is not None else None
+        sub_pair = det.pair_of(s) if det is not None else None
         if self.holds_one_device(name):
-            prefer = (self.identity.get(name) or {}).get(str(sub_sig.id)) if sub_sig is not None else None
+            prefer = (self.identity.get(name) or {}).get(str(sub_pair.id)) if sub_pair is not None else None
         else:
-            here = self.main.device_signature(m)
+            here = self.main.device_pair(m)
             prefer = here.id if here is not None and here.name else None
             if prefer is None and not self.main.awaited(m):
                 self._meter_owns(m, name, s)
                 return
-        sig = self._place(m, name, prefer)
+        pair = self._place(m, name, prefer)
         # ...and the device stays where its meter's word put it while that
-        # signature stands: a run a guard kept out of it (another phase, a
+        # pair stands: a run a guard kept out of it (another phase, a
         # meter that held through its start) is not where the device lives.
         # Home's hidrofor: one 998 W, eight-minute run kept out of its
-        # signature went to a 1 kW phase-A one, and the pump's next 102 runs
+        # pair went to a 1 kW phase-A one, and the pump's next 102 runs
         # followed it there (09-30 12:29, 2026-10-04)
         home = self.main._current(prefer) if prefer is not None else None
-        if sig is not None and sub_sig is not None and (home is None or self.main._sig(home) is None or sig.id == home):
-            self.identity.setdefault(name, {})[str(sub_sig.id)] = sig.id
+        if pair is not None and sub_pair is not None and (home is None or self.main._pair(home) is None or pair.id == home):
+            self.identity.setdefault(name, {})[str(sub_pair.id)] = pair.id
 
     def _meter_owns(self, m: Run, name: str, s: Run) -> None:
         """``m`` is meter ``name``'s session ``s``'s load's - see _file_as."""
-        m.parent_signature = (name, s)
+        m.parent_pair = (name, s)
         self._remember_owned(name, s)
         if self.main._day_from is not None:
             self.main._day_log.append(m)
@@ -9351,7 +9423,7 @@ class Fleet:
         Home's pump stopped at 11:20:08 (its plug -942 W) as a 3.2 kW load on
         its phase rose by about as much: the grid declared no fall, and the
         pump's 755 W run, freed by its plug's fall, stayed open two hours -
-        1.5 kWh in the hidrofor's signature (09-22, 2026-10-03). Only if the
+        1.5 kWh in the hidrofor's pair (09-22, 2026-10-03). Only if the
         meter still shows it stopped at ``upto``: Kozolec's car charger
         paused a minute at 15:02, too short for the grid to show, and its
         last 55 minutes went with the pause (09-20)."""
@@ -10120,8 +10192,8 @@ class Fleet:
         locations (2026-09-18). Tried when it is filed and once more
         MATCH_PATIENCE_S after its end, by when a slow meter has written past
         it."""
-        sig = self.main.signature_of(m)
-        if sig is None:
+        pair = self.main.pair_of(m)
+        if pair is None:
             return True
         main_iv = self._interval("")
         pairs = self._session_pairs([m], main_iv) + self._energy_pairs([m])
@@ -10130,12 +10202,12 @@ class Fleet:
         _, _, name, si = min(pairs, key=lambda x: (x[0], x[1]))
         if si is not None:
             self.pending_sub[name].pop(si)
-        sig.locations[name] = sig.locations.get(name, 0) + 1
+        pair.locations[name] = pair.locations.get(name, 0) + 1
         return True
 
-    # ------------------------------------------------ names: any meter's signature may wear one
-    # A signature is (meter, id), the grid's under "": a load inside a meter
-    # holding several devices is that meter's own signature (_file_as), and
+    # ------------------------------------------------ names: any meter's pair may wear one
+    # A pair is (meter, id), the grid's under "": a load inside a meter
+    # holding several devices is that meter's own pair (_file_as), and
     # named there it is a named load like any other (2026-10-03).
     def _volts_at(self, name: str, ph: str, t: float, before: bool) -> Optional[float]:
         """The voltage on meter ``name``'s phase ``ph`` just before ``t`` (or
@@ -10159,7 +10231,7 @@ class Fleet:
         out = {}
         for name, det in self.detectors():
             out[name or "grid"] = {
-                "steps": sum(len(c.recent) for c in det.edges), "signatures": len(det.signatures), "step_groups": len(det.edges),
+                "steps": sum(len(c.recent) for c in det.edges), "signatures": len(det.pairs), "step_groups": len(det.edges),
                 "order_pairs": len(det.order), "co_runs": len(det.co_run),
                 "day_readings": sum(len(c[0]) for c in det._day_rows.values()),
                 "declared": sum(len(st.declared) for st in det.phases.values()),
@@ -10171,29 +10243,29 @@ class Fleet:
         """Every meter's detector, the grid's under "" first, then by name."""
         return [("", self.main)] + sorted(self.subs.items(), key=lambda kv: kv[0])
 
-    def signature(self, ref: Tuple[str, int]) -> Optional["Signature"]:
-        """The signature ``ref`` is now, merges followed; None once gone."""
+    def pair(self, ref: Tuple[str, int]) -> Optional["Pair"]:
+        """The pair ``ref`` is now, merges followed; None once gone."""
         det = self._det(ref[0])
-        return det._sig(det._current(ref[1])) if det is not None else None
+        return det._pair(det._current(ref[1])) if det is not None else None
 
     def rename(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
         det = self._det(ref[0])
         return det is not None and det.rename(ref[1], name)
 
-    def family_head(self, ref: Tuple[str, int]) -> Optional["Signature"]:
-        """The biggest signature of family ``ref`` = (meter, family id)."""
+    def signature_head(self, ref: Tuple[str, int]) -> Optional["Pair"]:
+        """The biggest pair of signature ``ref`` = (meter, signature id)."""
         det = self._det(ref[0])
-        return det.family_head(ref[1]) if det is not None else None
+        return det.signature_head(ref[1]) if det is not None else None
 
-    def rename_family(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
+    def rename_signature(self, ref: Tuple[str, int], name: Optional[str]) -> bool:
         det = self._det(ref[0])
-        return det is not None and det.rename_family(ref[1], name)
+        return det is not None and det.rename_signature(ref[1], name)
 
     def adopt(self, ref: Tuple[str, int]) -> Optional[str]:
         det = self._det(ref[0])
         return det.adopt(ref[1]) if det is not None else None
 
-    def predecessor_of(self, ref: Tuple[str, int]) -> Optional["Signature"]:
+    def predecessor_of(self, ref: Tuple[str, int]) -> Optional["Pair"]:
         det = self._det(ref[0])
         return det.predecessor_of(ref[1]) if det is not None else None
 
@@ -10259,14 +10331,14 @@ class Fleet:
 
     def live_ceiling(self) -> Dict[str, float]:
         """name -> the most a read of it may show: LIVE_CAP_FACTOR times the
-        highest of its signatures' means and level tops, over the signatures
+        highest of its pairs' means and level tops, over the pairs
         seen at least LIVE_NAME_MIN_RUNS times (all of them for a name that
         has none yet)."""
         top: Dict[str, List[Tuple[int, float]]] = {}
         for _, det in self.detectors():
-            for sig in det.signatures:
-                if sig.name:
-                    top.setdefault(sig.name, []).append((sig.count, max(sig.watts, sig.high or 0.0)))
+            for pair in det.pairs:
+                if pair.name:
+                    top.setdefault(pair.name, []).append((pair.count, max(pair.watts, pair.high or 0.0)))
         out = {}
         for name, rows in top.items():
             seen = [w for n, w in rows if n >= LIVE_NAME_MIN_RUNS] or [w for _, w in rows]
@@ -10274,45 +10346,45 @@ class Fleet:
         return out
 
     def energy_by_name(self) -> Dict[str, float]:
-        """Wh each NAME has used, each signature's from its own meter's sessions."""
+        """Wh each NAME has used, each pair's from its own meter's sessions."""
         return self._summed(lambda d: d.energy_by_name())
 
     def hourly_by_name(self, name: str) -> Dict[int, float]:
         return dict(sorted(self._summed(lambda d: d.hourly_by_name(name)).items()))
 
     def take_older(self, name: str) -> Dict[int, float]:
-        """hour start -> Wh the signatures wearing ``name`` kept from before
-        they were named (Signature.older), now theirs no longer: their meter
+        """hour start -> Wh the pairs wearing ``name`` kept from before
+        they were named (Pair.older), now theirs no longer: their meter
         is owed it once, before its window."""
         out: Dict[int, float] = {}
         for _, det in self.detectors():
-            for sig in det.signatures:
-                if sig.name == name:
-                    for hour, wh in sig.older.items():
+            for pair in det.pairs:
+                if pair.name == name:
+                    for hour, wh in pair.older.items():
                         out[hour] = out.get(hour, 0.0) + wh
-                    sig.older = {}
+                    pair.older = {}
         return out
 
     def older_to_dict(self) -> dict:
-        """Every signature's older hours, meter -> id -> hour -> Wh: stored
+        """Every pair's older hours, meter -> id -> hour -> Wh: stored
         apart from the library, which a year of hours would swell."""
         out: Dict[str, dict] = {}
         for meter, det in self.detectors():
-            for sig in det.signatures:
-                hours = {str(h): _trim(wh, 1) for h, wh in sig.older.items() if wh >= 0.05 * TRIM}
+            for pair in det.pairs:
+                hours = {str(h): _trim(wh, 1) for h, wh in pair.older.items() if wh >= 0.05 * TRIM}
                 if hours:
-                    out.setdefault(meter, {})[str(sig.id)] = hours
+                    out.setdefault(meter, {})[str(pair.id)] = hours
         return out
 
     def load_older(self, d: dict) -> None:
-        """Hand stored older hours back, each to what its signature is now -
+        """Hand stored older hours back, each to what its pair is now -
         merged into another since they were stored, or gone with it."""
-        for meter, sigs in (d or {}).items():
-            for sid, hours in sigs.items():
-                sig = self.signature((meter, int(sid)))
-                if sig is not None:
+        for meter, pairs in (d or {}).items():
+            for sid, hours in pairs.items():
+                pair = self.pair((meter, int(sid)))
+                if pair is not None:
                     for h, wh in hours.items():
-                        sig.older[int(h)] = sig.older.get(int(h), 0.0) + float(wh)
+                        pair.older[int(h)] = pair.older.get(int(h), 0.0) + float(wh)
 
     def running(self, now: float) -> List[dict]:
         """Every load running now, ONCE: each grid run (legs started within
@@ -10341,7 +10413,7 @@ class Fleet:
             since = min(o.since for _, o, _ in run)
             meter = run[0][1].meter
             one = bool(meter) and self.holds_one_device(meter)
-            det, ref_meter, sig_ph, sig_w, where = self.main, "", phases, watts, None
+            det, ref_meter, pair_ph, pair_w, where = self.main, "", phases, watts, None
             if meter and meter in self.subs and not one:
                 sub = self.subs[meter]
                 found: Dict[int, tuple] = {}      # id(_Open) -> (channel, _Open, scale): one meter run, however many rises point at it
@@ -10355,22 +10427,22 @@ class Fleet:
                                     found[id(x)] = (c, x, sub.phases[c].open_scale())
                 if found:
                     det, ref_meter = sub, meter
-                    sig_ph = "".join(sorted({c for c, _, _ in found.values()}))
-                    sig_w = sum(x.watts * k for _, x, k in found.values())
+                    pair_ph = "".join(sorted({c for c, _, _ in found.values()}))
+                    pair_w = sum(x.watts * k for _, x, k in found.values())
                 where = meter
-            sid = det._guess(sig_ph, sig_w, now - since)
-            sig = next((s for s in det.signatures if s.id == sid), None) if sid is not None else None
+            sid = det._guess(pair_ph, pair_w, now - since)
+            pair = next((s for s in det.pairs if s.id == sid), None) if sid is not None else None
             if one:
-                name = (sig.name if sig else None) or meter
+                name = (pair.name if pair else None) or meter
             else:
-                name = sig.name if sig else None
+                name = pair.name if pair else None
                 if where is None:
-                    where = most_specific(sig.locations, sig.count, self.parents) if sig else "main"
-            ref = (ref_meter, sig.id) if sig else None
+                    where = most_specific(pair.locations, pair.count, self.parents) if pair else "main"
+            ref = (ref_meter, pair.id) if pair else None
             row = {"name": name, "ref": ref, "refs": {ref} if ref else set(),
                    "watts": watts, "phases": phases, "since": since,
                    "where": None if one or where == "main" else where,
-                   "tag": sig.guess().tag if sig and not name else ""}
+                   "tag": pair.guess().tag if pair and not name else ""}
             if name and name in rows:             # one device, one row
                 r = rows[name]
                 r["watts"] += watts
@@ -10390,7 +10462,7 @@ class Fleet:
         return {r["name"]: float(r["watts"]) for r in self.running(now_ts) if r["name"]}
 
     def running_refs(self, now_ts: float) -> Set[Tuple[str, int]]:
-        """(meter, id) of every signature believed on right now - running()'s."""
+        """(meter, id) of every pair believed on right now - running()'s."""
         return {ref for r in self.running(now_ts) for ref in r["refs"]}
 
     def name_descriptors(self) -> List[dict]:
@@ -10405,31 +10477,31 @@ class Fleet:
         for n in sorted({d["meter"] for d in descriptors if d.get("meter")}):
             self.subs.setdefault(n, Detector()).carry_names([d for d in descriptors if d.get("meter") == n])
 
-    def namable(self, one_device, min_count: int, min_wh: float) -> Dict[str, List[Tuple[Tuple[str, int], "Signature"]]]:
+    def namable(self, one_device, min_count: int, min_wh: float) -> Dict[str, List[Tuple[Tuple[str, int], "Pair"]]]:
         """What a person could name, by where it lives - ``where`` -> [((meter,
-        id), signature)], biggest first by what it costs and whether its row
+        id), pair)], biggest first by what it costs and whether its row
         says enough to recognise it (2026-09-18): not named yet, seen at
         least ``min_count`` times and used ``min_wh`` (2026-09-17: "as
-        for signatures only seen once, dont show them") - or what a named one
+        for pairs only seen once, dont show them") - or what a named one
         may have become, whatever its size.
 
-        Each meter offers its own signatures under its name, the grid its own
+        Each meter offers its own pairs under its name, the grid its own
         under "main": a load a meter below saw lives there - one holding one
         device (``one_device``) IS that device, one holding several offers it
         from its own library, seen alone on its circuit (2026-10-03:
         "shouldn't we display the most reliable sources"). A switch's stays
-        with the switch. A meter's signature whose runs the grid files under a
+        with the switch. A meter's pair whose runs the grid files under a
         name the user gave there is that named load already (_file_as)."""
         groups: Dict[str, list] = {}
         for meter, det in self.detectors():
             if meter and one_device(meter):
                 continue              # its own readings are that device (2026-09-28)
             twins = (self.identity.get(meter) or {}) if meter else {}
-            for s in det.signatures:
+            for s in det.pairs:
                 heir = det.predecessor_of(s.id) is not None
                 if s.name or not (heir or (s.count >= min_count and s.energy_wh >= min_wh)):
                     continue
-                twin = self.signature(("", twins[str(s.id)])) if str(s.id) in twins else None
+                twin = self.pair(("", twins[str(s.id)])) if str(s.id) in twins else None
                 if twin is not None and twin.name:
                     continue
                 where = most_specific(s.locations, s.count, self.parents)
@@ -10515,7 +10587,7 @@ class Fleet:
             ("rows", {p: [tuple(r) for r in v] for p, v in (carry.get("rows") or {}).items()}),
             *((k, {p: {t: x for t, x in v} for p, v in (carry.get(k) or {}).items()}) for k in ("q", "pv"))) if v}
         # a run's owner is the meter's own session, as its detector keeps it (_day_log, pending_sub, _unvoted):
-        # stored apart it is a copy that the filing (its signature) never reaches
+        # stored apart it is a copy that the filing (its pair) never reaches
         mine = {(n, x.phases, x.start, x.end): x for n, det in f.subs.items() for x in det._day_log}
         mine.update({(n, x.phases, x.start, x.end): x for n, v in f.pending_sub.items() for x in v})
         mine.update({(n, x.phases, x.start, x.end): x for _, n, _, x in f._unvoted})
@@ -10529,9 +10601,9 @@ class Fleet:
         f._recent_main = [(t, same(x)) for t, x in f._recent_main]
         f.main.held = [same(x) for x in f.main.held]
         for m in f.main._day_log:
-            if m.parent_signature and isinstance(m.parent_signature[1], Run):
-                o = m.parent_signature[1]
-                m.parent_signature = (m.parent_signature[0], mine.get((m.parent_signature[0], o.phases, o.start, o.end), o))
+            if m.parent_pair and isinstance(m.parent_pair[1], Run):
+                o = m.parent_pair[1]
+                m.parent_pair = (m.parent_pair[0], mine.get((m.parent_pair[0], o.phases, o.start, o.end), o))
         return f
 
 
@@ -10547,22 +10619,22 @@ def _booked(s: Run, ph: str) -> List[Tuple[float, float, float]]:
 
 
 def _hour_of(t: float, tz: float) -> int:
-    """The clock hour ``t`` falls in, as Signature.hourly keys it."""
+    """The clock hour ``t`` falls in, as Pair.hourly keys it."""
     return int(t - (t + tz) % 3600.0)
 
 
-def _unbook(sig: "Signature", by_hour: Dict[int, float], tz: float) -> None:
-    """Take Wh off a signature's hours, the hour-of-day and the weekday charts
+def _unbook(pair: "Pair", by_hour: Dict[int, float], tz: float) -> None:
+    """Take Wh off a pair's hours, the hour-of-day and the weekday charts
     with them - never below nothing: what it spread was its runs' union."""
     for hour, wh in by_hour.items():
         if wh <= 0:
             continue
-        if hour in sig.hourly:
-            sig.hourly[hour] = max(0.0, sig.hourly[hour] - wh)
+        if hour in pair.hourly:
+            pair.hourly[hour] = max(0.0, pair.hourly[hour] - wh)
         loc = hour + tz
         h, d = int(loc % 86400.0 // 3600.0), int((loc // 86400.0 + 3) % 7)   # 1970-01-01 was a Thursday
-        sig.hour_wh[h] = max(0.0, sig.hour_wh[h] - wh)
-        sig.day_wh[d] = max(0.0, sig.day_wh[d] - wh)
+        pair.hour_wh[h] = max(0.0, pair.hour_wh[h] - wh)
+        pair.day_wh[d] = max(0.0, pair.day_wh[d] - wh)
 
 
 def _floor_of(rows: Sequence[Tuple[float, float]], a: float, b: float, share: float) -> Optional[float]:
@@ -10584,7 +10656,7 @@ def _cap_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b
     its noise (REPAIR_SLACK_NOISE). At each moment the excess is taken from
     the runs then on that no meter measured (Run.wh) before the measured
     ones, the one open longest first; each run's Wh on the phase, and its
-    signature's hours, are what is left. A run booked at an EV charge's start
+    pair's hours, are what is left. A run booked at an EV charge's start
     for the whole tapering charge, or open hours past its stop until a floor
     fall (#16, #23, #26), keeps what the phase carried of it. Never adds: a
     run whose stop came too early keeps what it was booked (#37)."""
@@ -10630,15 +10702,15 @@ def _cap_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b
             s = runs[k]
             was = s.phase_wh(ph)
             s.wh[ph] = max(0.0, was - sum(by_hour.values()))
-            sig = det.signature_of(s) if s.parent_signature is None else None
-            if sig is not None:
-                _unbook(sig, by_hour, tz)
+            pair = det.pair_of(s) if s.parent_pair is None else None
+            if pair is not None:
+                _unbook(pair, by_hour, tz)
 
 
 def _two_modes(lens: Sequence[float]) -> Optional[int]:
     """The index into the sorted lengths where they split in two modes (the cut maximising the between-class
     variance of the log-lengths), or None: each side needs SPLIT_MIN_RUNS runs and the sides' medians
-    MATCH_DURATION_FACTOR apart. Over all of a family's lengths, not the last RUN_MEMORY: the gap rule of
+    MATCH_DURATION_FACTOR apart. Over all of a signature's lengths, not the last RUN_MEMORY: the gap rule of
     learn_split finds an outlier there, not a minority load's mode."""
     ordered = sorted(max(x, 1.0) for x in lens)
     n = len(ordered)
@@ -10673,15 +10745,15 @@ def _densest_window(hours: Sequence[float]) -> Tuple[float, float]:
 
 
 def _hint_split(det: "Detector") -> None:
-    """The daily repair's hints that a family is two loads (HINT_*): the lengths of its runs are in two modes
-    AND the rarer mode keeps to a few hours of the day. One hint alone never splits. The family's biggest
-    signature then takes the length split learn_split would have set (split_s, split_side); runs on the other
-    side are filed into a signature of their own, in the same family, from now on. Learning is untouched."""
-    for fid in list(det.family_runs):
-        rows = det.family_runs[fid]
-        members = [x for x in det.signatures if x.family == fid]
+    """The daily repair's hints that a signature is two loads (HINT_*): the lengths of its runs are in two modes
+    AND the rarer mode keeps to a few hours of the day. One hint alone never splits. The signature's biggest
+    pair then takes the length split learn_split would have set (split_s, split_side); runs on the other
+    side are filed into a pair of their own, in the same signature, from now on. Learning is untouched."""
+    for fid in list(det.signature_runs):
+        rows = det.signature_runs[fid]
+        members = [x for x in det.pairs if x.signature == fid]
         if not members:
-            del det.family_runs[fid]
+            del det.signature_runs[fid]
             continue
         head = max(members, key=lambda x: x.count)
         if len(rows) < HINT_MIN_RUNS or head.split_s is not None:
@@ -10786,19 +10858,19 @@ def _find_cycles(times: Sequence[float], res: Sequence[float], g0: float, g1: fl
 def _recover_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: float, b: float) -> None:
     """The day's repair, the other way from _cap_day: where a regular cycler's runs have a hole in them (RECOVER_*),
     its own steps are looked for in what the day's readings show beyond the runs booked, and the cycles found
-    are booked on its hours (Signature.recovered, as well as hourly) and in det.recovered_log. Its learning -
+    are booked on its hours (Pair.recovered, as well as hourly) and in det.recovered_log. Its learning -
     count, power, runs, edges - is never touched."""
     if not RECOVER_ON:
         return
     tz = det.tz_offset_s
     zone = timezone.utc if not tz else timezone(timedelta(seconds=tz))
     cache: Dict[str, Tuple[List[float], List[float]]] = {}
-    for sig in det.signatures:
-        ph = sig.phases
-        if len(ph) != 1 or sig.count < RECOVER_MIN_RUNS or ph not in rows or not rows[ph]:
+    for pair in det.pairs:
+        ph = pair.phases
+        if len(ph) != 1 or pair.count < RECOVER_MIN_RUNS or ph not in rows or not rows[ph]:
             continue
-        mine = sorted((s for s in log if ph in s.levels and det.signature_of(s) is sig), key=lambda s: s.start)
-        period, watts, dur = _period([s.start for s in mine]), sig.power.get(ph, 0.0), sig.duration_s
+        mine = sorted((s for s in log if ph in s.levels and det.pair_of(s) is pair), key=lambda s: s.start)
+        period, watts, dur = _period([s.start for s in mine]), pair.power.get(ph, 0.0), pair.duration_s
         if period is None or watts <= 0 or dur <= 0:
             continue
         starts = [a] + [s.start for s in mine] + [b]
@@ -10816,7 +10888,7 @@ def _recover_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: floa
         tol_w = min(max(RECOVER_POWER_REL * watts, 1.5 * noise), 0.5 * watts)
         spacing = _median([y - x for x, y in zip(times, times[1:])]) or 1.0
         win = max(RECOVER_WINDOW_S, 3.0 * spacing)
-        dur_tol = min(max(2.0 * sig.duration_mad, 0.25 * dur), 0.5 * dur)
+        dur_tol = min(max(2.0 * pair.duration_mad, 0.25 * dur), 0.5 * dur)
         for (g0, g1), (xl, xr) in zip(holes, hole_starts):
             quota = int((g1 - g0) // period) + 1
             anchors = [x for x in (xl, xr) if x is not None]
@@ -10826,14 +10898,14 @@ def _recover_day(det: "Detector", log: List[Run], rows: Dict[str, list], a: floa
                            for x in anchors):
                     continue
                 anchors.append(t0)
-                _book_recovered(sig, t0, t1, wh, zone)
+                _book_recovered(pair, t0, t1, wh, zone)
                 det.recovered_log.append(Run(phases=ph, start=t0, end=t1, levels={ph: [(t0, wh * 3600.0 / (t1 - t0))]},
-                                             wh={ph: wh}, quality=0.5, signature_id=sig.id))
+                                             wh={ph: wh}, quality=0.5, pair_id=pair.id))
     del det.recovered_log[:-RECOVER_LOG_KEEP]
 
 
-def _book_recovered(sig: "Signature", t0: float, t1: float, wh: float, zone) -> None:
-    """``wh`` over t0..t1 into the hours and days it occupied, as Signature._spread does, and into ``recovered``."""
+def _book_recovered(pair: "Pair", t0: float, t1: float, wh: float, zone) -> None:
+    """``wh`` over t0..t1 into the hours and days it occupied, as Pair._spread does, and into ``recovered``."""
     watts = wh * 3600.0 / (t1 - t0)
     t = t0
     while t < t1:
@@ -10841,11 +10913,11 @@ def _book_recovered(sig: "Signature", t0: float, t1: float, wh: float, zone) -> 
         into = moment.minute * 60 + moment.second + moment.microsecond / 1e6
         step = min(t1 - t, max(3600.0 - into, 1.0))
         part = watts * step / 3600.0
-        sig.hour_wh[moment.hour] += part
-        sig.day_wh[moment.weekday()] += part
+        pair.hour_wh[moment.hour] += part
+        pair.day_wh[moment.weekday()] += part
         hour = int(t - into)
-        sig.hourly[hour] = sig.hourly.get(hour, 0.0) + part
-        sig.recovered[hour] = sig.recovered.get(hour, 0.0) + part
+        pair.hourly[hour] = pair.hourly.get(hour, 0.0) + part
+        pair.recovered[hour] = pair.recovered.get(hour, 0.0) + part
         t += step
 
 
@@ -10952,7 +11024,7 @@ def implausible_baseline(baselines: Dict[str, float]) -> List[str]:
     phases and detected loads in that for days without a word (2026-09-22).
 
     Worth saying out loud precisely because nothing breaks: sessions still
-    open and close, signatures still form, and every one of them is nonsense.
+    open and close, pairs still form, and every one of them is nonsense.
     """
     return sorted(p.upper() for p, v in (baselines or {}).items()
                   if v is not None and v <= IMPLAUSIBLE_BASELINE_W)
@@ -10986,15 +11058,15 @@ def drop_stale_load_override(detection: dict) -> dict:
     return out
 
 
-def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: float,
+def offer_for_naming(worth: Sequence["Pair"], named: int, min_evidence: float,
                      min_rows: int, start_rows: int, rows_per_name: int,
-                     is_heir=None) -> List["Signature"]:
-    """Which of the namable signatures to put in front of someone, and how
+                     is_heir=None) -> List["Pair"]:
+    """Which of the namable pairs to put in front of someone, and how
     many.
 
     Two separate questions, and only the first is about the loads. WHICH is
     evidence: a house makes far more shapes than it has appliances, so a
-    signature has to have repeated, and repeated tightly, before it is worth
+    pair has to have repeated, and repeated tightly, before it is worth
     anyone's attention - but a bar that hides everything is worse than one set
     too low, so when too few clear it the best of the rest come along.
 
@@ -11003,16 +11075,16 @@ def offer_for_naming(worth: Sequence["Signature"], named: int, min_evidence: flo
     is put down unread. So the page opens with a handful and lengthens each
     time one is named - the right number of rows being a property of how much
     work someone has already done rather than of their house (the owner,
-    2026-09-22). Nothing is hidden for good; the library keeps every signature
+    2026-09-22). Nothing is hidden for good; the library keeps every pair
     and naming one brings more.
     """
     clear = clears_for_naming(worth, min_evidence, min_rows, is_heir)
     return clear[:max(start_rows + named * rows_per_name, min_rows)]
 
 
-def clears_for_naming(worth: Sequence["Signature"], min_evidence: float,
-                      min_rows: int, is_heir=None) -> List["Signature"]:
-    """WHICH of the namable signatures are worth someone's attention - the
+def clears_for_naming(worth: Sequence["Pair"], min_evidence: float,
+                      min_rows: int, is_heir=None) -> List["Pair"]:
+    """WHICH of the namable pairs are worth someone's attention - the
     first of offer_for_naming's two questions, split out because the page has
     to say how many are waiting behind it.
 
@@ -11030,22 +11102,22 @@ def clears_for_naming(worth: Sequence["Signature"], min_evidence: float,
     return clear
 
 
-def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> List[List[int]]:
-    """Signatures that look like different settings of ONE device.
+def suggest_levels(pairs: Sequence[Pair], recent: Sequence[dict]) -> List[List[int]]:
+    """Pairs that look like different settings of ONE device.
 
-    A hob on three settings looks like three signatures: same phases, the
+    A hob on three settings looks like three pairs: same phases, the
     same power factor, and - because it is one appliance - never two of them
     running at once. That is the whole test; the sizes are deliberately not
     compared, since settings can be any ratio. It is only a suggestion, and
     confirming it means giving them the same name."""
-    # Each signature's OWN record first, and the rolling session list on top
+    # Each pair's OWN record first, and the rolling session list on top
     # of it. The list alone was the whole evidence and it is far too short to
     # answer this at a busy house: 40 sessions over 2.1 hours holding 11 of
-    # Home's 199 signatures, so the kiln - fired 8.6 days ago, and split
-    # across sixteen balanced A+C signatures holding 304 sessions - could
+    # Home's 199 pairs, so the kiln - fired 8.6 days ago, and split
+    # across sixteen balanced A+C pairs holding 304 sessions - could
     # never be compared with a single one of its own settings.
     times: Dict[int, List[Tuple[float, float]]] = {
-        sig.id: list(sig.runs) for sig in signatures if sig.runs}
+        pair.id: list(pair.runs) for pair in pairs if pair.runs}
     for r in recent:
         times.setdefault(r["signature"], []).append((r["start"], r["end"]))
 
@@ -11056,8 +11128,8 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
                     return True
         return False
 
-    def compatible(a: Signature, b: Signature) -> bool:
-        # A NAMED signature belongs in this: naming one setting of a device is
+    def compatible(a: Pair, b: Pair) -> bool:
+        # A NAMED pair belongs in this: naming one setting of a device is
         # the moment its owner proved it real, and excluding it from the pool
         # switched off the very suggestion that would have found the other
         # fifteen settings of the same machine (the owner's kiln, 2026-09-22).
@@ -11111,16 +11183,16 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
             return False
         return not overlap(a.id, b.id)
 
-    pool = [s for s in signatures if s.count >= 2]
-    groups: List[List[Signature]] = []
-    for sig in sorted(pool, key=lambda x: -x.count):
+    pool = [s for s in pairs if s.count >= 2]
+    groups: List[List[Pair]] = []
+    for pair in sorted(pool, key=lambda x: -x.count):
         for g in groups:
-            if all(compatible(sig, m) for m in g):
-                g.append(sig)
+            if all(compatible(pair, m) for m in g):
+                g.append(pair)
                 break
         else:
-            groups.append([sig])
-    # A group needs something to DO: at least one signature still unnamed.
+            groups.append([pair])
+    # A group needs something to DO: at least one pair still unnamed.
     # A named one may anchor it - that is the whole point, since "these
     # fifteen belong to Peč za Glino" is the useful sentence - but once every
     # member is named the matter is settled and repeating it is noise.
@@ -11128,21 +11200,21 @@ def suggest_levels(signatures: Sequence[Signature], recent: Sequence[dict]) -> L
             if len(g) > 1 and any(not x.name for x in g)]
 
 
-def input_groups(signatures: Sequence[Signature]) -> List[List[int]]:
+def input_groups(pairs: Sequence[Pair]) -> List[List[int]]:
     """Loads tied to values of the SAME setting - a washer's heater in its
     wash phase, its drum in its spin - as one device's parts or settings.
     Unlike suggest_levels this needs no likeness between them: a heater and
     a drum motor share nothing but the machine, which the setting names."""
     by_setting: Dict[str, List[int]] = {}
-    for sig in signatures:
-        got = sig.strongest_input()
+    for pair in pairs:
+        got = pair.strongest_input()
         if got:
-            by_setting.setdefault(got[0], []).append(sig.id)
+            by_setting.setdefault(got[0], []).append(pair.id)
     return [sorted(ids) for ids in by_setting.values() if len(ids) > 1]
 
 
 def most_specific(locations: Dict[str, int], count: int, parents: Optional[Dict[str, Optional[str]]] = None) -> str:
-    """Which meter a signature belongs to, given the Energy dashboard's
+    """Which meter a pair belongs to, given the Energy dashboard's
     nesting. A load seen by both the workshop's meter and the boiler's is the
     BOILER's - the deepest meter that saw it, not the widest. ``parents`` maps
     a meter to the meter it sits inside (``included_in_stat``)."""
@@ -11195,7 +11267,7 @@ def on_phases(phases: str) -> str:
     return "on phases " + ", ".join(ps[:-1]) + f" and {ps[-1]}"
 
 
-def same_device_phrase(others: Sequence["Signature"], limit: int = 2) -> str:
+def same_device_phrase(others: Sequence["Pair"], limit: int = 2) -> str:
     """What the naming page says about a load that may be another setting of
     the same device: the OTHER loads, described, since the rows they are on
     are often not on the page at all. "set 4 of one device" said nothing to
@@ -11319,10 +11391,10 @@ def location_confidence(locations: Dict[str, int], count: int,
     return round(1.0 - min(1.0, (max(locations.values()) / count) if locations else 0.0), 2)
 
 
-def signature_rows(signatures, tz, parents: Optional[Dict[str, Optional[str]]] = None) -> List[dict]:
-    """The signature library as the Signature library sensor shows it, best
+def pair_rows(pairs, tz, parents: Optional[Dict[str, Optional[str]]] = None) -> List[dict]:
+    """The pair library as the Pair library sensor shows it, best
     evidence first. Nothing in a row depends on the clock - no "ran 5 min ago",
-    no "running" flag, no age: a row changes only when its signature does, so
+    no "running" flag, no age: a row changes only when its pair does, so
     Home Assistant writes no new state, and sends nothing to a dashboard, for a
     pass that filed nothing. Dashboards work the age out of ``last_seen_ts`` and
     the running ids from the Detected loads sensor's ``running_ids``."""
@@ -11332,6 +11404,7 @@ def signature_rows(signatures, tz, parents: Optional[Dict[str, Optional[str]]] =
          "system_phases": [display_phase(p) for p in s.phases if p in PHASES],
          "watts_by_phase": {p.upper(): round(w) for p, w in s.power.items()}, "count": s.count,
          "typical_duration_s": round(s.duration_s), "typical_interval_s": None if s.interval_s is None else round(s.interval_s),
+         "interval_spread_s": None if s.interval_mad is None else round(s.interval_mad),
          "pf": None if s.pf is None else round(s.pf, 2),
          "pf_mad": round(s.pf_mad, 3), "last_seen": datetime.fromtimestamp(s.last_seen, tz).isoformat(),
          "last_seen_ts": round(s.last_seen),
@@ -11348,5 +11421,5 @@ def signature_rows(signatures, tz, parents: Optional[Dict[str, Optional[str]]] =
          "guess": s.guess().to_dict(),
          "where_confidence": location_confidence(s.locations, s.count, parents)}
         # same order as the naming page: best evidence first
-        for s in sorted(signatures, key=lambda x: (-x.evidence, -x.count))
+        for s in sorted(pairs, key=lambda x: (-x.evidence, -x.count))
     ]

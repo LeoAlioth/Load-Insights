@@ -1,4 +1,4 @@
-"""What KIND of thing a signature might be. Pure.
+"""What KIND of thing a pair might be. Pure.
 
 Electrical shape cannot name a device - a hair dryer and a fan heater are
 the same two kilowatts - but it does say which FAMILY a load belongs to, and
@@ -304,7 +304,7 @@ def appliance(family: Optional[str], watts: float, pf: Optional[float], levels: 
     s: Dict[str, float] = {}
 
     if family == MOTOR_3P:
-        # The strongest signature in either house: almost nothing else in a
+        # The strongest pair in either house: almost nothing else in a
         # home is a balanced three-phase motor, and a workshop is full of them.
         s[WORKSHOP] = (_band(watts, 700, 1200, 7000, 12000)
                        * _band(duration_s, 2, 6, 600, 3600)

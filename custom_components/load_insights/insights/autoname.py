@@ -26,10 +26,10 @@ KINDS = (FRIDGE_KIND, HEATER_KIND)
 
 # ---------------------------------------------------------------- the bar
 # Shared. Evidence is the detector's own "a real repeating load" score
-# (`Signature.evidence`); 0.7 is the naming page's bar (`DEFAULT_MIN_EVIDENCE`),
+# (`Pair.evidence`); 0.7 is the naming page's bar (`DEFAULT_MIN_EVIDENCE`),
 # and the hand-named loads that are fridges or heaters at Home all sit above it
 # (Mansarda's fridge and freezer 0.85 / 0.71) while Kozolec's fridges, split by
-# the detector over dozens of signatures, sit at 0.5-0.67 and so are NOT
+# the detector over dozens of pairs, sit at 0.5-0.67 and so are NOT
 # named automatically (the plan says so).
 MIN_EVIDENCE = 0.7
 MIN_DAYS_ACTIVE = 3            # weekdays the load has energy on; ten days of history, so ~ days seen
@@ -60,7 +60,7 @@ DAYS_TO_REVOKE = 7                 # consecutive days it has NOT cleared before 
 KEEP_DAYS = 30                     # how many past days a candidate remembers
 
 # One device or two: look-alikes share a name. The detector splits one fridge
-# over several signatures (Kozolec's two fridges over 30), so a second look-alike
+# over several pairs (Kozolec's two fridges over 30), so a second look-alike
 # is never "Fridge 2" - only a load of another size or phase is.
 SAME_WATTS = 0.25                  # within this share of the larger
 TOMBSTONE_WATTS = 0.15             # an owner's removal covers a load this close in size...
@@ -69,7 +69,7 @@ TOMBSTONE_DURATION = 2.0           # ...and within this factor in duration
 
 @dataclass(frozen=True)
 class Facts:
-    """What the recogniser reads of one signature. Optional fields may be None
+    """What the recogniser reads of one pair. Optional fields may be None
     (the exported attribute does not carry them): a None skips its test."""
     ref: Tuple[str, int]
     phases: str
@@ -334,6 +334,12 @@ def plan_dashboard(devices: Sequence[dict], wanted: Dict[str, str], added: Seque
         elif stat not in listed:
             added.remove(stat)
             declined.append(stat)
+    for i, d in enumerate(new):
+        # one of ours whose meter is now known, or has changed: nested under it - never un-nested, so a parent
+        # the owner set by hand on one of ours stays where it is when we know none
+        stat = d.get("stat_consumption")
+        if stat in added and stat in wanted and parents and parents.get(stat) and d.get("included_in_stat") != parents[stat]:
+            new[i] = {**d, "included_in_stat": parents[stat]}
     for stat, name in sorted(wanted.items()):
         if stat in declined or any(d.get("stat_consumption") == stat for d in new):
             continue
@@ -344,19 +350,19 @@ def plan_dashboard(devices: Sequence[dict], wanted: Dict[str, str], added: Seque
     return (new if new != list(devices) else None), added, declined
 
 
-# ---------------------------------------------------------------- reading a signature, and the owner's hand
+# ---------------------------------------------------------------- reading a pair, and the owner's hand
 def key_of(ref: Tuple[str, int]) -> str:
     return f"{ref[0]}#{ref[1]}"
 
 
-def facts_of(ref: Tuple[str, int], sig) -> Facts:
-    """The Facts of a ``Signature`` (duck-typed: this module imports no detector)."""
-    g = sig.guess()
-    return Facts(ref=ref, phases=sig.phases, watts=float(sig.watts), duration_s=float(sig.duration_s),
-                 interval_s=sig.interval_s, count=sig.count, span_days=max(0.0, sig.last_seen - sig.first_seen) / 86400.0,
-                 evidence=sig.evidence, hour_wh=list(sig.hour_wh), day_wh=list(sig.day_wh),
-                 level_count=sig.level_count, interval_mad=sig.interval_mad, guess_kind=g.kind,
-                 guess_confidence=g.confidence, appliance=g.appliance, named=sig.name)
+def facts_of(ref: Tuple[str, int], pair) -> Facts:
+    """The Facts of a ``Pair`` (duck-typed: this module imports no detector)."""
+    g = pair.guess()
+    return Facts(ref=ref, phases=pair.phases, watts=float(pair.watts), duration_s=float(pair.duration_s),
+                 interval_s=pair.interval_s, count=pair.count, span_days=max(0.0, pair.last_seen - pair.first_seen) / 86400.0,
+                 evidence=pair.evidence, hour_wh=list(pair.hour_wh), day_wh=list(pair.day_wh),
+                 level_count=pair.level_count, interval_mad=pair.interval_mad, guess_kind=g.kind,
+                 guess_confidence=g.confidence, appliance=g.appliance, named=pair.name)
 
 
 def reconcile(marks: Dict[str, dict], present: Iterable[str]) -> Tuple[Dict[str, dict], List[Tombstone]]:
@@ -377,7 +383,7 @@ def reconcile(marks: Dict[str, dict], present: Iterable[str]) -> Tuple[Dict[str,
 def claimed(f: Facts, kind: str, owned: Iterable[Tuple[str, dict]], fridge_word) -> bool:
     """Does an owner-named load already stand for this one - the detector having
     split a load the owner named? ``owned`` is (name, descriptor) of every
-    signature wearing a name that is not ours. A fridge is claimed by a
+    pair wearing a name that is not ours. A fridge is claimed by a
     fridge-worded name (``fridge_word(name)``) of the same phases and size; a
     heater by any owner-named load of the same phases and size (an element's
     power is exact)."""

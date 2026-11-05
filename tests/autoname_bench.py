@@ -1,15 +1,15 @@
-"""The auto-naming bar against real signatures (INS-21; plan docs/auto-naming-plan.md).
+"""The auto-naming bar against real pairs (INS-21; plan docs/auto-naming-plan.md).
 
     python3 tests/autoname_bench.py                # data/autoname/{home,kozolec,andrejg}.json + lib_{home,kozolec}.json
 
 Two sources per site, both read-only:
-  * the LIVE export of the detected-loads sensor's `signatures` attribute (with
+  * the LIVE export of the detected-loads sensor's `pairs` attribute (with
     the owner's names; carries no first/last-seen or level count, so those
     tests are skipped or read from the description),
   * `lib_<site>.json`: a production-style replay of the last ten days
-    (`tools/dumplib.py` style: every meter's signatures with all fields, NO
+    (`tools/dumplib.py` style: every meter's pairs with all fields, NO
     names - a replay has none).
-Prints, per source, every signature that clears the bar and, for the export,
+Prints, per source, every pair that clears the bar and, for the export,
 each hand-named load with what stopped it.
 """
 import json
@@ -56,7 +56,7 @@ def main() -> None:
         if path.exists():
             d = json.loads(path.read_text())
             names = {r: n for n, refs in d["named_loads"].items() for r in refs if isinstance(r, int)}
-            print(f"=== {site}: live export, {len(d['signatures'])} signatures, named {sorted(d['named_loads'])}")
+            print(f"=== {site}: live export, {len(d['signatures'])} pairs, named {sorted(d['named_loads'])}")
             clearing, hand = [], []
             for s in d["signatures"]:
                 f = facts_from_export(s, names)
@@ -76,7 +76,7 @@ def main() -> None:
             rows = [(facts_from_lib(s), s) for s in d["sigs"]]
             clearing = [(f, A.recognise(f)) for f, _ in rows]
             clearing = [(f, v) for f, v in clearing if v.kind]
-            print(f"=== {site}: ten-day replay, {len(rows)} signatures (every meter)")
+            print(f"=== {site}: ten-day replay, {len(rows)} pairs (every meter)")
             for f, v in clearing:
                 print(f"  CLEARS {v.kind:7} {line(f)}")
             print(f"  -> {len(clearing)} clear the bar")
