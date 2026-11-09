@@ -362,6 +362,15 @@ def _sum_phases(readings) -> Dict[str, list]:
     return out
 
 
+def _profiled(prof, job):
+    """Run ``job`` under ``prof`` in the calling (executor) thread."""
+    prof.enable()
+    try:
+        return job()
+    finally:
+        prof.disable()
+
+
 class DetectionRunner(DataUpdateCoordinator[None]):
     """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
@@ -426,6 +435,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
+        # load_insights.profile_passes: the passes still to profile, the profiler, and each pass's timings
+        self._profile_left = 0
+        self._profiler = None
+        self._profile_rows: List[dict] = []
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
         self._pass_rows: Optional[tuple] = None
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
@@ -1265,6 +1278,39 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         async with self._lock:
             await self._persist(force=True)
 
+    def profile_passes(self, passes: int) -> None:
+        """Profile the detection of the next ``passes`` passes (load_insights.profile_passes,
+        2026-11-09): what a pass costs on the site's own hardware, which a replay on a
+        laptop cannot say (Home's Yellow: 2.6-9.5 s a pass against 71 ms replayed).
+        cProfile in the executor thread fleet.process runs in - Home Assistant's own
+        profiler sees only the event loop's thread."""
+        import cProfile  # noqa: PLC0415 - only when asked for
+        self._profiler = cProfile.Profile()
+        self._profile_left = passes
+        self._profile_rows = []
+
+    async def _profile_pass_done(self) -> None:
+        self._profile_rows.append(dict(self.last_pass))
+        self._profile_left -= 1
+        if self._profile_left > 0:
+            return
+        prof, passes = self._profiler, self._profile_rows
+        self._profiler, self._profile_rows = None, []
+        path, report = await self.hass.async_add_executor_job(self._profile_report, prof)
+        _LOGGER.warning("Load Insights profile of %d passes, written to %s\nEach pass: %s\n%s",
+                        len(passes), path, passes, report)
+
+    def _profile_report(self, prof) -> tuple:
+        import io  # noqa: PLC0415
+        import pstats  # noqa: PLC0415
+        path = self.hass.config.path(f"load_insights_profile_{dt_util.utcnow():%Y%m%dT%H%M%S}.pstats")
+        prof.dump_stats(path)
+        out = io.StringIO()
+        stats = pstats.Stats(prof, stream=out).strip_dirs()
+        stats.sort_stats("tottime").print_stats(25)
+        stats.sort_stats("cumulative").print_stats(30)
+        return path, out.getvalue()
+
     def _older(self) -> dict:
         return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
 
@@ -1475,20 +1521,30 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 read = time.monotonic()
                 self._pass_rows = None
                 self.fleet.wait_cap_s = self.meter_wait_s
-                await self.hass.async_add_executor_job(
+                job = functools.partial(
                     self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
                     dict(self.q_quantum), single, switches or None, numbers or None,
                     inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None,
                 )
-                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
+                if self._profiler is not None:
+                    job = functools.partial(_profiled, self._profiler, job)
+                await self.hass.async_add_executor_job(job)
+                detected = time.monotonic()
+                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(detected - read, 1),
                                   "hours": round((end - start).total_seconds() / 3600.0, 2)}
                 self.samples_read += sum(len(rows) for rows in samples.values())
                 self._update_live_power(end.timestamp())
                 self.last_processed = end
                 self.caught_up = end >= now - timedelta(minutes=1)
                 self.last_run = now
+                # what the event loop itself spends after detection (2026-11-09, Home's freezes)
+                live = time.monotonic()
+                self.last_pass["live_s"] = round(live - detected, 2)
                 await self._persist()
+                self.last_pass["persist_s"] = round(time.monotonic() - live, 2)
+                listeners = time.monotonic()
                 self.async_update_listeners()
+                self.last_pass["listeners_s"] = round(time.monotonic() - listeners, 2)
                 if self.caught_up and self.refiling:
                     self.refiling = False
                     # the ten days re-read are the named loads' history now
@@ -1497,10 +1553,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 if not self.caught_up:
                     # keep slicing without waiting the minute
                     self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
+                dashboard = time.monotonic()
                 try:
                     await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
                 except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
                     _LOGGER.exception("Energy dashboard list failed")
+                self.last_pass["dashboard_s"] = round(time.monotonic() - dashboard, 2)
+                self.last_pass["total_s"] = round(time.monotonic() - began, 1)
+                if self._profiler is not None:
+                    await self._profile_pass_done()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection run failed")
 

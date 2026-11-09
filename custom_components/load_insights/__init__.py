@@ -18,6 +18,7 @@ from .const import (
     DOMAIN,
     SERVICE_BACKFILL_STATISTICS,
     SERVICE_NAME_LOAD,
+    SERVICE_PROFILE_PASSES,
     SERVICE_RESET_DETECTION,
 )
 from .coordinator import InsightsCoordinator
@@ -151,6 +152,14 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
                 _LOGGER.info("Not backfilling %s yet: its energy meter has no hour of its own; "
                              "it is filled once it has", name)
 
+    async def _profile_passes(call) -> None:
+        """Profile the next passes' detection on this machine; the report goes to the log
+        and a .pstats file in the config folder (2026-11-09)."""
+        runner = runner_of(_loaded(hass))
+        if runner is None:
+            raise ServiceValidationError("Load Insights is still loading; try again once it has")
+        runner.profile_passes(int(call.data.get("passes", 10)))
+
     # Renamed entities: gathered for a few seconds - a rename tool changes
     # dozens at once - then followed in one options change per entry, which
     # reloads it once. Registered here rather than per entry so a rename that
@@ -190,6 +199,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_RESET_DETECTION, _reset_detection)
     hass.services.async_register(DOMAIN, SERVICE_NAME_LOAD, _name_load)
     hass.services.async_register(DOMAIN, SERVICE_BACKFILL_STATISTICS, _backfill_statistics)
+    hass.services.async_register(DOMAIN, SERVICE_PROFILE_PASSES, _profile_passes)
     return True
 
 
