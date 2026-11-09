@@ -204,9 +204,29 @@ NOQ = False                            # NOQ=1: the replay ignores reactive powe
 # (2026-11-09: at Home the grid meter shows a cloud's change ~9 s before the inverter's reading does, median over
 # 168 jumps on 9 Nov - every cloud edge a phantom step in grid + inverter). A bench dial while it is measured.
 INV_LAG = 0.0
+# INV_INTERP=1: the inverter's part of each phase interpolated linearly between its readings onto the grid meter's
+# times, instead of held: it reports every ~6 s, the grid every ~2.4 s, and during a cloud's ramp a held inverter
+# makes grid + inverter drift and snap back at each of its readings. A bench dial while it is measured.
+INV_INTERP = False
 _flag = lambda v: bool(float(v))  # noqa: E731
 OWN = {"CADENCE": str, "SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag,
-       "INV_LAG": float}
+       "INV_LAG": float, "INV_INTERP": _flag}
+
+
+def _interpolated(rows: list, onto: list) -> list:
+    """``rows`` (time, value) linearly interpolated at each time of ``onto`` that falls between two of its readings,
+    together with its own readings; before its first and after its last reading nothing is invented."""
+    if len(rows) < 2:
+        return rows
+    ts = [t for t, _ in rows]
+    out = list(rows)
+    for t, _ in onto:
+        i = bisect.bisect_right(ts, t)
+        if 0 < i < len(rows) and ts[i - 1] < t:
+            (t0, v0), (t1, v1) = rows[i - 1], rows[i]
+            out.append((t, v0 + (v1 - v0) * (t - t0) / (t1 - t0)))
+    out.sort()
+    return out
 CADENCE = "auto"                     # CADENCE=shellies: every Shelly meter reports on change, the rest on a timer, as production's settings say
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
@@ -268,6 +288,9 @@ def _prod_house(s: dict, key=None, site: str = "home") -> dict:
         amps = {p: early(s.get(f"{stem}_ac_current_{p}") or []) for p in "abc"}
         if key and INV_LAG:
             key = key + ("inv_lag", INV_LAG)
+        if key and INV_INTERP:
+            key = key + ("inv_interp",)
+        smooth = (lambda rows, p: _interpolated(rows, m1.get(p) or [])) if INV_INTERP else (lambda rows, p: rows)  # noqa: E731
         gv = {p: s.get(f"{gstem}_ac_voltage_{p}n") or [] for p in "abc"}
         mapping = P.phase_mapping(P.voltage_votes(volts, gv)) if all(volts.values()) and all(gv.values()) else {}
         if key and len(mapping) == 3 and all(amps.values()):
@@ -276,8 +299,8 @@ def _prod_house(s: dict, key=None, site: str = "home") -> dict:
         def build():
             if len(mapping) == 3 and all(amps.values()):
                 per = P.share_split(inv, volts, amps, mapping, "abc")
-                return {p: D.combine([(rows, sign), (per[p], 1.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
-            return {p: D.combine([(rows, sign), (inv, 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
+                return {p: D.combine([(rows, sign), (smooth(per[p], p), 1.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
+            return {p: D.combine([(rows, sign), (smooth(inv, p), 1.0 / 3.0)], settle_s=D.COMBINE_SETTLE_S) for p, rows in m1.items()}
         for p, rows in (R._cached(key, build) if key else build()).items():
             s[SITES[site]["main"][p]] = rows
             # what the inverter added to each reading, the detector's array as
