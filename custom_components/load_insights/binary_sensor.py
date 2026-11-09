@@ -8,7 +8,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import CONF_HEAT_DEVICES
 from .detection import DetectionRunner
@@ -53,7 +52,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._name in self._runner.fleet.active_by_name(dt_util.utcnow().timestamp())
+        return self._name in self._runner.active_by_name()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -63,7 +62,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
         return {
             # the grid's by id, a meter's as "Mansarda#11"; its phases are its own meter's
             "signatures": [ref_label(r) for r in refs],
-            "watts": round(fleet.active_by_name(dt_util.utcnow().timestamp()).get(self._name, 0.0)),
+            "watts": round(self._runner.active_by_name().get(self._name, 0.0)),
             "sessions_seen": sum(s.count for s in pairs),
             "phases": "".join(sorted({p for s in pairs for p in s.phases})).upper(),
         }

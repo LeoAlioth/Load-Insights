@@ -439,6 +439,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._profile_left = 0
         self._profiler = None
         self.last_hourly_check: Dict[str, float] = {}
+        self._active_memo: Optional[tuple] = None      # see active_by_name
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
@@ -1154,6 +1155,17 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 out.append((where, [(ref[id(x)], x) for x in shown], max(0, len(clear) - len(shown))))
         out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for _, x in g[1])))
         return out
+
+    def active_by_name(self) -> Dict[str, float]:
+        """Fleet.active_by_name now, worked out once for all the named loads' running sensors after a
+        pass: each asks twice, which was 146 walks of every open run a pass at Home for one answer
+        (2026-11-09). Kept while no pass has run since and within the same second; a rename reloads
+        the entry, so a new runner. Shared: read it, never write."""
+        now = dt_util.utcnow().timestamp()
+        key = (self.last_processed, int(now))
+        if self._active_memo is None or self._active_memo[0] != key:
+            self._active_memo = (key, self.fleet.active_by_name(now))
+        return self._active_memo[1]
 
     def named(self) -> list:
         """Every named load as ``((meter, id), pair)``, biggest first, wherever it was seen."""
