@@ -26,6 +26,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -52,7 +53,6 @@ from .const import (
     NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_METER_WAIT,
-    DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     PREFETCH_MAX_MIN,
     HISTORY_SAVE_INTERVAL_S,
@@ -372,7 +372,7 @@ def _profiled(prof, job):
 
 
 class DetectionRunner(DataUpdateCoordinator[None]):
-    """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
+    """Every minute of the clock (_on_minute), read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and pairs persist in
@@ -455,6 +455,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
+        self._stopping = False
         # what detection named by itself and put on the Energy dashboard (INS-21)
         self.autonamer = AutoNamer(self)
 
@@ -1392,7 +1393,20 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return
         self.entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, self._hour_compiled))
-        self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+        # a caught-up pass starts on the clock's minute (the owner, 2026-11-09), not a minute after
+        # the last one ended, which made every pass's own length drift the schedule (65-80 s at Home)
+        self.entry.async_on_unload(async_track_time_change(self.hass, self._on_minute, second=0))
+        self.hass.async_create_task(self.async_refresh())
+
+    @callback
+    def _on_minute(self, _now) -> None:
+        """A pass at every minute of the clock, but never two at once: one still running skips
+        this minute. While catching up the passes chain by themselves (CATCH_UP_PASS_S)."""
+        if self._stopping or self.entry.pref_disable_polling:
+            return
+        if self._lock.locked():
+            _LOGGER.debug("The last pass is still running; skipping this minute's")
+            return
         self.hass.async_create_task(self.async_refresh())
 
     async def async_reset(self, forget_names: bool = False) -> None:
@@ -1429,6 +1443,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.hass.async_create_task(self.async_refresh())
 
     async def async_stop(self) -> None:
+        self._stopping = True                    # nor does the clock start one
         await self.async_shutdown()              # no pass starts after this
         # A reload - every options change is one - used to drop whatever was
         # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
@@ -1449,7 +1464,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return
         async with self._lock:
             try:
-                self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+                self.update_interval = None      # the clock starts the next one (_on_minute)...
                 began = time.monotonic()
                 try:
                     await asyncio.wait_for(get_instance(self.hass).async_block_till_done(), RECORDER_FLUSH_S)
@@ -1551,7 +1566,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     self.entry.async_create_background_task(
                         self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
                 if not self.caught_up:
-                    # keep slicing without waiting the minute
+                    # ...but behind, keep slicing without waiting for it
                     self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
                 dashboard = time.monotonic()
                 try:
