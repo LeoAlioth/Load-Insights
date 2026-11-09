@@ -5772,9 +5772,11 @@ class Detector:
         for pair in self._judge_born():
             self._touch(pair.id)
         if self.orphan_names:
-            # a name lands on a pair as it stands after this filing
+            # a name lands on a pair as it stands after this filing; each waiting name described once,
+            # not once per pair (Home's twelve waiting names, 194,520 descriptions in ten passes, 2026-11-09)
+            described = [_described(o) for o in self.orphan_names]
             for pair in self.pairs:
-                self._reclaim(pair, noise)
+                self._reclaim(pair, noise, described)
         self._prune(s.end)
 
     def _judge_born(self, daily: bool = False) -> List["Pair"]:
@@ -6846,7 +6848,7 @@ class Detector:
         n = sum(w for b, w in hk.items() if lo <= b <= hi)
         if n < PAIR_MIN_RUNS:
             return False
-        seen = sum(c.count for c in self.edges) or 1.0
+        seen = None             # every edge's count, summed only for a key that needs it (2026-11-09, Home profile)
         p = 1.0
         for name, kind in keyed.items():
             if not kind:
@@ -6859,6 +6861,8 @@ class Detector:
             near = sum(self.lag_hist.get(name) or [])
             if window is None or not near:
                 return False
+            if seen is None:
+                seen = sum(c.count for c in self.edges) or 1.0
             p *= min(1.0, near / seen) * min(1.0, (window[1] - window[0]) / (2 * EDGE_LAG_REACH_S))
         expected = p * sum(w for b, w in h.items() if lo <= b <= hi)
         return above_chance(n, expected)
@@ -7584,7 +7588,7 @@ class Detector:
         found = self._input_context(s)
         return self._device_pair(device, found[0] if found else None, (), s.phases)
 
-    def _reclaim(self, pair: "Pair", noise_w: float) -> None:
+    def _reclaim(self, pair: "Pair", noise_w: float, described: List["Pair"]) -> None:
         """Give a rebuilt pair back the name a reset took from it.
 
         The same test that decides two pairs are one load decides this,
@@ -7595,11 +7599,12 @@ class Detector:
         if pair.name or not self.orphan_names:
             return
         for i, orphan in enumerate(self.orphan_names):
-            if _described(orphan).alike(pair, noise_w):
+            if described[i].alike(pair, noise_w):
                 for m in self.signature_of(pair):
                     m.name = orphan.get("name")
                     self._touch(m.id)
                 self.orphan_names.pop(i)
+                described.pop(i)
                 return
 
     def rename(self, pair_id: int, name: Optional[str]) -> bool:
