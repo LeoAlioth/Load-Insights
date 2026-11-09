@@ -142,13 +142,13 @@ CONF_BASE_LOAD = "base_load_meters"
 CONF_BASE_LOAD_PHASES = "base_load_phases"
 BASE_LOAD_GRID = "grid"
 BASE_LOAD_MIN_W = 2.0
-# How often the recorder is re-read: every minute. The pass itself costs well
-# under a millisecond and its overheads no longer scale with it - one query
-# rather than one per entity, and the state written hourly rather than every
-# pass (2026-09-18). It was a setting until 2026-10-01, for a large site
-# or slow storage; a slower one bought latency, not accuracy, and an entry
-# that stored one keeps it unread.
-DETECTION_INTERVAL_MINUTES = 1
+# How often the recorder is re-read: every minute, on the clock's minute
+# (detection._on_minute, 2026-11-09; until then a minute after the last pass
+# ended). The pass itself costs well under a millisecond and its overheads no
+# longer scale with it - one query rather than one per entity, and the state
+# written hourly rather than every pass (2026-09-18). It was a setting until
+# 2026-10-01, for a large site or slow storage; a slower one bought latency,
+# not accuracy, and an entry that stored one keeps it unread.
 DETECTION_BACKFILL_DAYS = 10
 DETECTION_SLICE_HOURS = 6
 PREFETCH_MAX_MIN = 15         # a pass this short reads every meter in one recorder query (detection._prefetch)

@@ -293,7 +293,7 @@ def _meter_wait_field(defaults: dict) -> dict:
     say what an evidence of 0.7 should be; the second is a floor under each
     phase's MEASURED noise that 1 to 10 W left the scored loads alone at both
     sites - DEFAULT_MIN_EVIDENCE and MIN_NOISE_W. How often the recorder is
-    re-read followed (2026-10-01): DETECTION_INTERVAL_MINUTES."""
+    re-read followed (2026-10-01): every minute (detection._on_minute)."""
     return {vol.Optional(CONF_METER_WAIT, default=defaults.get(CONF_METER_WAIT, METER_WAIT_CAP_S)):
             selector.NumberSelector(selector.NumberSelectorConfig(
                 min=0, max=300, step=5, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX))}
