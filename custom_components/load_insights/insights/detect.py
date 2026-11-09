@@ -1136,14 +1136,14 @@ MAX_PAIRS = 200
 ESTABLISHED_EVIDENCE = 0.5
 ESTABLISHED_HORIZON_S = 400 * 86400.0
 YOUNG_COUNT = 3
-# BENCH DIAL (2026-11-09, the owner: bench a cap on young pairs): at most this many young pairs keep the grace's
-# protection, the most recently seen; the rest are fair game like any other. 0 = no cap. Home kept ~900 one-run
-# pairs (841 of 1,138) under PRUNE_GRACE_S, and every filing walks them (alike, input_lift, _prune).
-YOUNG_CAP = 0
-# BENCH DIAL (2026-11-09, the owner: bench a narrower cap): with it set, YOUNG_CAP counts only one-run pairs under
-# this many watts (most of Home's young pairs: 503 of 899 under 100 W); larger first sightings - a kiln, a washer -
-# keep the full grace. 0 = YOUNG_CAP counts every young pair.
-YOUNG_CAP_W = 0.0
+# At most this many young pairs keep PRUNE_GRACE_S's protection, the most recently seen; the rest are fair game
+# like any other (2026-11-09, the owner). Live Home kept ~900 young pairs under the 6 h grace (one-off midday runs,
+# ~1.9 founded a minute) and every filing walks them. Policy, benched on Home/Kozolec/third 10 days: caps 200 / 100
+# / 50 / 20 / 10 all raise Home's right kWh and cut its wrong kWh (100: hidden partition +3.25 / -3.48 kWh, fed
+# partition +1.99 / -1.46), Kozolec and the third site unchanged (<= 0.6 kWh); the kiln check identical at 100 and
+# 20 (244 full-size, top pair x134). 100 keeps a new pair ~36 minutes at Home's founding rate, enough for a load
+# that repeats within the hour; one that runs once a day is not benchable here (no metered one).
+YOUNG_CAP = 100
 # A NAMED pair is never evicted, so when its load CHANGES - a kiln put on
 # a different programme, an element replaced - the name stays attached to a
 # fingerprint nothing matches any more while the successor sits unnamed. The
@@ -7528,9 +7528,8 @@ class Detector:
         # another, which is the lockout again wearing a different hat. What
         # bounds it in practice is reality (a house has so many loads), the
         # thirty-day horizon, and the grace period on the young.
-        capped = [x for x in tiers[2] if not YOUNG_CAP_W or (x.count <= 1 and abs(x.watts) < YOUNG_CAP_W)]
-        if YOUNG_CAP and len(capped) > YOUNG_CAP:
-            young = sorted(capped, key=lambda x: x.last_seen)
+        if YOUNG_CAP and len(tiers[2]) > YOUNG_CAP:
+            young = sorted(tiers[2], key=lambda x: x.last_seen)
             gone = {id(x) for x in young[:-YOUNG_CAP]}
             tiers[3] += young[:-YOUNG_CAP]
             tiers[2] = [x for x in tiers[2] if id(x) not in gone]     # library order kept, as without the cap
