@@ -441,6 +441,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.last_hourly_check: Dict[str, float] = {}
         self._active_memo: Optional[tuple] = None      # see active_by_name
         self._names_memo: Optional[tuple] = None       # see names_now
+        self._input_cache: Dict[str, tuple] = {}       # see _check_input_cache: (since, end, states) per input
+        self.input_cache_check: Dict[str, object] = {}
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
@@ -779,6 +781,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 states = await get_instance(self.hass).async_add_executor_job(
                     history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
                 )
+            await self._check_input_cache(eid, domain, since, end, states.get(eid, []))
             rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
             if domain in NUMBER_DOMAINS:
                 values = []
@@ -1167,6 +1170,44 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if self._active_memo is None or self._active_memo[0] != key:
             self._active_memo = (key, self.fleet.active_by_name(now))
         return self._active_memo[1]
+
+    async def _check_input_cache(self, eid: str, domain: str, since: datetime, end: datetime, full: list) -> None:
+        """CHECK MODE, nothing reads its result (2026-11-09): _read_inputs re-reads SWITCH_MEMORY_S (4 h) of
+        every input's history at every pass - ~1 s of each pass at Home, 19 inputs. Kept rows plus only what
+        came since the last read would do, if they are the same rows; that hangs on how the recorder hands
+        back the state in force at a window's start, which no replay here can show. So both are built and
+        compared, row by row (state, last_updated, the attribute a climate or fan is read by), and the count
+        and first difference go to the diagnostics (input_cache_check). Switched on only once it reads 0."""
+        def key(st):
+            attr = st.attributes.get("hvac_action") if domain == "climate" else (
+                st.attributes.get("percentage") if domain == "fan" else None)
+            return (st.state, round(st.last_updated.timestamp(), 3), attr)
+
+        kept = self._input_cache.get(eid)
+        self._input_cache[eid] = (since, end, list(full))
+        if kept is None or kept[1] < since or kept[0] > since:
+            return
+        recorder = get_instance(self.hass)
+        if domain in ("climate", "fan"):
+            new = await recorder.async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, kept[1], end, [eid],
+                include_start_time_state=False, significant_changes_only=False))
+        else:
+            new = await recorder.async_add_executor_job(
+                history.state_changes_during_period, self.hass, kept[1], end, eid, True, False, None, False)
+        old = [st for st in kept[2] if st.last_updated >= since]
+        before = [st for st in kept[2] if st.last_updated < since]
+        start = before[-1:]                     # the state in force at since, as the recorder's start row
+        built = [key(st) for st in start + old] + [key(st) for st in new.get(eid, []) if st.last_updated > kept[1]]
+        want = [key(st) for st in full]
+        c = self.input_cache_check
+        c["compared"] = c.get("compared", 0) + 1
+        if built != want:
+            c["different"] = c.get("different", 0) + 1
+            if "first" not in c:
+                i = next((i for i, (a, b) in enumerate(zip(built, want)) if a != b), min(len(built), len(want)))
+                c["first"] = {"entity": eid, "at": i, "built": [str(x) for x in built[i:i + 2]],
+                              "full": [str(x) for x in want[i:i + 2]], "lengths": [len(built), len(want)]}
 
     def names_now(self) -> Dict[str, list]:
         """Fleet.names, worked out once per pass and second for every entity that reads it: each
