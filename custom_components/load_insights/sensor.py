@@ -560,6 +560,18 @@ class DetectedLoadsSensor(_DetectionBase):
         super().__init__(runner, entry, "detected_loads")
         # HA opens an integration's entry from this, highlighted; it has no link into an options-flow step
         self._link = f"/config/integrations/integration/{DOMAIN}#config_entry={entry.entry_id}"
+        self._slow = None
+
+    def _slow_parts(self) -> tuple:
+        """(the refs offered for naming, the look-alike suggestions), worked out again when a name
+        changes or every LIBRARY_REFRESH_S, not every pass: on Home's Yellow this sensor's update was
+        0.64 s of the event loop a pass, most of it these two walks of the whole library (2026-11-09)."""
+        det = self._runner.detector
+        names, now = tuple(sorted(self._runner.fleet.names())), time.monotonic()
+        if self._slow is None or self._slow[0] != names or now - self._slow[1] >= LIBRARY_REFRESH_S:
+            offered = {ref for _, rows, _ in self._runner.naming_groups() for ref, _ in rows}
+            self._slow = (names, now, offered, suggest_levels(det.pairs, det.recent))
+        return self._slow[2], self._slow[3]
 
     @property
     def native_value(self) -> Optional[int]:
@@ -574,10 +586,10 @@ class DetectedLoadsSensor(_DetectionBase):
             return datetime.fromtimestamp(ts, tz).isoformat()
         rows = self._runner.fleet.running(now)
         running = {i for r in rows for m, i in r["refs"] if m == ""}
+        offered, levels = self._slow_parts()
         return {
             # every load on now, once, as a list for a Markdown card (Fleet.running)
-            "running_markdown": running_markdown(
-                rows, self._link, {ref for _, offered, _ in self._runner.naming_groups() for ref, _ in offered}, now=now),
+            "running_markdown": running_markdown(rows, self._link, offered, now=now),
             "active": [
                 {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
                  "signature": a["signature"], "name": a.get("name")}
@@ -608,7 +620,7 @@ class DetectedLoadsSensor(_DetectionBase):
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
             # names detection gave by itself (insights/autoname.py), told from the owner's
             "auto_named": {n: m.get("kind") for n, m in sorted(self._runner.autonamer.marks.items())},
-            "looks_like_one_device": suggest_levels(det.pairs, det.recent),
+            "looks_like_one_device": levels,
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
@@ -647,15 +659,17 @@ class PairLibrarySensor(_DetectionBase):
         self._written = 0.0
 
     def _library_shape(self) -> tuple:
-        """What a card must see at once: which pairs exist, where, under which name and signature."""
-        return tuple((m, x.id, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs)
+        """What a card must see at once: the named pairs, where, and their signature. Not every pair:
+        Home founds one nearly every minute (584 -> 750 in a morning), which kept the write per pass;
+        a new pair is not offered for naming before it has runs enough anyway."""
+        return tuple((m, x.id, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs if x.name)
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Written at once when a pair comes, goes, is named or joins another signature; its figures
-        (counts, energy, last seen) at most every LIBRARY_REFRESH_S. Every pass's counts moved, so every
-        pass rewrote ~370 kB of attributes and sent them to every open dashboard: at Home ~1.8 s of the
-        event loop a pass, the websocket's send_frame alone 12.8 s over ten passes (2026-11-09)."""
+        """Written at once when a name comes, goes or moves; the rest (new pairs, counts, energy, last
+        seen) at most every LIBRARY_REFRESH_S. Every pass's counts moved, so every pass rewrote ~370 kB
+        of attributes and sent them to every open dashboard: at Home ~1.8 s of the event loop a pass, the
+        websocket's send_frame alone 12.8 s over ten passes (2026-11-09)."""
         shape, now = self._library_shape(), time.monotonic()
         if shape == self._shape and now - self._written < LIBRARY_REFRESH_S:
             return
