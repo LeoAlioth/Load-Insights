@@ -7973,6 +7973,7 @@ class Fleet:
     _stops_used: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False)   # see _meter_stop
     # meter -> (phase, run, closed at) of the runs it owned the last day - see _meter_wh
     _owned_runs: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
+    _levels_memo: Dict[tuple, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _kept_levels
     wait_cap_s: float = field(default=0.0, metadata=DERIVED)   # set by the runner - see METER_WAIT_CAP_S
     # how far behind its meters the grid is read now, and the MODEL_REFRESH_S
     # step of the clock it was worked out at - see _horizon
@@ -9861,11 +9862,13 @@ class Fleet:
             return None
         kept = self._owned_runs.setdefault(name, [])
         kept[:] = [r for r in kept if r[2] > at - MAX_OPEN_S]
+        self._levels_memo = {k: v for k, v in self._levels_memo.items() if k[3] > at - MAX_OPEN_S}
         runs = [(o, mine)]
         for p, x, end in [(p, x, math.inf) for p, st in self.main.phases.items() for x in st.open_edges] + kept:
             if x is o or x.meter != name or x.since >= at or end <= o.since:
                 continue
-            got = self._run_levels(name, p, x, min(end, at))
+            got = (self._kept_levels(name, p, x, end) if end <= at and end <= self._now - 2.0 * MATCH_PATIENCE_S
+                   else self._run_levels(name, p, x, min(end, at)))
             if got is not None and set(got[2]) & set(mine[2]):
                 runs.append((x, got, end))
         kept.append((ph, o, at))
@@ -9881,6 +9884,18 @@ class Fleet:
             w = level(low[1], t0) * gain * o.watts / sum(r[0].watts for r in now)
             wh += max(0.0, w) * (t1 - t0)
         return wh / 3600.0
+
+    def _kept_levels(self, name: str, ph: str, x: "_Open", end: float):
+        """_run_levels of a kept run that ended ``end``, long enough before the clock that the meter's
+        steps over it are all in: kept while its phase map is the same object (phase_map keeps it until
+        the votes move). Every close of a meter's run read the levels of every run it owned in the last
+        MAX_OPEN_S again - 4,274 rebuilds in 144 replayed live passes (2026-11-09)."""
+        mp = self.phase_map(name)
+        key = (name, ph, id(x), end)
+        hit = self._levels_memo.get(key)
+        if hit is None or hit[0] is not x or hit[1] is not mp:
+            hit = self._levels_memo[key] = (x, mp, self._run_levels(name, ph, x, end))
+        return hit[2]
 
     def _run_levels(self, name: str, ph: str, o: "_Open", until: float):
         """(the rise of meter ``name`` for run ``o`` on grid phase ``ph``,
