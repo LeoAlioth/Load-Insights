@@ -1941,6 +1941,12 @@ def running_markdown(rows: List[dict], link: str, offered=frozenset(), cap: int 
     return "\n".join(lines[:cap] + ([f"- … {len(lines) - cap} more"] if len(lines) > cap else []))
 
 
+def _reclaim_mark(pair: "Pair") -> tuple:
+    """Everything of ``pair`` that ``_described(o).alike(pair, noise)`` reads, for a pair not born in a value."""
+    return (pair.phases, pair.name, pair.split_s, pair.split_side, pair.duration_s, tuple(sorted(pair.power.items())),
+            pair.power_mad, pair.count, pair.pf, pair.pf_mad)
+
+
 def _described(orphan: dict) -> "Pair":
     """A carried name's description as a pair to compare with (alike)."""
     return Pair(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
@@ -5402,6 +5408,9 @@ class Detector:
     _dev_pos: Dict[int, int] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     _rejudge: Set[int] = field(default_factory=set, repr=False, compare=False, metadata=DERIVED)
     _rejudge_all: bool = field(default=True, repr=False, compare=False, metadata=DERIVED)
+    # the waiting names (orphan_names) and, per pair id, (its _reclaim_mark, the noise) at which none of them was
+    # alike - see _file; any change of the names starts it again
+    _reclaim_seen: Tuple[tuple, Dict[int, tuple]] = field(default=((), {}), repr=False, compare=False, metadata=DERIVED)
     # per phase|direction|inputs: bin -> recency-weighted steps, and when it
     # last faded - see EDGE_BATCH; its segments, cut at every step (EDGE_RECUT)
     edge_hist: Dict[str, Dict[int, float]] = field(default_factory=dict, repr=False, compare=False)
@@ -5879,14 +5888,32 @@ class Detector:
         for pair in self._judge_born():
             self._touch(pair.id)
         if self.orphan_names:
+            self._reclaim_all(noise)
+        self._prune(s.end)
+
+    def _reclaim_all(self, noise: float) -> None:
+        """After a filing: each unnamed pair offered to the names a reset left waiting (_reclaim)."""
+        if self.orphan_names:
             # a name lands on a pair as it stands after this filing; each waiting name described once,
             # not once per pair (Home's twelve waiting names, 194,520 descriptions in ten passes, 2026-11-09)
             described = [_described(o) for o in self.orphan_names]
             wanted = {d.phases for d in described}         # alike is False across phase sets: ask only those
+            # a pair no waiting name was alike to, unchanged since and at no more noise, is not asked again: alike
+            # reads only the figures in _reclaim_mark (a name's description has no name, split, value or spread) and
+            # a larger noise only widens it. 36,498 alike calls in ten passes at Home, ~0.07 s a pass (2026-11-09)
+            names = tuple(o.get("name") for o in self.orphan_names)
+            if self._reclaim_seen[0] != names:
+                self._reclaim_seen = (names, {})
+            seen = self._reclaim_seen[1]
             for pair in self.pairs:
                 if pair.phases in wanted and not pair.name:
+                    mark = None if pair.born_in else _reclaim_mark(pair)     # born in a value: input_lift too
+                    was = seen.get(pair.id)
+                    if mark is not None and was is not None and was[0] == mark and noise <= was[1]:
+                        continue
                     self._reclaim(pair, noise, described)
-        self._prune(s.end)
+                    if mark is not None and not pair.name:
+                        seen[pair.id] = (mark, noise)
 
     def _judge_born(self, daily: bool = False) -> List["Pair"]:
         """A born-in pair that has seen its value come round
