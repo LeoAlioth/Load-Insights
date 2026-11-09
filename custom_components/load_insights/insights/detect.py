@@ -1492,6 +1492,15 @@ def _trim(value, places: int):
     return round(value, places) if isinstance(value, float) and TRIM else value
 
 
+def _rows_trimmed(rows, tp: int, vp: int) -> list:
+    """[[time, value], ...] of numeric rows at their stored precision: _trim on each, without its two
+    calls a value - the readings' ~1 million values were three quarters of a save's walk (2026-11-09).
+    round leaves an int as it is, as _trim does."""
+    if not TRIM:
+        return [[t, v] for t, v in rows]
+    return [[round(t, tp), round(v, vp)] for t, v in rows]
+
+
 # What is stored is rounded (_trim, and the histograms below): a restart costs
 # the library that rounding, by design, for a third less store. The bench's
 # RESTART dial switches it off (TRIM = 0) to ask the other question - does a
@@ -7775,7 +7784,7 @@ class Detector:
                 # the day's runs and readings, for the day's repair (Fleet._repair): what a restart mid-day must not lose
                 "rejudge": sorted(self._rejudge), "rejudge_all": self._rejudge_all,
                 "day_log": [x.to_dict() for x in self._day_log],
-                "day_rows": {ph: [[_trim(t, 3), _trim(w, 1)] for t, w in zip(*cols)] for ph, cols in self._day_rows.items()},
+                "day_rows": {ph: _rows_trimmed(zip(*cols), 3, 1) for ph, cols in self._day_rows.items()},
                 # the size density kept between steps, as it stands: worked out afresh it can differ by a float's last
                 # digit, and a valley cut on a plateau then lands elsewhere (see Detector._valleys)
                 "dens": {g: {"order": [k for k, _ in sorted(st[1].items(), key=lambda kv: kv[1])], "lo": st[2], "dens": list(st[3])}
@@ -10622,7 +10631,7 @@ class Fleet:
         (2026-11-09). The pieces are made as they are written, not before."""
         yield "main", self.main.to_dict()
         yield "subs", ((n, d.to_dict()) for n, d in self.subs.items())
-        yield "volts", {n: {p: [[_trim(t, 3), _trim(v, 2)] for t, v in rows] for p, rows in byp.items()}
+        yield "volts", {n: {p: _rows_trimmed(rows, 3, 2) for p, rows in byp.items()}
                         for n, byp in self.volts.items()}
         yield from self._state().items()
 
@@ -10640,7 +10649,7 @@ class Fleet:
                 "unvoted": [[t, n, final, s.to_dict()] for t, n, final, s in self._unvoted],
                 "recent_main": [[t, s.to_dict()] for t, s in self._recent_main],
                 "meter_gain": self.meter_gain,
-                "sub_rows": {n: {c: [[_trim(t, 3), _trim(w, 1)] for t, w in rows] for c, rows in chans.items()}
+                "sub_rows": {n: {c: _rows_trimmed(rows, 3, 1) for c, rows in chans.items()}
                              for n, chans in self.sub_rows.items()},
                 "sub_from": self._sub_from, "sub_seed": self._sub_seed, "aged_to": self._aged_to, "now": self._now,
                 "stops_used": [[n, t, u] for (n, t), u in self._stops_used.items()],
