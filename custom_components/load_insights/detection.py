@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,15 +19,18 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     COMPRESSED_STATE_LAST_UPDATED,
     COMPRESSED_STATE_STATE,
+    EVENT_HOMEASSISTANT_FINAL_WRITE,
     EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
     UnitOfEnergy,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.json import json_bytes
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
+from homeassistant.util.json import load_json
 
 from .const import (
     GRID_PREFIX,
@@ -74,6 +78,7 @@ from .insights.detect import (
     _sum_series,
     without_window_start,
     names_in_store,
+    dump_items,
     carries_load,
     unit_scale,
     exports_positive,
@@ -424,7 +429,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
         self._pass_rows: Optional[tuple] = None
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
-        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
+        # the library: a Store's file, but written and read by _write_store / async_start,
+        # not through Store - see _write_store
+        self._store_key = f"{DOMAIN}.{entry.entry_id}.detection"
+        self._store_path = hass.config.path(STORAGE_DIR, self._store_key)
         # the hours confident unnamed loads keep past the window
         # (Pair.older), apart from the library they would swell
         self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
@@ -1198,7 +1206,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         until shutdown - and an ungraceful one would lose everything since the
         last write. So the delayed save is the safety net (it also registers
         Home Assistant's final-write listener, which is what makes a clean
-        shutdown durable) and the elapsed check is the floor.
+        shutdown durable) and the elapsed check is the floor. The library
+        itself is no Store's any more (_write_store): its safety net is
+        _final_write, the elapsed check its floor as before.
+
+        Every caller holds _lock or runs when no pass can (async_stop), so
+        nothing changes the library while _write_store walks it.
         """
         now = dt_util.utcnow().timestamp()
         due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
@@ -1212,17 +1225,45 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         else:
             self._history.async_delay_save(self._older, HISTORY_SAVE_INTERVAL_S)
         if force or due:
-            await self._store.async_save(self._snapshot())
+            await self.hass.async_add_executor_job(self._write_store)
             self._saved_at = now
-        else:
-            self._store.async_delay_save(self._snapshot, SAVE_MAX_INTERVAL_S)
 
-    def _snapshot(self) -> dict:
-        return {"fleet": self.fleet.to_dict(),
-                "last_processed": self.last_processed.isoformat() if self.last_processed else None,
-                "refiling": self.refiling,
-                "carry": self.carries,
-                "generation": DETECTOR_GENERATION}
+    def _snapshot_items(self):
+        yield "fleet", self.fleet.dict_items()
+        yield "last_processed", self.last_processed.isoformat() if self.last_processed else None
+        yield "refiling", self.refiling
+        yield "carry", self.carries
+        yield "generation", DETECTOR_GENERATION
+
+    def _write_store(self) -> None:
+        """The library straight to its file, a meter's detector at a time, in
+        an executor thread (2026-11-09). Through Store it was one ~21 MB dict
+        (Home), built in the event loop and then serialised whole: on Home's
+        2 GB Yellow, already in swap, that froze Home Assistant for 50-130 s
+        once an hour ("Finished fetching load_insights detection data in 51.4
+        seconds" against 5-11 s for an ordinary pass). The file is the Store's
+        own - same path, same envelope, Home Assistant's own encoder, compact
+        instead of indented - so a library saved either way loads either way;
+        it is replaced atomically, as Store does. Not through Store because the
+        Store manager remembers which files existed when Home Assistant started:
+        a file it did not write would read as missing at the next reload."""
+        began = time.monotonic()
+        tmp = f"{self._store_path}.tmp"
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        with open(tmp, "wb") as fh:
+            dump_items(fh.write, iter([("version", STORAGE_VERSION), ("minor_version", 1), ("key", self._store_key),
+                                       ("data", self._snapshot_items())]), json_bytes)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self._store_path)
+        _LOGGER.debug("Library saved: %.1f MB in %.1f s", os.path.getsize(self._store_path) / 1e6,
+                      time.monotonic() - began)
+
+    async def _final_write(self, _event) -> None:
+        """Home Assistant is stopping: write the library once more (a stop does
+        not unload the entry, so async_stop does not run)."""
+        async with self._lock:
+            await self._persist(force=True)
 
     def _older(self) -> dict:
         return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
@@ -1261,7 +1302,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                    for inv in (self.entry.options.get(CONF_INVERTERS) or []))
 
     async def async_start(self) -> None:
-        raw = await self._store.async_load() or {}
+        # the file _write_store writes, or a Store wrote before it: the same envelope
+        stored = await self.hass.async_add_executor_job(load_json, self._store_path, {})
+        raw = (stored.get("data") if isinstance(stored, dict) else None) or {}
         orphans: list = []
         if raw and raw.get("generation") != DETECTOR_GENERATION:
             # The library was learned by a detector that no longer exists, so
@@ -1297,6 +1340,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             # the steps store of its own is gone: a step group keeps its steps
             # (StepGroup.recent, 2026-10-30) - the old file removed
             await self._steps.async_remove()
+        self.entry.async_on_unload(
+            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_FINAL_WRITE, self._final_write))
         if not self.enabled:
             return
         self.entry.async_on_unload(

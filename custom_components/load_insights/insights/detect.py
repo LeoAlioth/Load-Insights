@@ -28,6 +28,7 @@ import math
 import operator
 import statistics
 from collections import ChainMap
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -1860,6 +1861,22 @@ def _described(orphan: dict) -> "Pair":
     return Pair(id=-1, phases=orphan.get("phases") or "", power=dict(orphan.get("power") or {}),
                      duration_s=orphan.get("duration_s") or 0.0, pf=orphan.get("pf"), count=1,
                      first_seen=0.0, last_seen=0.0)
+
+
+def dump_items(write, items, dumps) -> None:
+    """Write (key, value) pairs as one JSON object, a value at a time: a value
+    that is itself an iterator of pairs is written the same way, nested, so the
+    writer never holds more than one piece of the whole. `dumps` turns one
+    value into bytes (the runner passes Home Assistant's own, the Store's)."""
+    write(b"{")
+    for i, (key, value) in enumerate(items):
+        write(b"," if i else b"")
+        write(dumps(str(key)) + b":")
+        if isinstance(value, Iterator):
+            dump_items(write, value, dumps)
+        else:
+            write(dumps(value))
+    write(b"}")
 
 
 def names_in_store(raw: dict) -> List[dict]:
@@ -10515,10 +10532,18 @@ class Fleet:
         return groups
 
     def to_dict(self) -> dict:
-        return {"main": self.main.to_dict(), "subs": {n: d.to_dict() for n, d in self.subs.items()},
-                "volts": {n: {p: [[_trim(t, 3), _trim(v, 2)] for t, v in rows] for p, rows in byp.items()}
-                          for n, byp in self.volts.items()},
-                **self._state()}
+        return {k: dict(v) if k == "subs" else v for k, v in self.dict_items()}
+
+    def dict_items(self):
+        """to_dict a piece at a time, each meter's detector a piece of its own
+        (an iterator of pairs), for dump_items: the hourly save built all ~21 MB
+        of Home's as one dict in the event loop and froze its Yellow for 50-130 s
+        (2026-11-09). The pieces are made as they are written, not before."""
+        yield "main", self.main.to_dict()
+        yield "subs", ((n, d.to_dict()) for n, d in self.subs.items())
+        yield "volts", {n: {p: [[_trim(t, 3), _trim(v, 2)] for t, v in rows] for p, rows in byp.items()}
+                        for n, byp in self.volts.items()}
+        yield from self._state().items()
 
     def _state(self) -> dict:
         """What a fleet knows beyond its detectors - a meter's own fleet is
