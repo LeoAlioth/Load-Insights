@@ -1346,6 +1346,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         out = io.StringIO()
         stats = pstats.Stats(prof, stream=out).strip_dirs()
         stats.sort_stats("tottime").print_stats(25)
+        stats.print_callers(8)                      # who calls the hottest: a count alone does not say where to cut
         stats.sort_stats("cumulative").print_stats(30)
         return path, out.getvalue()
 
