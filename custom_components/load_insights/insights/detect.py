@@ -2283,6 +2283,9 @@ class PhaseState:
     # [day number (ts // 86400), the reading's minimum in each hour of that
     # day (None where nothing was read)] for the last BASE_LOAD_DAYS days
     floor_days: List[list] = field(default_factory=list, repr=False, compare=False)
+    # base_load_at's smoothed day profile, kept while floor_days is the same list and unchanged (_floor_rev)
+    _floor_rev: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
+    _floor_prof: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _resolved: List["Run"] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     # the open edge another leg vouched is stopping, for _pair to close
     close_hint: Optional[object] = field(default=None, repr=False, compare=False, metadata=DERIVED)
@@ -2367,14 +2370,35 @@ class PhaseState:
                 return                                  # a reading from before the day being read
             self.floor_days.append([day, [None] * 24])
             del self.floor_days[:-BASE_LOAD_DAYS]
+            self._floor_rev += 1
         mins = self.floor_days[-1][1]
         if mins[hour] is None or w < mins[hour]:
             mins[hour] = w
+            self._floor_rev += 1
 
     def base_load_at(self, ts: float) -> Optional[float]:
         """The base load at ``ts``: the lowest minimum of its hour of the day
         over floor_days, smoothed over BASE_LOAD_SMOOTH_H hours and interpolated
-        between hour centres; None until something was read."""
+        between hour centres; None until something was read. The smoothed
+        profile is worked out again only when floor_days changed: asked at
+        every reading, rebuilding it from every kept day was 16,821 rebuilds
+        in 144 replayed live passes (2026-11-09)."""
+        key = (self.floor_days, self._floor_rev)
+        if self._floor_prof is None or self._floor_prof[0] is not key[0] or self._floor_prof[1] != key[1]:
+            self._floor_prof = (key[0], key[1], self._smoothed_floor())
+        smoothed = self._floor_prof[2]
+        if smoothed is None:
+            return None
+        hour, frac = int((ts % 86400) // 3600), (ts % 3600) / 3600.0
+        if frac >= 0.5:
+            a, b, f = smoothed[hour], smoothed[(hour + 1) % 24], frac - 0.5
+        else:
+            a, b, f = smoothed[(hour - 1) % 24], smoothed[hour], frac + 0.5
+        return a + (b - a) * f
+
+    def _smoothed_floor(self) -> Optional[List[float]]:
+        """base_load_at's day profile: per hour the lowest minimum over floor_days, an hour never read
+        taking the nearest hour that was, smoothed over BASE_LOAD_SMOOTH_H hours; None until something was read."""
         prof = []
         for h in range(24):
             vals = [mins[h] for _, mins in self.floor_days if mins[h] is not None]
@@ -2386,17 +2410,7 @@ class PhaseState:
                                                     if prof[(h + k * s) % 24] is not None)
                   for h, v in enumerate(prof)]
         half = BASE_LOAD_SMOOTH_H // 2
-
-        def smooth(h: int) -> float:
-            vals = [filled[(h + k) % 24] for k in range(-half, half + 1)]
-            return sum(vals) / len(vals)
-
-        hour, frac = int((ts % 86400) // 3600), (ts % 3600) / 3600.0
-        if frac >= 0.5:
-            a, b, f = smooth(hour), smooth((hour + 1) % 24), frac - 0.5
-        else:
-            a, b, f = smooth((hour - 1) % 24), smooth(hour), frac + 0.5
-        return a + (b - a) * f
+        return [sum(filled[(h + k) % 24] for k in range(-half, half + 1)) / (2 * half + 1) for h in range(24)]
 
     def process(self, ts: float, w: float, q: Optional[float] = None,
                 pv: Optional[float] = None, held: bool = False) -> List[Run]:
@@ -2450,10 +2464,15 @@ class PhaseState:
         1.5 kW was ended after 29 s, the phase flat (2026-10-12)."""
         out = []
         for o in list(self.open_edges):
-            if o.cluster is None or self.owned(o):
+            if o.cluster is None:
                 continue
+            # the cheap question first: most runs' groups have no input that changed back, and owned
+            # reads the meter's readings (Fleet._meter_on) - 82k calls, a fifth of a replayed live
+            # pass, asked of every open run at every reading (2026-11-09). input_end only reads.
             got = self.lib.input_end(o.cluster, o.since, ts)
-            if got is not None and self._stepped(o.since, *got):
+            if got is None or self.owned(o):
+                continue
+            if self._stepped(o.since, *got):
                 out.append(self._end(o, got[0], o.now or o.watts))
         return out
 
