@@ -711,11 +711,14 @@ def energy(site: str, folder: str, dials: list) -> dict:
     if kitchen:
         tables["fridge"] = [KITCHEN]
     times = {name: [r[0] for r in rows] for name, rows in devices.items()}
+    plant_rows = {}     # each plant as a meter would read it: its square wave, held
     for name, watts, _, ivs in PLANTS:
         truth[name] = watts * sum(b - a for a, b in ivs) / 3600.0
         floors[name] = (0.0, 0.0)
         for names in tables.values():
             names.append(name)
+        rows = [(0.0, 0.0)] + [r for a, b in ivs for r in ((a, watts), (b, 0.0))]
+        plant_rows[name] = (rows, [t for t, _ in rows])
     by_id = {x.id: x for x in det.pairs}
     by_id.update({f"{n}#{x.id}": x for n, d in fleet.subs.items() for x in d.pairs})   # a meter's own, see sid_of
 
@@ -749,7 +752,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
         # happened to start with a pulse can take the boiler's whole afternoon,
         # and a pulse that starts as the EVSE ramps back up takes only its own
         # energy's share of the EVSE's minute.
-        left = {name: [] for name in devices}       # each meter's moments, the share not yet credited
+        left = {name: [] for name in [*devices, *plant_rows]}       # each meter's moments, the share not yet credited
         for k in sorted(range(len(filed)), key=lambda k: (filed[k].end - filed[k].start, filed[k].start)):
             s, sid = filed[k], sids[k]
             if s.energy_wh <= 0 or not keep(s):
@@ -767,10 +770,14 @@ def energy(site: str, folder: str, dials: list) -> dict:
                 if credit > 0:
                     row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
-            for name, watts, _, ivs in PLANTS:
-                ov = _overlap(ivs, s.start, s.end)
-                if ov > 0:
-                    row[name] = row.get(name, 0.0) + min(watts * ov / 3600.0, s.energy_wh)
+            for name, (rows, ptimes) in plant_rows.items():
+                # as a meter's: only a run the plant switched on with, each moment once - credited by overlap alone,
+                # every run spanning a pulse took it again (a daily 2 kW plant 13.7 kWh right of 7.3, 2026-11-09)
+                if not _started_with(rows, ptimes, s):
+                    continue
+                credit = _credit(left[name], rows, ptimes, 0.0, s.start, s.end, s.energy_wh)
+                if credit > 0:
+                    row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
             for name, wh in [*run_wh.get(id(s), ()), *kitchen_wh.get(id(s), ())]:
                 row[name] = row.get(name, 0.0) + min(wh, s.energy_wh)
