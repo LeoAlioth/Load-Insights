@@ -6,6 +6,7 @@ import functools
 import logging
 import os
 import time
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -270,8 +271,11 @@ CATCH_UP_PASS_S = 2.0
 # same start a minute later.
 RECORDER_FLUSH_S = 30.0
 # Every this many passes an input's kept rows (_input_states) are held to a full read of its window; on any
-# difference the full read is used and the kept rows start again (input_cache_check in the diagnostics)
-INPUT_AUDIT_PASSES = 30
+# difference the full read is used and the kept rows start again (input_cache_check in the diagnostics).
+# Once a day, each input on a pass of its own (by its id): every 30 passes, all at once, made one pass in 30
+# read every input's window again - 13.8 s of a 25.3 s pass at Home - after 108 audits in three deploys found
+# no difference (2026-11-09)
+INPUT_AUDIT_PASSES = 1440
 # ...and each pass reads again this far back from the last read's end, for a row committed after that read
 INPUT_OVERLAP_S = 60.0
 
@@ -1225,7 +1229,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._input_cache[eid] = (since, end, rows)
         got = await own(rows)
         self._input_passes[eid] = self._input_passes.get(eid, 0) + 1
-        if self._input_passes[eid] % INPUT_AUDIT_PASSES == 0:
+        if self._input_passes[eid] % INPUT_AUDIT_PASSES == zlib.crc32(eid.encode()) % INPUT_AUDIT_PASSES:
             full = await self._input_states_full(eid, domain, since, end)
             c = self.input_cache_check
             c["compared"] = c.get("compared", 0) + 1
