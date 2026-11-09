@@ -750,6 +750,16 @@
                     "description": "Poimenovano breme, ki naj se prepiše. Prazno prepiše vsa poimenovana bremena."
                 }
             }
+        },
+        "profile_passes": {
+            "name": "Profiliraj zaznavanje",
+            "description": "Izmeri, kje naslednji prehodi zaznavanja na tej napravi porabijo čas. Ko so končani, se najpočasnejše funkcije in časi vsakega prehoda zapišejo v dnevnik kot opozorilo, celoten profil pa v datoteko .pstats v mapi z nastavitvami. Zaznavanje medtem deluje kot običajno, le nekoliko počasneje.",
+            "fields": {
+                "passes": {
+                    "name": "Prehodi",
+                    "description": "Koliko prehodov profilirati; ko je zaznavanje dohitelo, je to en na minuto."
+                }
+            }
         }
     },
     "exceptions": {
