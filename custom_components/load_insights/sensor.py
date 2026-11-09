@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -40,6 +41,10 @@ from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
 from .insights.scoring import LEADS, Ledger
+
+# the Pair library sensor's figures (counts, energy) are rewritten at most this often; what pairs exist and
+# their names at once (PairLibrarySensor._handle_coordinator_update). Policy: how fresh a card's counts are.
+LIBRARY_REFRESH_S = 600.0
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -638,6 +643,24 @@ class PairLibrarySensor(_DetectionBase):
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "signature_library")
+        self._shape = None
+        self._written = 0.0
+
+    def _library_shape(self) -> tuple:
+        """What a card must see at once: which pairs exist, where, under which name and signature."""
+        return tuple((m, x.id, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Written at once when a pair comes, goes, is named or joins another signature; its figures
+        (counts, energy, last seen) at most every LIBRARY_REFRESH_S. Every pass's counts moved, so every
+        pass rewrote ~370 kB of attributes and sent them to every open dashboard: at Home ~1.8 s of the
+        event loop a pass, the websocket's send_frame alone 12.8 s over ten passes (2026-11-09)."""
+        shape, now = self._library_shape(), time.monotonic()
+        if shape == self._shape and now - self._written < LIBRARY_REFRESH_S:
+            return
+        self._shape, self._written = shape, now
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> int:
