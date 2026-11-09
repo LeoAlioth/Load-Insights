@@ -439,6 +439,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._profile_left = 0
         self._profiler = None
         self._profile_rows: List[dict] = []
+        self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
         self._pass_rows: Optional[tuple] = None
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
@@ -1289,17 +1290,33 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._profiler = cProfile.Profile()
         self._profile_left = passes
         self._profile_rows = []
+        self._listener_s = {}
+
+    def _timed_update_listeners(self) -> None:
+        """async_update_listeners, each entity timed (load_insights.profile_passes): which of
+        the many entities fed by a pass costs the event loop its time."""
+        for update_callback, _ in list(self._listeners.values()):
+            began = time.perf_counter()
+            try:
+                update_callback()
+            except Exception:  # noqa: BLE001 - as async_update_listeners
+                _LOGGER.exception("Unexpected error updating a listener of %s", self.name)
+            who = getattr(getattr(update_callback, "__self__", None), "entity_id", None) or repr(update_callback)
+            self._listener_s[who] = self._listener_s.get(who, 0.0) + time.perf_counter() - began
 
     async def _profile_pass_done(self) -> None:
         self._profile_rows.append(dict(self.last_pass))
         self._profile_left -= 1
         if self._profile_left > 0:
             return
-        prof, passes = self._profiler, self._profile_rows
-        self._profiler, self._profile_rows = None, []
+        prof, passes, listeners = self._profiler, self._profile_rows, self._listener_s
+        self._profiler, self._profile_rows, self._listener_s = None, [], {}
         path, report = await self.hass.async_add_executor_job(self._profile_report, prof)
-        _LOGGER.warning("Load Insights profile of %d passes, written to %s\nEach pass: %s\n%s",
-                        len(passes), path, passes, report)
+        slowest = sorted(listeners.items(), key=lambda kv: -kv[1])[:15]
+        _LOGGER.warning("Load Insights profile of %d passes, written to %s\nEach pass: %s\n"
+                        "Slowest entities (s over all %d passes, %d entities): %s\n%s",
+                        len(passes), path, passes, len(passes), len(listeners),
+                        [(who, round(s, 3)) for who, s in slowest], report)
 
     def _profile_report(self, prof) -> tuple:
         import io  # noqa: PLC0415
@@ -1558,7 +1575,10 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 await self._persist()
                 self.last_pass["persist_s"] = round(time.monotonic() - live, 2)
                 listeners = time.monotonic()
-                self.async_update_listeners()
+                if self._profiler is not None:
+                    self._timed_update_listeners()
+                else:
+                    self.async_update_listeners()
                 self.last_pass["listeners_s"] = round(time.monotonic() - listeners, 2)
                 if self.caught_up and self.refiling:
                     self.refiling = False
