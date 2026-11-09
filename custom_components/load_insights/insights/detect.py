@@ -5842,8 +5842,10 @@ class Detector:
             # a name lands on a pair as it stands after this filing; each waiting name described once,
             # not once per pair (Home's twelve waiting names, 194,520 descriptions in ten passes, 2026-11-09)
             described = [_described(o) for o in self.orphan_names]
+            wanted = {d.phases for d in described}         # alike is False across phase sets: ask only those
             for pair in self.pairs:
-                self._reclaim(pair, noise, described)
+                if pair.phases in wanted and not pair.name:
+                    self._reclaim(pair, noise, described)
         self._prune(s.end)
 
     def _judge_born(self, daily: bool = False) -> List["Pair"]:
@@ -7063,9 +7065,10 @@ class Detector:
         fa, fb = self.signature_of(keep), self.signature_of(other)
         if len({m.name for m in fa + fb if m.name}) > 1:
             return False
+        apart = {m.id: {self._current(x) for x in m.apart} for m in fa + fb}    # once per member, not per pair of them
         for a in fa:
             for b in fb:
-                if (a.id in {self._current(x) for x in b.apart} or b.id in {self._current(x) for x in a.apart}
+                if (a.id in apart[b.id] or b.id in apart[a.id]
                         or not a.takes_len(b.duration_s) or not b.takes_len(a.duration_s)):
                     return False
         self._merge_signature(other.signature, keep.signature)
@@ -7666,7 +7669,7 @@ class Detector:
         if pair.name or not self.orphan_names:
             return
         for i, orphan in enumerate(self.orphan_names):
-            if described[i].alike(pair, noise_w):
+            if described[i].phases == pair.phases and described[i].alike(pair, noise_w):
                 for m in self.signature_of(pair):
                     m.name = orphan.get("name")
                     self._touch(m.id)
