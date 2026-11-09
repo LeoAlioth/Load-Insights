@@ -2937,6 +2937,22 @@ def test_a_rebuilt_library_gets_its_names_back():
     assert round(fresh.energy_by_name()["Kompresor"]) == round(det.energy_by_name()["Kompresor"])
 
 
+def test_a_pair_a_waiting_name_passed_over_is_asked_again_once_it_changes():
+    """_reclaim_all skips a pair no waiting name was alike to while its figures and the noise stay as they were
+    (Home: 36,498 alike calls in ten passes, 2026-11-09) - but not once it has changed, or the noise has grown."""
+    det = D.Detector()
+    det.carry_names([{"name": "Kiln", "phases": "a", "power": {"a": 3000.0}, "duration_s": 48.0, "pf": None}])
+    pair = _pair(5, 2000.0, 48.0, count=3)
+    det.pairs = [pair]
+    det._reclaim_all(20.0)
+    assert pair.name is None and 5 in det._reclaim_seen[1]
+    det._reclaim_all(20.0)                                   # unchanged, same noise: skipped, still nobody's
+    assert pair.name is None
+    pair.power = {"a": 3010.0}                               # it changed: asked again, and it is the kiln
+    det._reclaim_all(10.0)
+    assert pair.name == "Kiln" and det.orphan_names == []
+
+
 def test_a_reset_on_a_reset_keeps_the_names_still_waiting():
     """Home, 2026-09-29: a second reset fifteen minutes after the first
     dropped the mat, the kiln and the washer - none had run in between, so
