@@ -438,6 +438,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # load_insights.profile_passes: the passes still to profile, the profiler, and each pass's timings
         self._profile_left = 0
         self._profiler = None
+        self.last_hourly_check: Dict[str, float] = {}
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
@@ -1111,14 +1112,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         moment - a sensor added at a start or a reload, the service - counts
         twice what was counted since the hour began but filed before it,
         until this check the hour after."""
+        began = time.monotonic()
         await get_instance(self.hass).async_block_till_done()
+        drained = time.monotonic()
         try:
             await self.autonamer.async_check()
         except Exception:  # noqa: BLE001 - a fault in auto-naming must not stop the statistics check
             _LOGGER.exception("Auto-naming failed")
-        for name in sorted(self.fleet.names()):
-            if not self.metered_device(name):
-                await self.async_backfill_statistics(name, force=False)
+        named = time.monotonic()
+        names = [n for n in sorted(self.fleet.names()) if not self.metered_device(n)]
+        for name in names:
+            await self.async_backfill_statistics(name, force=False)
+        # what the hour's check costs (2026-11-09: the pass right after 12:00 at Home read for 64 s)
+        self.last_hourly_check = {"drain_s": round(drained - began, 1), "autoname_s": round(named - drained, 1),
+                                  "names": len(names), "statistics_s": round(time.monotonic() - named, 1)}
+        _LOGGER.debug("Hourly statistics check: %s", self.last_hourly_check)
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
