@@ -567,7 +567,7 @@ class DetectedLoadsSensor(_DetectionBase):
         changes or every LIBRARY_REFRESH_S, not every pass: on Home's Yellow this sensor's update was
         0.64 s of the event loop a pass, most of it these two walks of the whole library (2026-11-09)."""
         det = self._runner.detector
-        names, now = tuple(sorted(self._runner.fleet.names())), time.monotonic()
+        names, now = tuple(sorted(self._runner.names_now())), time.monotonic()
         if self._slow is None or self._slow[0] != names or now - self._slow[1] >= LIBRARY_REFRESH_S:
             offered = {ref for _, rows, _ in self._runner.naming_groups() for ref, _ in rows}
             self._slow = (names, now, offered, suggest_levels(det.pairs, det.recent))
@@ -614,7 +614,7 @@ class DetectedLoadsSensor(_DetectionBase):
                                      for a in d.active(now)]
                               for name, d in self._runner.fleet.subs.items()},
             "meter_hierarchy": self._runner.parents,
-            "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
+            "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.names_now().items()},
             # names whose pair a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
@@ -1188,7 +1188,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         value = self._runner.live_power.get(self._name)
         if value is None:
             # a name waiting for its load after a rebuild draws nothing, it is not unknown
-            return 0 if self._name not in self._runner.fleet.names() else None
+            return 0 if self._name not in self._runner.names_now() else None
         return round(value)
 
 

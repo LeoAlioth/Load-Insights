@@ -440,6 +440,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._profiler = None
         self.last_hourly_check: Dict[str, float] = {}
         self._active_memo: Optional[tuple] = None      # see active_by_name
+        self._names_memo: Optional[tuple] = None       # see names_now
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
@@ -1166,6 +1167,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if self._active_memo is None or self._active_memo[0] != key:
             self._active_memo = (key, self.fleet.active_by_name(now))
         return self._active_memo[1]
+
+    def names_now(self) -> Dict[str, list]:
+        """Fleet.names, worked out once per pass and second for every entity that reads it: each
+        named load's running sensor walked every pair of every meter for it, 73 walks a pass at Home
+        (2026-11-09). Shared: read it, never write."""
+        key = (self.last_processed, int(dt_util.utcnow().timestamp()))
+        if self._names_memo is None or self._names_memo[0] != key:
+            self._names_memo = (key, self.fleet.names())
+        return self._names_memo[1]
 
     def named(self) -> list:
         """Every named load as ``((meter, id), pair)``, biggest first, wherever it was seen."""

@@ -5361,6 +5361,7 @@ class Detector:
     # numbers); and what is worked out once a pass from the library
     signals: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_id: Optional[Dict[int, "StepGroup"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _by_id_of: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # see cluster
     _windows: Optional[Dict[str, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # rise group -> [(fall group, its counts)] of the pairs counted PAIR_MIN_RUNS
     # times or more, in order's own order (partners_of): built again whenever a
@@ -6465,7 +6466,10 @@ class Detector:
             return list(memo[rise])
         key = rise
         rise = self._fin(rise)
-        if self._elig is None or self._elig[0] != len(self.order):
+        # rebuilt when a count reaches PAIR_MIN_RUNS, counts fade or groups fold (each clears _elig), or
+        # the table is replaced - not at every new key: a new rise>fall pair counts once, never eligible,
+        # and keying on len(order) rebuilt the whole index at nearly every fall (2026-11-09)
+        if self._elig is None or self._elig[0] is not self.order:
             # a pair counted fewer than PAIR_MIN_RUNS times has no evidence: never
             # walked (a long-running group is counted against hundreds of fall
             # groups - 104 s of a 593 s six-day Home profile, 2026-10-29)
@@ -6474,7 +6478,7 @@ class Detector:
                 if acc[0] >= PAIR_MIN_RUNS:
                     r, f = k.split(">")
                     idx.setdefault(int(r), []).append((int(f), acc))
-            self._elig = (len(self.order), idx)
+            self._elig = (self.order, idx)
         memo[key] = [f for f, acc in self._elig[1].get(rise, ()) if self.partner_evidence(rise, f) > 0]
         return list(memo[key])
 
@@ -6878,11 +6882,12 @@ class Detector:
             if b + reach > lo + len(dens) - 1:
                 dens.extend([0.0] * (b + reach - (lo + len(dens) - 1)))
             near = sorted((k for k in range(b - 2 * reach, b + 2 * reach + 1) if k in h), key=order.__getitem__)
+            nk = len(kernel)                     # once, not at every term: 1.7 million len calls (2026-11-09)
             for i in range(b - reach, b + reach + 1):
                 v = 0.0
                 for k in near:
                     j = i - k + reach
-                    if 0 <= j < len(kernel):
+                    if 0 <= j < nk:
                         v += h[k] * kernel[j]
                 dens[i - lo] = v
         if st[4] is None:
@@ -7254,13 +7259,16 @@ class Detector:
                 continue
             pairs.sort(key=lambda x: (not x.name, -x.count))     # a named one survives
             keep = pairs[0]
+            kept_apart = None                 # keep's apart set, built once while keep.apart stands (512k _current calls)
             for other in pairs[1:]:
                 if other.phases != keep.phases:
                     continue
                 if other.name and keep.name and other.name != keep.name:
                     continue
-                if (keep.id in {self._current(x) for x in other.apart}
-                        or other.id in {self._current(x) for x in keep.apart}):
+                if kept_apart is None or kept_apart[0] is not keep.apart or kept_apart[1] != len(keep.apart):
+                    kept_apart = (keep.apart, len(keep.apart), {self._current(x) for x in keep.apart})
+                if (any(self._current(x) == keep.id for x in other.apart)
+                        or other.id in kept_apart[2]):
                     continue                  # one's run was kept out of the other - see Pair.apart
                 if not keep.takes_len(other.duration_s) or not other.takes_len(keep.duration_s):
                     continue                  # the daily rewrite split them by length
@@ -7391,8 +7399,13 @@ class Detector:
 
     def cluster(self, cid: int) -> Optional["StepGroup"]:
         c = self._by_id.get(cid) if self._by_id is not None else None
-        if c is None:
-            self._by_id = {x.id: x for x in self.edges}      # one born this pass
+        # rebuilt on a miss only when the groups changed since (one born this pass, the list replaced):
+        # an id no group has any more rebuilt it at every ask - 64,819 asks in 144 replayed live passes
+        edges = (self.edges, len(self.edges), self.next_edge_id)
+        if c is None and (self._by_id is None or self._by_id_of is None or self._by_id_of[0] is not edges[0]
+                          or self._by_id_of[1:] != edges[1:]):
+            self._by_id = {x.id: x for x in self.edges}
+            self._by_id_of = edges
             c = self._by_id.get(cid)
         return c
 
@@ -7511,6 +7524,10 @@ class Detector:
         room = MAX_PAIRS - len(keep)
         tiers[3].sort(key=lambda x: (x.evidence, x.count, x.last_seen))
         keep += tiers[3][-room:] if room > 0 else []
+        if len(keep) == len(self.pairs) and all(a is b for a, b in zip(keep, self.pairs)):
+            # the same pairs in the same order: nothing evicted, no survivor of a merge changes. A library over
+            # the cap (Home's) came here at every filing and had every device judged again (2026-11-09)
+            return
         self.pairs = keep
         self._by_pair = None          # or _pair hands back one just evicted, and a run filed there is no one's
         self._rejudge_all = True     # the order decides a merge's survivor - see _merge_devices
@@ -7974,6 +7991,9 @@ class Fleet:
     # meter -> (phase, run, closed at) of the runs it owned the last day - see _meter_wh
     _owned_runs: Dict[str, List[tuple]] = field(default_factory=dict, repr=False, compare=False)
     _levels_memo: Dict[tuple, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _kept_levels
+    _loc_rev: int = field(default=0, repr=False, compare=False, metadata=DERIVED)   # the locations the fleet wrote (meter_phases)
+    _mp_memo: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # see meter_phases
+    _pm_fast: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see phase_map
     wait_cap_s: float = field(default=0.0, metadata=DERIVED)   # set by the runner - see METER_WAIT_CAP_S
     # how far behind its meters the grid is read now, and the MODEL_REFRESH_S
     # step of the clock it was worked out at - see _horizon
@@ -8936,6 +8956,7 @@ class Fleet:
                 for a, b in pairs:
                     if a in pair.locations:
                         pair.locations[b] = pair.locations.get(b, 0) + pair.locations.pop(a)
+                        self._loc_rev += 1
                     if a in pair.inputs:
                         pair.inputs[b] = pair.inputs.pop(a)
                     # "setting=value" markers name the setting's entity
@@ -9117,6 +9138,7 @@ class Fleet:
             for where in (name, switch):
                 if where is not None:
                     pair.locations[where] = pair.locations.get(where, 0) + 1
+                    self._loc_rev += 1
         return pair
 
     def _meter_single(self, name: str) -> bool:
@@ -9154,7 +9176,30 @@ class Fleet:
         """meter -> the phases its one device runs on, for every one-device
         meter old enough to say: the phase sets it has been credited at least
         METER_PHASES_MIN sightings of, together. Read off the locations the
-        house pairs already carry, so there is nothing new to keep."""
+        house pairs already carry, so there is nothing new to keep. Kept while
+        nothing it reads can have moved - the grid's filings and pairs, the
+        meters and switches and what is declared or guessed of them, the
+        locations the fleet writes (_loc_rev): asked ~4.5 times for every run
+        decided, 2,454 walks of the library in 144 replayed live passes
+        (2026-11-09)."""
+        key = (self.main.filed_n, len(self.main.pairs), self._loc_rev, len(self.subs), len(self.switch_on),
+               self._guess_rev(), self.main.pairs, self.single, self.switch_on)
+        hit = self._mp_memo
+        if hit is not None and hit[0][:6] == key[:6] and all(a is b for a, b in zip(hit[0][6:], key[6:])):
+            return dict(hit[1])
+        out = self._meter_phases()
+        self._mp_memo = (key, out)
+        return dict(out)
+
+    def _guess_rev(self) -> tuple:
+        """What holds_one_device guesses for every meter nobody declared (guess_one_device reads the
+        meter's own detector, which moves with the meter's readings): part of meter_phases' key. Empty
+        where every meter is declared, as the runner does for every meter it reads."""
+        return tuple((n, self.guess_one_device(n)) for n in sorted(self.subs)
+                     if n not in self.single and not n.startswith(SWITCH_PREFIX))
+
+    def _meter_phases(self) -> Dict[str, str]:
+        """meter_phases, worked out."""
         seen: Dict[str, Dict[str, int]] = {}
         one: Dict[str, bool] = {}            # holds_one_device, asked once per meter rather than per location
         for pair in self.main.pairs:
@@ -9922,9 +9967,12 @@ class Fleet:
         if rise <= 0:
             return None
         out = [(o.since, rise)]
-        for ts, c, change in sorted(marks):
-            cur[c] = change
-            out.append((max(ts, o.since), sum(cur.values())))
+        if len(cur) == 1:                     # one channel: its change is the sum (522k sums of one value, 2026-11-09)
+            out += [(ts if ts > o.since else o.since, change) for ts, _, change in sorted(marks)]
+        else:
+            for ts, c, change in sorted(marks):
+                cur[c] = change
+                out.append((max(ts, o.since), sum(cur.values())))
         return rise, out, chans, sum(was.values())
 
     def _meter_held(self, name: str, ph: str, since: float, up: bool) -> bool:
@@ -10238,6 +10286,26 @@ class Fleet:
                     self._votes_rev += 1
 
     def phase_map(self, name: str) -> Dict[str, str]:
+        """_phase_map, handed back as kept while nothing it reads has moved: this
+        fleet's and the root's votes (_votes_rev), the circuit view the meter
+        hangs in and its votes, the parents table and the vote tables
+        themselves. Asked ~230k times in 144 replayed live passes, its kept
+        path alone - the parent walk, the stamp, the checks - was 643k dict
+        lookups (2026-11-09). The very object _phase_map keeps is handed on,
+        so callers keyed on it (_chans) see it unchanged."""
+        root = self._root or self
+        parent = self.parents.get(name)
+        view = self.views.get(parent) if parent else None
+        stamp = (self._votes_rev, root._votes_rev, view._votes_rev if view is not None else None)
+        fast = self._pm_fast.get(name)
+        if (fast is not None and fast[0] == stamp and fast[1] is self.parents and fast[2] is view
+                and fast[3] is self.phase_votes and fast[4] is self.phase_energy):
+            return fast[5]
+        mp = self._phase_map(name)
+        self._pm_fast[name] = (stamp, self.parents, view, self.phase_votes, self.phase_energy, mp)
+        return mp
+
+    def _phase_map(self, name: str) -> Dict[str, str]:
         """Which house phase each of the meter's channels carries, from its
         votes - worked out again only once they have changed: every grid
         step asks every meter, and the answer moves only when a session
@@ -10346,6 +10414,7 @@ class Fleet:
         if si is not None:
             self.pending_sub[name].pop(si)
         pair.locations[name] = pair.locations.get(name, 0) + 1
+        self._loc_rev += 1
         return True
 
     # ------------------------------------------------ names: any meter's pair may wear one

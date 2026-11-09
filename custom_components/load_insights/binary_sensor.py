@@ -57,7 +57,7 @@ class NamedLoadRunning(CoordinatorEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         fleet = self._runner.fleet
-        refs = fleet.names().get(self._name, [])
+        refs = self._runner.names_now().get(self._name, [])
         pairs = [s for s in (fleet.pair(r) for r in refs) if s is not None]
         return {
             # the grid's by id, a meter's as "Mansarda#11"; its phases are its own meter's
