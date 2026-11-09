@@ -1616,6 +1616,73 @@ def _kept_merge(old: Optional[list], rows, keep: float, cast) -> list:
     return sorted((t, v) for t, v in held.items() if t >= keep or t == last)
 
 
+class _Series:
+    """Rows (time, value) as two float arrays, read like the list of tuples the
+    code was written against - an index gives a tuple, a slice a list of them,
+    and bisect with a (time, value) key works as on the list. A list of float
+    tuples costs ~100 bytes a row, this 16: a meter's readings (Fleet.sub_rows)
+    and voltages (Fleet.volts) were 16 of the 60 MB a replayed Home fleet held
+    (2026-11-09)."""
+    __slots__ = ("t", "v")
+
+    def __init__(self, rows=()) -> None:
+        self.t, self.v = array("d"), array("d")
+        for t, v in rows:
+            self.t.append(t)
+            self.v.append(v)
+
+    def __len__(self) -> int:
+        return len(self.t)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return list(zip(self.t[i], self.v[i]))
+        return (self.t[i], self.v[i])
+
+    def __iter__(self):
+        return zip(self.t, self.v)
+
+    def __setitem__(self, i: int, row) -> None:
+        self.t[i], self.v[i] = row
+
+    def pop(self, i: int = -1):
+        row = self[i]
+        del self.t[i]
+        del self.v[i]
+        return row
+
+    def __eq__(self, other) -> bool:
+        return list(self) == list(other)
+
+    def append(self, row) -> None:
+        self.t.append(row[0])
+        self.v.append(row[1])
+
+    def extend(self, rows) -> None:
+        for row in rows:
+            self.append(row)
+
+    def drop_before(self, j: int) -> None:
+        """Forget the first ``j`` rows."""
+        del self.t[:j]
+        del self.v[:j]
+
+
+def _kept_series(old, rows, keep: float) -> "_Series":
+    """_kept_merge for float rows held as a _Series: a live pass's rows, all
+    later than the last held and in order, appended and the front cut in
+    place; anything else through _kept_merge."""
+    new = [(float(t), float(v)) for t, v in rows]
+    if isinstance(old, _Series) and all(new[i][0] < new[i + 1][0] for i in range(len(new) - 1)) \
+            and (not old or not new or new[0][0] > old.t[-1]):
+        old.extend(new)
+        j = bisect.bisect_left(old.t, keep)
+        if j > 1:
+            old.drop_before(j - 1)
+        return old
+    return _Series(_kept_merge(list(old or ()), new, keep, float))
+
+
 def _as_of(rows: Sequence[Tuple[float, float]], ts: float, i: int) -> int:
     """Index of the last row at or before ``ts``, never before ``i``; -1 when
     the series has not started yet. Two steps on are looked at directly -
@@ -7996,7 +8063,7 @@ class Fleet:
         for name, by_ph in (volts or {}).items():
             mine = self.volts.setdefault(name, {})
             for ph, rows in by_ph.items():
-                mine[ph] = _kept_merge(mine.get(ph), rows, keep, float)
+                mine[ph] = _kept_series(mine.get(ph), rows, keep)
         if single is not None:
             self.single = dict(single)      # the whole declaration, so a withdrawn one lapses
         sub_samples = sub_samples or {}
@@ -8575,11 +8642,14 @@ class Fleet:
                 seed[p] = last[p]                     # carried from before: what it held until it wrote
             new = [(t, v) for t, v in rows]
             if kept and new[0] <= kept[-1]:
-                chans[p] = sorted(kept + new)                                      # a pass that overlapped:
+                chans[p] = _Series(sorted(list(kept) + new))                       # a pass that overlapped:
                 for k in [k for k in self._sub_totals if k[0] == name]:            # its sums are summed afresh
                     del self._sub_totals[k]
             else:
-                chans[p] = kept + new
+                if not isinstance(kept, _Series):
+                    kept = _Series(kept)
+                kept.extend(new)
+                chans[p] = kept
             last[p] = new[-1][1]
         # Everything this pass brought, plus a tail before it. Trimming to
         # a fixed two hours looked thrifty and silently gutted the
@@ -8601,7 +8671,10 @@ class Fleet:
                                        for k in [bisect.bisect_left(kept, (frm, -math.inf))] if k < len(kept))
         for p, kept in chans.items():
             j = max(0, bisect.bisect_left(kept, (cut, -math.inf)) - 1)
-            chans[p] = kept[j:]
+            if isinstance(kept, _Series):
+                kept.drop_before(j)
+            else:
+                chans[p] = kept[j:]
 
     def _window_size(self, name: str, ph: str, since: float, up: bool,
                      size: Optional[float] = None) -> Optional[Tuple[float, float, float, float]]:
@@ -10595,7 +10668,7 @@ class Fleet:
         f._wait, f._wait_at = float(d.get("wait") or 0.0), d.get("wait_at")
         f.meter_lag = {n: [list(r) for r in v] for n, v in (d.get("meter_lag") or {}).items()}
         f._lag_from = d.get("lag_from")
-        f.volts = {n: {p: [(t, v) for t, v in rows] for p, rows in byp.items()} for n, byp in (d.get("volts") or {}).items()}
+        f.volts = {n: {p: _Series(rows) for p, rows in byp.items()} for n, byp in (d.get("volts") or {}).items()}
         # -inf (nothing voted yet) is written as null by the store's JSON; None is "never"
         f._step_votes_from = {n: float(t) for n, t in (d.get("step_votes_from") or {}).items() if t is not None}
         f._unvoted = [(t, n, bool(final), Run.from_dict(x)) for t, n, final, x in d.get("unvoted") or []]
@@ -10603,7 +10676,7 @@ class Fleet:
         f.identity = {n: dict(v) for n, v in (d.get("identity") or {}).items()}
         f.meter_gain = {n: {k: list(x) for k, x in v.items()} for n, v in (d.get("meter_gain") or {}).items()}
         f._view_states = dict(d.get("views") or {})
-        f.sub_rows = {n: {c: [tuple(r) for r in rows] for c, rows in chans.items()}
+        f.sub_rows = {n: {c: _Series(rows) for c, rows in chans.items()}
                       for n, chans in (d.get("sub_rows") or {}).items()}
         f._sub_from = {n: float(t) for n, t in (d.get("sub_from") or {}).items()}
         f._sub_seed = {n: dict(v) for n, v in (d.get("sub_seed") or {}).items()}
