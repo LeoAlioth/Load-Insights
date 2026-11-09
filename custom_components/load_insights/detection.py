@@ -272,6 +272,8 @@ RECORDER_FLUSH_S = 30.0
 # Every this many passes an input's kept rows (_input_states) are held to a full read of its window; on any
 # difference the full read is used and the kept rows start again (input_cache_check in the diagnostics)
 INPUT_AUDIT_PASSES = 30
+# ...and each pass reads again this far back from the last read's end, for a row committed after that read
+INPUT_OVERLAP_S = 60.0
 
 
 def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
@@ -446,6 +448,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._names_memo: Optional[tuple] = None       # see names_now
         self._input_cache: Dict[str, tuple] = {}       # see _input_states: (since, end, every row) per input
         self._input_passes: Dict[str, int] = {}        # passes read per input, for the audit (INPUT_AUDIT_PASSES)
+        self._input_starts: Dict[str, list] = {}       # this pass's start rows, every input's (_start_rows)
         self.input_cache_check: Dict[str, object] = {}
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
@@ -768,6 +771,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # every input the forecast is given, whatever it is linked to (the owner,
         # 2026-09-28: add the thermostat to the inputs first, and move it to
         # the device once the load it helped find is named)
+        read_ids = [e for e in self.entry.options.get(CONF_INPUT_ENTITIES) or []
+                    if e.split(".", 1)[0] in SWITCH_DOMAINS or e.split(".", 1)[0] in NUMBER_DOMAINS
+                    or e.split(".", 1)[0] in STATE_DOMAINS]
+        # every input's start row in one query: one per input was ~0.55 s of a pass at Home (19 inputs, 2026-11-09)
+        self._input_starts = await self._start_rows(read_ids, since)
         for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
@@ -1187,8 +1195,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             # audits, by seconds, 2026-11-09); the rows inside the window from the kept ones
             changes = domain not in ("climate", "fan")
             s, e = since.timestamp(), end.timestamp()
-            start = await self._input_states_full(eid, domain, since, since + timedelta(microseconds=1))
-            start = [st for st in start if st.last_updated.timestamp() <= s][:1]
+            start = [st for st in (self._input_starts or {}).get(eid, []) if st.last_updated.timestamp() <= s][:1]
             inside = [st for st in rows if s < st.last_updated.timestamp() < e
                       and (not changes or st.last_changed == st.last_updated)]
             return start + inside
@@ -1204,10 +1211,14 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if kept is None or kept[0] > since or kept[1] < since:
             rows = list((await read(since, True)).get(eid, []))
         else:
-            edge = kept[1].timestamp()
-            new = [st for st in (await read(kept[1] - timedelta(microseconds=1), False)).get(eid, [])
+            # read again from INPUT_OVERLAP_S before the last read's end: a reading stamped before that end but
+            # committed after the read (Home's boiler temperature, one row in 1,369, 2026-11-09) is found
+            # the next time, and the kept rows give way to what was read again from there
+            frm = kept[1] - timedelta(seconds=INPUT_OVERLAP_S)
+            edge = frm.timestamp()
+            new = [st for st in (await read(frm - timedelta(microseconds=1), False)).get(eid, [])
                    if st.last_updated.timestamp() >= edge]
-            rows = kept[2] + new
+            rows = [st for st in kept[2] if st.last_updated.timestamp() < edge] + new
             # all after since, and the newest before it - the start row of this window and the next
             cut = next((i for i, st in enumerate(rows) if st.last_updated >= since), len(rows))
             rows = rows[max(0, cut - 1):]
@@ -1227,6 +1238,16 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 self._input_cache.pop(eid, None)
                 return full
         return got
+
+    async def _start_rows(self, eids: List[str], since: datetime) -> Dict[str, list]:
+        """Each input's start row at ``since`` - the newest row of any kind before it, as both full reads hand
+        it back (the recorder's start-time statement) - for them all in one query over a window one
+        microsecond wide."""
+        if not eids:
+            return {}
+        return await get_instance(self.hass).async_add_executor_job(functools.partial(
+            history.get_significant_states, self.hass, since, since + timedelta(microseconds=1), list(eids),
+            include_start_time_state=True, significant_changes_only=False))
 
     async def _input_states_full(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
         """The input's states read whole, as every pass did until 2026-11-09 - the audit _input_states is held to."""
