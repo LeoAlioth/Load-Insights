@@ -200,8 +200,13 @@ SLICE = 6.0                            # production's backfill slice, hours; SLI
 LIVE = 0.0                             # the last days in one-minute passes
 RESTART = 0.0                          # hours between restarts of the replayed Fleet (0: none)
 NOQ = False                            # NOQ=1: the replay ignores reactive power (--no-q)
+# INV_LAG=s: the inverter's readings (power, volts, amps) moved this many seconds earlier before the house is built
+# (2026-11-09: at Home the grid meter shows a cloud's change ~9 s before the inverter's reading does, median over
+# 168 jumps on 9 Nov - every cloud edge a phantom step in grid + inverter). A bench dial while it is measured.
+INV_LAG = 0.0
 _flag = lambda v: bool(float(v))  # noqa: E731
-OWN = {"CADENCE": str, "SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag}
+OWN = {"CADENCE": str, "SUBS": str, "HOUSE": str, "START_STATE": _flag, "SLICE": float, "LIVE": float, "RESTART": float, "NOQ": _flag,
+       "INV_LAG": float}
 CADENCE = "auto"                     # CADENCE=shellies: every Shelly meter reports on change, the rest on a timer, as production's settings say
 SWITCHES: list = []                    # SWITCH=entity dials, fed as --switch
 DRIVERS: list = []                     # DRIVER=entity dials, fed as --driver
@@ -251,14 +256,18 @@ def _prod_house(s: dict, key=None, site: str = "home") -> dict:
     grid, sign, inverter = PROD_HOUSE.get(site, ({}, 1.0, None))
     inv = s.get(inverter)
     if inv:
+        early = (lambda rows: [(t - INV_LAG, v) for t, v in rows]) if INV_LAG else (lambda rows: rows)  # noqa: E731
+        inv = early(inv)
         m1 = {p: s[e] for p, e in grid.items() if s.get(e)}
         # the inverter on each grid phase by its V x I share through the map its
         # voltages vote (phases.voltage_votes), as production splits it; thirds
         # where the export has no volts and amps for it (detection._inverter_split)
         stem = inverter.rsplit("_ac_power", 1)[0]
         gstem = next(iter(grid.values())).rsplit("_ac_power_", 1)[0]
-        volts = {p: s.get(f"{stem}_ac_voltage_{p}n") or [] for p in "abc"}
-        amps = {p: s.get(f"{stem}_ac_current_{p}") or [] for p in "abc"}
+        volts = {p: early(s.get(f"{stem}_ac_voltage_{p}n") or []) for p in "abc"}
+        amps = {p: early(s.get(f"{stem}_ac_current_{p}") or []) for p in "abc"}
+        if key and INV_LAG:
+            key = key + ("inv_lag", INV_LAG)
         gv = {p: s.get(f"{gstem}_ac_voltage_{p}n") or [] for p in "abc"}
         mapping = P.phase_mapping(P.voltage_votes(volts, gv)) if all(volts.values()) and all(gv.values()) else {}
         if key and len(mapping) == 3 and all(amps.values()):
