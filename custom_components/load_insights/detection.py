@@ -269,6 +269,9 @@ CATCH_UP_PASS_S = 2.0
 # pass that cannot get it in this long reads nothing and tries again at the
 # same start a minute later.
 RECORDER_FLUSH_S = 30.0
+# Every this many passes an input's kept rows (_input_states) are held to a full read of its window; on any
+# difference the full read is used and the kept rows start again (input_cache_check in the diagnostics)
+INPUT_AUDIT_PASSES = 30
 
 
 def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
@@ -441,7 +444,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.last_hourly_check: Dict[str, float] = {}
         self._active_memo: Optional[tuple] = None      # see active_by_name
         self._names_memo: Optional[tuple] = None       # see names_now
-        self._input_cache: Dict[str, tuple] = {}       # see _check_input_cache: (since, end, states) per input
+        self._input_cache: Dict[str, tuple] = {}       # see _input_states: (since, end, every row) per input
+        self._input_passes: Dict[str, int] = {}        # passes read per input, for the audit (INPUT_AUDIT_PASSES)
         self.input_cache_check: Dict[str, object] = {}
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
@@ -768,20 +772,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
                 continue
-            if domain in ("climate", "fan"):
-                # Read by an ATTRIBUTE - a thermostat's hvac_action, a fan's
-                # speed - which changes while the state does not: a thermostat
-                # stays "heat" all winter. state_changes_during_period returns
-                # state changes only, and so gave the floor mat's thermostat
-                # not one switch-on in production (2026-09-28).
-                states = await get_instance(self.hass).async_add_executor_job(functools.partial(
-                    history.get_significant_states, self.hass, since, end, [eid],
-                    include_start_time_state=True, significant_changes_only=False))
-            else:
-                states = await get_instance(self.hass).async_add_executor_job(
-                    history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
-                )
-            await self._check_input_cache(eid, domain, since, end, states.get(eid, []))
+            # A climate or a fan is read by an ATTRIBUTE - a thermostat's
+            # hvac_action, a fan's speed - which changes while the state does
+            # not: a thermostat stays "heat" all winter, and state changes only
+            # gave the floor mat's thermostat not one switch-on in production
+            # (2026-09-28). Kept between passes: _input_states.
+            states = {eid: await self._input_states(eid, domain, since, end)}
             rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
             if domain in NUMBER_DOMAINS:
                 values = []
@@ -1171,43 +1167,74 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             self._active_memo = (key, self.fleet.active_by_name(now))
         return self._active_memo[1]
 
-    async def _check_input_cache(self, eid: str, domain: str, since: datetime, end: datetime, full: list) -> None:
-        """CHECK MODE, nothing reads its result (2026-11-09): _read_inputs re-reads SWITCH_MEMORY_S (4 h) of
-        every input's history at every pass - ~1 s of each pass at Home, 19 inputs. Kept rows plus only what
-        came since the last read would do, if they are the same rows; that hangs on how the recorder hands
-        back the state in force at a window's start, which no replay here can show. So both are built and
-        compared, row by row (state, last_updated, the attribute a climate or fan is read by), and the count
-        and first difference go to the diagnostics (input_cache_check). Switched on only once it reads 0."""
-        def key(st):
-            attr = st.attributes.get("hvac_action") if domain == "climate" else (
-                st.attributes.get("percentage") if domain == "fan" else None)
-            return (st.state, round(st.last_updated.timestamp(), 3), attr)
+    async def _input_states(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
+        """The input's recorder states over (since, end), as _read_inputs' own query returns them, from kept
+        rows and only what came since the last read (2026-11-09): every pass re-read SWITCH_MEMORY_S (4 h)
+        of every input's history - ~1 s of each pass at Home, 19 inputs.
+
+        Every row is kept, attribute-only updates too (get_significant_states, all changes), because that
+        is what the recorder's start row is made of: the newest row of ANY kind before the window, with its
+        own time (history._get_single_entity_start_time_stmt, LazyState keeps last_updated). The window is
+        then built as the recorder builds it - that start row, then the rows strictly inside it, and for
+        everything but a climate or a fan (read by an attribute) only the state changes (last_changed ==
+        last_updated, as state_changes_during_period). Read whole the first time, when the window has moved
+        back (the first pass after a restart reads further) or past what is kept; and every
+        INPUT_AUDIT_PASSES passes the old full read is made too and compared: on any difference it is the
+        one used and the kept rows start again (input_cache_check in the diagnostics counts both)."""
+        def own(rows):
+            changes = domain not in ("climate", "fan")
+            s, e = since.timestamp(), end.timestamp()
+            before = [st for st in rows if st.last_updated.timestamp() < s]
+            inside = [st for st in rows if s < st.last_updated.timestamp() < e
+                      and (not changes or st.last_changed == st.last_updated)]
+            return before[-1:] + inside
+
+        recorder = get_instance(self.hass)
+
+        def read(frm, start_row):
+            return recorder.async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, frm, end, [eid],
+                include_start_time_state=start_row, significant_changes_only=False))
 
         kept = self._input_cache.get(eid)
-        self._input_cache[eid] = (since, end, list(full))
-        if kept is None or kept[1] < since or kept[0] > since:
-            return
-        recorder = get_instance(self.hass)
-        if domain in ("climate", "fan"):
-            new = await recorder.async_add_executor_job(functools.partial(
-                history.get_significant_states, self.hass, kept[1], end, [eid],
-                include_start_time_state=False, significant_changes_only=False))
+        if kept is None or kept[0] > since or kept[1] < since:
+            rows = list((await read(since, True)).get(eid, []))
         else:
-            new = await recorder.async_add_executor_job(
-                history.state_changes_during_period, self.hass, kept[1], end, eid, True, False, None, False)
-        old = [st for st in kept[2] if st.last_updated >= since]
-        before = [st for st in kept[2] if st.last_updated < since]
-        start = before[-1:]                     # the state in force at since, as the recorder's start row
-        built = [key(st) for st in start + old] + [key(st) for st in new.get(eid, []) if st.last_updated > kept[1]]
-        want = [key(st) for st in full]
-        c = self.input_cache_check
-        c["compared"] = c.get("compared", 0) + 1
-        if built != want:
-            c["different"] = c.get("different", 0) + 1
-            if "first" not in c:
-                i = next((i for i, (a, b) in enumerate(zip(built, want)) if a != b), min(len(built), len(want)))
-                c["first"] = {"entity": eid, "at": i, "built": [str(x) for x in built[i:i + 2]],
-                              "full": [str(x) for x in want[i:i + 2]], "lengths": [len(built), len(want)]}
+            edge = kept[1].timestamp()
+            new = [st for st in (await read(kept[1] - timedelta(microseconds=1), False)).get(eid, [])
+                   if st.last_updated.timestamp() >= edge]
+            rows = kept[2] + new
+            # all after since, and the newest before it - the start row of this window and the next
+            cut = next((i for i, st in enumerate(rows) if st.last_updated >= since), len(rows))
+            rows = rows[max(0, cut - 1):]
+        self._input_cache[eid] = (since, end, rows)
+        got = own(rows)
+        self._input_passes[eid] = self._input_passes.get(eid, 0) + 1
+        if self._input_passes[eid] % INPUT_AUDIT_PASSES == 0:
+            full = await self._input_states_full(eid, domain, since, end)
+            c = self.input_cache_check
+            c["compared"] = c.get("compared", 0) + 1
+            key = lambda st: (st.state, st.last_updated.timestamp(), st.attributes.get("hvac_action") if domain == "climate"  # noqa: E731
+                              else st.attributes.get("percentage") if domain == "fan" else None)
+            if [key(st) for st in got] != [key(st) for st in full]:
+                c["different"] = c.get("different", 0) + 1
+                c.setdefault("first", {"entity": eid, "cached": [str(key(st)) for st in got[:3]],
+                                       "full": [str(key(st)) for st in full[:3]], "lengths": [len(got), len(full)]})
+                self._input_cache.pop(eid, None)
+                return full
+        return got
+
+    async def _input_states_full(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
+        """The input's states read whole, as every pass did until 2026-11-09 - the audit _input_states is held to."""
+        if domain in ("climate", "fan"):
+            states = await get_instance(self.hass).async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, since, end, [eid],
+                include_start_time_state=True, significant_changes_only=False))
+        else:
+            states = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
+            )
+        return list(states.get(eid, []))
 
     def names_now(self) -> Dict[str, list]:
         """Fleet.names, worked out once per pass and second for every entity that reads it: each
