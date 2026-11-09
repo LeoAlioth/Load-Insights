@@ -5884,7 +5884,10 @@ class Detector:
             # judgement waits
             noise = max((self.phases[p].noise for p in pair.phases if p in self.phases), default=MIN_NOISE_W)
             born, pair.born_in = pair.born_in, None
-            twins = [o for o in self.pairs if not o.born_in and o.id not in moved and o.alike(pair, noise)]
+            # phases first: alike is False across phase sets, and a born-in pair whose twins' lift cannot be
+            # measured yet is asked again after every filing (Home: 433k alike calls in ten passes, 2026-11-09)
+            twins = [o for o in self.pairs if o.phases == pair.phases and not o.born_in and o.id not in moved
+                     and o.alike(pair, noise)]
             pair.born_in = born
             lifts = [(pair.input_lift(o, born), o) for o in twins]
             taken = [o for lift, o in lifts if lift is not None and lift < INPUT_SPLIT_LIFT]
@@ -7944,8 +7947,7 @@ class Fleet:
     _names: List[str] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
     _phase_maps: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see phase_map
     _composed: Dict[str, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _through_parent
-    _chans_memo: Dict[tuple, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _chans
-    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process: the voltage
+    _chans_memo: Dict[tuple, tuple] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)   # see _chans    # meter ("" the grid) -> its phase -> sorted [(ts, volts)], fed by process: the voltage
     # the cross-meter edges read beside each step (insights/edges.py); nothing here sizes a step by it.
     volts: Dict[str, Dict[str, List[Tuple[float, float]]]] = field(default_factory=dict, repr=False, compare=False)
     _sub_last: Dict[str, Dict[str, float]] = field(default_factory=dict)   # each meter's channels' last values - see _keep_rows
