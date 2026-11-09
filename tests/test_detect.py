@@ -918,6 +918,25 @@ def test_a_restart_leaves_the_stored_state_as_it_was():
             assert gone(a.get(k)) == gone(b.get(k)), k
 
 
+def test_a_streamed_store_reads_back_as_the_whole_snapshot():
+    """The runner's hourly save writes Fleet.dict_items through dump_items, a
+    meter's detector at a time, instead of one to_dict (2026-11-09: the whole
+    dict, built in the event loop, froze Home's Yellow for 50-130 s an hour).
+    The file must hold exactly what to_dict holds, and load to the same fleet."""
+    rows, end = _sliced_history()
+    plug = [(t + 2.0, w - 300.0) for t, w in rows["b"][::10]]
+    fleet = _fleet_restarted(rows, plug, 3600.0, end, False, state=True)
+    assert fleet.subs, "a meter's detector, so the nested pieces are written too"
+    out = []
+    D.dump_items(out.append, iter([("version", 1), ("data", iter([("fleet", fleet.dict_items()), ("refiling", False)]))]),
+                 lambda v: json.dumps(v).encode())
+    streamed = json.loads(b"".join(out))
+    whole = json.loads(json.dumps(fleet.to_dict()))
+    assert streamed == {"version": 1, "data": {"fleet": whole, "refiling": False}}
+    same = lambda d: json.dumps(D.Fleet.from_dict(d).to_dict(), sort_keys=True)  # noqa: E731
+    assert same(streamed["data"]["fleet"]) == same(whole)
+
+
 def test_every_field_is_persisted_or_derived():
     """A restart must not lose what a pass was in the middle of deciding, and
     a new field must not slip past it unnoticed (2026-10-12): every field of
