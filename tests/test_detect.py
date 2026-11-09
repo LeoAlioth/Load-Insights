@@ -207,6 +207,7 @@ def _evidence(det, rise, fall, secs, ratio=1.0, n=20):
     det.order[f"{rise}>{fall}"] = [n, n * math.log(secs), n * math.log(secs) ** 2,
                                    n * math.log(ratio), n * math.log(ratio) ** 2]
     det.fall_n[fall], det.run_time[rise], det.order_span = n, 0.1 * 86400.0, 86400.0
+    det._elig = None          # written past note_order, which clears partners_of's index when a count reaches it
 
 
 def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
@@ -1385,6 +1386,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     fleet._now = T0 + 6000.0
     # once it has shown its phase, a load on another one is not its own
     pair.locations[name] = D.METER_PHASES_MIN
+    fleet._loc_rev += 1          # written past the fleet, which counts every locations write (meter_phases' key)
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "a"), 6.0) is None
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "c"), 6.0) == name
     # seen by the circuit AND switched by the thermostat: the thermostat's
