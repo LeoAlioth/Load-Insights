@@ -4070,14 +4070,6 @@ class Pair:
             return False                       # named apart on purpose
         if not self.takes_len(other.duration_s) or not other.takes_len(self.duration_s):
             return False                       # the daily rewrite split them by length
-        if inputs and self.born_in != other.born_in:
-            # apart until judged; a born-in one that is chance goes back
-            born = self.born_in or other.born_in
-            if self.born_in and other.born_in and not (other.born_in in self.takes_in or self.born_in in other.takes_in):
-                return False
-            lift = self.input_lift(other, born)
-            if lift is None or lift >= INPUT_SPLIT_LIFT:
-                return False
         # NOT widened by power_mad, unlike matches() - and the difference is
         # the whole point. Against a SESSION the mad is what the pair
         # learned from its own sightings, and a single observation cannot
@@ -4120,6 +4112,16 @@ class Pair:
         if self.pf is not None and other.pf is not None and \
                 abs(self.pf - other.pf) > pf_tolerance(self.pf_mad, other.pf_mad):
             return False
+        # the inputs last: the same answer (every test here is pure), but input_lift is the dear one and most pairs
+        # differ in power first (Home: 24,018 input_lift calls from alike in ten passes, 2026-11-09)
+        if inputs and self.born_in != other.born_in:
+            # apart until judged; a born-in one that is chance goes back
+            born = self.born_in or other.born_in
+            if self.born_in and other.born_in and not (other.born_in in self.takes_in or self.born_in in other.takes_in):
+                return False
+            lift = self.input_lift(other, born)
+            if lift is None or lift >= INPUT_SPLIT_LIFT:
+                return False
         return True
 
     def swallow(self, other: "Pair") -> None:
