@@ -1035,6 +1035,7 @@ INPUT_DOWN = "unavailable"
 # A pair born in a setting's value with this many runs or fewer, never judged, is a fragment: see
 # Detector.retake_fragments.
 FRAGMENT_MAX_RUNS = 2
+NAMED_FRAGMENT_AGE_S = 86400.0    # a named fragment goes back into its signature once unseen this long (fold_named_fragments)
 # An input's CONTINUOUS state at a step - not only a change near it - is part of
 # the step's group, judged one input at a time against the state's share of the
 # time (Detector._by_state): while the washer is Running, a 2 kW step is not the
@@ -5949,6 +5950,42 @@ class Detector:
         self._absorb(moved)
         return judged
 
+    def fold_named_fragments(self, now: float) -> List["Pair"]:
+        """Once a day (Fleet._repair): a NAMED pair of FRAGMENT_MAX_RUNS runs or fewer, last seen over
+        NAMED_FRAGMENT_AGE_S ago, goes back into its signature - its alike twin of at least YOUNG_COUNT runs, the
+        one with the most (swallow), or, alike to none, the signature's biggest such pair, which takes its energy
+        as carried (as ``adopt`` moves a name's: the named load's meter never steps back, the twin's figures stay
+        its own). A run that fits none of a named signature's pairs founds a pair of that signature and wears its
+        name, and a named pair is never pruned: Home's kitchen fridge held 280 pairs, 238 of one run, and named,
+        established and young filled MAX_PAIRS with nothing left to evict (2026-11-09). Returns the keepers."""
+        moved: Dict[int, int] = {}
+        keepers: Dict[int, Pair] = {}
+        for frag in list(self.pairs):
+            # born-in ones too, as retake_fragments takes them: 172 of Home's waited on a value that came once and
+            # stayed (99 the fridge's, born in Le Hottie's Keep Warm, 2026-11-09)
+            if (not frag.name or frag.count > FRAGMENT_MAX_RUNS or now - frag.last_seen < NAMED_FRAGMENT_AGE_S
+                    or frag.id in moved or frag.id in keepers):
+                continue
+            kin = [o for o in self.signature_of(frag)
+                   if o is not frag and o.id not in moved and o.count >= YOUNG_COUNT and o.name == frag.name]
+            if not kin:
+                continue
+            noise = max((self.phases[p].noise for p in frag.phases if p in self.phases), default=MIN_NOISE_W)
+            # the born-in gate aside, as _fragment_twin's: a fragment's lift is None below INPUT_MIN_RUNS runs
+            twin = max((o for o in kin if o.alike(frag, noise, inputs=False)), key=lambda o: o.count, default=None)
+            if twin is not None:
+                twin.swallow(frag)
+            else:
+                twin = max(kin, key=lambda o: o.count)
+                twin.carried_wh += frag.energy_wh
+                for mine, theirs in ((twin.hourly, frag.hourly), (twin.older, frag.older), (twin.recovered, frag.recovered)):
+                    for hour, wh in theirs.items():
+                        mine[hour] = mine.get(hour, 0.0) + wh
+            moved[frag.id] = twin.id
+            keepers[twin.id] = twin
+        self._absorb(moved)
+        return list(keepers.values())
+
     def retake_fragments(self) -> int:
         """Once, on a library stored before ``fragments_retaken`` existed: the pairs born in a setting's value
         that have run FRAGMENT_MAX_RUNS times or fewer and were never judged go into their alike ordinary twin, the
@@ -8356,6 +8393,9 @@ class Fleet:
                 _recover_day(det, log, rows, a, b)
             # ...the born-in pairs waiting for ever on a lift (Detector._judge_born)
             for pair in det._judge_born(daily=True):
+                det._touch(pair.id)
+            # ...the named one-run pairs a named signature founds and never lets go (Detector.fold_named_fragments)
+            for pair in det.fold_named_fragments(b):
                 det._touch(pair.id)
             # ...and the length split each pair's run memory shows (the owner,
             # 2026-10-23: length decides here, with the runs' lengths in view, not live)

@@ -6859,6 +6859,36 @@ def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_rou
     assert named_apart.born_in is None and value in named_apart.takes_in and boiler.count == 20
 
 
+def test_a_named_signatures_one_run_pairs_go_back_into_it_in_the_daily_rewrite():
+    """A run that fits none of a named signature's pairs founds one more that wears the name, and a named pair is
+    never pruned: Home's kitchen fridge held 280 pairs, 238 of one run (2026-11-09). Once a day one unseen for a day
+    goes into its alike twin, or - alike to none - its energy is carried by the signature's biggest pair, whose own
+    figures stay; the name's energy never steps back. Born in a value or not (172 of Home's waited on Keep Warm and
+    the washer's phases). Kept: one seen within the day, one of three runs, one whose signature has nothing bigger."""
+    def wh(x):
+        return [x] + [0.0] * 23
+    now = T0 + 2 * 86400.0
+    head = _pair(1, 50.0, 240.0, count=500, phases="c", name="Fridge", signature=9, hour_wh=wh(900.0))
+    # born in a value that came once and stayed (Le Hottie's Keep Warm): never judged, folded all the same
+    alike = _pair(2, 52.0, 230.0, count=1, phases="c", name="Fridge", signature=9, hour_wh=wh(3.0), born_in="select.oven=Keep Warm")
+    sliver = _pair(3, 10.0, 30.0, count=2, phases="c", name="Fridge", signature=9, hour_wh=wh(5.0), hourly={7: 5.0})
+    fresh = _pair(4, 52.0, 230.0, count=1, phases="c", name="Fridge", signature=9, last_seen=now - 3600.0, hour_wh=wh(3.0))
+    three = _pair(5, 30.0, 60.0, count=3, phases="c", name="Fridge", signature=9, hour_wh=wh(2.0))
+    alone = _pair(6, 1400.0, 150.0, count=1, phases="b", name="Kettle", signature=7, hour_wh=wh(60.0))
+    fleet = D.Fleet()
+    det = fleet.subs["Hiša"] = D.Detector()
+    det.pairs = [head, alike, sliver, fresh, three, alone]
+    fridge = sum(s.energy_wh for s in det.pairs if s.name == "Fridge")
+    fleet._repair(now - 86400.0, now)
+    assert [s.id for s in det.pairs] == [1, 4, 5, 6]
+    assert head.count == 501 and head.name == "Fridge"                    # the alike one swallowed
+    assert not head.born_in and "select.oven=Keep Warm" in head.takes_in
+    assert head.carried_wh == 5.0 and head.hourly.get(7) == 5.0           # the sliver's energy only
+    assert abs(head.power["c"] - (50.0 * 500 + 52.0) / 501) < 1e-9          # not dragged towards 10 W
+    assert sum(s.energy_wh for s in det.pairs if s.name == "Fridge") == fridge
+    assert det._current(2) == 1 and det._current(3) == 1
+
+
 def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loading():
     value = "sensor.washer=Rinse"
     det = D.Detector()
