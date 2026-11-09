@@ -1140,6 +1140,10 @@ YOUNG_COUNT = 3
 # protection, the most recently seen; the rest are fair game like any other. 0 = no cap. Home kept ~900 one-run
 # pairs (841 of 1,138) under PRUNE_GRACE_S, and every filing walks them (alike, input_lift, _prune).
 YOUNG_CAP = 0
+# BENCH DIAL (2026-11-09, the owner: bench a narrower cap): with it set, YOUNG_CAP counts only one-run pairs under
+# this many watts (most of Home's young pairs: 503 of 899 under 100 W); larger first sightings - a kiln, a washer -
+# keep the full grace. 0 = YOUNG_CAP counts every young pair.
+YOUNG_CAP_W = 0.0
 # A NAMED pair is never evicted, so when its load CHANGES - a kiln put on
 # a different programme, an element replaced - the name stays attached to a
 # fingerprint nothing matches any more while the successor sits unnamed. The
@@ -7524,11 +7528,12 @@ class Detector:
         # another, which is the lockout again wearing a different hat. What
         # bounds it in practice is reality (a house has so many loads), the
         # thirty-day horizon, and the grace period on the young.
-        if YOUNG_CAP and len(tiers[2]) > YOUNG_CAP:
-            young = sorted(tiers[2], key=lambda x: x.last_seen)
-            tiers[2], tiers[3] = young[-YOUNG_CAP:], tiers[3] + young[:-YOUNG_CAP]
-            pos = {id(p): i for i, p in enumerate(self.pairs)}
-            tiers[2].sort(key=lambda x: pos[id(x)])     # kept in library order, as without the cap
+        capped = [x for x in tiers[2] if not YOUNG_CAP_W or (x.count <= 1 and abs(x.watts) < YOUNG_CAP_W)]
+        if YOUNG_CAP and len(capped) > YOUNG_CAP:
+            young = sorted(capped, key=lambda x: x.last_seen)
+            gone = {id(x) for x in young[:-YOUNG_CAP]}
+            tiers[3] += young[:-YOUNG_CAP]
+            tiers[2] = [x for x in tiers[2] if id(x) not in gone]     # library order kept, as without the cap
         keep = tiers[0] + tiers[1] + tiers[2]
         room = MAX_PAIRS - len(keep)
         tiers[3].sort(key=lambda x: (x.evidence, x.count, x.last_seen))
