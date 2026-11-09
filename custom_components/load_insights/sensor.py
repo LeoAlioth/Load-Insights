@@ -661,8 +661,11 @@ class PairLibrarySensor(_DetectionBase):
     def _library_shape(self) -> tuple:
         """What a card must see at once: the named pairs, where, and their signature. Not every pair:
         Home founds one nearly every minute (584 -> 750 in a morning), which kept the write per pass;
-        a new pair is not offered for naming before it has runs enough anyway."""
-        return tuple((m, x.id, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs if x.name)
+        a new pair is not offered for naming before it has runs enough anyway. By signature, not pair: a run
+        that fits none of a named signature's pairs founds one more wearing the name, and the card reads names
+        and the unnamed pairs only - Home's kitchen fridge did that several times an hour, each a ~0.27 s
+        rewrite of the whole library (2026-11-09)."""
+        return tuple(sorted({(m, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs if x.name}))
 
     @callback
     def _handle_coordinator_update(self) -> None:
