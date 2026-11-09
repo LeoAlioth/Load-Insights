@@ -1500,15 +1500,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 now = dt_util.utcnow()
                 start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
                 end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
+                # where read_s goes, step by step (2026-11-09: ~2 s a pass on Home's Yellow)
+                marks = [time.monotonic()]
                 await self._prefetch(start, end)
+                marks.append(time.monotonic())
                 samples = await self._derive_load(start, end)
+                marks.append(time.monotonic())
                 # the arrays, for telling a cloud from a load switching
                 self.solar = await self._resolve_solar()
                 generation = _sum_phases([(await self._read(start, end, fields))[0] for fields in self.solar])
+                marks.append(time.monotonic())
                 # after the sum, not before: where the inverter is added back the
                 # grid meter is the circuit every household watt flows through,
                 # so its VAr is the one that steps when a load switches
                 q = await self._reactive_series(start, end, samples)
+                marks.append(time.monotonic())
                 pv: Dict[str, Dict[float, float]] = {}
                 for p, target in samples.items():
                     if generation.get(p):
@@ -1538,6 +1544,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     if p in samples:
                         pv[p] = arr       # ...but a house built with the inverter added has it in
                 await self._refresh_submeters()
+                marks.append(time.monotonic())
                 for name, meter in self.all_submeters.items():
                     if meter.get("ignored"):
                         self.fleet.subs.pop(name, None)     # left out on the settings page: as if never read
@@ -1552,6 +1559,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     ss, sq = await self._read(start, end, meter["fields"], name)
                     if ss:
                         sub_samples[name], sub_q[name] = ss, sq
+                marks.append(time.monotonic())
                 # the recorder's start-of-window row is a copy, not a reading - see
                 # without_window_start; the sums above needed it, the detector must not
                 samples = without_window_start(samples, start.timestamp())
@@ -1559,6 +1567,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 single = {n: self.holds_one_device(n) for n in self.submeters}
                 switches, numbers, inputs = await self._read_inputs(start, end)
                 read = time.monotonic()
+                marks.append(read)
+                read_parts = {k: round(b - a, 2) for k, a, b in zip(
+                    ("prefetch", "load", "solar", "reactive", "meters_found", "meters_read", "inputs"), marks, marks[1:])}
                 self._pass_rows = None
                 self.fleet.wait_cap_s = self.meter_wait_s
                 job = functools.partial(
@@ -1571,7 +1582,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 await self.hass.async_add_executor_job(job)
                 detected = time.monotonic()
                 self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(detected - read, 1),
-                                  "hours": round((end - start).total_seconds() / 3600.0, 2)}
+                                  "hours": round((end - start).total_seconds() / 3600.0, 2), "read_parts": read_parts}
                 self.samples_read += sum(len(rows) for rows in samples.values())
                 self._update_live_power(end.timestamp())
                 self.last_processed = end
