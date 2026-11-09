@@ -1181,13 +1181,17 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         back (the first pass after a restart reads further) or past what is kept; and every
         INPUT_AUDIT_PASSES passes the old full read is made too and compared: on any difference it is the
         one used and the kept rows start again (input_cache_check in the diagnostics counts both)."""
-        def own(rows):
+        async def own(rows):
+            # the start row asked of the recorder itself, over a window one microsecond wide - the same function
+            # and start-row statement as the full read (rebuilt from kept rows it differed at Home in 35 of 36
+            # audits, by seconds, 2026-11-09); the rows inside the window from the kept ones
             changes = domain not in ("climate", "fan")
             s, e = since.timestamp(), end.timestamp()
-            before = [st for st in rows if st.last_updated.timestamp() < s]
+            start = await self._input_states_full(eid, domain, since, since + timedelta(microseconds=1))
+            start = [st for st in start if st.last_updated.timestamp() <= s][:1]
             inside = [st for st in rows if s < st.last_updated.timestamp() < e
                       and (not changes or st.last_changed == st.last_updated)]
-            return before[-1:] + inside
+            return start + inside
 
         recorder = get_instance(self.hass)
 
@@ -1208,7 +1212,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             cut = next((i for i, st in enumerate(rows) if st.last_updated >= since), len(rows))
             rows = rows[max(0, cut - 1):]
         self._input_cache[eid] = (since, end, rows)
-        got = own(rows)
+        got = await own(rows)
         self._input_passes[eid] = self._input_passes.get(eid, 0) + 1
         if self._input_passes[eid] % INPUT_AUDIT_PASSES == 0:
             full = await self._input_states_full(eid, domain, since, end)
