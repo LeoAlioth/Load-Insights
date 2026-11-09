@@ -1344,7 +1344,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         path = self.hass.config.path(f"load_insights_profile_{dt_util.utcnow():%Y%m%dT%H%M%S}.pstats")
         prof.dump_stats(path)
         out = io.StringIO()
-        stats = pstats.Stats(prof, stream=out).strip_dirs()
+        # full paths: the profile sees every thread, and a bare "sensor.py:330" (23.7 s in Home's fourth
+        # profile, 2026-11-09) cannot say which integration's it is
+        stats = pstats.Stats(prof, stream=out)
         stats.sort_stats("tottime").print_stats(25)
         stats.print_callers(8)                      # who calls the hottest: a count alone does not say where to cut
         stats.sort_stats("cumulative").print_stats(30)
