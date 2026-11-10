@@ -158,7 +158,12 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         runner = runner_of(_loaded(hass))
         if runner is None:
             raise ServiceValidationError("Load Insights is still loading; try again once it has")
-        runner.profile_passes(int(call.data.get("passes", 10)))
+        if runner._profiler is not None or runner._window is not None:
+            raise ServiceValidationError("A profile is already running; wait for its report in the log")
+        if call.data.get("seconds"):
+            runner.profile_seconds(int(call.data["seconds"]))
+        else:
+            runner.profile_passes(int(call.data.get("passes", 10)))
 
     # Renamed entities: gathered for a few seconds - a rename tool changes
     # dozens at once - then followed in one options change per entry, which

@@ -464,6 +464,10 @@ then logs the top functions and each pass's `last_pass` as a warning and writes
 loop's own steps after detection: `live_s`, `persist_s`, `listeners_s`,
 `dashboard_s`, and `total_s`. A replay on the Mac cannot stand in for the
 site: Home's 1-minute pass replays in 71 ms and took 2.6-9.5 s on the Yellow.
+With `seconds` (2026-11-10) it profiles the whole process for that long instead,
+every thread, and the report opens with the CPU seconds per owner (integration,
+library; a builtin's time split among its callers): the pass profile sees another
+integration only in the second or two a pass takes, so it cannot price one.
 
 Every attribute assembled per update must be in `_unrecorded_attributes`;
 `tests/test_sensor_attributes.py` fails otherwise. The library runs to well

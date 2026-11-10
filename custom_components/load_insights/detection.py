@@ -27,7 +27,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_call_later, async_track_time_change
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -371,6 +371,37 @@ def _sum_phases(readings) -> Dict[str, list]:
     return out
 
 
+def _owner(path: str) -> str:
+    """Whose code a profiled function is: the integration (custom or core), else the library."""
+    for mark in ("/custom_components/", "/homeassistant/components/"):
+        if mark in path:
+            return path.split(mark, 1)[1].split("/", 1)[0]
+    if "/site-packages/" in path:
+        return "lib:" + path.split("/site-packages/", 1)[1].split("/", 1)[0]
+    if "/homeassistant/" in path:
+        return "ha-core"
+    return "python"
+
+
+def _owner_seconds(stats: dict) -> List[Tuple[str, float]]:
+    """Own time (tottime) per owner, largest first, from pstats' raw table. A builtin ("~", dict.get,
+    sum) has no file, so its time goes to its callers' owners, in their share of it."""
+    out: Dict[str, float] = {}
+    for (path, _, _), (_, _, tt, _, callers) in stats.items():
+        if path != "~":
+            out[_owner(path)] = out.get(_owner(path), 0.0) + tt
+            continue
+        shares = {c: v[2] for c, v in callers.items()}
+        total = sum(shares.values())
+        if not total:
+            out["python"] = out.get("python", 0.0) + tt
+            continue
+        for (cpath, _, _), part in shares.items():
+            who = "python" if cpath == "~" else _owner(cpath)
+            out[who] = out.get(who, 0.0) + tt * part / total
+    return sorted(out.items(), key=lambda kv: -kv[1])
+
+
 def _profiled(prof, job):
     """Run ``job`` under ``prof`` in the calling (executor) thread."""
     prof.enable()
@@ -447,6 +478,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # load_insights.profile_passes: the passes still to profile, the profiler, and each pass's timings
         self._profile_left = 0
         self._profiler = None
+        self._window = None          # ...and profile_seconds' whole-process profiler while it runs
         self.last_hourly_check: Dict[str, float] = {}
         self._active_memo: Optional[tuple] = None      # see active_by_name
         self._names_memo: Optional[tuple] = None       # see names_now
@@ -1419,6 +1451,25 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._profile_rows = []
         self._listener_s = {}
 
+    def profile_seconds(self, seconds: int) -> None:
+        """Profile the whole process for ``seconds`` (load_insights.profile_passes with ``seconds``,
+        2026-11-10): what every integration costs on the site's own hardware, not only what runs
+        while detection does - the pass profile catches another integration only in the second or
+        two a pass takes, so a per-minute figure from it is a guess (SolarEdge's "2.4 s a minute")."""
+        import cProfile  # noqa: PLC0415 - only when asked for
+        prof = cProfile.Profile()
+        prof.enable()                 # sys.monitoring: every thread, not only the event loop's
+        self._window = prof           # one profiler at a time (__init__.py refuses a second)
+
+        async def done(_now) -> None:
+            prof.disable()
+            self._window = None
+            path, report = await self.hass.async_add_executor_job(self._profile_report, prof)
+            _LOGGER.warning("Load Insights profile of %d s of the whole process, written to %s\n%s",
+                            seconds, path, report)
+
+        async_call_later(self.hass, seconds, done)
+
     def _timed_update_listeners(self) -> None:
         """async_update_listeners, each entity timed (load_insights.profile_passes): which of
         the many entities fed by a pass costs the event loop its time."""
@@ -1454,6 +1505,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # full paths: the profile sees every thread, and a bare "sensor.py:330" (23.7 s in Home's fourth
         # profile, 2026-11-09) cannot say which integration's it is
         stats = pstats.Stats(prof, stream=out)
+        owners = _owner_seconds(stats.stats)
+        out.write("CPU seconds by owner: " + ", ".join(f"{o} {s:.2f}" for o, s in owners[:30]) + "\n\n")
         stats.sort_stats("tottime").print_stats(25)
         stats.print_callers(8)                      # who calls the hottest: a count alone does not say where to cut
         stats.sort_stats("cumulative").print_stats(30)
