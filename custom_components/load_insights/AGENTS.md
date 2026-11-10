@@ -475,7 +475,10 @@ id -> pair dict on every miss, and ids merged or evicted away miss every time (a
 it is now rebuilt only when `pairs` is another list or grew; and every pass matched the same meter sensors
 by name again (`match_meter_entities` via `beside` and `_resolve_submeters`, ~0.5 s/min), now remembered by
 the rows' contents (`detection.match_rows` / `beside_of`, lru_cache) so `phases.py` stays Load Juggler's
-verbatim copy.
+verbatim copy. Then `start_homes` (the other half of the live naming, ~0.2 s/min): it scanned every key of
+`pair_home` per call; now an index of the keys by start group (`_starts`), dropped when a key comes
+(`_file`) or moves (`_promote`) or `pair_home` is another dict - a Home replay, 985 calls, every answer
+equal to the old scan, order included.
 
 Every attribute assembled per update must be in `_unrecorded_attributes`;
 `tests/test_sensor_attributes.py` fails otherwise. The library runs to well

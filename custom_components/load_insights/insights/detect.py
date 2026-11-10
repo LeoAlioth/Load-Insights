@@ -5391,6 +5391,9 @@ class Detector:
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair: Optional[Dict[int, "Pair"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair_of: Optional[list] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the list it indexes
+    # start group -> its pair_home keys, in pair_home's order (start_homes); built again when a key comes or goes
+    _starts: Optional[Dict[int, List[str]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _starts_of: Optional[dict] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # device (device_of: the start and stop groups' pair, or a start with no
     # partner yet) -> {pair id: runs filed there}: what a run is filed by,
     # devices are merged by, and an open run is named by (start_homes) - see DEVICE_FILING (the owner, 2026-10-29: filing by
@@ -5875,6 +5878,8 @@ class Detector:
         if self._day_from is not None:
             self._day_log.append(s)
         if device is not None:
+            if str(device) not in self.pair_home:
+                self._starts = None                      # a new key: start_homes' index built again
             row = self.pair_home.setdefault(str(device), {})
             row[best.id] = row.get(best.id, 0.0) + 1.0
             self._vote(str(device), best.id)
@@ -7274,7 +7279,7 @@ class Detector:
         into = self.pair_home.setdefault(str(-(start * PAIR_ID_BASE + max(partners, key=partners.get))), {})
         for sid, n in self.pair_home.pop(str(start)).items():
             into[sid] = into.get(sid, 0.0) + n
-        self._device_home, self._votes = None, None
+        self._device_home, self._votes, self._starts = None, None, None
 
     def _device_pair(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Pair"]:
@@ -7713,12 +7718,16 @@ class Detector:
         out: Dict[int, float] = {}
         if cluster is None:
             return out
-        start = self._final(cluster)
-        for k, home in self.pair_home.items():
-            d = int(k)
-            if d == start or (d < 0 and _pair_start(d) == start):
-                for sid, n in home.items():
-                    out[sid] = out.get(sid, 0.0) + n
+        # By an index of pair_home's keys under their start group: it scanned every key of pair_home for each
+        # call, ~5.7 ms a call at Home on the CM4, all for the live naming (start_name; 2026-11-10)
+        if self._starts is None or self._starts_of is not self.pair_home:
+            self._starts, self._starts_of = {}, self.pair_home
+            for k in self.pair_home:
+                d = int(k)
+                self._starts.setdefault(_pair_start(d) if d < 0 else d, []).append(k)
+        for k in self._starts.get(self._final(cluster), ()):
+            for sid, n in self.pair_home[k].items():
+                out[sid] = out.get(sid, 0.0) + n
         return out
 
     def start_name(self, cluster: Optional[int]) -> Optional[str]:
