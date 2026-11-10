@@ -468,6 +468,14 @@ With `seconds` (2026-11-10) it profiles the whole process for that long instead,
 every thread, and the report opens with the CPU seconds per owner (integration,
 library; a builtin's time split among its callers): the pass profile sees another
 integration only in the second or two a pass takes, so it cannot price one.
+The first whole-process window at Home (2026-11-10, 120 s, after the template and entity cuts) put Load
+Insights at ~3.1 s CPU a minute, two parts of it pure waste, both fixed: `Detector._pair` rebuilt the
+id -> pair dict on every miss, and ids merged or evicted away miss every time (a Home replay: 570,013 calls,
+85 % misses, every answer checked equal to a fresh lookup; live ~0.4 s/min, nearly all from `start_name`) -
+it is now rebuilt only when `pairs` is another list or grew; and every pass matched the same meter sensors
+by name again (`match_meter_entities` via `beside` and `_resolve_submeters`, ~0.5 s/min), now remembered by
+the rows' contents (`detection.match_rows` / `beside_of`, lru_cache) so `phases.py` stays Load Juggler's
+verbatim copy.
 
 Every attribute assembled per update must be in `_unrecorded_attributes`;
 `tests/test_sensor_attributes.py` fails otherwise. The library runs to well

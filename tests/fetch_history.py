@@ -42,9 +42,10 @@ HOME = {
     "base": "https://ha.alpacasbarn.com",
     "tz": timezone(timedelta(hours=2)),
     "groups": {
-        # the SolarEdge meter and inverter, plus the template phase sensors
-        # detection is configured against, plus the single-phase device
-        # meters - all of them poll, so a day of these is modest
+        # the SolarEdge meter and inverter, plus the single-phase device
+        # meters - all of them poll, so a day of these is modest (the owner's
+        # template phase sensors were removed from Home 2026-11-10; the bench
+        # builds the house from the meter and inverter, bench._prod_house)
         "meters-and-devices": (
             [f"sensor.solaredge_se17k_m1_ac_{k}" for k in
              ("power_a", "power_b", "power_c", "current_a", "current_b", "current_c",
@@ -54,7 +55,6 @@ HOME = {
             + ["sensor.solaredge_se17k_i1_ac_power"]
             + [f"sensor.solaredge_se17k_i1_ac_{k}" for k in
                ("current_a", "current_b", "current_c", "voltage_an", "voltage_bn", "voltage_cn")]
-            + [f"sensor.se17k_home_power_phase_{p}" for p in "abc"]
             + ["sensor.blaz_pc_power", "sensor.attic_office_power",
                "sensor.evbox_elvi_power_active_import", "sensor.hidrofor_power",
                "sensor.workshop_boiler_power", "sensor.attic_ac_power",
