@@ -36,7 +36,7 @@ from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsD
 from .detection import (DetectionRunner, base_load_entities, base_load_label, base_load_uid, device_uid, load_uid,
                         loaded)
 from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
-                              pair_rows, suggest_levels)
+                              card_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
@@ -646,8 +646,9 @@ class PairLibrarySensor(_DetectionBase):
     Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
     pass and its pairs were 0.5 MB - every pass, to every connected
     dashboard and phone, and into the state machine. Nothing here depends on
-    the clock (``pair_rows``), so a pass that filed nothing writes nothing.
-    Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
+    the clock (``card_rows``), so a pass that filed nothing writes nothing.
+    Not recorded, for the reason DetectedLoadsSensor's attributes are not. Only what the Load Insights card
+    reads (2026-11-10: 536 kB at Home with every field of every pair); the diagnostics download has them all."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -685,20 +686,11 @@ class PairLibrarySensor(_DetectionBase):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        det = self._runner.detector
-        tz = dt_util.DEFAULT_TIME_ZONE
-        parents = self._runner.parents
         return {
-            "signatures": pair_rows(det.pairs, tz, parents),
-            "meters": {
-                name: {
-                    "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
-                                   for x in sorted(d.pairs, key=lambda y: -y.count)],
-                    "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
-                    "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
-                }
-                for name, d in self._runner.fleet.subs.items()
-            },
+            "signatures": card_rows(self._runner.detector.pairs, self._runner.parents),
+            # the card offers the names given anywhere; a sub-meter's unnamed pairs it never shows
+            "meters": {name: {"signatures": [{"id": x.id, "name": x.name} for x in d.pairs if x.name]}
+                       for name, d in self._runner.fleet.subs.items()},
         }
 
 

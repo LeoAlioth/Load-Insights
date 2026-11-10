@@ -216,7 +216,6 @@ HOME = {
             "sensor.workshop_charger_energy",
             "sensor.workshop_charger_power",
             "sensor.workshop_total_energy",
-            "sensor.workshop_total_power",
             "weather.arso_weather_pasja_ravan",
         ],
     },
