@@ -758,6 +758,10 @@
                 "passes": {
                     "name": "Prehodi",
                     "description": "Koliko prehodov profilirati; ko je zaznavanje dohitelo, je to en na minuto."
+                },
+                "seconds": {
+                    "name": "Celoten proces za",
+                    "description": "Namesto prehodov: toliko časa profiliraj vse, kar teče v Home Assistantu, vsako integracijo, in v dnevnik zapiši sekunde procesorja vsake."
                 }
             }
         }
