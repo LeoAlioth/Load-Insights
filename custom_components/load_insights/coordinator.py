@@ -724,9 +724,17 @@ class InsightsCoordinator(DataUpdateCoordinator):
         # the lowest daylight hour of the house forecast, today and tomorrow: from the same two
         # inputs, but unknown is a valid answer here, so it is never held (no held_since)
         out["base"] = base_consumption(now, use, pv, now.tzinfo)
-        # when the pack is next full: read off the excess balance (held with it)
-        full_at = ((out.get("excess") or {}).get("attributes") or {}).get("full_at")
-        out["full"] = {"at": full_at} if full_at else None
+        # when the pack is next full: read off the excess balance (held with it). A balance that never gets
+        # there is an answer, not a missing input: the sensor reads unknown with the reason, and stays
+        # unavailable only without a balance (Load Juggler's status took the old unavailable for a dropout)
+        bal = (out.get("excess") or {}).get("attributes")
+        if bal is None:
+            out["full"] = None
+        elif bal.get("full_at"):
+            out["full"] = {"at": bal["full_at"]}
+        else:
+            out["full"] = {"at": None, "reason": "not full within the forecast",
+                           "until_full_kwh": bal.get("until_full_kwh")}
         return out
 
     async def _solar_forecast(self, site: SiteModel, now: datetime) -> Dict[float, float]:
