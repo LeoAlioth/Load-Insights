@@ -822,19 +822,29 @@ class SunWindowSensor(CoordinatorEntity, SensorEntity):
         on_site(self, entry, key)
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def _reading(self) -> Optional[datetime]:
+    def _section_data(self) -> Optional[dict]:
         data: Optional[InsightsData] = self.coordinator.data
-        sun = (data.plan or {}).get(self._section) if data is not None else None
-        iso = sun.get(self._which) if sun else None
+        return (data.plan or {}).get(self._section) if data is not None else None
+
+    def _reading(self) -> Optional[datetime]:
+        sec = self._section_data()
+        iso = sec.get(self._which) if sec else None
         return dt_util.parse_datetime(iso) if iso else None
 
     @property
     def available(self) -> bool:
-        return super().available and self._reading() is not None
+        # the section is there whenever its inputs are; a time it does not have (the pack not full within
+        # the forecast) is unknown, with the reason as an attribute
+        return super().available and self._section_data() is not None
 
     @property
     def native_value(self) -> Optional[datetime]:
         return self._reading()
+
+    @property
+    def extra_state_attributes(self) -> Optional[dict[str, Any]]:
+        sec = self._section_data() or {}
+        return {k: sec[k] for k in ("reason", "until_full_kwh") if k in sec} or None
 
 
 class PlanSensor(CoordinatorEntity, SensorEntity):
