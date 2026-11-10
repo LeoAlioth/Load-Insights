@@ -5390,6 +5390,7 @@ class Detector:
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair: Optional[Dict[int, "Pair"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    _by_pair_of: Optional[list] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the list it indexes
     # device (device_of: the start and stop groups' pair, or a start with no
     # partner yet) -> {pair id: runs filed there}: what a run is filed by,
     # devices are merged by, and an open run is named by (start_homes) - see DEVICE_FILING (the owner, 2026-10-29: filing by
@@ -7298,9 +7299,14 @@ class Detector:
         return max(cands)[2] if cands else None
 
     def _pair(self, sid: int) -> Optional["Pair"]:
-        if self._by_pair is None or sid not in self._by_pair:
-            self._by_pair = {x.id: x for x in self.pairs}
-        return self._by_pair.get(sid)
+        # Rebuilt only when the library is another list or grew (a pair appended). It was rebuilt on every
+        # miss, and an id merged or evicted away misses every time: 5,500 calls in a 2-minute profile at Home,
+        # 0.15 ms each - most of them a rebuild of the whole library (0.4 s CPU a minute on the CM4, 2026-11-10)
+        idx = self._by_pair
+        if idx is None or self._by_pair_of is not self.pairs or (sid not in idx and len(idx) != len(self.pairs)):
+            idx = self._by_pair = {x.id: x for x in self.pairs}
+            self._by_pair_of = self.pairs
+        return idx.get(sid)
 
     def _merge_devices(self) -> int:
         """Pairs whose runs came from one device are one - see

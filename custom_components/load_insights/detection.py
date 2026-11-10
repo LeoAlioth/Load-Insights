@@ -362,6 +362,32 @@ def device_rows(hass: HomeAssistant, device_id: str) -> list:
     return rows
 
 
+def _key(rows) -> tuple:
+    return tuple(tuple(sorted(r.items())) for r in rows)
+
+
+@functools.lru_cache(maxsize=64)
+def _matched_key(rows: tuple, role: str) -> Dict[str, str]:
+    return match_meter_entities([dict(r) for r in rows], role)
+
+
+@functools.lru_cache(maxsize=256)
+def _beside_key(rows: tuple, reference: str, kind: str, phase: str) -> Optional[str]:
+    return beside([dict(r) for r in rows], reference, kind, phase)
+
+
+def match_rows(rows, role: str = "load") -> Dict[str, str]:
+    """match_meter_entities, remembered by the rows themselves: every pass matched the same unchanged sensors
+    again by their names (~0.5 s CPU a minute at Home on the CM4, 2026-11-10). A renamed or added sensor is
+    another key, so nothing goes stale; phases.py stays the verbatim copy Load Juggler shares."""
+    return dict(_matched_key(_key(rows), role))
+
+
+def beside_of(rows, reference: str, kind: str, phase: str) -> Optional[str]:
+    """phases.beside, remembered the same way as match_rows()."""
+    return _beside_key(_key(rows), reference, kind, phase)
+
+
 def _sum_phases(readings) -> Dict[str, list]:
     """Per phase, every reading's series summed (_sum_series), in order."""
     out: Dict[str, list] = {}
@@ -554,7 +580,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
-                fields = match_meter_entities(device_rows(self.hass, entry.device_id))
+                fields = match_rows(device_rows(self.hass, entry.device_id))
             if not any(fields.get(f"power_{p}") for p in PHASES):
                 # no per-phase reading: the dashboard's own power sensor, one
                 # channel whose label means nothing - the votes find its
@@ -621,7 +647,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         each phase hid that, a share through the wrong map would not."""
         fields = {f"{kind}_{p}": inv.get(f"{kind}_{p}") for kind in ("voltage", "current") for p in PHASES}
         if not all(fields.values()) and inv.get(CONF_INV_DEVICE):
-            matched = match_meter_entities(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            matched = match_rows(device_rows(self.hass, inv[CONF_INV_DEVICE]))
             fields = {key: fields[key] or matched.get(key) for key in fields}
         grid_v = {f"voltage_{p}": self.config.get(f"{GRID_PREFIX}voltage_{p}") for p in PHASES}
         if not all(fields.values()) or not all(grid_v.values()):
@@ -765,7 +791,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
                 # the inverter's device may carry the grid meter too (SolarEdge Modbus Multi's M1)
-                matched = match_meter_entities(array_rows(device_rows(self.hass, entry.device_id), grid_power))
+                matched = match_rows(array_rows(device_rows(self.hass, entry.device_id), grid_power))
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
@@ -1837,7 +1863,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         uses it without being set up again."""
         if device is None:
             return None
-        return beside(device_rows(self.hass, device), reference, "var", phase)
+        return beside_of(device_rows(self.hass, device), reference, "var", phase)
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -1858,7 +1884,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         device = self._device_of(amps)
         if device is None or device != self._device_of(volts):
             return None
-        power = beside(device_rows(self.hass, device), amps, "power", phase)
+        power = beside_of(device_rows(self.hass, device), amps, "power", phase)
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,
