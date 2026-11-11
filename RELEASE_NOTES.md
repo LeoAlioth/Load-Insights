@@ -6,6 +6,8 @@
 
 - **A load on a meter is offered for naming even when one of its runs was named on the grid.** A meter's load was left off the naming page whenever the grid's look-alike of it had a name, even when that look-alike held only one stray run of it: Home's dryer heater, 325 runs on its own plug, never showed up because a grid load named after the oven had taken one of them. The grid's named look-alike now hides it only when it holds at least half of its runs.
 
+- **The house includes your solar even when no inverter is set up.** Without an inverter on the *Inverters* page the house was taken as the grid meter alone, so on a sunny day it read below zero (the *house reading negative* repair) and the loads were measured against the wrong figure. The Energy dashboard's solar source now stands in for the inverter: its per-phase power where its device publishes one, else the dashboard's solar power spread evenly over the grid's phases. A grid meter on the same device as the inverter (SolarEdge's M1) is never taken for the array. An inverter set up on the page still wins, so nothing changes where one is.
+
 ### Improvements
 
 - **The inputs are read in one query a pass.** The forecast's inputs (switches, thermostats, settings, sensors) were read from the recorder one at a time, every minute - about 20 queries a minute at a site with 19 inputs. They now come in one (two on the pass an input is added), with the same rows as before.
