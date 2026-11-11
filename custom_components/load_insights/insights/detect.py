@@ -1615,6 +1615,14 @@ def _kept_steps(rows: list) -> list:
     return out
 
 
+def _set_quantum(det: "Detector", phases, quantum: Optional[Dict[str, float]]) -> None:
+    """What one quantum of a meter's amps is worth, per phase, on the given phases - as Detector.begin set it from
+    a pass's q_quantum (Fleet.process, which hands the readings to Fleet.feed instead)."""
+    for ph in phases:
+        if ph in det.phases and quantum and quantum.get(ph):
+            det.phases[ph].q_quantum = quantum[ph]
+
+
 def _kept_merge(old: Optional[list], rows, keep: float, cast) -> list:
     """``old`` rows (time, value) with ``rows`` added - a time already held
     takes the new value - kept from ``keep`` on, with the one still in force
@@ -8105,6 +8113,9 @@ class Fleet:
     cadence_forced: Dict[str, bool] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # the grid's readings, reactive and PV newer than the wait, for the next pass
     _carry: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False)
+    # a meter's readings fed but not yet read (Fleet.feed), for a meter that is not a main (no view); a main's wait
+    # in its fleet's _carry. Emptied by every advance up to the meter's last reading, as Fleet.process does
+    _inbox: Dict[str, dict] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     # switch -> {on moment: off moment, or None while on}, as the runner last
     # read them - see SWITCH_PREFIX. Never persisted: every pass re-reads its
     # window with a lookback.
@@ -8239,46 +8250,27 @@ class Fleet:
                 f._keep_rows("", sub_samples.get(name) or {}, end)
                 for n in f.subs:
                     f._keep_rows(n, sub_samples.get(n) or {}, end)
-        # a main's readings - the grid's, a meter others hang under - the last
-        # pass's held ones in front: each is read once the clock is its
-        # horizon past it (_run); the rest wait. Only the main meter needs the
-        # array: a downstream meter sees the house side of it, never the sun
-        streams, kept = {}, {}
+        # what one quantum of each meter's amps is worth, on the phases this pass has rows for (held ones too), as
+        # Detector.begin set it; then the pass's readings into their streams (feed), and the stream run up to how
+        # far they reach (advance)
         for name, f in units:
-            rows, q, quantum = ((main_samples, main_q, main_q_quantum) if not name else
-                                (sub_samples.get(name) or {}, (sub_q or {}).get(name), (sub_q_quantum or {}).get(name)))
-            rows, q, arr = f._hold_back(rows, q, pv if not name else None, math.inf)
-            kept[name] = (rows, q, arr)
-            streams[name] = f.main.begin(rows, q, arr, quantum, file=False)
-        meters = []
-        for name in sorted(self.subs):
+            _set_quantum(f.main, set((main_samples or {}) if not name else (sub_samples.get(name) or {}))
+                         | set(f._carry.get("rows") or {}),
+                         main_q_quantum if not name else (sub_q_quantum or {}).get(name))
+        for name in self.subs:
             if name not in self.views:
-                det = self.subs[name]
-                meters += [(ts, name, ph, w) for ts, ph, w in det.begin(sub_samples.get(name) or {}, (sub_q or {}).get(name),
-                                                                        q_quantum=(sub_q_quantum or {}).get(name))]
-        meters.sort(key=lambda r: r[:3])
-        self._dues, self._names = {}, [""] + sorted(self.subs)
-        first = min([end] + [r[0] for r in streams[""][:1] + meters[:1]])
-        for _, f in units:
-            if f._wait_at is None:
-                f._wait_at = math.floor(first / MODEL_REFRESH_S)
-        if self._repaired_to is None:
-            tz = self.main.tz_offset_s
-            self._repaired_to = (first + tz) // REPAIR_DAY_S * REPAIR_DAY_S - tz
-        for _, det in self.detectors():
-            det._day_from = self._repaired_to
-        for name, det in self.detectors():
-            det.volts_at = functools.partial(self._volts_at, name)
-        done = self._run(units, streams, meters, end)
-        for name, f in units:
-            left: Dict[str, list] = {}
-            for ts, ph, w in streams[name][done[name]:]:
-                left.setdefault(ph, []).append((ts, w))
-            f._hold_back(left, kept[name][1], kept[name][2], -math.inf)   # kept, with their reactive and PV values
-        self._now = max(self._now, end)
+                _set_quantum(self.subs[name], set(sub_samples.get(name) or {}), (sub_q_quantum or {}).get(name))
+        for name, by_ph in [("", main_samples or {})] + sorted(sub_samples.items()):
+            qs = (main_q if not name else (sub_q or {}).get(name)) or {}
+            pvs = (pv or {}) if not name else {}
+            for ph, rows in by_ph.items():
+                qm, pvm = qs.get(ph) or {}, pvs.get(ph) or {}
+                for ts, w in rows:
+                    self.feed(name, ts, ph, w, qm.get(ts), pvm.get(ts))
+        self.advance(end)
         for name, f in units:
             f._now = self._now
-            f.main.finish(kept[name][0], f.main._clock or end, f._oldest_asked())
+            f.main.finish({}, f.main._clock or end, f._oldest_asked())
         for name, det in self.subs.items():
             if name not in self.views:
                 det.finish(sub_samples.get(name) or {}, end)
@@ -8291,6 +8283,60 @@ class Fleet:
             for _, det in self.detectors():
                 for pair in det.pairs:
                     pair.age(self._now)
+
+    def feed(self, meter: str, ts: float, phase: str, watts: float,
+             q: Optional[float] = None, pv: Optional[float] = None) -> None:
+        """One assembled reading into its meter's stream (the grid's under ""), with its reactive VAr and, for the
+        grid, the array's power at that moment - read when advance reaches it (streaming pipeline, step 1). A main's
+        - the grid's, a meter others hang under - waits in its fleet's carry until the clock is its horizon past it,
+        as a pass's held readings always did; any other meter's in the inbox until the clock reaches it."""
+        f = self if not meter else self.views.get(meter)
+        box = f._carry if f is not None else self._inbox.setdefault(meter, {})
+        box.setdefault("rows", {}).setdefault(phase, []).append((ts, watts))
+        for key, value in (("q", q), ("pv", pv)):
+            if value is not None:
+                box.setdefault(key, {}).setdefault(phase, {})[ts] = value
+
+    def advance(self, until: float) -> None:
+        """Run the stream up to ``until``: every reading fed so far and everything due, in ONE order on one clock
+        (_run). A main's readings its horizon has not yet passed, and any meter's after ``until``, stay for the next
+        call; the same readings fed in one call, in slices or a minute at a time file the same sessions."""
+        units = self._units()
+        # a main's readings - the grid's, a meter others hang under: each is read once the clock is its horizon
+        # past it (_run); the rest wait. Only the main meter has the array: a downstream meter sees the house side
+        # of it, never the sun
+        streams, kept = {}, {}
+        for name, f in units:
+            rows, q, arr = f._hold_back(None, None, None, math.inf)
+            kept[name] = (rows, q, arr)
+            streams[name] = f.main.begin(rows, q, arr, None, file=False)
+        meters = []
+        for name in sorted(self.subs):
+            if name not in self.views:
+                box = self._inbox.pop(name, None) or {}
+                meters += [(ts, name, ph, w) for ts, ph, w in self.subs[name].begin(box.get("rows") or {}, box.get("q"))]
+        meters.sort(key=lambda r: r[:3])
+        self._dues, self._names = {}, [""] + sorted(self.subs)
+        first = min([until] + [r[0] for r in streams[""][:1] + meters[:1]])
+        for _, f in units:
+            if f._wait_at is None:
+                f._wait_at = math.floor(first / MODEL_REFRESH_S)
+        if self._repaired_to is None:
+            tz = self.main.tz_offset_s
+            self._repaired_to = (first + tz) // REPAIR_DAY_S * REPAIR_DAY_S - tz
+        for _, det in self.detectors():
+            det._day_from = self._repaired_to
+        for name, det in self.detectors():
+            det.volts_at = functools.partial(self._volts_at, name)
+        done, isub = self._run(units, streams, meters, until)
+        for name, f in units:
+            left: Dict[str, list] = {}
+            for ts, ph, w in streams[name][done[name]:]:
+                left.setdefault(ph, []).append((ts, w))
+            f._hold_back(left, kept[name][1], kept[name][2], -math.inf)   # kept, with their reactive and PV values
+        for ts, name, ph, w in meters[isub:]:
+            self.feed(name, ts, ph, w, (self.subs[name]._q.get(ph) or {}).get(ts))
+        self._now = max(self._now, until)
 
     def _units(self) -> List[Tuple[str, "Fleet"]]:
         """The grid's fleet under "", then each meter's others hang under, by name."""
@@ -8338,7 +8384,8 @@ class Fleet:
         (_vote_phases), a horizon worked out again. At one moment the
         readings first - the mains', the grid's first, then the meters' - and
         then what is due, in that order. Returns how many of each main's
-        readings were read; the rest wait for the next pass."""
+        readings were read, and how many of the meters'; the rest wait for
+        the next advance."""
         at_ = {name: 0 for name, _ in units}
         isub = 0
         fleets = [f for _, f in units]
@@ -8363,7 +8410,7 @@ class Fleet:
             best = min(cands, default=None)               # the first of a tie, as the strict < kept
             at, cls, rank = best[:3]
             if at > end or (cls == 1 and at >= end):
-                return at_
+                return at_, isub
             self._now = max(self._now, at)
             for f in fleets:
                 f._now = f.main.horizon = self._now
