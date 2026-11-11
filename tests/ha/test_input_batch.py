@@ -82,10 +82,14 @@ def _runner(rec, inputs):
     r.fleet = SimpleNamespace(_now=None)
     r._inputs_primed = True
     r._input_cache, r._input_starts, r._input_rows, r._input_passes, r.input_cache_check = {}, {}, {}, {}, {}
+    r._live, r._input_buf = False, {}
     return r
 
 
-def _passes(batch: bool):
+def _passes(batch: bool, live: bool = False, listen_late_s: float = 0.0):
+    """60 one-minute passes of _read_inputs: one query an input (batch False), one a pass (batch True), or -
+    live - the first from the recorder and every later one from the state changes as they arrive (_input_buf),
+    as the streaming runner reads them; ``listen_late_s`` after the first pass's end listening begins."""
     rec = _Recorder(_history())
     D.history = SimpleNamespace(get_significant_states=rec.query,
                                 state_changes_during_period=lambda *a, **k: {})
@@ -97,10 +101,18 @@ def _passes(batch: bool):
         async def none(*a):
             return None
         r._batch_inputs = none
-    out = []
+    out, arrived = [], T0 + timedelta(seconds=4 * 3600 - 60)
     for k in range(60):
         end = T0 + timedelta(seconds=4 * 3600 + k * 60)
         rec.now = end
+        if live and k:
+            listened = T0 + timedelta(seconds=4 * 3600 + listen_late_s)   # the first pass ended at T0 + 4 h
+            # live once a window starts after listening began (_step's rule); before, a gap pass from the recorder
+            r._live = end - timedelta(seconds=60) >= listened
+            for seen, st in rec.rows:                # what HA's state_changed events delivered since the last pass
+                if arrived < seen <= end and seen > listened:
+                    r._input_buf.setdefault(st.entity_id, []).append(st)
+        arrived = end
         if k == 20:
             r.entry.options[CONF_INPUT_ENTITIES] = inputs + ["switch.late"]
         out.append(asyncio.run(r._read_inputs(end - timedelta(seconds=60), end)))
@@ -120,6 +132,26 @@ def test_one_query_a_pass_reads_what_one_an_input_read():
     # the pass an input is added: it is read whole, the others on)
     assert calls_each == 20 * 5 + 40 * 6, calls_each
     assert calls_together == 60 * 2 + 1, calls_together
+
+
+def test_live_inputs_from_the_state_changes_read_what_the_recorder_read():
+    """Streaming (step 2): after the first pass, the inputs' new rows come from their state changes and their
+    start rows from the kept rows - no recorder query - and every pass returns exactly what one query an input
+    returned; only an input added later (switch.late, pass 20) is read whole from the recorder once."""
+    one_each, _ = _passes(batch=False)
+    live, calls = _passes(batch=True, live=True)
+    assert live == one_each
+    assert calls == 2 + 1, calls          # pass 0: the start rows and the batch; pass 20: the new input, whole
+
+
+
+def test_listening_that_begins_after_the_last_gap_read_loses_nothing():
+    """The first live read's overlap edge lies before listening began: what changed between is in the kept rows
+    the last recorder read handed over, and is read from there."""
+    one_each, _ = _passes(batch=False)
+    live, calls = _passes(batch=True, live=True, listen_late_s=30.0)
+    assert live == one_each
+    assert calls == 2 + 2 + 1, calls      # pass 0 and the gap pass 1 from the recorder, then live; pass 20's input
 
 
 if __name__ == "__main__":

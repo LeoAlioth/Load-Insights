@@ -118,6 +118,10 @@ def _detection(runner) -> dict:
         "last_pass": dict(runner.last_pass),
         "last_hourly_check": dict(runner.last_hourly_check),
         "input_cache_check": dict(runner.input_cache_check),
+        # streaming: declared time less step time, the daily comparison with the recorder, the minute's work
+        "step_latency": dict(runner.step_latency),
+        "stream_audit": dict(runner.stream_audit),
+        "last_minute": dict(runner.last_minute),
         "footprint": runner.fleet.footprint(),        # what the memory goes to, by count
         "reactive_from": dict(runner.reactive_from),
         # each one-figure inverter's phases on the grid meter's, learned from
