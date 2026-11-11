@@ -116,6 +116,8 @@ def _detection(runner) -> dict:
         "caught_up": runner.caught_up,
         "samples_read": runner.samples_read,
         "last_pass": dict(runner.last_pass),
+        "last_hourly_check": dict(runner.last_hourly_check),
+        "input_cache_check": dict(runner.input_cache_check),
         "footprint": runner.fleet.footprint(),        # what the memory goes to, by count
         "reactive_from": dict(runner.reactive_from),
         # each one-figure inverter's phases on the grid meter's, learned from

@@ -205,6 +205,8 @@ Benched on Home 15-25 Oct (SLICE=6, the seven input entities of production, `dat
 | `ESTABLISHED_HORIZON_S` | 400 days | ...while seen within this | policy | — | not tested |
 | `YOUNG_COUNT` | 3 | sightings under which a new signature is protected... | policy | 2–5 | not tested |
 | `PRUNE_GRACE_S` | 6 h | ...for this long | policy | 1–48 h | not tested |
+| `YOUNG_CAP` | 100 | at most this many young pairs keep that protection, the most recently seen | policy | 20–200 | 2026-11-09: Home's library grew well past `MAX_PAIRS` at midday (real one-off runs, all under the 6 h grace); caps 10-200 all raise Home's right kWh and cut its wrong (100: hidden +3.25 / -3.48 kWh), Kozolec and the third site unchanged, kiln identical at 0 / 100 / 20; 100 picked as ~36 min of grace at Home's founding rate. The narrower bench dial `YOUNG_CAP_W` (one-run pairs under a wattage only) was not kept. Rare loads, planted (`energy_bench.py PLANT=2000:1200:86400:a PLANT=700:900:43200:b`, Home 3-13 Oct, 7.33 / 3.85 kWh truth), right kWh / impurity, cap 0 -> 100: hidden 2 kW 3.88 / 11.4 -> 3.41 / 11.7 % (the one loss: -0.47 kWh), 700 W 2.25 / 6.1 both; fed 2 kW 5.10 / 7.7 both, 700 W 2.78 / 14.0 -> 2.78 / 9.1 %; 8-9 Nov at twice the rate, hidden: 2 kW 1.28 / 3.5 both, 700 W 0.83 / 15.1 -> 0.83 / 14.0 % (its top pair 13 -> 10 runs). Either way a once-a-day load's runs found a new pair each and are evicted by `MAX_PAIRS`: at Home named, established and young pairs fill it (live 2026-11-09: 316 named - 280 of them the kitchen fridge's, 238 of one run -, 177 established, 100 young, 0 evictable), so an unnamed pair lives only its grace. (Numbers committed before 2026-11-09 evening read the planted loads' broken scoring - see tests/energy_bench.py's plant credit - and said the cap helped them.) |
+| `NAMED_FRAGMENT_AGE_S` | 1 day | in the daily rewrite a NAMED pair of `FRAGMENT_MAX_RUNS` runs or fewer unseen this long goes back into its signature (`fold_named_fragments`): its alike twin of `YOUNG_COUNT`+ runs (born-in gate aside), or the signature's biggest pair carries its energy | policy | — | 2026-11-09, offline on Home's live libraries (no bench: the replay names nothing): grid 598 -> 397 pairs (named 322 -> 121; 166 swallowed, 35 carried), Hiša 665 -> 473, Mansarda 284 -> 207, every named load's energy unchanged; Kozolec has 7 named. The kitchen fridge's signature had 280 pairs (238 of one run, 99 born in Le Hottie's Keep Warm). Still at Home's grid: 121 named + 177 established + 100 young > `MAX_PAIRS`, so nothing unprotected survives its grace |
 | `SUCCESSOR_*` | 7 d, 6 intervals, 0.5, 5 | when a quiet named load hints that an unnamed one is what it became | policy | — | not tested |
 
 ### Solar and supply
@@ -453,6 +455,30 @@ live in `data/<hostname>` (gitignored).
 The detected-loads sensor publishes what the gates measured — `resolution_w`,
 `pf_floor_w`, `noise_floor_w`, `baseline_w` — so a gate can be checked against
 a site instead of assumed. Add to that list rather than debugging blind.
+
+**Profiling on a site** (2026-11-09, Home's freezes): `load_insights.profile_passes`
+(`passes`, default 10) runs the next passes' `fleet.process` under cProfile in its
+executor thread (Home Assistant's own profiler sees only the event loop's thread),
+then logs the top functions and each pass's `last_pass` as a warning and writes
+`/config/load_insights_profile_<utc>.pstats`. `last_pass` also times the event
+loop's own steps after detection: `live_s`, `persist_s`, `listeners_s`,
+`dashboard_s`, and `total_s`. A replay on the Mac cannot stand in for the
+site: Home's 1-minute pass replays in 71 ms and took 2.6-9.5 s on the Yellow.
+With `seconds` (2026-11-10) it profiles the whole process for that long instead,
+every thread, and the report opens with the CPU seconds per owner (integration,
+library; a builtin's time split among its callers): the pass profile sees another
+integration only in the second or two a pass takes, so it cannot price one.
+The first whole-process window at Home (2026-11-10, 120 s, after the template and entity cuts) put Load
+Insights at ~3.1 s CPU a minute, two parts of it pure waste, both fixed: `Detector._pair` rebuilt the
+id -> pair dict on every miss, and ids merged or evicted away miss every time (a Home replay: 570,013 calls,
+85 % misses, every answer checked equal to a fresh lookup; live ~0.4 s/min, nearly all from `start_name`) -
+it is now rebuilt only when `pairs` is another list or grew; and every pass matched the same meter sensors
+by name again (`match_meter_entities` via `beside` and `_resolve_submeters`, ~0.5 s/min), now remembered by
+the rows' contents (`detection.match_rows` / `beside_of`, lru_cache) so `phases.py` stays Load Juggler's
+verbatim copy. Then `start_homes` (the other half of the live naming, ~0.2 s/min): it scanned every key of
+`pair_home` per call; now an index of the keys by start group (`_starts`), dropped when a key comes
+(`_file`) or moves (`_promote`) or `pair_home` is another dict - a Home replay, 985 calls, every answer
+equal to the old scan, order included.
 
 Every attribute assembled per update must be in `_unrecorded_attributes`;
 `tests/test_sensor_attributes.py` fails otherwise. The library runs to well
@@ -1262,6 +1288,10 @@ before until a `reset_detection` re-runs the backfill.
 ## Things already ruled out
 
 Don't re-chase these; each cost real time.
+
+- **A bigger pair budget, 2026-11-09 (the owner: bench MAX_PAIRS higher).** Home's grid library keeps more protected pairs than `MAX_PAIRS` (after `fold_named_fragments` ~121 named + 177 established + 100 young), so an unnamed pair lives only its grace and a once-a-day load never reaches a second run. Card on 8961cd6 (home, kozolec, third; `data/scorecard/8961cd6-mp{200,400,600}-*`), right / wrong kWh against 200: 400 - Home hidden devices -1.83 / +0.33, partition -3.18 / +2.71, circuits partition +0.58 / +1.81, fed partition -1.14 / +1.17, third hidden partition -2.11 / +2.21; 600 - Home hidden devices -3.78 / +0.46, partition -9.47 / +4.73, circuits partition -5.23 / +4.25, fed partition -3.35 / +4.11, third hidden partition -2.46 / +2.98; Kozolec identical (its library sits under the cap). Worse the bigger, every Home mode. The planted rare loads (hidden, 3-13 Oct) do not gain either: at 600 the daily 2 kW plant 1.24 kWh right of 7.33 against 3.41 at 200, the 700 W one 2.25 right both but impurity 6.1 -> 27.0 % (its runs land in a 16-run pair that holds other loads'). More pairs to file into dilutes every load. Not shipped.
+
+- **Aligning Home's inverter with the grid meter, 2026-11-09.** Midday founding at Home (~2-3 new pairs a minute) looked like cloud edges seen by the M1 meter (~2.4 s) before the SE17K inverter's reading (~6 s): a phantom step in grid + inverter at each. The "~9 s lag" (median over 168 jumps on 9 Nov) was a measurement artefact of the inverter's cadence. Bench dials, both lost: `INV_LAG` (inverter readings moved earlier) - 9 s gave 2.97-3.15 founded/min at midday against 1.0-1.5 without, every other shift worse too; `INV_INTERP` (inverter interpolated onto the grid's times instead of held) - founded 954 -> 905, but Home hidden devices -3.14 / +0.92 kWh (right / wrong) and circuits partition -7.28 / +2.03. Removed from `tests/bench.py`; the library growth was handled by `YOUNG_CAP`.
 
 - **Long-running loads and the idle floor, 2026-10-30** (`docs/specs/2026-10-30-floor-net-of-runs.md`). The floor learns only with nothing open, so it is not what loses a long load; the closes are. Kozolec's pond pump (46 W, on 84 %, 14.6 kWh, 0 % caught) shares its ~40 W step group with the unmetered fridges: a fridge's fall closes the pump's run (12 stretches, 7.2 kWh), or the pump starts in the reading a 1-3.5 kW load does and that load's alike fall ends the run "though a rest is carried" (26 starts, 4.5 kWh); the floor then takes the 46 W as idle. Benched against `base1030` (identical to 51427c4), kWh right / wrong: (1) `CARRY_REST` - a close must leave the reading without the run: carried whole, the fall was another load's; carried in part, the rest runs on from the same start. Both halves: Home hidden +4.2 / +3.5, circuits -8.4 / +2.1, fed +4.1 / +0.4, Kozolec hidden -2.4 / +2.3 (water pump 67 -> 14 %). Refuse only: circuits -3.1 / +2.8, fed +6.9 / -0.3, Kozolec +0.9 / +2.0. Split only: Home hidden +3.7 / +1.0, circuits -0.8 / +1.7, fed +3.1 / -0.7, Kozolec +0.3 / +3.5 (car charger -3.2 kWh): 133 splits at Kozolec, most of them 25-90 W left by 1-minute boiler pulses whose grid fall reads 2-5 % under its rise (a ramp, or a floor under the idle reading); measuring the rest from the reading before the run's start and after it settled (80 s) halved them and still lost the car charger's 3.1 kWh. (2) `TIE_OLDEST` - near-tied runs of one group, the oldest ends: circuits -8.6 / +1.5, nothing gained (the pump is the older of the two as often as the younger). (3) `SEEN_CARRY` - second_rise's seen-fall branch only where the reading no longer carries the run: circuits -6.5 / +2.6, fed +2.2 / -0.7, Kozolec +1.7 / +1.9; with split-only: Kozolec +4.1 / +2.3, circuits -2.3 / +2.6, hidden -2.2 / 0. Pond stayed at 0 % in every variant: nothing in size, angle or order tells the pump from a fridge in one group. Patch kept outside the repo (session scratchpad, `carry-rest-experiment.patch`); not shipped.
 - **Splitting a multi-phase leg a meter's coincident rise is most of, 2026-10-30.** Home 7 Oct 18:16:06: Hiša's own +689 W start inside the EVBox's +793 W phase C leg took the leg whole (within MATCH_EDGE_REL) and Hiša's stop later ended it. Tried: where the rest is beyond the two meters' error (sqrt(2) noise, METER_CAL_SLACK), the meter's rise a run of its own and the leg the rest, as `_split_rise` does a single-phase start. Card against the co_run commit: Polnilnica fed 80.1 -> 68.9, circuits 61.2 -> 58.5; Home fed 56.1 / 6.0 -> 54.8 / 7.2; Blaž's PC fed +14.2 capture but +9.9 impurity. The EVBox's legs, cut down, stop matching its own meter's session. Not shipped.

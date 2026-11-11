@@ -1,5 +1,25 @@
 # Release Notes
 
+## 0.5.2
+
+### New Features
+
+- **Profile Load Insights, and the rest of Home Assistant, on the site itself.** The new action *Load Insights: Profile passes* (`load_insights.profile_passes`) writes a report to the system log and a `.pstats` file to `/config`. With `passes` it profiles the next detection passes (default 10); with `seconds` it profiles the whole Home Assistant process for that long and opens the report with CPU seconds per integration, core component and library, so you can see what keeps a small box busy. One profile at a time; nothing changes until it is called.
+
+### Fixes
+
+- **The hourly save no longer freezes Home Assistant.** Once an hour Load Insights saved its whole library in one go inside Home Assistant's event loop. On a small box (a Raspberry Pi CM4 with 2 GB) that froze Home Assistant for 50-130 seconds every hour - everything went unavailable for a moment, chargers and Shellys included. The library is now written a piece at a time in the background. Same file, nothing to migrate.
+- **Next full charge reads unknown, not unavailable, when the battery will not be full.** When the forecast never gets the battery full, the *Next full charge* sensor now reads *unknown*, with `reason: not full within the forecast` and `until_full_kwh` (what the pack still takes) as attributes. It was *unavailable*, the same as when the forecast is missing, so Load Juggler's hub status reported it as a sensor dropout. *Unavailable* now means only that there is no forecast to read it from.
+
+### Improvements
+
+- **Much less work for Home Assistant.** Detection does the same with far fewer calls (the same answers, measured on replays), passes start on the minute instead of drifting, and the sensors that cost most are written only when something they show changes. On a CM4, Load Insights' share of a two-minute profile fell by about a third in a day, and Home Assistant's event loop spends seconds less a minute on it.
+- **The Pair library sensor is a quarter of its size.** It carries only what the Load Insights card shows (540 kB -> 141 kB at a busy site), its counts are refreshed at most every 10 minutes, and a new, renamed or joined load still shows at the next pass. The full pairs remain in the integration's diagnostics download. If you read other fields of this sensor in your own templates, they are gone.
+- **Named loads stay tidy.** A named load used to collect a new one-run pair for every run that did not quite fit - one kitchen fridge held 280 pairs, 238 of them one run - until the library was full of them. Once a day those small pairs go back into the load they belong to, and its energy is kept.
+- **Better detection on busy sites.** At most the 100 most recent young pairs are protected from pruning (a busy site kept about 900), which also improved how much of the measured loads' energy is found.
+
+---
+
 ## 0.5.1
 
 ### New Features

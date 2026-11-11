@@ -750,6 +750,20 @@
                     "description": "The named load to rewrite. Empty rewrites every named load."
                 }
             }
+        },
+        "profile_passes": {
+            "name": "Profile detection",
+            "description": "Measure where the next detection passes spend their time on this machine. When they are done, the slowest functions and each pass's timings are written to the log as a warning, and the full profile to a .pstats file in the configuration folder. Detection works as usual meanwhile, a little slower.",
+            "fields": {
+                "passes": {
+                    "name": "Passes",
+                    "description": "How many passes to profile, one a minute once detection has caught up."
+                },
+                "seconds": {
+                    "name": "Whole process for",
+                    "description": "Instead of the passes: profile everything Home Assistant runs for this long, every integration, and log the CPU seconds each one took."
+                }
+            }
         }
     },
     "exceptions": {
