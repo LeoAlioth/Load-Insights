@@ -10811,7 +10811,9 @@ class Fleet:
                 if s.name or not (heir or (s.count >= min_count and s.energy_wh >= min_wh)):
                     continue
                 twin = self.pair(("", twins[str(s.id)])) if str(s.id) in twins else None
-                if twin is not None and twin.name:
+                # the named twin is this load only if it holds most of its runs (most_specific's rule): Home's
+                # Susilna heater, 325 runs, was hidden behind a grid Le Hottie holding one of them (INS-29)
+                if twin is not None and twin.name and twin.locations.get(meter, 0) * 2 >= s.count:
                     continue
                 where = most_specific(s.locations, s.count, self.parents)
                 if where == "main":

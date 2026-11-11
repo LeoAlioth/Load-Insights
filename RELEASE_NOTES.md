@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.5.3
+
+### Fixes
+
+- **A load on a meter is offered for naming even when one of its runs was named on the grid.** A meter's load was left off the naming page whenever the grid's look-alike of it had a name, even when that look-alike held only one stray run of it: Home's dryer heater, 325 runs on its own plug, never showed up because a grid load named after the oven had taken one of them. The grid's named look-alike now hides it only when it holds at least half of its runs.
+
+---
+
 ## 0.5.2
 
 ### New Features

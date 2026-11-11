@@ -5167,6 +5167,24 @@ def _kw(det):
     return [x for x in det.pairs if abs(sum(x.power.values()) - 1000.0) < 150.0]
 
 
+def test_a_named_grid_twin_holding_one_stray_run_does_not_hide_a_meters_load():
+    """INS-29, Home's Susilna heater (2026-10-28): 325 runs on its plug, never
+    offered for naming, because Fleet.identity pointed it at a grid pair named
+    Le Hottie that held ONE of its runs. A named twin hides a meter's pair only
+    when it holds at least half of that pair's runs - most_specific's rule."""
+    f = _tree_fleet()
+    his = f.subs["Hiša"]
+    kw = _kw(his)[0]
+    twin = next(x for x in f.main.pairs if not x.name)
+    twin.name = "Le Hottie"
+    f.identity.setdefault("Hiša", {})[str(kw.id)] = twin.id
+    offered = lambda: [r for rows in f.namable(lambda m: m == "Blaž PC", 2, 50.0).values() for r, _ in rows]  # noqa: E731
+    twin.locations = {"Hiša": 1}
+    assert kw.count >= 4 and ("Hiša", kw.id) in offered(), (kw.count, offered())
+    twin.locations = {"Hiša": (kw.count + 1) // 2}
+    assert ("Hiša", kw.id) not in offered()            # a twin with most of its runs: that named load already
+
+
 def test_a_load_inside_a_circuit_is_the_circuits_own_and_is_named_there():
     """Mansarda's fridge and freezer (2026-10-03: "if a same load is
     detected by both meters, shouldn't the reading collapse into a single
