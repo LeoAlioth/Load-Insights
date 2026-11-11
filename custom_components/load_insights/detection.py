@@ -612,8 +612,25 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         input and contributes its whole output; a hybrid with the grid
         flowing through it contributes the difference, so the grid it passed
         on is not counted a second time. Nothing here consults a wiring flag,
-        because the sum telescopes either way."""
+        because the sum telescopes either way.
+
+        With no inverter set up, the Energy dashboard's solar sources stand in as inverters with no input (the
+        owner, 2026-11-11, INS-23): without them the house was the grid meter alone, below zero whenever the
+        sun exported (Andrej's site, 2026-10-21, until his inverter was entered by hand). A source that only
+        has a total is spread over the grid meter's phases in equal shares, as an inverter's total is."""
         out: List[tuple] = []
+        if not self.entry.options.get(CONF_INVERTERS):
+            phases = [p for p in PHASES if self.config.get(f"{GRID_PREFIX}power_{p}")] or list(PHASES)
+            for fields in await self._dashboard_arrays():
+                ids = {v for v in fields.values() if v}
+                if len(ids) == 1:
+                    cfg, share = {f"power_{p}": next(iter(ids)) for p in phases}, 1.0 / len(phases)
+                else:
+                    cfg, share = {k: v for k, v in fields.items() if v}, 1.0
+                rows, _ = await self._read(start, end, cfg)
+                if rows:
+                    out.append((rows, share))
+            return out
         for k, inv in enumerate(self.entry.options.get(CONF_INVERTERS) or []):
             for prefix, sign in (("", 1.0), (CONF_INV_INPUT_PREFIX, -1.0)):
                 cfg = {f"power_{p}": inv.get(f"{prefix}power_{p}") for p in PHASES}
@@ -779,6 +796,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     out.append(fields)
             if out:
                 return out
+        return await self._dashboard_arrays()
+
+    async def _dashboard_arrays(self) -> List[Dict[str, str]]:
+        """Each of the Energy dashboard's solar sources as an array's power per phase (a total in every phase
+        where its device has no per-phase powers), never a meter's reading on the same device (array_rows)."""
         manager = await async_get_manager(self.hass)
         site = energy_site(self.hass, manager.data)
         if not site.solar:
