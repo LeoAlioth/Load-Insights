@@ -2078,9 +2078,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         day = local.date().isoformat()
         if local.hour < 3 or self._audited_day == day:
             return
-        self._audited_day = day
         end = dt_util.utcnow() - timedelta(minutes=5)
         start = end - timedelta(hours=1)
+        if self._listen_from is None or start.timestamp() < self._listen_from:
+            return          # the hour must be one the stream listened to all of (the first, at Home, compared the
+                            # hour before the restart: 27,481 of 27,481 "missing", 2026-11-11)
+        self._audited_day = day
         rec = await self._recorder_rows(start, end, self._wanted)
         a, b = start.timestamp(), end.timestamp()
         missing = extra = compared = 0
