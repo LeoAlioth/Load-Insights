@@ -8182,17 +8182,18 @@ class Fleet:
     # repairs the whole day
     _repaired_to: Optional[float] = field(default=None, repr=False, compare=False)
 
-    def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
-                main_q=None, sub_q=None, now_ts: Optional[float] = None,
-                pv: Optional[Dict[str, Dict[float, float]]] = None,
-                main_q_quantum: Optional[Dict[str, float]] = None,
-                single: Optional[Dict[str, bool]] = None,
-                switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
-                numbers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
-                inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None,
-                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
-                volts: Optional[Dict[str, Dict[str, Sequence[Tuple[float, float]]]]] = None) -> None:
-        """A pass over every meter's new readings, on ONE clock (2026-10-02).
+    def ingest(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
+               main_q=None, sub_q=None, now_ts: Optional[float] = None,
+               pv: Optional[Dict[str, Dict[float, float]]] = None,
+               main_q_quantum: Optional[Dict[str, float]] = None,
+               single: Optional[Dict[str, bool]] = None,
+               switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
+               numbers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
+               inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None,
+               sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
+               volts: Optional[Dict[str, Dict[str, Sequence[Tuple[float, float]]]]] = None) -> float:
+        """Readings in, on ONE clock (2026-10-02); returns how far they reach - see process, which runs the
+        stream up to there (advance) and closes the pass (settle).
 
         The meters below are read as they come and the grid wait_cap_s behind
         them, so when a grid step asks what the meters did about it (the
@@ -8267,13 +8268,35 @@ class Fleet:
                 qm, pvm = qs.get(ph) or {}, pvs.get(ph) or {}
                 for ts, w in rows:
                     self.feed(name, ts, ph, w, qm.get(ts), pvm.get(ts))
+        return end
+
+    def process(self, main_samples, sub_samples: Dict[str, Dict[str, Sequence[Tuple[float, float]]]],
+                main_q=None, sub_q=None, now_ts: Optional[float] = None,
+                pv: Optional[Dict[str, Dict[float, float]]] = None,
+                main_q_quantum: Optional[Dict[str, float]] = None,
+                single: Optional[Dict[str, bool]] = None,
+                switches: Optional[Dict[str, Sequence[Tuple[float, Optional[float]]]]] = None,
+                numbers: Optional[Dict[str, Sequence[Tuple[float, float]]]] = None,
+                inputs: Optional[Dict[str, Sequence[Tuple[float, str]]]] = None,
+                sub_q_quantum: Optional[Dict[str, Dict[str, float]]] = None,
+                volts: Optional[Dict[str, Dict[str, Sequence[Tuple[float, float]]]]] = None) -> None:
+        """A pass: the readings in (ingest), the stream run up to how far they reach (advance), and what a pass
+        closes with (settle). The runner does the three apart - ingest and advance every second, settle on a
+        minute timer (streaming pipeline, step 2); the bench and the replay call this."""
+        end = self.ingest(main_samples, sub_samples, main_q, sub_q, now_ts, pv, main_q_quantum, single,
+                          switches, numbers, inputs, sub_q_quantum, volts)
         self.advance(end)
-        for name, f in units:
+        self.settle(end)
+
+    def settle(self, end: float) -> None:
+        """What a pass closes with: each detector's finish (its edges trimmed, its pairs' successors linked) and,
+        once an hour, every pair's hours aged."""
+        for name, f in self._units():
             f._now = self._now
             f.main.finish({}, f.main._clock or end, f._oldest_asked())
         for name, det in self.subs.items():
             if name not in self.views:
-                det.finish(sub_samples.get(name) or {}, end)
+                det.finish({}, end)
         # once an hour, every pair's hours age as a run filed now would
         # age them: one that stopped running still lets its hours go - into
         # older, kept for naming it one day - rather than keeping its last

@@ -6,7 +6,6 @@ meter (export positive) on the inverter's device; with no inverter entered the h
 Needs Home Assistant installed (detection.py imports it); run with Load Juggler's venv:
     ../Dynamic_OCPP_EVSE/.venv/bin/python tests/ha/test_dashboard_solar_house.py
 """
-import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,8 +41,9 @@ def _runner(options):
     r.hass = None
     r.entry = SimpleNamespace(options={CONF_DETECTION: {f"{GRID_PREFIX}power_{p}": M1[p] for p in "abc"}, **options})
     r._exports_positive = False
+    r._site = D.energy_site(None, None)          # the dashboard's site as _refresh_config caches it
 
-    async def read(start, end, cfg):
+    def read(start, end, cfg):
         return {k.split("_")[-1]: rows[eid] for k, eid in cfg.items() if eid in rows}, {}
     r._read = read
     return r
@@ -67,7 +67,7 @@ SOLAREDGE = [{"entity_id": TOTAL, "device_class": "power", "name": "AC Power"},
 
 def test_with_no_inverter_set_up_the_dashboards_solar_keeps_the_house_above_zero():
     _site(SOLAREDGE)
-    house = asyncio.run(_runner({})._derive_load(None, None))
+    house = _runner({})._derive_load(None, None)
     assert set(house) == {"a", "b", "c"}, house.keys()
     for p, rows in house.items():
         ws = [w for _, w in rows]
@@ -77,28 +77,28 @@ def test_with_no_inverter_set_up_the_dashboards_solar_keeps_the_house_above_zero
 
 def test_the_m1_on_the_inverters_device_never_stands_in_for_the_array():
     _site(SOLAREDGE)
-    arrays = asyncio.run(_runner({})._dashboard_arrays())
+    arrays = _runner({})._dashboard_arrays()
     assert arrays == [{f"power_{p}": TOTAL for p in "abc"}], arrays
 
 
 def test_with_no_solar_source_the_house_is_the_meter_alone_as_before():
     _site([{"entity_id": M1[p], "device_class": "power", "name": f"M1 AC Power {p.upper()}"} for p in "abc"])
     D.energy_site = lambda hass, data: SimpleNamespace(solar=[], solar_power=[], grid_power=[])
-    house = asyncio.run(_runner({})._derive_load(None, None))
+    house = _runner({})._derive_load(None, None)
     assert min(w for rows in house.values() for _, w in rows) < 0.0      # the repair's case
 
 
 def test_an_inverter_set_up_wins_and_the_dashboard_is_not_read():
-    async def no(*a):
+    def no(*a):
         raise AssertionError("the dashboard's solar was read although an inverter is set up")
     _site(SOLAREDGE)
     r = _runner({CONF_INVERTERS: [{"power": TOTAL}]})
     r._dashboard_arrays = no
 
-    async def no_split(*a):
+    def no_split(*a):
         return None
     r._inverter_split = no_split
-    house = asyncio.run(r._derive_load(None, None))
+    house = r._derive_load(None, None)
     assert min(w for rows in house.values() for _, w in rows) > 0.0
 
 

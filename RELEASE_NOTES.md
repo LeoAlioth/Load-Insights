@@ -10,7 +10,7 @@
 
 ### Improvements
 
-- **The inputs are read in one query a pass.** The forecast's inputs (switches, thermostats, settings, sensors) were read from the recorder one at a time, every minute - about 20 queries a minute at a site with 19 inputs. They now come in one (two on the pass an input is added), with the same rows as before.
+- **Detection follows the meters as they change, not once a minute.** Load Insights read everything the meters recorded once a minute, from the recorder - one query per meter and input, every minute - so a load was seen up to a minute and a pass after it switched. It now listens to the meters' own updates and works through them every second, a second behind; the recorder is read only to fill what it missed (the first start, the time a restart took). The detector works on exactly the same readings as before - the same loads, runs and names. What is shown is still updated once a minute for now: live power, the library and the other sensors. The diagnostics show how far behind the steps are declared (`step_latency`) and, once a day, how the stream compared with the recorder over an hour (`stream_audit`).
 
 ---
 

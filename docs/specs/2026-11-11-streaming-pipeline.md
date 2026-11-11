@@ -1,6 +1,6 @@
 # Streaming detection pipeline
 
-*Agreed with the owner 2026-11-11 (decisions at the end). Nothing built yet.*
+*Agreed with the owner 2026-11-11 (decisions at the end). Steps 1 and 2 built (dev, 0.5.3); steps 3 and 4 not yet.*
 
 ## Why
 
@@ -163,3 +163,10 @@ this first: the look-back then reads the stream's own retained readings instead 
 3. **No fallback:** the minute pass is removed with step 2; no option, no period with both paths.
 4. **No provisional live power:** left out for now. It adds latency (a step waits for its horizon)
    but every power is still shown correctly, just late.
+5. **Step 2's details (the owner, 2026-11-11):** one settle lag of 1 s (`STREAM_SETTLE_S`) for ordering,
+   assembling and advancing - a meter's update arrives within milliseconds (Home's SolarEdge poll ~14 ms apart, its
+   3EMs ~1 ms, measured that day), and joins only ever combine readings of one update; a window never ends inside
+   one (`_Stream.quiet_end`, readings under `COMBINE_SETTLE_S` apart); a change stamped behind its window is dropped
+   and counted (`stream_late` / `late_dropped`); the entities, the save, live power and `Fleet.settle` once a minute
+   until steps 3-4; the daily audit counts only (`stream_audit`). The recorder fills gaps an hour's slice at a time
+   (every meter in one query; six hours were ~90 MB at Home).

@@ -150,8 +150,15 @@ BASE_LOAD_MIN_W = 2.0
 # 2026-10-01, for a large site or slow storage; a slower one bought latency,
 # not accuracy, and an entry that stored one keeps it unread.
 DETECTION_BACKFILL_DAYS = 10
-DETECTION_SLICE_HOURS = 6
-PREFETCH_MAX_MIN = 15         # a pass this short reads every meter in one recorder query (detection._prefetch)
+# A gap the recorder fills (a fresh start, the stretch a restart missed) is read in slices of this many hours,
+# every meter in one query a slice (detection._recorder_rows): six hours of every meter at once was ~90 MB at Home
+DETECTION_SLICE_HOURS = 1
+# Streaming (docs/specs/2026-11-11-streaming-pipeline.md, the owner 2026-11-11): every STREAM_TICK_S the readings up to
+# STREAM_SETTLE_S ago are put in order, assembled and run, in one executor job. A meter's phases arrive within
+# milliseconds (Home's SolarEdge poll ~14 ms, its 3EMs ~1 ms, 2026-11-11), so one second holds a whole update; a
+# reading that arrives later than that, behind what its window ran, is dropped and counted (stream_late)
+STREAM_TICK_S = 1.0
+STREAM_SETTLE_S = 1.0
 # How long the detector's state may sit in memory unwritten. The snapshot is
 # the whole pair library - well over a hundred kilobytes - and writing
 # it every pass is what makes the polling interval expensive rather than the
