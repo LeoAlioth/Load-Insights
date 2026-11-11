@@ -511,6 +511,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._input_cache: Dict[str, tuple] = {}       # see _input_states: (since, end, every row) per input
         self._input_passes: Dict[str, int] = {}        # passes read per input, for the audit (INPUT_AUDIT_PASSES)
         self._input_starts: Dict[str, list] = {}       # this pass's start rows, every input's (_start_rows)
+        self._input_rows: Dict[str, tuple] = {}        # this pass's rows, every input's, read together (_batch_inputs)
         self.input_cache_check: Dict[str, object] = {}
         self._profile_rows: List[dict] = []
         self._listener_s: Dict[str, float] = {}
@@ -838,6 +839,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     or e.split(".", 1)[0] in STATE_DOMAINS]
         # every input's start row in one query: one per input was ~0.55 s of a pass at Home (19 inputs, 2026-11-09)
         self._input_starts = await self._start_rows(read_ids, since)
+        await self._batch_inputs(read_ids, since, end)
         for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
@@ -877,6 +879,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             if on is not None:
                 spans.append((on, None))
             switches[eid] = [(a, b) for a, b in spans if a > since.timestamp() + 1.0]
+        self._input_rows = {}
         return switches, numbers, inputs
 
     def holds_one_device(self, name: str) -> bool:
@@ -1270,16 +1273,18 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 include_start_time_state=start_row, significant_changes_only=False))
 
         kept = self._input_cache.get(eid)
+        pre = self._input_rows.get(eid)              # this pass's batch read (_batch_inputs), when it covers this read
         if kept is None or kept[0] > since or kept[1] < since:
-            rows = list((await read(since, True)).get(eid, []))
+            rows = list(pre[1]) if pre is not None and pre[0] is None else list((await read(since, True)).get(eid, []))
         else:
             # read again from INPUT_OVERLAP_S before the last read's end: a reading stamped before that end but
             # committed after the read (Home's boiler temperature, one row in 1,369, 2026-11-09) is found
             # the next time, and the kept rows give way to what was read again from there
             frm = kept[1] - timedelta(seconds=INPUT_OVERLAP_S)
             edge = frm.timestamp()
-            new = [st for st in (await read(frm - timedelta(microseconds=1), False)).get(eid, [])
-                   if st.last_updated.timestamp() >= edge]
+            got = (pre[1] if pre is not None and pre[0] is not None and pre[0] <= frm - timedelta(microseconds=1)
+                   else (await read(frm - timedelta(microseconds=1), False)).get(eid, []))
+            new = [st for st in got if st.last_updated.timestamp() >= edge]
             rows = [st for st in kept[2] if st.last_updated.timestamp() < edge] + new
             # all after since, and the newest before it - the start row of this window and the next
             cut = next((i for i, st in enumerate(rows) if st.last_updated >= since), len(rows))
@@ -1310,6 +1315,34 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         return await get_instance(self.hass).async_add_executor_job(functools.partial(
             history.get_significant_states, self.hass, since, since + timedelta(microseconds=1), list(eids),
             include_start_time_state=True, significant_changes_only=False))
+
+    async def _batch_inputs(self, eids: List[str], since: datetime, end: datetime) -> None:
+        """This pass's input rows in at most two recorder queries instead of one an input (the owner, 2026-11-11:
+        "lets read things in 1 query"; 19 inputs at Home, most of the ~88 get_significant_states calls in a
+        two-minute profile): the inputs _input_states reads whole, from ``since`` with their start rows, in one;
+        the ones it reads on from its kept rows in another, from the earliest of their INPUT_OVERLAP_S edges -
+        each input then keeps only its rows from its own edge on, as its own read did. The same function and
+        options as the reads they replace; the daily audit (_input_states_full) still reads each input alone."""
+        self._input_rows = {}
+        whole, on = [], []
+        for eid in eids:
+            kept = self._input_cache.get(eid)
+            (whole if kept is None or kept[0] > since or kept[1] < since else on).append(eid)
+        recorder = get_instance(self.hass)
+
+        def read(frm, ids, start_row):
+            return recorder.async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, frm, end, list(ids),
+                include_start_time_state=start_row, significant_changes_only=False))
+
+        if whole:
+            got = await read(since, whole, True)
+            self._input_rows.update({eid: (None, list(got.get(eid, []))) for eid in whole})
+        if on:
+            frm = (min(self._input_cache[eid][1] for eid in on) - timedelta(seconds=INPUT_OVERLAP_S)
+                   - timedelta(microseconds=1))
+            got = await read(frm, on, False)
+            self._input_rows.update({eid: (frm, list(got.get(eid, []))) for eid in on})
 
     async def _input_states_full(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
         """The input's states read whole, as every pass did until 2026-11-09 - the audit _input_states is held to."""
