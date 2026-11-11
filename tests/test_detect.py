@@ -207,6 +207,7 @@ def _evidence(det, rise, fall, secs, ratio=1.0, n=20):
     det.order[f"{rise}>{fall}"] = [n, n * math.log(secs), n * math.log(secs) ** 2,
                                    n * math.log(ratio), n * math.log(ratio) ** 2]
     det.fall_n[fall], det.run_time[rise], det.order_span = n, 0.1 * 86400.0, 86400.0
+    det._elig = None          # written past note_order, which clears partners_of's index when a count reaches it
 
 
 def test_a_fall_closes_its_partner_not_the_newest_of_its_size():
@@ -918,6 +919,25 @@ def test_a_restart_leaves_the_stored_state_as_it_was():
             assert gone(a.get(k)) == gone(b.get(k)), k
 
 
+def test_a_streamed_store_reads_back_as_the_whole_snapshot():
+    """The runner's hourly save writes Fleet.dict_items through dump_items, a
+    meter's detector at a time, instead of one to_dict (2026-11-09: the whole
+    dict, built in the event loop, froze Home's Yellow for 50-130 s an hour).
+    The file must hold exactly what to_dict holds, and load to the same fleet."""
+    rows, end = _sliced_history()
+    plug = [(t + 2.0, w - 300.0) for t, w in rows["b"][::10]]
+    fleet = _fleet_restarted(rows, plug, 3600.0, end, False, state=True)
+    assert fleet.subs, "a meter's detector, so the nested pieces are written too"
+    out = []
+    D.dump_items(out.append, iter([("version", 1), ("data", iter([("fleet", fleet.dict_items()), ("refiling", False)]))]),
+                 lambda v: json.dumps(v).encode())
+    streamed = json.loads(b"".join(out))
+    whole = json.loads(json.dumps(fleet.to_dict()))
+    assert streamed == {"version": 1, "data": {"fleet": whole, "refiling": False}}
+    same = lambda d: json.dumps(D.Fleet.from_dict(d).to_dict(), sort_keys=True)  # noqa: E731
+    assert same(streamed["data"]["fleet"]) == same(whole)
+
+
 def test_every_field_is_persisted_or_derived():
     """A restart must not lose what a pass was in the middle of deciding, and
     a new field must not slip past it unnoticed (2026-10-12): every field of
@@ -1366,6 +1386,7 @@ def test_a_switch_is_a_meter_that_knows_only_when():
     fleet._now = T0 + 6000.0
     # once it has shown its phase, a load on another one is not its own
     pair.locations[name] = D.METER_PHASES_MIN
+    fleet._loc_rev += 1          # written past the fleet, which counts every locations write (meter_phases' key)
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "a"), 6.0) is None
     assert fleet._switch_for(session(T0 + 1004, T0 + 1118, "c"), 6.0) == name
     # seen by the circuit AND switched by the thermostat: the thermostat's
@@ -2914,6 +2935,22 @@ def test_a_rebuilt_library_gets_its_names_back():
     fresh.process(samples, now_ts=t2)
     assert [s.name for s in fresh.pairs] == ["Kompresor"]
     assert round(fresh.energy_by_name()["Kompresor"]) == round(det.energy_by_name()["Kompresor"])
+
+
+def test_a_pair_a_waiting_name_passed_over_is_asked_again_once_it_changes():
+    """_reclaim_all skips a pair no waiting name was alike to while its figures and the noise stay as they were
+    (Home: 36,498 alike calls in ten passes, 2026-11-09) - but not once it has changed, or the noise has grown."""
+    det = D.Detector()
+    det.carry_names([{"name": "Kiln", "phases": "a", "power": {"a": 3000.0}, "duration_s": 48.0, "pf": None}])
+    pair = _pair(5, 2000.0, 48.0, count=3)
+    det.pairs = [pair]
+    det._reclaim_all(20.0)
+    assert pair.name is None and 5 in det._reclaim_seen[1]
+    det._reclaim_all(20.0)                                   # unchanged, same noise: skipped, still nobody's
+    assert pair.name is None
+    pair.power = {"a": 3010.0}                               # it changed: asked again, and it is the kiln
+    det._reclaim_all(10.0)
+    assert pair.name == "Kiln" and det.orphan_names == []
 
 
 def test_a_reset_on_a_reset_keeps_the_names_still_waiting():
@@ -6836,6 +6873,36 @@ def test_a_stuck_fragment_goes_back_in_the_daily_rewrite_once_its_value_came_rou
     assert twin.count == 51 and det._current(2) == 1 and value in twin.takes_in
     assert covered.born_in == value and not covered.born_judged      # ran in 2 of 3: still the value's to judge
     assert named_apart.born_in is None and value in named_apart.takes_in and boiler.count == 20
+
+
+def test_a_named_signatures_one_run_pairs_go_back_into_it_in_the_daily_rewrite():
+    """A run that fits none of a named signature's pairs founds one more that wears the name, and a named pair is
+    never pruned: Home's kitchen fridge held 280 pairs, 238 of one run (2026-11-09). Once a day one unseen for a day
+    goes into its alike twin, or - alike to none - its energy is carried by the signature's biggest pair, whose own
+    figures stay; the name's energy never steps back. Born in a value or not (172 of Home's waited on Keep Warm and
+    the washer's phases). Kept: one seen within the day, one of three runs, one whose signature has nothing bigger."""
+    def wh(x):
+        return [x] + [0.0] * 23
+    now = T0 + 2 * 86400.0
+    head = _pair(1, 50.0, 240.0, count=500, phases="c", name="Fridge", signature=9, hour_wh=wh(900.0))
+    # born in a value that came once and stayed (Le Hottie's Keep Warm): never judged, folded all the same
+    alike = _pair(2, 52.0, 230.0, count=1, phases="c", name="Fridge", signature=9, hour_wh=wh(3.0), born_in="select.oven=Keep Warm")
+    sliver = _pair(3, 10.0, 30.0, count=2, phases="c", name="Fridge", signature=9, hour_wh=wh(5.0), hourly={7: 5.0})
+    fresh = _pair(4, 52.0, 230.0, count=1, phases="c", name="Fridge", signature=9, last_seen=now - 3600.0, hour_wh=wh(3.0))
+    three = _pair(5, 30.0, 60.0, count=3, phases="c", name="Fridge", signature=9, hour_wh=wh(2.0))
+    alone = _pair(6, 1400.0, 150.0, count=1, phases="b", name="Kettle", signature=7, hour_wh=wh(60.0))
+    fleet = D.Fleet()
+    det = fleet.subs["Hiša"] = D.Detector()
+    det.pairs = [head, alike, sliver, fresh, three, alone]
+    fridge = sum(s.energy_wh for s in det.pairs if s.name == "Fridge")
+    fleet._repair(now - 86400.0, now)
+    assert [s.id for s in det.pairs] == [1, 4, 5, 6]
+    assert head.count == 501 and head.name == "Fridge"                    # the alike one swallowed
+    assert not head.born_in and "select.oven=Keep Warm" in head.takes_in
+    assert head.carried_wh == 5.0 and head.hourly.get(7) == 5.0           # the sliver's energy only
+    assert abs(head.power["c"] - (50.0 * 500 + 52.0) / 501) < 1e-9          # not dragged towards 10 W
+    assert sum(s.energy_wh for s in det.pairs if s.name == "Fridge") == fridge
+    assert det._current(2) == 1 and det._current(3) == 1
 
 
 def test_a_library_stored_before_fragments_were_retaken_is_retaken_once_on_loading():

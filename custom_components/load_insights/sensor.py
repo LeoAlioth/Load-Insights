@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -35,11 +36,15 @@ from .coordinator import REMAINDER_KEY, SITE_KEY, InsightsCoordinator, InsightsD
 from .detection import (DetectionRunner, base_load_entities, base_load_label, base_load_uid, device_uid, load_uid,
                         loaded)
 from .insights.detect import (PF_MIN_QUANTA, PHASES, display_phase, ref_label, running_markdown,
-                              pair_rows, suggest_levels)
+                              card_rows, suggest_levels)
 from .insights.model import SiteModel
 from .insights.named import carry_reading
 from .insights.profile import PART_MIN_WEEKS, Forecast
 from .insights.scoring import LEADS, Ledger
+
+# the Pair library sensor's figures (counts, energy) are rewritten at most this often; what pairs exist and
+# their names at once (PairLibrarySensor._handle_coordinator_update). Policy: how fresh a card's counts are.
+LIBRARY_REFRESH_S = 600.0
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -555,6 +560,18 @@ class DetectedLoadsSensor(_DetectionBase):
         super().__init__(runner, entry, "detected_loads")
         # HA opens an integration's entry from this, highlighted; it has no link into an options-flow step
         self._link = f"/config/integrations/integration/{DOMAIN}#config_entry={entry.entry_id}"
+        self._slow = None
+
+    def _slow_parts(self) -> tuple:
+        """(the refs offered for naming, the look-alike suggestions), worked out again when a name
+        changes or every LIBRARY_REFRESH_S, not every pass: on Home's Yellow this sensor's update was
+        0.64 s of the event loop a pass, most of it these two walks of the whole library (2026-11-09)."""
+        det = self._runner.detector
+        names, now = tuple(sorted(self._runner.names_now())), time.monotonic()
+        if self._slow is None or self._slow[0] != names or now - self._slow[1] >= LIBRARY_REFRESH_S:
+            offered = {ref for _, rows, _ in self._runner.naming_groups() for ref, _ in rows}
+            self._slow = (names, now, offered, suggest_levels(det.pairs, det.recent))
+        return self._slow[2], self._slow[3]
 
     @property
     def native_value(self) -> Optional[int]:
@@ -569,10 +586,10 @@ class DetectedLoadsSensor(_DetectionBase):
             return datetime.fromtimestamp(ts, tz).isoformat()
         rows = self._runner.fleet.running(now)
         running = {i for r in rows for m, i in r["refs"] if m == ""}
+        offered, levels = self._slow_parts()
         return {
             # every load on now, once, as a list for a Markdown card (Fleet.running)
-            "running_markdown": running_markdown(
-                rows, self._link, {ref for _, offered, _ in self._runner.naming_groups() for ref, _ in offered}, now=now),
+            "running_markdown": running_markdown(rows, self._link, offered, now=now),
             "active": [
                 {"phases": a["phases"].upper(), "watts": a["watts"], "since": iso(a["since"]),
                  "signature": a["signature"], "name": a.get("name")}
@@ -597,13 +614,13 @@ class DetectedLoadsSensor(_DetectionBase):
                                      for a in d.active(now)]
                               for name, d in self._runner.fleet.subs.items()},
             "meter_hierarchy": self._runner.parents,
-            "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.fleet.names().items()},
+            "named_loads": {n: [ref_label(r) for r in refs] for n, refs in self._runner.names_now().items()},
             # names whose pair a reset took, still looking for the load
             # that wore them - visible so they are not silently in limbo
             "awaiting_name": [o.get("name") for o in self._runner.detector.orphan_names],
             # names detection gave by itself (insights/autoname.py), told from the owner's
             "auto_named": {n: m.get("kind") for n, m in sorted(self._runner.autonamer.marks.items())},
-            "looks_like_one_device": suggest_levels(det.pairs, det.recent),
+            "looks_like_one_device": levels,
             "recent_sessions": [
                 {**r, "start": iso(r["start"]), "end": iso(r["end"]), "phases": r["phases"].upper()} for r in det.recent[-40:]
             ],
@@ -629,8 +646,9 @@ class PairLibrarySensor(_DetectionBase):
     Moved off DetectedLoadsSensor (2026-10-25): that sensor is rewritten every
     pass and its pairs were 0.5 MB - every pass, to every connected
     dashboard and phone, and into the state machine. Nothing here depends on
-    the clock (``pair_rows``), so a pass that filed nothing writes nothing.
-    Not recorded, for the reason DetectedLoadsSensor's attributes are not."""
+    the clock (``card_rows``), so a pass that filed nothing writes nothing.
+    Not recorded, for the reason DetectedLoadsSensor's attributes are not. Only what the Load Insights card
+    reads (2026-11-10: 536 kB at Home with every field of every pair); the diagnostics download has them all."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -638,6 +656,29 @@ class PairLibrarySensor(_DetectionBase):
 
     def __init__(self, runner, entry) -> None:
         super().__init__(runner, entry, "signature_library")
+        self._shape = None
+        self._written = 0.0
+
+    def _library_shape(self) -> tuple:
+        """What a card must see at once: the named pairs, where, and their signature. Not every pair:
+        Home founds one nearly every minute (584 -> 750 in a morning), which kept the write per pass;
+        a new pair is not offered for naming before it has runs enough anyway. By signature, not pair: a run
+        that fits none of a named signature's pairs founds one more wearing the name, and the card reads names
+        and the unnamed pairs only - Home's kitchen fridge did that several times an hour, each a ~0.27 s
+        rewrite of the whole library (2026-11-09)."""
+        return tuple(sorted({(m, x.name, x.signature) for m, d in self._runner.fleet.detectors() for x in d.pairs if x.name}))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Written at once when a name comes, goes or moves; the rest (new pairs, counts, energy, last
+        seen) at most every LIBRARY_REFRESH_S. Every pass's counts moved, so every pass rewrote ~370 kB
+        of attributes and sent them to every open dashboard: at Home ~1.8 s of the event loop a pass, the
+        websocket's send_frame alone 12.8 s over ten passes (2026-11-09)."""
+        shape, now = self._library_shape(), time.monotonic()
+        if shape == self._shape and now - self._written < LIBRARY_REFRESH_S:
+            return
+        self._shape, self._written = shape, now
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> int:
@@ -645,20 +686,11 @@ class PairLibrarySensor(_DetectionBase):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        det = self._runner.detector
-        tz = dt_util.DEFAULT_TIME_ZONE
-        parents = self._runner.parents
         return {
-            "signatures": pair_rows(det.pairs, tz, parents),
-            "meters": {
-                name: {
-                    "signatures": [{"id": x.id, "name": x.name, "description": x.describe(tz), "count": x.count}
-                                   for x in sorted(d.pairs, key=lambda y: -y.count)],
-                    "baseline_w": {p.upper(): round(st.baseline) for p, st in d.phases.items() if st.baseline is not None},
-                    "noise_floor_w": {p.upper(): round(st.noise) for p, st in d.phases.items() if st.baseline is not None},
-                }
-                for name, d in self._runner.fleet.subs.items()
-            },
+            "signatures": card_rows(self._runner.detector.pairs, self._runner.parents),
+            # the card offers the names given anywhere; a sub-meter's unnamed pairs it never shows
+            "meters": {name: {"signatures": [{"id": x.id, "name": x.name} for x in d.pairs if x.name]}
+                       for name, d in self._runner.fleet.subs.items()},
         }
 
 
@@ -790,19 +822,29 @@ class SunWindowSensor(CoordinatorEntity, SensorEntity):
         on_site(self, entry, key)
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def _reading(self) -> Optional[datetime]:
+    def _section_data(self) -> Optional[dict]:
         data: Optional[InsightsData] = self.coordinator.data
-        sun = (data.plan or {}).get(self._section) if data is not None else None
-        iso = sun.get(self._which) if sun else None
+        return (data.plan or {}).get(self._section) if data is not None else None
+
+    def _reading(self) -> Optional[datetime]:
+        sec = self._section_data()
+        iso = sec.get(self._which) if sec else None
         return dt_util.parse_datetime(iso) if iso else None
 
     @property
     def available(self) -> bool:
-        return super().available and self._reading() is not None
+        # the section is there whenever its inputs are; a time it does not have (the pack not full within
+        # the forecast) is unknown, with the reason as an attribute
+        return super().available and self._section_data() is not None
 
     @property
     def native_value(self) -> Optional[datetime]:
         return self._reading()
+
+    @property
+    def extra_state_attributes(self) -> Optional[dict[str, Any]]:
+        sec = self._section_data() or {}
+        return {k: sec[k] for k in ("reason", "until_full_kwh") if k in sec} or None
 
 
 class PlanSensor(CoordinatorEntity, SensorEntity):
@@ -1151,7 +1193,7 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         value = self._runner.live_power.get(self._name)
         if value is None:
             # a name waiting for its load after a rebuild draws nothing, it is not unknown
-            return 0 if self._name not in self._runner.fleet.names() else None
+            return 0 if self._name not in self._runner.names_now() else None
         return round(value)
 
 

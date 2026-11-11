@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import time
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -18,15 +20,19 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     COMPRESSED_STATE_LAST_UPDATED,
     COMPRESSED_STATE_STATE,
+    EVENT_HOMEASSISTANT_FINAL_WRITE,
     EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
     UnitOfEnergy,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.event import async_call_later, async_track_time_change
+from homeassistant.helpers.json import json_bytes
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
+from homeassistant.util.json import load_json
 
 from .const import (
     GRID_PREFIX,
@@ -48,7 +54,6 @@ from .const import (
     NAMING_START_ROWS,
     DETECTION_BACKFILL_DAYS,
     CONF_METER_WAIT,
-    DETECTION_INTERVAL_MINUTES,
     DETECTION_SLICE_HOURS,
     PREFETCH_MAX_MIN,
     HISTORY_SAVE_INTERVAL_S,
@@ -74,6 +79,7 @@ from .insights.detect import (
     _sum_series,
     without_window_start,
     names_in_store,
+    dump_items,
     carries_load,
     unit_scale,
     exports_positive,
@@ -264,6 +270,14 @@ CATCH_UP_PASS_S = 2.0
 # pass that cannot get it in this long reads nothing and tries again at the
 # same start a minute later.
 RECORDER_FLUSH_S = 30.0
+# Every this many passes an input's kept rows (_input_states) are held to a full read of its window; on any
+# difference the full read is used and the kept rows start again (input_cache_check in the diagnostics).
+# Once a day, each input on a pass of its own (by its id): every 30 passes, all at once, made one pass in 30
+# read every input's window again - 13.8 s of a 25.3 s pass at Home - after 108 audits in three deploys found
+# no difference (2026-11-09)
+INPUT_AUDIT_PASSES = 1440
+# ...and each pass reads again this far back from the last read's end, for a row committed after that read
+INPUT_OVERLAP_S = 60.0
 
 
 def energy_site(hass: HomeAssistant, prefs) -> SiteModel:
@@ -348,6 +362,32 @@ def device_rows(hass: HomeAssistant, device_id: str) -> list:
     return rows
 
 
+def _key(rows) -> tuple:
+    return tuple(tuple(sorted(r.items())) for r in rows)
+
+
+@functools.lru_cache(maxsize=64)
+def _matched_key(rows: tuple, role: str) -> Dict[str, str]:
+    return match_meter_entities([dict(r) for r in rows], role)
+
+
+@functools.lru_cache(maxsize=256)
+def _beside_key(rows: tuple, reference: str, kind: str, phase: str) -> Optional[str]:
+    return beside([dict(r) for r in rows], reference, kind, phase)
+
+
+def match_rows(rows, role: str = "load") -> Dict[str, str]:
+    """match_meter_entities, remembered by the rows themselves: every pass matched the same unchanged sensors
+    again by their names (~0.5 s CPU a minute at Home on the CM4, 2026-11-10). A renamed or added sensor is
+    another key, so nothing goes stale; phases.py stays the verbatim copy Load Juggler shares."""
+    return dict(_matched_key(_key(rows), role))
+
+
+def beside_of(rows, reference: str, kind: str, phase: str) -> Optional[str]:
+    """phases.beside, remembered the same way as match_rows()."""
+    return _beside_key(_key(rows), reference, kind, phase)
+
+
 def _sum_phases(readings) -> Dict[str, list]:
     """Per phase, every reading's series summed (_sum_series), in order."""
     out: Dict[str, list] = {}
@@ -357,8 +397,48 @@ def _sum_phases(readings) -> Dict[str, list]:
     return out
 
 
+def _owner(path: str) -> str:
+    """Whose code a profiled function is: the integration (custom or core), else the library."""
+    for mark in ("/custom_components/", "/homeassistant/components/"):
+        if mark in path:
+            return path.split(mark, 1)[1].split("/", 1)[0]
+    if "/site-packages/" in path:
+        return "lib:" + path.split("/site-packages/", 1)[1].split("/", 1)[0]
+    if "/homeassistant/" in path:
+        return "ha-core"
+    return "python"
+
+
+def _owner_seconds(stats: dict) -> List[Tuple[str, float]]:
+    """Own time (tottime) per owner, largest first, from pstats' raw table. A builtin ("~", dict.get,
+    sum) has no file, so its time goes to its callers' owners, in their share of it."""
+    out: Dict[str, float] = {}
+    for (path, _, _), (_, _, tt, _, callers) in stats.items():
+        if path != "~":
+            out[_owner(path)] = out.get(_owner(path), 0.0) + tt
+            continue
+        shares = {c: v[2] for c, v in callers.items()}
+        total = sum(shares.values())
+        if not total:
+            out["python"] = out.get("python", 0.0) + tt
+            continue
+        for (cpath, _, _), part in shares.items():
+            who = "python" if cpath == "~" else _owner(cpath)
+            out[who] = out.get(who, 0.0) + tt * part / total
+    return sorted(out.items(), key=lambda kv: -kv[1])
+
+
+def _profiled(prof, job):
+    """Run ``job`` under ``prof`` in the calling (executor) thread."""
+    prof.enable()
+    try:
+        return job()
+    finally:
+        prof.disable()
+
+
 class DetectionRunner(DataUpdateCoordinator[None]):
-    """Every DETECTION_INTERVAL_MINUTES, read what the meter has recorded since
+    """Every minute of the clock (_on_minute), read what the meter has recorded since
     the last processed instant and feed it to the detector. The first run
     backfills the recorder's window in slices, one per call, so no single
     query is large; the detector's state, sessions and pairs persist in
@@ -421,10 +501,26 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # seconds the last pass spent reading the recorder and detecting, and
         # the hours it covered: where a backfill's time goes
         self.last_pass: Dict[str, float] = {}
+        # load_insights.profile_passes: the passes still to profile, the profiler, and each pass's timings
+        self._profile_left = 0
+        self._profiler = None
+        self._window = None          # ...and profile_seconds' whole-process profiler while it runs
+        self.last_hourly_check: Dict[str, float] = {}
+        self._active_memo: Optional[tuple] = None      # see active_by_name
+        self._names_memo: Optional[tuple] = None       # see names_now
+        self._input_cache: Dict[str, tuple] = {}       # see _input_states: (since, end, every row) per input
+        self._input_passes: Dict[str, int] = {}        # passes read per input, for the audit (INPUT_AUDIT_PASSES)
+        self._input_starts: Dict[str, list] = {}       # this pass's start rows, every input's (_start_rows)
+        self.input_cache_check: Dict[str, object] = {}
+        self._profile_rows: List[dict] = []
+        self._listener_s: Dict[str, float] = {}
         # a short pass's every reading, fetched in one query: (start, end, rows by entity) - see _prefetch
         self._pass_rows: Optional[tuple] = None
         self.reactive_from: Dict[str, str] = {}      # phase -> what its reactive power was read from
-        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection")
+        # the library: a Store's file, but written and read by _write_store / async_start,
+        # not through Store - see _write_store
+        self._store_key = f"{DOMAIN}.{entry.entry_id}.detection"
+        self._store_path = hass.config.path(STORAGE_DIR, self._store_key)
         # the hours confident unnamed loads keep past the window
         # (Pair.older), apart from the library they would swell
         self._history: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.detection.history")
@@ -434,6 +530,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # held by a pass, and by whatever must not run under one: a reset, a
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
+        self._stopping = False
         # what detection named by itself and put on the Energy dashboard (INS-21)
         self.autonamer = AutoNamer(self)
 
@@ -483,7 +580,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 continue
             fields: Dict[str, str] = {}
             if entry is not None and entry.device_id:
-                fields = match_meter_entities(device_rows(self.hass, entry.device_id))
+                fields = match_rows(device_rows(self.hass, entry.device_id))
             if not any(fields.get(f"power_{p}") for p in PHASES):
                 # no per-phase reading: the dashboard's own power sensor, one
                 # channel whose label means nothing - the votes find its
@@ -550,7 +647,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         each phase hid that, a share through the wrong map would not."""
         fields = {f"{kind}_{p}": inv.get(f"{kind}_{p}") for kind in ("voltage", "current") for p in PHASES}
         if not all(fields.values()) and inv.get(CONF_INV_DEVICE):
-            matched = match_meter_entities(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            matched = match_rows(device_rows(self.hass, inv[CONF_INV_DEVICE]))
             fields = {key: fields[key] or matched.get(key) for key in fields}
         grid_v = {f"voltage_{p}": self.config.get(f"{GRID_PREFIX}voltage_{p}") for p in PHASES}
         if not all(fields.values()) or not all(grid_v.values()):
@@ -694,7 +791,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
                 # the inverter's device may carry the grid meter too (SolarEdge Modbus Multi's M1)
-                matched = match_meter_entities(array_rows(device_rows(self.hass, entry.device_id), grid_power))
+                matched = match_rows(array_rows(device_rows(self.hass, entry.device_id), grid_power))
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
@@ -736,23 +833,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # every input the forecast is given, whatever it is linked to (the owner,
         # 2026-09-28: add the thermostat to the inputs first, and move it to
         # the device once the load it helped find is named)
+        read_ids = [e for e in self.entry.options.get(CONF_INPUT_ENTITIES) or []
+                    if e.split(".", 1)[0] in SWITCH_DOMAINS or e.split(".", 1)[0] in NUMBER_DOMAINS
+                    or e.split(".", 1)[0] in STATE_DOMAINS]
+        # every input's start row in one query: one per input was ~0.55 s of a pass at Home (19 inputs, 2026-11-09)
+        self._input_starts = await self._start_rows(read_ids, since)
         for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
             domain = eid.split(".", 1)[0]
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
                 continue
-            if domain in ("climate", "fan"):
-                # Read by an ATTRIBUTE - a thermostat's hvac_action, a fan's
-                # speed - which changes while the state does not: a thermostat
-                # stays "heat" all winter. state_changes_during_period returns
-                # state changes only, and so gave the floor mat's thermostat
-                # not one switch-on in production (2026-09-28).
-                states = await get_instance(self.hass).async_add_executor_job(functools.partial(
-                    history.get_significant_states, self.hass, since, end, [eid],
-                    include_start_time_state=True, significant_changes_only=False))
-            else:
-                states = await get_instance(self.hass).async_add_executor_job(
-                    history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
-                )
+            # A climate or a fan is read by an ATTRIBUTE - a thermostat's
+            # hvac_action, a fan's speed - which changes while the state does
+            # not: a thermostat stays "heat" all winter, and state changes only
+            # gave the floor mat's thermostat not one switch-on in production
+            # (2026-09-28). Kept between passes: _input_states.
+            states = {eid: await self._input_states(eid, domain, since, end)}
             rows = [st for st in states.get(eid, []) if st.state not in ("unknown", "unavailable")]
             if domain in NUMBER_DOMAINS:
                 values = []
@@ -1088,14 +1183,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         moment - a sensor added at a start or a reload, the service - counts
         twice what was counted since the hour began but filed before it,
         until this check the hour after."""
+        began = time.monotonic()
         await get_instance(self.hass).async_block_till_done()
+        drained = time.monotonic()
         try:
             await self.autonamer.async_check()
         except Exception:  # noqa: BLE001 - a fault in auto-naming must not stop the statistics check
             _LOGGER.exception("Auto-naming failed")
-        for name in sorted(self.fleet.names()):
-            if not self.metered_device(name):
-                await self.async_backfill_statistics(name, force=False)
+        named = time.monotonic()
+        names = [n for n in sorted(self.fleet.names()) if not self.metered_device(n)]
+        for name in names:
+            await self.async_backfill_statistics(name, force=False)
+        # what the hour's check costs (2026-11-09: the pass right after 12:00 at Home read for 64 s)
+        self.last_hourly_check = {"drain_s": round(drained - began, 1), "autoname_s": round(named - drained, 1),
+                                  "names": len(names), "statistics_s": round(time.monotonic() - named, 1)}
+        _LOGGER.debug("Hourly statistics check: %s", self.last_hourly_check)
 
     def naming_groups(self) -> list:
         """What is waiting to be named, one group per meter: ``(meter, offered,
@@ -1123,6 +1225,112 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 out.append((where, [(ref[id(x)], x) for x in shown], max(0, len(clear) - len(shown))))
         out.sort(key=lambda g: (g[0] != "main", -sum(x.energy_wh for _, x in g[1])))
         return out
+
+    def active_by_name(self) -> Dict[str, float]:
+        """Fleet.active_by_name now, worked out once for all the named loads' running sensors after a
+        pass: each asks twice, which was 146 walks of every open run a pass at Home for one answer
+        (2026-11-09). Kept while no pass has run since and within the same second; a rename reloads
+        the entry, so a new runner. Shared: read it, never write."""
+        now = dt_util.utcnow().timestamp()
+        key = (self.last_processed, int(now))
+        if self._active_memo is None or self._active_memo[0] != key:
+            self._active_memo = (key, self.fleet.active_by_name(now))
+        return self._active_memo[1]
+
+    async def _input_states(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
+        """The input's recorder states over (since, end), as _read_inputs' own query returns them, from kept
+        rows and only what came since the last read (2026-11-09): every pass re-read SWITCH_MEMORY_S (4 h)
+        of every input's history - ~1 s of each pass at Home, 19 inputs.
+
+        Every row is kept, attribute-only updates too (get_significant_states, all changes), because that
+        is what the recorder's start row is made of: the newest row of ANY kind before the window, with its
+        own time (history._get_single_entity_start_time_stmt, LazyState keeps last_updated). The window is
+        then built as the recorder builds it - that start row, then the rows strictly inside it, and for
+        everything but a climate or a fan (read by an attribute) only the state changes (last_changed ==
+        last_updated, as state_changes_during_period). Read whole the first time, when the window has moved
+        back (the first pass after a restart reads further) or past what is kept; and every
+        INPUT_AUDIT_PASSES passes the old full read is made too and compared: on any difference it is the
+        one used and the kept rows start again (input_cache_check in the diagnostics counts both)."""
+        async def own(rows):
+            # the start row asked of the recorder itself, over a window one microsecond wide - the same function
+            # and start-row statement as the full read (rebuilt from kept rows it differed at Home in 35 of 36
+            # audits, by seconds, 2026-11-09); the rows inside the window from the kept ones
+            changes = domain not in ("climate", "fan")
+            s, e = since.timestamp(), end.timestamp()
+            start = [st for st in (self._input_starts or {}).get(eid, []) if st.last_updated.timestamp() <= s][:1]
+            inside = [st for st in rows if s < st.last_updated.timestamp() < e
+                      and (not changes or st.last_changed == st.last_updated)]
+            return start + inside
+
+        recorder = get_instance(self.hass)
+
+        def read(frm, start_row):
+            return recorder.async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, frm, end, [eid],
+                include_start_time_state=start_row, significant_changes_only=False))
+
+        kept = self._input_cache.get(eid)
+        if kept is None or kept[0] > since or kept[1] < since:
+            rows = list((await read(since, True)).get(eid, []))
+        else:
+            # read again from INPUT_OVERLAP_S before the last read's end: a reading stamped before that end but
+            # committed after the read (Home's boiler temperature, one row in 1,369, 2026-11-09) is found
+            # the next time, and the kept rows give way to what was read again from there
+            frm = kept[1] - timedelta(seconds=INPUT_OVERLAP_S)
+            edge = frm.timestamp()
+            new = [st for st in (await read(frm - timedelta(microseconds=1), False)).get(eid, [])
+                   if st.last_updated.timestamp() >= edge]
+            rows = [st for st in kept[2] if st.last_updated.timestamp() < edge] + new
+            # all after since, and the newest before it - the start row of this window and the next
+            cut = next((i for i, st in enumerate(rows) if st.last_updated >= since), len(rows))
+            rows = rows[max(0, cut - 1):]
+        self._input_cache[eid] = (since, end, rows)
+        got = await own(rows)
+        self._input_passes[eid] = self._input_passes.get(eid, 0) + 1
+        if self._input_passes[eid] % INPUT_AUDIT_PASSES == zlib.crc32(eid.encode()) % INPUT_AUDIT_PASSES:
+            full = await self._input_states_full(eid, domain, since, end)
+            c = self.input_cache_check
+            c["compared"] = c.get("compared", 0) + 1
+            key = lambda st: (st.state, st.last_updated.timestamp(), st.attributes.get("hvac_action") if domain == "climate"  # noqa: E731
+                              else st.attributes.get("percentage") if domain == "fan" else None)
+            if [key(st) for st in got] != [key(st) for st in full]:
+                c["different"] = c.get("different", 0) + 1
+                c.setdefault("first", {"entity": eid, "cached": [str(key(st)) for st in got[:3]],
+                                       "full": [str(key(st)) for st in full[:3]], "lengths": [len(got), len(full)]})
+                self._input_cache.pop(eid, None)
+                return full
+        return got
+
+    async def _start_rows(self, eids: List[str], since: datetime) -> Dict[str, list]:
+        """Each input's start row at ``since`` - the newest row of any kind before it, as both full reads hand
+        it back (the recorder's start-time statement) - for them all in one query over a window one
+        microsecond wide."""
+        if not eids:
+            return {}
+        return await get_instance(self.hass).async_add_executor_job(functools.partial(
+            history.get_significant_states, self.hass, since, since + timedelta(microseconds=1), list(eids),
+            include_start_time_state=True, significant_changes_only=False))
+
+    async def _input_states_full(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
+        """The input's states read whole, as every pass did until 2026-11-09 - the audit _input_states is held to."""
+        if domain in ("climate", "fan"):
+            states = await get_instance(self.hass).async_add_executor_job(functools.partial(
+                history.get_significant_states, self.hass, since, end, [eid],
+                include_start_time_state=True, significant_changes_only=False))
+        else:
+            states = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period, self.hass, since, end, eid, True, False, None, True,
+            )
+        return list(states.get(eid, []))
+
+    def names_now(self) -> Dict[str, list]:
+        """Fleet.names, worked out once per pass and second for every entity that reads it: each
+        named load's running sensor walked every pair of every meter for it, 73 walks a pass at Home
+        (2026-11-09). Shared: read it, never write."""
+        key = (self.last_processed, int(dt_util.utcnow().timestamp()))
+        if self._names_memo is None or self._names_memo[0] != key:
+            self._names_memo = (key, self.fleet.names())
+        return self._names_memo[1]
 
     def named(self) -> list:
         """Every named load as ``((meter, id), pair)``, biggest first, wherever it was seen."""
@@ -1198,7 +1406,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         until shutdown - and an ungraceful one would lose everything since the
         last write. So the delayed save is the safety net (it also registers
         Home Assistant's final-write listener, which is what makes a clean
-        shutdown durable) and the elapsed check is the floor.
+        shutdown durable) and the elapsed check is the floor. The library
+        itself is no Store's any more (_write_store): its safety net is
+        _final_write, the elapsed check its floor as before.
+
+        Every caller holds _lock or runs when no pass can (async_stop), so
+        nothing changes the library while _write_store walks it.
         """
         now = dt_util.utcnow().timestamp()
         due = self._saved_at is None or now - self._saved_at >= SAVE_MAX_INTERVAL_S
@@ -1212,17 +1425,118 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         else:
             self._history.async_delay_save(self._older, HISTORY_SAVE_INTERVAL_S)
         if force or due:
-            await self._store.async_save(self._snapshot())
+            await self.hass.async_add_executor_job(self._write_store)
             self._saved_at = now
-        else:
-            self._store.async_delay_save(self._snapshot, SAVE_MAX_INTERVAL_S)
 
-    def _snapshot(self) -> dict:
-        return {"fleet": self.fleet.to_dict(),
-                "last_processed": self.last_processed.isoformat() if self.last_processed else None,
-                "refiling": self.refiling,
-                "carry": self.carries,
-                "generation": DETECTOR_GENERATION}
+    def _snapshot_items(self):
+        yield "fleet", self.fleet.dict_items()
+        yield "last_processed", self.last_processed.isoformat() if self.last_processed else None
+        yield "refiling", self.refiling
+        yield "carry", self.carries
+        yield "generation", DETECTOR_GENERATION
+
+    def _write_store(self) -> None:
+        """The library straight to its file, a meter's detector at a time, in
+        an executor thread (2026-11-09). Through Store it was one ~21 MB dict
+        (Home), built in the event loop and then serialised whole: on Home's
+        2 GB Yellow, already in swap, that froze Home Assistant for 50-130 s
+        once an hour ("Finished fetching load_insights detection data in 51.4
+        seconds" against 5-11 s for an ordinary pass). The file is the Store's
+        own - same path, same envelope, Home Assistant's own encoder, compact
+        instead of indented - so a library saved either way loads either way;
+        it is replaced atomically, as Store does. Not through Store because the
+        Store manager remembers which files existed when Home Assistant started:
+        a file it did not write would read as missing at the next reload."""
+        began = time.monotonic()
+        tmp = f"{self._store_path}.tmp"
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        with open(tmp, "wb") as fh:
+            dump_items(fh.write, iter([("version", STORAGE_VERSION), ("minor_version", 1), ("key", self._store_key),
+                                       ("data", self._snapshot_items())]), json_bytes)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self._store_path)
+        _LOGGER.debug("Library saved: %.1f MB in %.1f s", os.path.getsize(self._store_path) / 1e6,
+                      time.monotonic() - began)
+
+    async def _final_write(self, _event) -> None:
+        """Home Assistant is stopping: write the library once more (a stop does
+        not unload the entry, so async_stop does not run)."""
+        async with self._lock:
+            await self._persist(force=True)
+
+    def profile_passes(self, passes: int) -> None:
+        """Profile the detection of the next ``passes`` passes (load_insights.profile_passes,
+        2026-11-09): what a pass costs on the site's own hardware, which a replay on a
+        laptop cannot say (Home's Yellow: 2.6-9.5 s a pass against 71 ms replayed).
+        cProfile in the executor thread fleet.process runs in - Home Assistant's own
+        profiler sees only the event loop's thread."""
+        import cProfile  # noqa: PLC0415 - only when asked for
+        self._profiler = cProfile.Profile()
+        self._profile_left = passes
+        self._profile_rows = []
+        self._listener_s = {}
+
+    def profile_seconds(self, seconds: int) -> None:
+        """Profile the whole process for ``seconds`` (load_insights.profile_passes with ``seconds``,
+        2026-11-10): what every integration costs on the site's own hardware, not only what runs
+        while detection does - the pass profile catches another integration only in the second or
+        two a pass takes, so a per-minute figure from it is a guess (SolarEdge's "2.4 s a minute")."""
+        import cProfile  # noqa: PLC0415 - only when asked for
+        prof = cProfile.Profile()
+        prof.enable()                 # sys.monitoring: every thread, not only the event loop's
+        self._window = prof           # one profiler at a time (__init__.py refuses a second)
+
+        async def done(_now) -> None:
+            prof.disable()
+            self._window = None
+            path, report = await self.hass.async_add_executor_job(self._profile_report, prof)
+            _LOGGER.warning("Load Insights profile of %d s of the whole process, written to %s\n%s",
+                            seconds, path, report)
+
+        async_call_later(self.hass, seconds, done)
+
+    def _timed_update_listeners(self) -> None:
+        """async_update_listeners, each entity timed (load_insights.profile_passes): which of
+        the many entities fed by a pass costs the event loop its time."""
+        for update_callback, _ in list(self._listeners.values()):
+            began = time.perf_counter()
+            try:
+                update_callback()
+            except Exception:  # noqa: BLE001 - as async_update_listeners
+                _LOGGER.exception("Unexpected error updating a listener of %s", self.name)
+            who = getattr(getattr(update_callback, "__self__", None), "entity_id", None) or repr(update_callback)
+            self._listener_s[who] = self._listener_s.get(who, 0.0) + time.perf_counter() - began
+
+    async def _profile_pass_done(self) -> None:
+        self._profile_rows.append(dict(self.last_pass))
+        self._profile_left -= 1
+        if self._profile_left > 0:
+            return
+        prof, passes, listeners = self._profiler, self._profile_rows, self._listener_s
+        self._profiler, self._profile_rows, self._listener_s = None, [], {}
+        path, report = await self.hass.async_add_executor_job(self._profile_report, prof)
+        slowest = sorted(listeners.items(), key=lambda kv: -kv[1])[:15]
+        _LOGGER.warning("Load Insights profile of %d passes, written to %s\nEach pass: %s\n"
+                        "Slowest entities (s over all %d passes, %d entities): %s\n%s",
+                        len(passes), path, passes, len(passes), len(listeners),
+                        [(who, round(s, 3)) for who, s in slowest], report)
+
+    def _profile_report(self, prof) -> tuple:
+        import io  # noqa: PLC0415
+        import pstats  # noqa: PLC0415
+        path = self.hass.config.path(f"load_insights_profile_{dt_util.utcnow():%Y%m%dT%H%M%S}.pstats")
+        prof.dump_stats(path)
+        out = io.StringIO()
+        # full paths: the profile sees every thread, and a bare "sensor.py:330" (23.7 s in Home's fourth
+        # profile, 2026-11-09) cannot say which integration's it is
+        stats = pstats.Stats(prof, stream=out)
+        owners = _owner_seconds(stats.stats)
+        out.write("CPU seconds by owner: " + ", ".join(f"{o} {s:.2f}" for o, s in owners[:30]) + "\n\n")
+        stats.sort_stats("tottime").print_stats(25)
+        stats.print_callers(8)                      # who calls the hottest: a count alone does not say where to cut
+        stats.sort_stats("cumulative").print_stats(30)
+        return path, out.getvalue()
 
     def _older(self) -> dict:
         return {"older": self.fleet.older_to_dict(), "generation": DETECTOR_GENERATION}
@@ -1261,7 +1575,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                    for inv in (self.entry.options.get(CONF_INVERTERS) or []))
 
     async def async_start(self) -> None:
-        raw = await self._store.async_load() or {}
+        # the file _write_store writes, or a Store wrote before it: the same envelope
+        stored = await self.hass.async_add_executor_job(load_json, self._store_path, {})
+        raw = (stored.get("data") if isinstance(stored, dict) else None) or {}
         orphans: list = []
         if raw and raw.get("generation") != DETECTOR_GENERATION:
             # The library was learned by a detector that no longer exists, so
@@ -1297,11 +1613,26 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             # the steps store of its own is gone: a step group keeps its steps
             # (StepGroup.recent, 2026-10-30) - the old file removed
             await self._steps.async_remove()
+        self.entry.async_on_unload(
+            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_FINAL_WRITE, self._final_write))
         if not self.enabled:
             return
         self.entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_RECORDER_HOURLY_STATISTICS_GENERATED, self._hour_compiled))
-        self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+        # a caught-up pass starts on the clock's minute (the owner, 2026-11-09), not a minute after
+        # the last one ended, which made every pass's own length drift the schedule (65-80 s at Home)
+        self.entry.async_on_unload(async_track_time_change(self.hass, self._on_minute, second=0))
+        self.hass.async_create_task(self.async_refresh())
+
+    @callback
+    def _on_minute(self, _now) -> None:
+        """A pass at every minute of the clock, but never two at once: one still running skips
+        this minute. While catching up the passes chain by themselves (CATCH_UP_PASS_S)."""
+        if self._stopping or self.entry.pref_disable_polling:
+            return
+        if self._lock.locked():
+            _LOGGER.debug("The last pass is still running; skipping this minute's")
+            return
         self.hass.async_create_task(self.async_refresh())
 
     async def async_reset(self, forget_names: bool = False) -> None:
@@ -1338,6 +1669,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.hass.async_create_task(self.async_refresh())
 
     async def async_stop(self) -> None:
+        self._stopping = True                    # nor does the clock start one
         await self.async_shutdown()              # no pass starts after this
         # A reload - every options change is one - used to drop whatever was
         # learned since the last write, up to SAVE_MAX_INTERVAL_S of it; and
@@ -1358,7 +1690,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return
         async with self._lock:
             try:
-                self.update_interval = timedelta(minutes=DETECTION_INTERVAL_MINUTES)
+                self.update_interval = None      # the clock starts the next one (_on_minute)...
                 began = time.monotonic()
                 try:
                     await asyncio.wait_for(get_instance(self.hass).async_block_till_done(), RECORDER_FLUSH_S)
@@ -1369,15 +1701,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 now = dt_util.utcnow()
                 start = self.last_processed or (now - timedelta(days=DETECTION_BACKFILL_DAYS))
                 end = min(now, start + timedelta(hours=DETECTION_SLICE_HOURS))
+                # where read_s goes, step by step (2026-11-09: ~2 s a pass on Home's Yellow)
+                marks = [time.monotonic()]
                 await self._prefetch(start, end)
+                marks.append(time.monotonic())
                 samples = await self._derive_load(start, end)
+                marks.append(time.monotonic())
                 # the arrays, for telling a cloud from a load switching
                 self.solar = await self._resolve_solar()
                 generation = _sum_phases([(await self._read(start, end, fields))[0] for fields in self.solar])
+                marks.append(time.monotonic())
                 # after the sum, not before: where the inverter is added back the
                 # grid meter is the circuit every household watt flows through,
                 # so its VAr is the one that steps when a load switches
                 q = await self._reactive_series(start, end, samples)
+                marks.append(time.monotonic())
                 pv: Dict[str, Dict[float, float]] = {}
                 for p, target in samples.items():
                     if generation.get(p):
@@ -1407,6 +1745,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     if p in samples:
                         pv[p] = arr       # ...but a house built with the inverter added has it in
                 await self._refresh_submeters()
+                marks.append(time.monotonic())
                 for name, meter in self.all_submeters.items():
                     if meter.get("ignored"):
                         self.fleet.subs.pop(name, None)     # left out on the settings page: as if never read
@@ -1421,6 +1760,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     ss, sq = await self._read(start, end, meter["fields"], name)
                     if ss:
                         sub_samples[name], sub_q[name] = ss, sq
+                marks.append(time.monotonic())
                 # the recorder's start-of-window row is a copy, not a reading - see
                 # without_window_start; the sums above needed it, the detector must not
                 samples = without_window_start(samples, start.timestamp())
@@ -1428,34 +1768,55 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 single = {n: self.holds_one_device(n) for n in self.submeters}
                 switches, numbers, inputs = await self._read_inputs(start, end)
                 read = time.monotonic()
+                marks.append(read)
+                read_parts = {k: round(b - a, 2) for k, a, b in zip(
+                    ("prefetch", "load", "solar", "reactive", "meters_found", "meters_read", "inputs"), marks, marks[1:])}
                 self._pass_rows = None
                 self.fleet.wait_cap_s = self.meter_wait_s
-                await self.hass.async_add_executor_job(
+                job = functools.partial(
                     self.fleet.process, samples, sub_samples, q, sub_q, end.timestamp(), pv,
                     dict(self.q_quantum), single, switches or None, numbers or None,
                     inputs or None, {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None,
                 )
-                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(time.monotonic() - read, 1),
-                                  "hours": round((end - start).total_seconds() / 3600.0, 2)}
+                if self._profiler is not None:
+                    job = functools.partial(_profiled, self._profiler, job)
+                await self.hass.async_add_executor_job(job)
+                detected = time.monotonic()
+                self.last_pass = {"flush_s": round(flushed, 2), "read_s": round(read - began, 1), "detect_s": round(detected - read, 1),
+                                  "hours": round((end - start).total_seconds() / 3600.0, 2), "read_parts": read_parts}
                 self.samples_read += sum(len(rows) for rows in samples.values())
                 self._update_live_power(end.timestamp())
                 self.last_processed = end
                 self.caught_up = end >= now - timedelta(minutes=1)
                 self.last_run = now
+                # what the event loop itself spends after detection (2026-11-09, Home's freezes)
+                live = time.monotonic()
+                self.last_pass["live_s"] = round(live - detected, 2)
                 await self._persist()
-                self.async_update_listeners()
+                self.last_pass["persist_s"] = round(time.monotonic() - live, 2)
+                listeners = time.monotonic()
+                if self._profiler is not None:
+                    self._timed_update_listeners()
+                else:
+                    self.async_update_listeners()
+                self.last_pass["listeners_s"] = round(time.monotonic() - listeners, 2)
                 if self.caught_up and self.refiling:
                     self.refiling = False
                     # the ten days re-read are the named loads' history now
                     self.entry.async_create_background_task(
                         self.hass, self._rewrite_named(), f"{DOMAIN} rewrite statistics")
                 if not self.caught_up:
-                    # keep slicing without waiting the minute
+                    # ...but behind, keep slicing without waiting for it
                     self.update_interval = timedelta(seconds=CATCH_UP_PASS_S)
+                dashboard = time.monotonic()
                 try:
                     await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
                 except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
                     _LOGGER.exception("Energy dashboard list failed")
+                self.last_pass["dashboard_s"] = round(time.monotonic() - dashboard, 2)
+                self.last_pass["total_s"] = round(time.monotonic() - began, 1)
+                if self._profiler is not None:
+                    await self._profile_pass_done()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection run failed")
 
@@ -1502,7 +1863,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         uses it without being set up again."""
         if device is None:
             return None
-        return beside(device_rows(self.hass, device), reference, "var", phase)
+        return beside_of(device_rows(self.hass, device), reference, "var", phase)
 
     def _triple_beside_the_amps(self, cfg: dict, phase: str) -> Optional[dict]:
         """A coherent triple built from the meter the VOLTS AND AMPS are on.
@@ -1523,7 +1884,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         device = self._device_of(amps)
         if device is None or device != self._device_of(volts):
             return None
-        power = beside(device_rows(self.hass, device), amps, "power", phase)
+        power = beside_of(device_rows(self.hass, device), amps, "power", phase)
         if not power:
             return None
         return {f"power_{phase}": power, f"voltage_{phase}": volts,
