@@ -10,7 +10,7 @@ import time
 import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance, history
@@ -78,6 +78,7 @@ from .insights.detect import (
     SYSTEM_PHASES,
     Detector,
     Fleet,
+    LivePower,
     carries_generation,
     _align,
     _reactive,
@@ -487,11 +488,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # how many meter readings the runs have actually had to work with,
         # so "no loads found" can be told from "no data"
         self.samples_read: int = 0
-        # Watts per NAMED load as of the data processed - see _update_live_power
+        # Watts per NAMED load as last written (LivePower, streaming spec step 3), and each one's entity's write
         self.live_power: Dict[str, float] = {}
-        self._live_marks: Dict[str, int] = {}
-        self._live_shown: Dict[str, List[float]] = {}
-        self._mark_ts: Optional[float] = None
+        self._livepower = LivePower()
+        self._live_due: Dict[str, float] = {}
+        self._live_writers: Dict[str, Callable[[], None]] = {}
         self._saved_at: Optional[float] = None
         self._history_saved_at: Optional[float] = None
         self._inputs_primed = False       # see _read_inputs
@@ -1793,6 +1794,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 self.carries = {}               # owed to names that are gone
             self.autonamer.reset(forget_names)
             self.fleet = Fleet()
+            self._livepower = LivePower()
             self.fleet.carry_names(orphans)
             self.fleet.main.tz_offset_s = dt_util.now().utcoffset().total_seconds()
             self.last_processed = None
@@ -1876,6 +1878,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             rows = {**rows, **await self._recorder_rows(start, end, self._missing)}
             self._listen()
         self._pass_rows = None
+        self._write_live()
         detected = time.monotonic()
         self.last_pass = {"live": live, "read_s": round(read - began, 3), "detect_s": round(detected - read, 3),
                           "hours": round((end - start).total_seconds() / 3600.0, 4),
@@ -1891,7 +1894,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.caught_up = end >= now - timedelta(minutes=1)
         if self._listen_from is None:
             self._listen()
-        self._update_live_power(end.timestamp())
         await self._persist()
         self.async_update_listeners()
         if self.caught_up and self.refiling:
@@ -1917,6 +1919,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.fleet.advance(until)
         if settle:
             self.fleet.settle(until)
+        # live power by energy since each load's last write, on the data's clock; a gap slice writes them all
+        self._livepower.accrue(self.fleet, end.timestamp())
+        self._live_due = self._livepower.due(self.fleet, end.timestamp(), force=settle)
         self._note_latency()
         return True
 
@@ -2038,9 +2043,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     async def _minute(self) -> None:
         """Once a minute, what a pass closed with, for the live stream: the detector settled (its edges trimmed,
-        its pairs' successors linked, the hourly ageing - Fleet.settle), the named loads' live power, the save,
-        the entities, the Energy dashboard list, and once a day the stream's audit. Until steps 3-4 move them to
-        their own triggers (the owner, 2026-11-11)."""
+        its pairs' successors linked, the hourly ageing - Fleet.settle), the save, the entities, the Energy
+        dashboard list, and once a day the stream's audit. Until step 4 moves them to their own triggers (the
+        owner, 2026-11-11); the named loads' live power is written by each step since step 3 (_write_live)."""
         if not self._live or self._lock.locked():
             return
         async with self._lock:
@@ -2052,7 +2057,6 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 began = time.monotonic()
                 await self.hass.async_add_executor_job(self.fleet.settle, end.timestamp())
                 settled = time.monotonic()
-                self._update_live_power(end.timestamp())
                 await self._persist()
                 # the entities hear once a minute what the steps since the last time did: the hours a base load's
                 # energy may gain over (BaseLoadEnergy) are those since then, not the last one-second step's
@@ -2276,19 +2280,21 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         entry = er.async_get(self.hass).async_get(entity_id)
         return getattr(entry, "unit_of_measurement", None) if entry else None
 
-    def _update_live_power(self, processed_to: float) -> None:
-        """Watts each named load draws as of the data just processed - live,
-        see LIVE_NAME_SHARE: its open runs from the moment their start is
-        declared, plus the runs that began and ended within the stretch,
-        spread over it.
+    @callback
+    def listen_live(self, name: str, write: Callable[[], None]) -> Callable[[], None]:
+        """A named load's power entity is written when its live power is (_write_live), not with the others."""
+        self._live_writers[name] = write
+        return lambda: self._live_writers.pop(name, None)
 
-        The denominator is the span of DATA processed, not wall-clock time.
-        During the backfill a single pass covers six hours of history in a
-        few seconds, and dividing that energy by the few seconds would report
-        megawatts."""
-        since, self._mark_ts = self._mark_ts, processed_to
-        span = processed_to - since if since is not None else 0.0
-        self.live_power = self.fleet.live_power(processed_to, span, self._live_marks, self._live_shown)
+    @callback
+    def _write_live(self) -> None:
+        """The live powers a step found due (LivePower.due) into live_power and their entities."""
+        due, self._live_due = self._live_due, {}
+        for name, watts in due.items():
+            self.live_power[name] = watts
+            write = self._live_writers.get(name)
+            if write is not None:
+                write()
 
     def _learn_q_quantum(self, key, series: Dict[tuple, list], phase: str) -> Optional[float]:
         """The apparent power one quantum of the amps behind a channel's

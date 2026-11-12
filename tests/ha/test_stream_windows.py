@@ -72,6 +72,7 @@ def _runner():
     r.solar, r.submeters, r.all_submeters, r.samples_read = [], {}, {}, 0
     r._wanted, r._missing, r._pass_rows, r._site = set(), set(), None, None
     r._live, r._lags, r._lag_seen, r.step_latency = False, [], {}, {}
+    r._livepower, r._live_due = D.LivePower(), {}
     return r
 
 

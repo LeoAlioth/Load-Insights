@@ -1,6 +1,6 @@
 # Streaming detection pipeline
 
-*Agreed with the owner 2026-11-11 (decisions at the end). Steps 1 and 2 built (dev, 0.5.3); steps 3 and 4 not yet.*
+*Agreed with the owner 2026-11-11 (decisions at the end). Steps 1, 2 and 3 built (dev, 0.5.3); step 4 not yet.*
 
 ## Why
 

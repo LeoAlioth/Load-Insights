@@ -4065,12 +4065,32 @@ def test_a_named_load_reads_its_power_while_its_run_is_still_open():
     declared, not when its run has closed - and a start whose stop never comes
     stops counting instead of sitting high (LIVE_STALE_FACTOR)."""
     fleet, t = _named_kettle()
-    marks, shown = {}, {}
-    fleet.live_power(t, 60.0, marks, shown)
     t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # on, no stop yet
-    live = fleet.live_power(t2, t2 - t, marks, shown)
-    assert 1400.0 < live["Kettle"] < 1600.0, live
+    live = D.LivePower()
+    live.accrue(fleet, t2)
+    assert live.due(fleet, t2) == {"Kettle": 0.0}            # the first write: nothing drawn since
+    live.accrue(fleet, t2 + 60.0)
+    got = live.due(fleet, t2 + 60.0)
+    assert 1400.0 < got["Kettle"] < 1600.0, got
     assert fleet.main.live_runs(t2 + 3600.0) == []           # open for an hour: no longer counted
+
+
+def test_live_power_is_written_when_it_moves_at_most_every_5_s_and_at_least_every_60_s():
+    """The streaming spec's decision 1 (the owner, 2026-11-11): LIVE_WRITE_MIN_S,
+    LIVE_WRITE_MAX_S, and between them only a move past the load's own noise."""
+    fleet, t = _named_kettle()
+    t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # the kettle is on
+    live = D.LivePower()
+    live.accrue(fleet, t2)
+    assert live.due(fleet, t2) == {"Kettle": 0.0}
+    live.accrue(fleet, t2 + 3.0)
+    assert live.due(fleet, t2 + 3.0) == {}                   # under 5 s: never, however far it moved
+    live.accrue(fleet, t2 + 10.0)
+    assert 1400.0 < live.due(fleet, t2 + 10.0)["Kettle"] < 1600.0     # moved: written at once
+    live.accrue(fleet, t2 + 20.0)
+    assert live.due(fleet, t2 + 20.0) == {}                  # steady: not again...
+    live.accrue(fleet, t2 + 70.0)
+    assert 1400.0 < live.due(fleet, t2 + 70.0)["Kettle"] < 1600.0     # ...until 60 s have passed
 
 
 def test_open_starts_never_add_up_to_more_than_the_phase_carries():
@@ -4101,9 +4121,10 @@ def test_a_named_loads_live_power_never_reads_far_above_its_pairs():
     the ceiling does: LIVE_CAP_FACTOR times its strongest pair."""
     import copy
     fleet, t = _named_kettle()
-    marks, shown = {}, {}
-    fleet.live_power(t, 60.0, marks, shown)
     t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 120)])     # the kettle is on
+    live = D.LivePower()
+    live.accrue(fleet, t2)
+    live.due(fleet, t2)
     st = next(x for x in fleet.main.phases.values() if x.open_edges)
     st.baseline = None
     for _ in range(4):
@@ -4114,8 +4135,9 @@ def test_a_named_loads_live_power_never_reads_far_above_its_pairs():
     excess = st.level - st.base_load_at(t2)
     assert sum(w for _, _, w in fleet.main.live_runs(t2)) <= excess + 1e-6
     assert all(w < top for _, _, w in fleet.main.live_runs(t2))
-    live = fleet.live_power(t2, t2 - t, marks, shown)["Kettle"]
-    assert 0.9 * top < live <= D.LIVE_CAP_FACTOR * top + 1e-6, (live, top)
+    live.accrue(fleet, t2 + 60.0)
+    got = live.due(fleet, t2 + 60.0)["Kettle"]
+    assert 0.9 * top < got <= D.LIVE_CAP_FACTOR * top + 1e-6, (got, top)
 
 
 def test_an_open_start_stops_counting_after_the_usual_run_not_the_longest_ever_seen():
@@ -4135,18 +4157,33 @@ def test_an_open_start_stops_counting_after_the_usual_run_not_the_longest_ever_s
 
 def test_a_named_run_that_began_and_ended_between_two_readings_comes_in_as_its_energy():
     """A run no reading saw open still counts, spread over the stretch (the
-    kiln's 44 s pulses, 2026-09-18) - and one a reading did see open is not
-    counted again when it closes."""
+    kiln's 44 s pulses, 2026-09-18) - and one a reading did see open counts
+    once: what it was credited open, and at its filing the rest of its filed
+    energy (LivePower, 2026-11-12), so the written power integrates to the
+    filed Wh. It was counted open and then again as filed energy (INS-30)."""
     fleet, t = _named_kettle()
-    marks, shown = {}, {}
-    fleet.live_power(t, 60.0, marks, shown)
+    before = fleet.energy_by_name()["Kettle"]
+    live = D.LivePower()
+    live.accrue(fleet, t)
+    live.due(fleet, t)
+    shown = []
     t2 = _feed(fleet, t, [(300.0, 60), (1800.0, 300), (300.0, 600)])   # a whole run inside one stretch
-    got = fleet.live_power(t2, t2 - t, marks, shown)["Kettle"]
+    live.accrue(fleet, t2)
+    got = live.due(fleet, t2)["Kettle"]
+    shown.append(got * (t2 - t))
     assert abs(got - 1500.0 * 300.0 / (t2 - t)) < 0.15 * 1500.0 * 300.0 / (t2 - t), got
     t3 = _feed(fleet, t2, [(1800.0, 120)])
-    assert fleet.live_power(t3, t3 - t2, marks, shown)["Kettle"] > 1400.0          # seen open...
+    live.accrue(fleet, t3)
+    got = live.due(fleet, t3)["Kettle"]
+    shown.append(got * (t3 - t2))
+    assert got > 1300.0, got                                                       # seen open...
     t4 = _feed(fleet, t3, [(1800.0, 180), (300.0, 600)])
-    assert fleet.live_power(t4, t4 - t3, marks, shown)["Kettle"] == 0.0             # ...so not again once filed
+    live.accrue(fleet, t4)
+    got = live.due(fleet, t4)["Kettle"]
+    shown.append(got * (t4 - t3))
+    assert 0.0 < got < 1500.0 * 300.0 / (t4 - t3), got                            # ...the rest of it once filed
+    filed = fleet.energy_by_name()["Kettle"] - before
+    assert abs(sum(shown) / 3600.0 - filed) < 0.01 * filed, (sum(shown) / 3600.0, filed)
 
 
 def test_a_load_powered_through_a_switch_is_not_given_a_run_the_switch_was_off_for():
