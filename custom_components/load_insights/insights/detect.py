@@ -1242,6 +1242,10 @@ LIVE_CAP_FACTOR = 1.25
 # how often a person's graph gets a point (the owner, 2026-11-11, decision 1).
 LIVE_WRITE_MIN_S = 5.0
 LIVE_WRITE_MAX_S = 60.0
+# Successor links (Detector._link_successors) are worked out again when a filing or a name moved the library, at
+# most this often on the readings' clock (streaming spec step 4: once a pass before). Budget: the links only
+# point the naming page at a candidate, and a load goes quiet over hours.
+SUCCESSOR_LINK_S = 60.0
 # How many of its OWN run windows each pair remembers, so "these two are
 # never on at once" can be asked about a load that runs every few days. It
 # was asked of the rolling session list, which a busy house burns through in
@@ -5362,6 +5366,9 @@ class Detector:
     _pending: List[dict] = field(default_factory=list, repr=False, compare=False)
     # runs ended by a stop found inside a rise when its event formed - see _split_rise
     _split_closed: List[tuple] = field(default_factory=list, repr=False, compare=False, metadata=DERIVED)
+    # what finish last linked at (streaming spec step 4): _link_successors once the library moved and a minute
+    # has passed (finish)
+    _linked: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     # the pass's work on the readings' clock - see _advance: what it released,
     # whether it files, the reading or deadline being handled, and when the
     # first waiting group is due (None: work it out again)
@@ -5566,17 +5573,25 @@ class Detector:
         SWITCH_MEMORY_S before the oldest run still to be filed - ``oldest``,
         as the fleet knows it, or this detector's own - not before the pass's
         first reading, which dropped a long run's start edge in short passes."""
+        # Called every step since the minute pass went (streaming spec 2026-11-11, step 4), so each part runs when
+        # its input changed: the edges trimmed to a cut floored to the hour, the list rebuilt only once its oldest
+        # edge is behind it - about once an hour, and the same with or without a restart (an edge before the cut is
+        # never asked for again - every run still to be filed starts after it - so trimming later changes no
+        # answer, only how many are kept); the successors linked when a filing or a name moved the library, at most
+        # once a minute: it walks the whole library for every named load, and it only points the naming page
         if oldest is None:
             oldest = min([self._clock or latest] + [o.since for st in self.phases.values() for o in st.open_edges]
                          + [st.pending[0][0] for st in self.phases.values() if st.pending]
                          + [s.start for s in self.held])
-        cut = oldest - SWITCH_MEMORY_S
-        for ph in self.edge_at:
-            self.edge_at[ph] = [e for e in self.edge_at[ph] if e[0] >= cut]
-        # once per pass, not once per session: it walks the whole
-        # library for every named load, and it only points the naming page
+        cut = (oldest - SWITCH_MEMORY_S) // 3600.0 * 3600.0
+        for ph, rows in self.edge_at.items():
+            if rows and rows[0][0] < cut:
+                self.edge_at[ph] = [e for e in rows if e[0] >= cut]
         if latest:
-            self._link_successors(latest)
+            key = (self.filed_n, len(self.pairs), sum(1 for x in self.pairs if x.name))
+            if self._linked is None or (key != self._linked[0] and latest - self._linked[1] >= SUCCESSOR_LINK_S):
+                self._linked = (key, latest)
+                self._link_successors(latest)
         out, self._released = self._released, []
         return out
 
