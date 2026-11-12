@@ -2083,7 +2083,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             return
         self._live = self._listen_from is not None and self.last_processed is not None \
             and self.last_processed.timestamp() >= self._listen_from
-        self.hass.async_create_task(self.async_refresh())
+        # the step itself, not the coordinator's refresh around it: its timing, logging and debouncing every
+        # second for an update that never has data to hand (always_update=False; _run tells the entities itself)
+        self.hass.async_create_task(self._run())
 
     async def _minute(self) -> None:
         """Once a minute, the cold path of the live stream (streaming spec, step 4): the configuration, the save
@@ -2384,9 +2386,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if not (amps and volts):
             return None
         steps = self._amp_steps.setdefault(key, [])
-        steps.extend(abs(b - a) for (_, a), (_, b) in zip(amps, amps[1:]) if b != a)
-        del steps[:-AMP_STEP_MEMORY]
-        dq = quantum_of_steps(steps)
+        new = [abs(b - a) for (_, a), (_, b) in zip(amps, amps[1:]) if b != a]
+        memo = self.__dict__.setdefault("_dq_memo", {})
+        if new or key not in memo:
+            # worked out again only when the amps stepped: a one-second window rarely holds a step, and every
+            # channel's quantum from its whole memory every step was 0.8 s of CPU per 2 min at Home (2026-11-12)
+            steps.extend(new)
+            del steps[:-AMP_STEP_MEMORY]
+            memo[key] = quantum_of_steps(steps)
+        dq = memo[key]
         return dq * _median([v for _, v in volts]) if dq else None
 
     def _read(self, start: datetime, end: datetime, cfg: dict, meter: Optional[str] = None):
