@@ -1211,9 +1211,10 @@ MAX_RECENT_SESSIONS = 200
 # A named load's power is live (2026-10-13): the watts of its open runs
 # from the moment their start is declared - an open run being a name's where
 # LIVE_NAME_SHARE of its start cluster's filed runs went to that name, over
-# at least LIVE_NAME_MIN_RUNS - plus, spread over the stretch of data, the
-# energy of its runs that started and closed between two readings of it,
-# which were never seen open (the kiln's 44 s pulses). A start whose stop
+# at least LIVE_NAME_MIN_RUNS - plus the energy of its runs that started and
+# closed between two readings of it, which were never seen open (the kiln's
+# 44 s pulses); since 2026-11-12 both as energy since the last write
+# (LivePower). A start whose stop
 # never comes stops counting once it has been open LIVE_STALE_FACTOR times
 # the longest run its name is known for: a step up with no partner sat high
 # for a day when power was first read off open steps (2026-09-18). Energy
@@ -1235,6 +1236,12 @@ LIVE_STALE_QUANTILE = 0.95
 # its pair group"). The ceiling of a pair is the higher of its mean
 # and the top of its level range.
 LIVE_CAP_FACTOR = 1.25
+# Streamed live power (spec 2026-11-11, step 3; LivePower): a named load's power
+# written at most every LIVE_WRITE_MIN_S and at least every LIVE_WRITE_MAX_S,
+# and between them when it moved by more than the load's own noise. Policy:
+# how often a person's graph gets a point (the owner, 2026-11-11, decision 1).
+LIVE_WRITE_MIN_S = 5.0
+LIVE_WRITE_MAX_S = 60.0
 # How many of its OWN run windows each pair remembers, so "these two are
 # never on at once" can be asked about a load that runs every few days. It
 # was asked of the rolling session list, which a busy house burns through in
@@ -7753,14 +7760,16 @@ class Detector:
         name, n = max(((k, v) for k, v in by.items() if k), key=lambda kv: kv[1], default=(None, 0.0))
         return name if n >= LIVE_NAME_MIN_RUNS and n >= LIVE_NAME_SHARE * total else None
 
-    def filed_after(self, n: int) -> List[Tuple[str, float, float]]:
-        """(name, start, Wh) of each named session filed after the ``n``-th."""
+    def filed_after(self, n: int) -> List[Tuple[Optional[str], float, float]]:
+        """(name, start, Wh) of each session filed after the ``n``-th - name None
+        for an unnamed pair's, which LivePower still needs to settle what it
+        credited the run while it was open."""
         out = []
         for r in self.recent:
             if int(r.get("n") or 0) > n:
                 pair = self._pair(self._current(r["signature"]))
-                if pair is not None and pair.name:
-                    out.append((pair.name, r["start"], float(r.get("wh", r["kwh"] * 1000.0))))
+                out.append((pair.name if pair is not None else None, r["start"],
+                            float(r.get("wh", r["kwh"] * 1000.0))))
         return out
 
     def names(self) -> Dict[str, List[int]]:
@@ -8037,6 +8046,88 @@ def _shared(rows: Sequence[Sequence[float]]) -> List[Sequence[float]]:
         return []
     lo, hi = (-EDGE_LAG_REACH_S + k * EDGE_LAG_BIN_S for k in (got[0], got[1] + 1))
     return [r for r in rows if lo <= r[0] < hi]
+
+
+class LivePower:
+    """Each named load's power as the energy it drew since its last write over
+    the time since (streaming spec 2026-11-11, step 3; INS-30's snapshot half).
+
+    It was a snapshot once a pass: the open runs' watts plus the energy of runs
+    filed since the last pass spread over it, so a 20 s pulse read 0 or its
+    full watts, and one seen open was counted again as filed energy (the
+    Inkubator, 2026-10-28). Now every step accrues each open run's level from
+    the last accrual on (Detector.live_runs: never from its start, which would
+    book the horizon's minutes into one write), remembered under its run
+    (meter, start); a filed run then brings its energy less what was credited
+    to it, so each run counts once and in all its filed Wh. A step's lag delays
+    the start and the stop alike, so for a run longer than the lag what was
+    credited is about its energy and the correction small. Times are the
+    data's (the readings processed to), never the wall clock: a backfill slice
+    is an hour of data read in seconds.
+
+    A load several meters see is read off the one showing the most of it, as
+    before; capped at Fleet.live_ceiling. A negative correction (a run credited
+    more than it was filed with) is carried into the next write, not shown."""
+
+    def __init__(self) -> None:
+        self.t: Optional[float] = None
+        self.marks: Dict[str, int] = {}                          # meter -> filed_n settled
+        self.credit: Dict[Tuple[str, float], Dict[str, float]] = {}  # (meter, run start) -> name -> Wh
+        self.energy: Dict[str, Dict[str, float]] = {}            # name -> meter -> Wh since its last write
+        self.shown: Dict[str, Tuple[float, float]] = {}          # name -> (written at, W)
+
+    def accrue(self, fleet: "Fleet", now: float) -> None:
+        """What every named load drew from the last accrual to ``now``."""
+        for key, det in fleet.detectors():
+            self.marks.setdefault(key, det.filed_n)          # a meter first seen: from its filings on
+        if self.t is None:
+            self.t = now
+        if now <= self.t:
+            return
+        for key, det in fleet.detectors():
+            open_keys = set()
+            for name, since, w in det.live_runs(now):
+                run = (key, since)
+                open_keys.add(run)
+                wh = w * (now - max(since, self.t)) / 3600.0
+                row = self.credit.setdefault(run, {})
+                row[name] = row.get(name, 0.0) + wh
+                mine = self.energy.setdefault(name, {})
+                mine[key] = mine.get(key, 0.0) + wh
+            for name, start, wh in det.filed_after(self.marks[key]):
+                for run in [r for r in self.credit if r[0] == key and r not in open_keys
+                            and abs(r[1] - start) <= MERGE_TOLERANCE_S]:
+                    for n, got in self.credit.pop(run).items():
+                        mine = self.energy.setdefault(n, {})
+                        mine[key] = mine.get(key, 0.0) - got
+                if name:
+                    mine = self.energy.setdefault(name, {})
+                    mine[key] = mine.get(key, 0.0) + wh
+            self.marks[key] = det.filed_n
+            # a run that vanished unfiled (a stale start, one never closed) keeps its credit a day, no longer
+            for run in [r for r in self.credit if r[0] == key and r not in open_keys and now - r[1] > 86400.0]:
+                del self.credit[run]
+        self.t = now
+
+    def due(self, fleet: "Fleet", now: float, force: bool = False) -> Dict[str, float]:
+        """name -> W of each load whose write is due at ``now`` (see
+        LIVE_WRITE_MIN_S); ``force`` writes every one (a backfill slice)."""
+        ceiling, noise = fleet.live_ceiling(), fleet.live_noise()
+        out = {}
+        for name in set(fleet.names()) | set(self.energy):
+            at, last = self.shown.get(name, (None, None))
+            span = now - at if at is not None else 0.0
+            row = self.energy.get(name, {})
+            w = max([0.0] + list(row.values())) * 3600.0 / span if span > 0 else 0.0
+            w = min(w, ceiling.get(name, w))
+            if not (force or last is None or span >= LIVE_WRITE_MAX_S
+                    or (span >= LIVE_WRITE_MIN_S and abs(w - last) > noise.get(name, MIN_NOISE_W))):
+                continue
+            if span > 0 or last is None:
+                self.energy[name] = {k: v for k, v in row.items() if v < 0.0}   # a deficit is carried
+                self.shown[name] = (now, w)
+                out[name] = w
+        return out
 
 
 # ------------------------------------------------------------------ the fleet: main meter + downstream meters
@@ -10681,32 +10772,15 @@ class Fleet:
                 out[k] = out.get(k, 0.0) + v
         return out
 
-    def live_power(self, now_ts: float, span_s: float, marks: Dict[str, int],
-                   shown: Dict[str, List[float]]) -> Dict[str, float]:
-        """Watts each name draws now - see LIVE_NAME_SHARE. ``marks`` (meter ->
-        the last session filed at the previous reading) and ``shown`` (name ->
-        the starts of runs counted open then) are the previous reading's, and
-        are updated to this one's. A load that several meters see is read off
-        the one showing the most of it, not added up."""
-        per: Dict[str, Dict[str, float]] = {}
-        now_shown: Dict[str, List[float]] = {}
-        for key, det in self.detectors():
-            for name, since, w in det.live_runs(now_ts):
-                row = per.setdefault(name, {})
-                row[key] = row.get(key, 0.0) + w
-                now_shown.setdefault(name, []).append(since)
-            if span_s > 0:
-                for name, start, wh in det.filed_after(marks.get(key, det.filed_n)):
-                    if not any(abs(start - t) <= MERGE_TOLERANCE_S for t in shown.get(name, [])):
-                        row = per.setdefault(name, {})
-                        row[key] = row.get(key, 0.0) + wh * 3600.0 / span_s
-            marks[key] = det.filed_n
-        shown.clear()
-        shown.update(now_shown)
-        out = {name: 0.0 for name in self.names()}
-        out.update({name: max(row.values()) for name, row in per.items()})
-        ceiling = self.live_ceiling()
-        return {name: min(w, ceiling.get(name, w)) for name, w in out.items()}
+    def live_noise(self) -> Dict[str, float]:
+        """name -> how far its live power may move unwritten (LivePower): the
+        widest power spread of its pairs (Pair.power_mad), never under MIN_NOISE_W."""
+        out: Dict[str, float] = {}
+        for _, det in self.detectors():
+            for pair in det.pairs:
+                if pair.name:
+                    out[pair.name] = max(out.get(pair.name, MIN_NOISE_W), pair.power_mad)
+        return out
 
     def live_ceiling(self) -> Dict[str, float]:
         """name -> the most a read of it may show: LIVE_CAP_FACTOR times the

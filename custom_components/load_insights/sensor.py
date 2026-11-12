@@ -1167,9 +1167,12 @@ class BaseLoadEnergy(_BaseLoad, RestoreSensor):
 
 
 class NamedLoadPower(_PowerW, _DetectionBase):
-    """What a named load draws now (2026-10-13): its open runs from the
-    moment their start is declared, plus the runs that began and ended between
-    two passes, spread over the pass - see LIVE_NAME_SHARE.
+    """What a named load draws now: since 2026-11-12 the energy it drew since
+    its last write over the time since (detect.LivePower, streaming spec step
+    3), written at most every 5 s and at least every 60 s. Before that
+    (2026-10-13), its open runs from the moment their start is declared, plus
+    the runs that began and ended between two passes, spread over the pass -
+    see LIVE_NAME_SHARE.
 
     It was the energy of CLOSED runs divided by the pass (2026-09-18), never
     an open step - a step up with no partner had sat high for a day, and a
@@ -1187,6 +1190,15 @@ class NamedLoadPower(_PowerW, _DetectionBase):
         self._name = name
         self._attr_unique_id = load_uid(entry.entry_id, "power", name)
         self._attr_device_info = _child_device(entry, f"load_{name}", name, "Load")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # written when the runner writes this load's power (LivePower's throttle), not at every update
+        self.async_on_remove(self._runner.listen_live(self._name, self.async_write_ha_state))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Not written with the other entities: see async_added_to_hass."""
 
     @property
     def native_value(self) -> Optional[float]:
