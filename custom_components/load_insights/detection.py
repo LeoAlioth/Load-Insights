@@ -2183,7 +2183,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # resolved once per configuration (_refresh_config forgets it): registry and device lookups every step
         # were 3.5 s of CPU per 2 min at Home (2026-11-12, 5,100 device_rows calls)
         memo = self.__dict__.setdefault("_resolve_memo", {})
-        key = ("coherent", tuple(sorted(cfg.items())), phase)
+        key = ("coherent", _triple_key(cfg, phase), phase)
         if key not in memo:
             memo[key] = self._coherent_triple_resolved(cfg, phase)
         return memo[key]
@@ -2228,7 +2228,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         its output watts rather than pairing them across its input.
         """
         memo = self.__dict__.setdefault("_resolve_memo", {})
-        key = ("beside", tuple(sorted(cfg.items())), phase)
+        key = ("beside", _triple_key(cfg, phase), phase)
         if key not in memo:
             memo[key] = self._triple_beside_the_amps_resolved(cfg, phase)
         return memo[key]
@@ -2446,6 +2446,12 @@ def _fetch(hass, start, end, entity_ids):
         no_attributes=True,
         compressed_state_format=True,
     )
+
+
+def _triple_key(cfg: dict, phase: str) -> tuple:
+    """What a phase's triple is resolved from: its own fields' entity ids. Not the whole configuration - it holds
+    lists (Home's detection options), and a key of it could not be hashed: every step failed, 2026-11-12."""
+    return tuple(cfg.get(f"{kind}_{phase}") for kind in ("power", "pf", "va", "voltage", "current", "var"))
 
 
 class _Stream:
