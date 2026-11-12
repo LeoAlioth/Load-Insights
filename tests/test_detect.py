@@ -4075,6 +4075,39 @@ def test_a_named_load_reads_its_power_while_its_run_is_still_open():
     assert fleet.main.live_runs(t2 + 3600.0) == []           # open for an hour: no longer counted
 
 
+def test_successors_are_linked_again_only_when_the_library_moved_and_at_most_once_a_minute():
+    """Streaming spec step 4: finish runs every step now, so its whole-library walk runs when a filing or a name
+    moved the library, at most once SUCCESSOR_LINK_S of the readings' clock; the edges are trimmed to a cut floored
+    to the hour, so a step rebuilds the list about once an hour, not every second."""
+    fleet, t = _named_kettle()
+    det, calls = fleet.main, []
+    link = det._link_successors
+    det._link_successors = lambda now: (calls.append(now), link(now))
+    det._linked = None
+    det.finish({}, t)
+    det.finish({}, t + 1.0)
+    det.finish({}, t + 120.0)
+    assert calls == [t], calls                               # nothing filed since: never again
+    det.filed_n += 1                                         # a filing...
+    det.finish({}, t + 130.0)
+    assert calls == [t, t + 130.0], calls
+    det.filed_n += 1
+    det.finish({}, t + 150.0)
+    assert calls == [t, t + 130.0], calls                    # ...but not within the minute
+    det.finish({}, t + 190.0)
+    assert calls == [t, t + 130.0, t + 190.0], calls
+    hour = (t - D.SWITCH_MEMORY_S) // 3600.0 * 3600.0
+    old, new = (hour - 1.0, 1, 100.0), (hour + 1.0, 2, 100.0)
+    det.edge_at["b"] = [old, new]
+    det.finish({}, t + 200.0, oldest=hour + 1.0 + D.SWITCH_MEMORY_S)
+    assert det.edge_at["b"] == [new], det.edge_at            # behind the hour's cut: gone
+    kept = det.edge_at["b"]
+    det.finish({}, t + 200.0, oldest=hour + 1800.0 + D.SWITCH_MEMORY_S)
+    assert det.edge_at["b"] is kept                          # the same hour: not rebuilt, though older than oldest
+    det.finish({}, t + 200.0, oldest=hour + 3601.0 + D.SWITCH_MEMORY_S)
+    assert det.edge_at["b"] == [], det.edge_at               # the next hour: trimmed
+
+
 def test_live_power_is_written_when_it_moves_at_most_every_5_s_and_at_least_every_60_s():
     """The streaming spec's decision 1 (the owner, 2026-11-11): LIVE_WRITE_MIN_S,
     LIVE_WRITE_MAX_S, and between them only a move past the load's own noise."""

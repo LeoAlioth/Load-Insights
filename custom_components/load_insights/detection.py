@@ -493,6 +493,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._livepower = LivePower()
         self._live_due: Dict[str, float] = {}
         self._live_writers: Dict[str, Callable[[], None]] = {}
+        self._dashboard_was: Optional[tuple] = None     # _dashboard_key as the Energy dashboard list was last written
         self._saved_at: Optional[float] = None
         self._history_saved_at: Optional[float] = None
         self._inputs_primed = False       # see _read_inputs
@@ -1917,8 +1918,9 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                                   switches or None, numbers or None, inputs or None,
                                   {n: dict(v) for n, v in self.sub_q_quantum.items()}, self.volts or None)
         self.fleet.advance(until)
-        if settle:
-            self.fleet.settle(until)
+        # every step, live too (streaming spec step 4): each part of it runs only when its input changed - the
+        # successors when a filing moved the library, the edges' trim and the pairs' ageing once an hour
+        self.fleet.settle(until)
         # live power by energy since each load's last write, on the data's clock; a gap slice writes them all
         self._livepower.accrue(self.fleet, end.timestamp())
         self._live_due = self._livepower.due(self.fleet, end.timestamp(), force=settle)
@@ -2042,10 +2044,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.hass.async_create_task(self.async_refresh())
 
     async def _minute(self) -> None:
-        """Once a minute, what a pass closed with, for the live stream: the detector settled (its edges trimmed,
-        its pairs' successors linked, the hourly ageing - Fleet.settle), the save, the entities, the Energy
-        dashboard list, and once a day the stream's audit. Until step 4 moves them to their own triggers (the
-        owner, 2026-11-11); the named loads' live power is written by each step since step 3 (_write_live)."""
+        """Once a minute, the cold path of the live stream (streaming spec, step 4): the configuration, the save
+        (_persist, throttled as before), the entities but the named loads' power (written by each step, _write_live;
+        the library and detected-loads sensors' large attributes at most every LIBRARY_REFRESH_S, sensor.py), the
+        Energy dashboard list when what it lists changed (_dashboard_key; the hourly check writes it too), and
+        once a day the stream's audit. The detector settles in every step since step 4 (_hot)."""
         if not self._live or self._lock.locked():
             return
         async with self._lock:
@@ -2055,23 +2058,33 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                     return
                 await self._refresh_config()
                 began = time.monotonic()
-                await self.hass.async_add_executor_job(self.fleet.settle, end.timestamp())
-                settled = time.monotonic()
                 await self._persist()
+                saved = time.monotonic()
                 # the entities hear once a minute what the steps since the last time did: the hours a base load's
                 # energy may gain over (BaseLoadEnergy) are those since then, not the last one-second step's
                 prev = self._settled_to if self._settled_to is not None else end.timestamp() - 60.0
                 self.last_pass = {**self.last_pass, "hours": round(max(0.0, end.timestamp() - prev) / 3600.0, 4)}
                 self._settled_to = end.timestamp()
                 self.async_update_listeners()
-                try:
-                    await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
-                except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
-                    _LOGGER.exception("Energy dashboard list failed")
-                self.last_minute = {"settle_s": round(settled - began, 2), "total_s": round(time.monotonic() - began, 2)}
+                key = self._dashboard_key()
+                if key != self._dashboard_was:
+                    try:
+                        await self.autonamer.async_dashboard()      # a new name is on the Energy dashboard now
+                        self._dashboard_was = key
+                    except Exception:  # noqa: BLE001 - the dashboard list must not stop detection
+                        _LOGGER.exception("Energy dashboard list failed")
+                self.last_minute = {"persist_s": round(saved - began, 2), "total_s": round(time.monotonic() - began, 2)}
                 await self._audit_stream()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection's minute work failed")
+
+    def _dashboard_key(self) -> tuple:
+        """What the Energy dashboard list is made of (AutoNamer.async_dashboard): every name with its energy and
+        power entities - one made after the name changes it again - the base loads, and whether detection has
+        caught up (the list waits for that)."""
+        names = self.fleet.entity_names()
+        return (tuple((n, self.energy_entity(n), self.power_entity(n)) for n in names),
+                tuple(sorted(self.base_load_keys(), key=str)), self.caught_up, self.refiling)
 
     async def _audit_stream(self) -> None:
         """Once a day (the first minute after 03:00 local), one hour of every entity the stream reads compared
