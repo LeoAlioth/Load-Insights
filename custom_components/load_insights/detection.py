@@ -79,6 +79,7 @@ from .insights.detect import (
     Detector,
     Fleet,
     LivePower,
+    LIVE_WRITE_MIN_S,
     carries_generation,
     _align,
     _reactive,
@@ -695,7 +696,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         each phase hid that, a share through the wrong map would not."""
         fields = {f"{kind}_{p}": inv.get(f"{kind}_{p}") for kind in ("voltage", "current") for p in PHASES}
         if not all(fields.values()) and inv.get(CONF_INV_DEVICE):
-            matched = match_rows(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            memo = self.__dict__.setdefault("_resolve_memo", {})
+            key = ("inv", inv[CONF_INV_DEVICE])
+            if key not in memo:              # once per configuration, as the triples
+                memo[key] = match_rows(device_rows(self.hass, inv[CONF_INV_DEVICE]))
+            matched = memo[key]
             fields = {key: fields[key] or matched.get(key) for key in fields}
         grid_v = {f"voltage_{p}": self.config.get(f"{GRID_PREFIX}voltage_{p}") for p in PHASES}
         if not all(fields.values()) or not all(grid_v.values()):
@@ -839,7 +844,11 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             entry = registry.async_get(stat)
             if entry is not None and entry.device_id:
                 # the inverter's device may carry the grid meter too (SolarEdge Modbus Multi's M1)
-                matched = match_rows(array_rows(device_rows(self.hass, entry.device_id), grid_power))
+                memo = self.__dict__.setdefault("_resolve_memo", {})
+                key = ("array", entry.device_id, tuple(grid_power))
+                if key not in memo:          # once per configuration, as the triples
+                    memo[key] = match_rows(array_rows(device_rows(self.hass, entry.device_id), grid_power))
+                matched = memo[key]
                 found = {k: v for k, v in matched.items() if k.startswith("power_")}
             if len([p for p in PHASES if found.get(f"power_{p}")]) >= 2:
                 fields = found
@@ -884,11 +893,18 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         read_ids = [e for e in self.entry.options.get(CONF_INPUT_ENTITIES) or []
                     if e.split(".", 1)[0] in SWITCH_DOMAINS or e.split(".", 1)[0] in NUMBER_DOMAINS
                     or e.split(".", 1)[0] in STATE_DOMAINS]
+        skip: set = set()
         if self._live:
-            # streaming: each input's start row from its kept rows (every row of any kind, as the recorder's
-            # start-time statement takes), its new rows from the state changes (_input_states) - no query
+            # streaming: only the inputs that changed since the last step (_input_dirty), one not read yet, or
+            # one whose daily audit is due - read every second, all 19 of Home's cost 4.8 s of CPU per 2 min
+            # (2026-11-12); an unchanged one would only hand the detector rows it has merged already
+            dirty = self.__dict__.setdefault("_input_dirty", set())
+            skip = {eid for eid in read_ids if eid not in dirty and eid in self._input_cache and not self._audit_due(eid)}
+            dirty.difference_update(read_ids)
+            # each input's start row from its kept rows (every row of any kind, as the recorder's start-time
+            # statement takes), its new rows from the state changes (_input_states) - no query
             self._input_starts = {eid: [st for st in (self._input_cache.get(eid) or (0, 0, []))[2]
-                                        if st.last_updated <= since][-1:] for eid in read_ids}
+                                        if st.last_updated <= since][-1:] for eid in read_ids if eid not in skip}
             self._input_rows = {}
         else:
             # every input's start row in one query: one per input was ~0.55 s of a pass at Home (19 inputs, 2026-11-09)
@@ -896,6 +912,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
             await self._batch_inputs(read_ids, since, end)
         for eid in self.entry.options.get(CONF_INPUT_ENTITIES) or []:
             domain = eid.split(".", 1)[0]
+            if eid in skip:
+                continue
             if domain not in SWITCH_DOMAINS and domain not in NUMBER_DOMAINS and domain not in STATE_DOMAINS:
                 continue
             # A climate or a fan is read by an ATTRIBUTE - a thermostat's
@@ -1359,10 +1377,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         got = await own(rows)
         # the audit once a day per input, at a minute of the day of its own (INPUT_AUDIT_PASSES minutes): by the
         # clock, now a step runs every second rather than a pass every minute
-        minute = int(time.time() // 60)
-        due = minute % INPUT_AUDIT_PASSES == zlib.crc32(eid.encode()) % INPUT_AUDIT_PASSES
-        if due and self._input_passes.get(eid) != minute:
-            self._input_passes[eid] = minute
+        if self._audit_due(eid):
+            self._input_passes[eid] = int(time.time() // 60)
             full = await self._input_states_full(eid, domain, since, end)
             c = self.input_cache_check
             c["compared"] = c.get("compared", 0) + 1
@@ -1375,6 +1391,12 @@ class DetectionRunner(DataUpdateCoordinator[None]):
                 self._input_cache.pop(eid, None)
                 return full
         return got
+
+    def _audit_due(self, eid: str) -> bool:
+        """Whether an input's daily audit (_input_states_full) falls in this minute and has not run in it."""
+        minute = int(time.time() // 60)
+        return (minute % INPUT_AUDIT_PASSES == zlib.crc32(eid.encode()) % INPUT_AUDIT_PASSES
+                and self._input_passes.get(eid) != minute)
 
     async def _start_rows(self, eids: List[str], since: datetime) -> Dict[str, list]:
         """Each input's start row at ``since`` - the newest row of any kind before it, as both full reads hand
@@ -1756,6 +1778,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         except Exception:  # noqa: BLE001 - a missing dashboard is not an error
             self._site = None
         await self._refresh_submeters()
+        self._resolve_memo = {}                      # the triples resolved again (_coherent_triple)
         for name, meter in self.all_submeters.items():
             if meter.get("ignored"):
                 self.fleet.subs.pop(name, None)     # left out on the settings page: as if never read
@@ -1921,9 +1944,16 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # every step, live too (streaming spec step 4): each part of it runs only when its input changed - the
         # successors when a filing moved the library, the edges' trim and the pairs' ageing once an hour
         self.fleet.settle(until)
-        # live power by energy since each load's last write, on the data's clock; a gap slice writes them all
-        self._livepower.accrue(self.fleet, end.timestamp())
-        self._live_due = self._livepower.due(self.fleet, end.timestamp(), force=settle)
+        # live power by energy since each load's last write, on the data's clock; a gap slice writes them all.
+        # Accrued and checked every LIVE_WRITE_MIN_S of data, as often as a write can come anyway: an open run's
+        # energy is its level times the time, and a filed run brings all of its own, either way - every step it
+        # walked the named loads for 2.4 s of CPU per 2 min at Home (2026-11-12)
+        t = end.timestamp()
+        last = self.__dict__.get("_live_checked")
+        if settle or last is None or t - last >= LIVE_WRITE_MIN_S or t < last:
+            self._livepower.accrue(self.fleet, t)
+            self._live_due = self._livepower.due(self.fleet, t, force=settle)
+            self._live_checked = t
         self._note_latency()
         return True
 
@@ -1983,15 +2013,26 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         happened, over the last 2,000 steps of every detector; median, 90th percentile and most in step_latency."""
         if not self._live:
             return
-        wall = time.time()
+        wall, grew = time.time(), False
         for meter, det in self.fleet.detectors():
             for ph, st in det.phases.items():
                 seen = self._lag_seen.get((meter, ph))
-                new = [d[0] for d in st.declared if seen is None or d[0] > seen]
+                # from the newest back to the last one seen: only what is new, not the whole list (up to 4,000)
+                # every second - that scan was 0.6 s of CPU per 2 min at Home (2026-11-12)
+                new = []
+                for d in reversed(st.declared):
+                    if seen is not None and d[0] <= seen:
+                        break
+                    new.append(d[0])
+                    if seen is None:
+                        break                        # the first job only marks where it starts
                 if new:
-                    self._lag_seen[(meter, ph)] = new[-1]
-                    if seen is not None:             # the first job only marks where it starts
+                    self._lag_seen[(meter, ph)] = new[0]
+                    if seen is not None:
                         self._lags.extend(wall - t for t in new)
+                        grew = True
+        if not grew:
+            return
         del self._lags[:-2000]
         if self._lags:
             lags = sorted(self._lags)
@@ -2028,6 +2069,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         eid = st.entity_id
         if eid in self._input_ids:
             self._input_buf.setdefault(eid, []).append(st)
+            self.__dict__.setdefault("_input_dirty", set()).add(eid)      # read at the next step (_read_inputs)
         if eid in self._wanted:
             self._stream.add(eid, st.last_updated_timestamp, st.state)
 
@@ -2138,6 +2180,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
         A power-factor entity needs no current, so it counts as coherent on
         its own as long as it sits with the power."""
+        # resolved once per configuration (_refresh_config forgets it): registry and device lookups every step
+        # were 3.5 s of CPU per 2 min at Home (2026-11-12, 5,100 device_rows calls)
+        memo = self.__dict__.setdefault("_resolve_memo", {})
+        key = ("coherent", tuple(sorted(cfg.items())), phase)
+        if key not in memo:
+            memo[key] = self._coherent_triple_resolved(cfg, phase)
+        return memo[key]
+
+    def _coherent_triple_resolved(self, cfg: dict, phase: str) -> Optional[dict]:
         power = cfg.get(f"power_{phase}")
         home = self._device_of(power)
         if not power:
@@ -2176,6 +2227,13 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         current entity, which is what keeps an inverter's output amps with
         its output watts rather than pairing them across its input.
         """
+        memo = self.__dict__.setdefault("_resolve_memo", {})
+        key = ("beside", tuple(sorted(cfg.items())), phase)
+        if key not in memo:
+            memo[key] = self._triple_beside_the_amps_resolved(cfg, phase)
+        return memo[key]
+
+    def _triple_beside_the_amps_resolved(self, cfg: dict, phase: str) -> Optional[dict]:
         volts, amps = cfg.get(f"voltage_{phase}"), cfg.get(f"current_{phase}")
         if not (volts and amps):
             return None
