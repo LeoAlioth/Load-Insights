@@ -63,7 +63,10 @@ def _site_rows():
 def _runner():
     r = object.__new__(D.DetectionRunner)
     r.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: SimpleNamespace(attributes={"unit_of_measurement": "W"})))
-    r.entry = SimpleNamespace(options={CONF_DETECTION: {f"{GRID_PREFIX}power_{p}": GRID[p] for p in "abc"},
+    # a list among the detection options, as Home has (ignore_meters): the triple memo once keyed on the whole
+    # configuration and failed every step on it (2026-11-12)
+    r.entry = SimpleNamespace(options={CONF_DETECTION: {**{f"{GRID_PREFIX}power_{p}": GRID[p] for p in "abc"},
+                                                        "ignore_meters": ["Delavnica"]},
                                        CONF_INVERTERS: [{"power": INV}]})
     r.fleet = Fleet()
     r.fleet.main.tz_offset_s = 0.0
