@@ -182,5 +182,22 @@ def test_a_change_behind_its_window_is_dropped_and_counted():
         {COMPRESSED_STATE_LAST_UPDATED: T0 + 10.0, COMPRESSED_STATE_STATE: "5"}]
 
 
+def test_the_amps_quantum_is_worked_out_again_only_when_the_amps_stepped():
+    r = _runner()
+    calls = []
+    real = D.quantum_of_steps
+    D.quantum_of_steps = lambda steps: calls.append(len(steps)) or real(steps)
+    try:
+        amps = [(T0 + k, 5.0 + 0.01 * (k % 7)) for k in range(400)]
+        volts = [(T0 + k, 230.0) for k in range(400)]
+        first = r._learn_q_quantum("a", {("current", "a"): amps, ("voltage", "a"): volts}, "a")
+        still = [(T0 + 500.0, amps[-1][1])]                 # a window with no amp step in it
+        again = r._learn_q_quantum("a", {("current", "a"): still, ("voltage", "a"): [(T0 + 500.0, 230.0)]}, "a")
+    finally:
+        D.quantum_of_steps = real
+    assert first is not None and again == first, (first, again)
+    assert len(calls) == 1, calls
+
+
 if __name__ == "__main__":
     run_main(globals())
