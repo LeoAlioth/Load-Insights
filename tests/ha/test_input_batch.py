@@ -112,6 +112,7 @@ def _passes(batch: bool, live: bool = False, listen_late_s: float = 0.0):
             for seen, st in rec.rows:                # what HA's state_changed events delivered since the last pass
                 if arrived < seen <= end and seen > listened:
                     r._input_buf.setdefault(st.entity_id, []).append(st)
+                    r.__dict__.setdefault("_input_dirty", set()).add(st.entity_id)    # as _on_state marks it
         arrived = end
         if k == 20:
             r.entry.options[CONF_INPUT_ENTITIES] = inputs + ["switch.late"]
@@ -134,13 +135,27 @@ def test_one_query_a_pass_reads_what_one_an_input_read():
     assert calls_together == 60 * 2 + 1, calls_together
 
 
+def _handed(out):
+    """Pass by pass, everything handed to the detector so far: what Fleet.ingest merges into its store (spans,
+    numbers, settings), each row once. A live pass hands only the inputs that changed; an unchanged one would
+    only hand rows already merged."""
+    seen, got = set(), []
+    for switches, numbers, inputs in out:
+        seen |= {("s", n, a, b) for n, spans in switches.items() for a, b in spans}
+        seen |= {("n", n, t, v) for n, rows in numbers.items() for t, v in rows}
+        seen |= {("i", n, t, v) for n, rows in inputs.items() for t, v in rows}
+        got.append(frozenset(seen))
+    return got
+
+
 def test_live_inputs_from_the_state_changes_read_what_the_recorder_read():
     """Streaming (step 2): after the first pass, the inputs' new rows come from their state changes and their
     start rows from the kept rows - no recorder query - and every pass returns exactly what one query an input
     returned; only an input added later (switch.late, pass 20) is read whole from the recorder once."""
     one_each, _ = _passes(batch=False)
     live, calls = _passes(batch=True, live=True)
-    assert live == one_each
+    assert _handed(live) == _handed(one_each)
+    assert sum(len(sw) + len(n) + len(i) for sw, n, i in live[1:]) < sum(len(sw) + len(n) + len(i) for sw, n, i in one_each[1:])
     assert calls == 2 + 1, calls          # pass 0: the start rows and the batch; pass 20: the new input, whole
 
 
@@ -150,7 +165,7 @@ def test_listening_that_begins_after_the_last_gap_read_loses_nothing():
     the last recorder read handed over, and is read from there."""
     one_each, _ = _passes(batch=False)
     live, calls = _passes(batch=True, live=True, listen_late_s=30.0)
-    assert live == one_each
+    assert _handed(live) == _handed(one_each)
     assert calls == 2 + 2 + 1, calls      # pass 0 and the gap pass 1 from the recorder, then live; pass 20's input
 
 
