@@ -5550,9 +5550,20 @@ class Detector:
             if q_quantum and q_quantum.get(ph):
                 st.q_quantum = q_quantum[ph]
             stream.extend((ts, ph, w) for ts, w in rows)
+        # one index of the pass's readings for every phase's question, not one per phase (2026-11-12: built
+        # three times a step at Home, 0.32 s per 2 min); the same rows, so the same answers
+        index = {}
+        for oph, ost in self.phases.items():
+            # with its last reading before the pass: at a pass's start the
+            # other leg's reading as of now was in the last one's rows
+            rows = list(samples.get(oph) or [])
+            if ost.raw_last and (not rows or ost.raw_last[0] < rows[0][0]):
+                rows.insert(0, ost.raw_last)
+            if rows:
+                index[oph] = ([t for t, _ in rows], rows)
         for ph, st in self.phases.items():
-            st.corroborate = self._corroborate(ph, samples)
-        stream.sort(key=lambda r: (r[0], r[1]))
+            st.corroborate = self._corroborate(ph, index)
+        stream.sort(key=operator.itemgetter(0, 1))
         return stream
 
     def step(self, ts: float, ph: str, w: float) -> None:
@@ -5681,7 +5692,7 @@ class Detector:
             self._merge_devices()
         self._released.append(s)
 
-    def _corroborate(self, ph: str, samples):
+    def _corroborate(self, ph: str, index):
         """Build the question one phase may ask of the others for this pass:
         is a leg of the same load stopping on another phase right now?
 
@@ -5692,16 +5703,9 @@ class Detector:
         instant shows the same drop. A real multi-phase device switches its
         legs together, every time - the owner's point about co-occurrence - so one
         leg seeing its gap is evidence the other's short gap was real too.
-        A single-phase load never has a partner and is never affected."""
-        index = {}
-        for oph, ost in self.phases.items():
-            # with its last reading before the pass: at a pass's start the
-            # other leg's reading as of now was in the last one's rows
-            rows = list(samples.get(oph) or [])
-            if ost.raw_last and (not rows or ost.raw_last[0] < rows[0][0]):
-                rows.insert(0, ost.raw_last)
-            if oph != ph and rows:
-                index[oph] = ([t for t, _ in rows], rows)
+        A single-phase load never has a partner and is never affected.
+        ``index`` is the pass's readings by phase (begin); only the other
+        phases' are asked."""
 
         def as_of(oph: str, ts: float):
             times, rows = index.get(oph, ((), ()))
@@ -8462,7 +8466,7 @@ class Fleet:
             left: Dict[str, list] = {}
             for ts, ph, w in streams[name][done[name]:]:
                 left.setdefault(ph, []).append((ts, w))
-            f._hold_back(left, kept[name][1], kept[name][2], -math.inf)   # kept, with their reactive and PV values
+            f._hold_back(left, kept[name][1], kept[name][2], -math.inf, ordered=True)   # kept, with their reactive and PV values
         for ts, name, ph, w in meters[isub:]:
             self.feed(name, ts, ph, w, (self.subs[name]._q.get(ph) or {}).get(ts))
         self._now = max(self._now, until)
@@ -9712,7 +9716,7 @@ class Fleet:
                        for name, d in steps.items()),
                       key=lambda nd: (-totals[nd[0]][3], -abs(nd[1])))
 
-    def _hold_back(self, rows, q, pv, cut: float):
+    def _hold_back(self, rows, q, pv, cut: float, ordered: bool = False):
         """The grid's readings up to ``cut`` - wait_cap_s before how far the
         pass reaches, see process - with the last pass's held ones in front;
         the newer ones, and their reactive and PV values, are kept for the
@@ -9724,11 +9728,16 @@ class Fleet:
         them: the detector only looks them up at the readings it is handed,
         which are all at or before the cut. Copying both dicts every pass
         cost the replay, which hands over all ten days each time, five times
-        its run on the live days."""
+        its run on the live days.
+
+        The held rows are kept in order; ``ordered`` says the new ones are too
+        (advance's own, handed back): then there is nothing to sort, as at
+        every streaming step (2026-11-12: 0.39 s per 2 min at Home)."""
         held = self._carry
         out_rows, keep_rows = {}, {}
         for ph in set(rows or {}) | set(held.get("rows") or {}):
-            both = sorted(list((held.get("rows") or {}).get(ph, [])) + [tuple(r) for r in (rows or {}).get(ph, [])])
+            old, new = (held.get("rows") or {}).get(ph, []), [tuple(r) for r in (rows or {}).get(ph, [])]
+            both = old + new if (ordered or not new) and not (old and new) else sorted(list(old) + new)
             out_rows[ph] = [r for r in both if r[0] <= cut]
             keep_rows[ph] = [r for r in both if r[0] > cut]
 
