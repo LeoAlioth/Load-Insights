@@ -159,7 +159,12 @@ this first: the look-back then reads the stream's own retained readings instead 
 1. **Write throttle:** live power written at most every 5 s and at least every 60 s per named load
    (`LIVE_WRITE_MIN_S` 5, `LIVE_WRITE_MAX_S` 60), and when it moves by more than the load's noise.
 2. **Hot path:** a 1 s loop for assembling, edges and joining edges into steps (and the run layer
-   behind them), in one executor job per second.
+   behind them), in one executor job per second. **Changed 2026-11-13 (the owner, INS-33): a 5 s loop**
+   (`STREAM_TICK_S`). At 1 s the step's fixed costs made Home ~5 s CPU per 2 min dearer than before streaming
+   (whole process 29.0 -> 34.3 s; Load Insights 3.46 -> 8.62, the recorder 6.75 -> 5.64); the detector runs on
+   the readings' clock, so the step size changes no answer (`tests/ha/test_stream_windows.py`, 1 s and 5 s
+   against one recorder window), and live power trails by up to 4 s more against a 60-80 s horizon. A gap the
+   recorder fills runs its next slice at once, not at the next tick.
 3. **No fallback:** the minute pass is removed with step 2; no option, no period with both paths.
 4. **No provisional live power:** left out for now. It adds latency (a step waits for its horizon)
    but every power is still shown correctly, just late.
