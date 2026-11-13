@@ -156,8 +156,12 @@ DETECTION_SLICE_HOURS = 1
 # Streaming (docs/specs/2026-11-11-streaming-pipeline.md, the owner 2026-11-11): every STREAM_TICK_S the readings up to
 # STREAM_SETTLE_S ago are put in order, assembled and run, in one executor job. A meter's phases arrive within
 # milliseconds (Home's SolarEdge poll ~14 ms, its 3EMs ~1 ms, 2026-11-11), so one second holds a whole update; a
-# reading that arrives later than that, behind what its window ran, is dropped and counted (stream_late)
-STREAM_TICK_S = 1.0
+# reading that arrives later than that, behind what its window ran, is dropped and counted (stream_late).
+# A step every 5 s, not every second (the owner, 2026-11-13, INS-33): the step's fixed costs - ~109 steps per 2 min
+# at Home, detector advance 2.3 s, assembling 1.5 s, ingest 1.05 s - made streaming ~5 s CPU per 2 min dearer than
+# the minute pass it replaced; the detector runs on the readings' clock, so the step size changes no answer, and
+# live power trails by up to 4 s more against a 60-80 s horizon
+STREAM_TICK_S = 5.0
 STREAM_SETTLE_S = 1.0
 # How long the detector's state may sit in memory unwritten. The snapshot is
 # the whole pair library - well over a hundred kilobytes - and writing

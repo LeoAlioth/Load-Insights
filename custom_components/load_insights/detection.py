@@ -448,7 +448,7 @@ def _profiled(prof, job):
 
 class DetectionRunner(DataUpdateCoordinator[None]):
     """The configured sensors' state changes, streamed into the detector (docs/specs/2026-11-11-streaming-pipeline.md,
-    step 2): every second (_tick) the readings up to a second ago, assembled and run in one executor job (_step);
+    step 2): every STREAM_TICK_S (_tick, 5 s) the readings up to a second ago, assembled and run in one executor job (_step);
     once a minute (_minute) the detector settled, live power, the save, the entities. What the stream did not see -
     the backfill on a fresh start, the stretch a restart missed - the recorder fills, an hour's slice a step, through
     the same assembly. The detector's state, sessions and pairs persist in .storage so a restart resumes where it
@@ -1747,7 +1747,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # a caught-up pass starts on the clock's minute (the owner, 2026-11-09), not a minute after
         # the last one ended, which made every pass's own length drift the schedule (65-80 s at Home)
         self.entry.async_on_unload(async_track_time_change(self.hass, self._on_minute, second=0))
-        # streaming: a step every second (_tick), the stream's listener (_listen), a registry change resolved
+        # streaming: a step every STREAM_TICK_S (_tick), the stream's listener (_listen), a registry change resolved
         self.entry.async_on_unload(async_track_time_interval(self.hass, self._tick, timedelta(seconds=STREAM_TICK_S)))
         self.entry.async_on_unload(self.hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, self._registry_changed))
         self.entry.async_on_unload(self._stop_listening)
@@ -1853,10 +1853,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if self._lock.locked() or not self.enabled:
             return
         async with self._lock:
+            before = self.last_processed
             try:
                 await self._step()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Load detection run failed")
+        # catching up (a gap the recorder fills a slice a step): the next slice at once, not at the next tick - at
+        # STREAM_TICK_S 5 s a ten-day backfill's 240 slices would otherwise wait 20 min on the ticks alone
+        if not self._live and not self._stopping and self.last_processed is not None and self.last_processed != before:
+            self.hass.async_create_task(self._run())
 
     async def _step(self) -> None:
         """The readings since last_processed into the detector (streaming pipeline, step 2 - the minute pass is

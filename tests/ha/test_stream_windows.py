@@ -115,16 +115,27 @@ def _decisions(fleet):
 def test_one_second_windows_from_the_stream_build_what_one_recorder_window_builds():
     """B is production's shape: a gap the recorder fills (the first half hour, as after a restart), then the
     stream. The verdicts a window needs 200 readings for (carries_generation: whether the reading goes below
-    zero) come from gap windows - a live minute pass, ~30 readings, could not give them either."""
+    zero) come from gap windows - a live minute pass, ~30 readings, could not give them either. At a step a
+    second and at production's STREAM_TICK_S (5 s since 2026-11-13, INS-33): the step size changes no answer."""
     _stub_registry()
     rows = _site_rows()
     end = T0 + HOURS * 3600.0
-    gap = T0 + 1800.0
     # A: one recorder window, a pass
     a = _runner()
     a._pass_rows = (_at(T0 - 1.0), _at(end), _window_from_recorder(rows, T0 - 1.0, end))
     assert a._hot(_at(T0 - 1.0), _at(end), None, None, None, settle=True)
-    # B: the gap from the recorder, then every change added as it arrives, a window a second, settled each minute
+    assert len(a.fleet.main.recent) > 5, len(a.fleet.main.recent)        # the loads were found at all
+    assert D.STREAM_TICK_S == 5.0
+    for tick in (1.0, D.STREAM_TICK_S):
+        b = _streamed(rows, end, tick)
+        assert a.samples_read == b.samples_read, (tick, a.samples_read, b.samples_read)
+        assert _decisions(a.fleet) == _decisions(b.fleet), tick
+
+
+def _streamed(rows, end, tick):
+    """The gap from the recorder, then every change added as it arrives, a window every ``tick`` s, settled
+    each minute."""
+    gap = T0 + 1800.0
     b = _runner()
     b._pass_rows = (_at(T0 - 1.0), _at(gap), _window_from_recorder(rows, T0 - 1.0, gap))
     assert b._hot(_at(T0 - 1.0), _at(gap), None, None, None, settle=True)
@@ -138,7 +149,7 @@ def test_one_second_windows_from_the_stream_build_what_one_recorder_window_build
     feed = sorted((t, e, v) for e, rr in rows.items() for t, v in rr if t > gap)
     i, prev, now = 0, gap, gap
     while prev < end:
-        now += 1.0
+        now += tick
         while i < len(feed) and feed[i][0] <= now + D.STREAM_SETTLE_S:   # what has arrived by the tick
             stream.add(feed[i][1], feed[i][0], feed[i][2])
             i += 1
@@ -156,9 +167,7 @@ def test_one_second_windows_from_the_stream_build_what_one_recorder_window_build
             b.fleet.settle(until)
     b.fleet.settle(end)
     assert sum(stream.late.values()) == 0
-    assert a.samples_read == b.samples_read, (a.samples_read, b.samples_read)
-    assert len(a.fleet.main.recent) > 5, len(a.fleet.main.recent)        # the loads were found at all
-    assert _decisions(a.fleet) == _decisions(b.fleet)
+    return b
 
 
 def test_the_stream_answers_a_window_as_the_recorder_does():
