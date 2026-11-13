@@ -273,6 +273,20 @@ the energy card (the owner: "the benches only tell us the final result").
 
 ### Task 12: Look back for missed falls and missing rises
 
+**Decided 2026-11-13 (the owner, on the measurement below): not built.** The end-moving half is covered by
+`_cap_day` (a run left open past its stop keeps only what its phase carried of it, hour by hour; pair lengths are
+learned only from direct closes, so moving the stored end would change neither energy nor learning). The
+netted-rise half was measured before building, on a fed replay of 9-12 Nov (`scratchpad/count_unmatched.py`,
+`stake_breakdown.py`; stake = the fall's size x its partner pair's learned length, a ceiling): Kozolec 3-20
+unmatched falls a day on the grid, at most 0.48 kWh at stake; Home's grid 790-1,003 a day, 41-73 % with a known
+partner, and on 11-12 Nov 1,132 partnered falls, 41.6 kWh at stake against ~53 kWh filed - half of it in 15
+falls, 90 % in 103, none of them a named load, most partner lengths (hours) learned from fall order alone for
+rise groups that never filed a run; 123 of them (16.3 kWh) had their partner group RUNNING at the fall (a missed
+close, not a missing rise); Home's meters 546 partnered falls, 12.7 kWh, mostly sub-100 W falls on Hiša with
+hour-long partners (95 running, 4.1 kWh). A search that books multi-hour runs from single falls on order-only
+lengths is where impurity would come from, for an upside far under the ceiling. The missed closes are a question
+for the closing score, not for this task (not started).
+
 **Files:**
 - Modify: `detect.py` - `Fleet._repair`, new module-level `_look_back(rows, run, level, unit, a, b)` beside `_find_cycles` (~9253)
 - Test: `tests/test_detect.py`
