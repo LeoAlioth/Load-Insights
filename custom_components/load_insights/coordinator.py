@@ -254,16 +254,19 @@ class InsightsCoordinator(DataUpdateCoordinator):
         weather_entity = opts.get(CONF_WEATHER_ENTITY)
         temps_hist: Dict[float, float] = {}
         temps_fc: Dict[float, float] = {}
-        if temp_entity and weather_entity:
-            temps_hist = await self._hourly_means(temp_entity, start, {"temperature": UnitOfTemperature.CELSIUS})
+        if weather_entity:
             temps_fc = await self._forecast_temperatures(weather_entity, now)
+            if temp_entity:
+                temps_hist = await self._hourly_means(temp_entity, start, {"temperature": UnitOfTemperature.CELSIUS})
         # A sun-heated sensor is corrected with the weather entity (heatnudge.corrected_series, INS-20):
         # the same series feeds the temperature evidence and the heat nudge. Hours older than the
         # recorder's states and the heat store's own are read from the sensor only where it is trusted.
+        # With no sensor the weather entity's own recorded temperature is the past ("reference" every
+        # hour, nothing to correct): fitted on it, applied to its forecast (the owner, 2026-11-13: no repair)
         reference: Dict[float, float] = {}
         t_basis: Dict[float, str] = {}
         t_bias = None
-        if temps_hist and weather_entity:
+        if weather_entity and (temps_hist or not temp_entity):
             stored = heatnudge.migrate(await self._heat_store.async_load())["obs"]
             reference = await self._weather_reference(weather_entity, start, now, stored)
             temps_hist, temps_fc, t_basis, t_bias = heatnudge.corrected_series(
@@ -444,6 +447,18 @@ class InsightsCoordinator(DataUpdateCoordinator):
         except Exception:  # noqa: BLE001 - shadow mode must never take the forecasts with it
             _LOGGER.exception("Heat nudge failed; its sensors keep their last readings")
             heat = (self.data.heat if self.data is not None else None) or {}
+        if reference and not heat_devices:
+            # the weather entity's observations kept without a heat device too (_heat_nudge keeps them with
+            # one): a weather-only site's past then outlives the recorder's ~10 days, up to OBS_KEEP_DAYS
+            # (the owner, 2026-11-13)
+            try:
+                state = heatnudge.migrate(await self._heat_store.async_load())
+                cut = now.timestamp() - heatnudge.OBS_KEEP_DAYS * 86400
+                await self._heat_store.async_save({"generation": heatnudge.HEAT_GENERATION, "days": state["days"],
+                                                   "forecasts": state["forecasts"],
+                                                   "obs": {str(int(k)): round(v, 2) for k, v in reference.items() if k >= cut}})
+            except Exception:  # noqa: BLE001 - the forecasts go on; the reference is read again next time
+                _LOGGER.exception("Keeping the weather observations failed")
         try:
             soc_history = await self._soc_history(site, now)
         except Exception:  # noqa: BLE001 - the SOC sensor then has no actual line, the forecasts go on
@@ -521,7 +536,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
                 return heatnudge.publish(now, None, None, {**heatnudge.summarize(card_days), "last": None}, "none",
                                          target, dev["kind"], why=why, temperature=tbasis())
             if not temps_hist or not temps_fc:
-                out[dev["id"]] = said("needs a weather entity and an outdoor temperature sensor (Explanatory inputs)")
+                out[dev["id"]] = said("needs a weather entity (Explanatory inputs)")
                 continue
             st = self.hass.states.get(dev["source"])
             dclass = st.attributes.get("device_class") if st is not None else None

@@ -647,8 +647,8 @@
     },
     "issues": {
         "temperature_pair_incomplete": {
-            "title": "The weather response needs both halves",
-            "description": "Load Insights has the {have} but not the {missing}. The temperature response is fitted on the sensor's recorded past and applied to the weather entity's coming week, so one without the other can never take effect. Add the missing one under Configure -> Explanatory inputs, or clear both."
+            "title": "The outdoor temperature sensor needs a weather entity",
+            "description": "Load Insights has an outdoor temperature sensor but no weather entity. The temperature response is applied to the weather entity's forecast, so the sensor alone can never take effect. Add a weather entity under Configure -> Explanatory inputs, or clear the sensor. (A weather entity alone is enough: its own recorded temperature is used then.)"
         },
         "no_pv_forecast": {
             "title": "No PV forecast is linked to the Energy dashboard",

@@ -647,8 +647,8 @@
     },
     "issues": {
         "temperature_pair_incomplete": {
-            "title": "Odziv na vreme potrebuje oba dela",
-            "description": "Load Insights ima {have}, nima pa {missing}. Temperaturni odziv se umeri na zabeleženi preteklosti senzorja in uporabi na prihodnjem tednu vremenske entitete, zato eno brez drugega ne more delovati. Manjkajoče dodajte v Nastavitve -> Pojasnjevalni vhodi ali izbrišite oboje."
+            "title": "Senzor zunanje temperature potrebuje vremensko entiteto",
+            "description": "Load Insights ima senzor zunanje temperature, nima pa vremenske entitete. Temperaturni odziv se uporabi na napovedi vremenske entitete, zato sam senzor ne more delovati. Vremensko entiteto dodajte v Nastavitve -> Pojasnjevalni vhodi ali izbrišite senzor. (Vremenska entiteta sama zadošča: takrat se uporabi njena zabeležena temperatura.)"
         },
         "no_pv_forecast": {
             "title": "Na nadzorni plošči Energija ni povezane napovedi PV",
