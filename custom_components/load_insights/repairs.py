@@ -38,13 +38,11 @@ def async_check(hass: HomeAssistant, entry: ConfigEntry, data) -> None:
     """Raise or withdraw every issue, from the refresh that just finished."""
     site = data.site
 
-    # The temperature response needs BOTH: the sensor supplies the past, the
-    # weather entity the future. One alone can never fit anything.
-    half = bool(data.weather_entity) != bool(data.temperature_entity)
-    _set(hass, entry, HALF_TEMPERATURE, half, {
-        "have": "weather entity" if data.weather_entity else "temperature sensor",
-        "missing": "outdoor temperature sensor" if data.weather_entity else "weather entity",
-    })
+    # The temperature response is applied to the weather entity's forecast, so a
+    # sensor alone can never take effect. A weather entity alone is fitted on its
+    # own recorded temperature (the owner, 2026-11-13: no repair for that).
+    half = bool(data.temperature_entity) and not data.weather_entity
+    _set(hass, entry, HALF_TEMPERATURE, half, {})
 
     # A PV site with no forecast linked: the grid forecast then predicts a
     # week of sunless days, and its import figures are badly pessimistic.

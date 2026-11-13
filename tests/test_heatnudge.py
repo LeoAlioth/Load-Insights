@@ -362,5 +362,23 @@ def test_the_forecast_reads_the_corrected_pair_INS20():
     assert src.index("heatnudge.corrected_series") < src.index("fit = lambda rows, signals")
 
 
+def test_a_weather_entity_alone_is_its_own_past():
+    """Dom (2026-11-13): a weather entity and no outdoor sensor. The weather entity's recorded temperature is the
+    history, every hour "reference" and nothing shifted (no bias to learn), its forecast the future; a day of it
+    counts as corrected. The coordinator takes this path, and the repair is left for a sensor with no weather entity."""
+    cur = NOW - NOW % 3600
+    fc = {cur + 3600 * i: 9.0 for i in range(6)}
+    _, ref = pairs_for(ref_wave, ref_wave)
+    hist, fcc, basis, bias = H.corrected_series({}, ref, fc, NOW, NIGHT)
+    assert hist == {k: v for k, v in ref.items() if k < cur} and fcc == fc and not bias["learned"]
+    assert set(H.series_basis(bias, basis)["hours"]) == {"reference", "forecast"}
+    assert H.day_basis([basis[k] for k in sorted(hist)[:24]]) == "corrected"
+    src = (BASE / "coordinator.py").read_text(encoding="utf-8")
+    assert "if weather_entity and (temps_hist or not temp_entity):" in src
+    assert "if reference and not heat_devices:" in src          # its observations kept, so its past grows past ~10 days
+    rep = (BASE / "repairs.py").read_text(encoding="utf-8")
+    assert "half = bool(data.temperature_entity) and not data.weather_entity" in rep
+
+
 if __name__ == "__main__":
     run_main(globals())
