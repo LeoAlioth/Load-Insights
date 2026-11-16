@@ -208,5 +208,22 @@ def test_the_amps_quantum_is_worked_out_again_only_when_the_amps_stepped():
     assert len(calls) == 1, calls
 
 
+def test_the_named_loads_energy_is_worked_out_once_for_all_their_sensors():
+    """Every named load's energy sensor read the fleet's energy by name for itself: 21 walks of every pair of
+    every detector per minute at Home (2026-11-16). Now one per step, shared; a new step works it out again."""
+    r = _runner()
+    r._energy_memo, r.last_processed = None, datetime(2026, 11, 16, 10, tzinfo=timezone.utc)
+    calls = []
+    real = r.fleet.energy_by_name
+    r.fleet.energy_by_name = lambda: calls.append(1) or {"Bojler": 1234.0}
+    try:
+        got = [r.energy_by_name().get(n, 0.0) for n in ("Bojler", "Hladilnik") * 21]
+        r.last_processed = datetime(2026, 11, 16, 10, 0, 5, tzinfo=timezone.utc)      # the next step
+        r.energy_by_name()
+    finally:
+        r.fleet.energy_by_name = real
+    assert got[:2] == [1234.0, 0.0] and len(calls) == 2, (got[:2], calls)
+
+
 if __name__ == "__main__":
     run_main(globals())

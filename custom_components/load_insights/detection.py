@@ -518,6 +518,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self._window = None          # ...and profile_seconds' whole-process profiler while it runs
         self.last_hourly_check: Dict[str, float] = {}
         self._active_memo: Optional[tuple] = None      # see active_by_name
+        self._energy_memo: Optional[tuple] = None      # see energy_by_name
         self._names_memo: Optional[tuple] = None       # see names_now
         self._input_cache: Dict[str, tuple] = {}       # see _input_states: (since, end, every row) per input
         self._input_passes: Dict[str, int] = {}        # passes read per input, for the audit (INPUT_AUDIT_PASSES)
@@ -1311,6 +1312,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         if self._active_memo is None or self._active_memo[0] != key:
             self._active_memo = (key, self.fleet.active_by_name(now))
         return self._active_memo[1]
+
+    def energy_by_name(self) -> Dict[str, float]:
+        """Fleet.energy_by_name, worked out once for all the named loads' energy sensors, kept as active_by_name
+        is: every one walked every pair of every detector for its own name - 42 walks per 2 min at Home, 0.22 s
+        of the minute's entity update (2026-11-16). Shared: read it, never write."""
+        key = (self.last_processed, int(dt_util.utcnow().timestamp()))
+        if self._energy_memo is None or self._energy_memo[0] != key:
+            self._energy_memo = (key, self.fleet.energy_by_name())
+        return self._energy_memo[1]
 
     async def _input_states(self, eid: str, domain: str, since: datetime, end: datetime) -> list:
         """The input's recorder states over (since, end), as _read_inputs' own query returns them, from kept

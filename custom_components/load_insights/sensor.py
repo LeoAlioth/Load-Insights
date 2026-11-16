@@ -1296,7 +1296,7 @@ class NamedLoadEnergy(_DetectionBase, RestoreSensor):
         return self._reading
 
     def _total(self) -> float:
-        return self._runner.fleet.energy_by_name().get(self._name, 0.0) / 1000.0
+        return self._runner.energy_by_name().get(self._name, 0.0) / 1000.0
 
     @callback
     def _handle_coordinator_update(self) -> None:
