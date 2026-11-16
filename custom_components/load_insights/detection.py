@@ -2269,11 +2269,18 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
         Taken from whichever role publishes a coherent triple - the load's
         own first, since that is the circuit the loads are in, and the grid
-        meter after it. At home only the grid meter has volts and amps, and
-        that is fine: every watt the house draws flows through it, so the
-        CHANGE in its reactive power when something switches is the load's
-        own, even though the level is mostly the inverter's grid support.
-        Kozolec has the triple on the load side itself.
+        meter after it. Kozolec has the triple on the load side itself; at
+        Home only the grid meter has volts and amps. The grid meter's CHANGE
+        in reactive power when something switches is the load's own only
+        where the grid carried the whole step - a PV inverter that does not
+        follow the load (Home's SolarEdge) leaves it so, even though the
+        level is mostly the inverter's grid support. It is NOT true where an
+        inverter feeds the house beside the grid and follows the load: Dom's
+        Deye hybrid, its battery covering the house, takes part or all of a
+        step and its reactive with it (the boiler read -28 to +35 degrees by
+        evening, 2026-11-16). So a step across which the inverters moved
+        carries no reactive change (detect.ANGLE_STEADY, PhaseState) and is
+        grouped by size alone.
 
         Nothing is returned when no role can offer one, which is honest: no
         power factor beats a fabricated one."""

@@ -446,6 +446,46 @@ def test_a_join_keeps_what_the_joined_group_learned_of_order():
     assert abs(det.pair_ratio(5, 9)[0] - math.log(0.86)) < 1e-9
 
 
+def test_a_step_the_inverters_moved_across_carries_no_angle():
+    """A battery inverter covering the house took a 2 kW load's step (Dom's Deye,
+    2026-11-16): the site consumption steps, the inverters' power steps with it
+    and the grid meter's reactive change is not the load's - the step is
+    grouped by size alone (ANGLE_STEADY). With the inverters steady it keeps its
+    angle (Home's SolarEdge)."""
+    n = int(3600 / DT)
+    on = lambda s: 600 <= s < 1800                                  # noqa: E731
+    house = [(T0 + i * DT, 300.0 + (2000.0 if on(i * DT) else 0.0)) for i in range(n)]
+    q = {T0 + i * DT: 50.0 + (600.0 if on(i * DT) else 0.0) for i in range(n)}
+    angles = {}
+    for name, pv in (("moved", lambda s: 1000.0 + (2000.0 if on(s) else 0.0)), ("steady", lambda s: 1000.0)):
+        det = D.Detector()
+        det.process({"a": house}, {"a": q}, T0 + 3700, {"a": {T0 + i * DT: pv(i * DT) for i in range(n)}})
+        angles[name] = [x[1] for c in det.edges if c.up and c.watts > 1500 for x in c.recent]
+    assert angles["steady"] and all(a is not None and a > 10 for a in angles["steady"]), angles
+    assert angles["moved"] and all(a is None for a in angles["moved"]), angles
+
+
+def test_a_groups_angle_width_is_its_own_steps_spread():
+    """ANGLE_WIDTH_FIT: a group whose angles scatter +-20 degrees (Dom's boiler by
+    evening, the reactive read off the grid side) is that wide in angle after the
+    daily pass, never under EDGE_ANGLE_KERNEL."""
+    rnd = random.Random(3)
+    det = D.Detector()
+    det.phases["a"].noise = 2.83
+    g = det._classify_step("a", T0, 1000.0, 0.0, 0.0)
+    g.recent = [(rnd.gauss(1000.0, 3.0), rnd.gauss(0.0, 20.0), None, None) for _ in range(30)]
+    g.count = 30.0
+    det.mix_daily()
+    w = det._mix_widths("a", 1000.0, g)[1]
+    assert 12.0 < w < 30.0 and g.angle_sd == w, (w, g.angle_sd)
+    tight = D.Detector()
+    tight.phases["a"].noise = 2.83
+    h = tight._classify_step("a", T0, 1000.0, 0.0, 0.0)
+    h.recent = [(1000.0, 0.5 * (k % 3), None, None) for k in range(30)]
+    tight.mix_daily()
+    assert tight._mix_widths("a", 1000.0, h)[1] == D.EDGE_ANGLE_KERNEL
+
+
 def test_a_fall_far_from_every_run_closes_nothing():
     det, st = _scoring_phase((0.0, 1000.0, 1))
     st.stop_cluster = 9

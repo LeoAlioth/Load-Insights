@@ -417,6 +417,12 @@ GROUP_SPAN = 3.0
 # as the group's smallest to largest recent step, with it, stays within that
 # ratio (0 = off, today's); MIX_ANGLE_WIDTHS is the angle's own gate
 GROUP_CEIL = 0.0
+# The reactive fix (the owner, 2026-11-16, both parts): a step's reactive change is the load's only where the
+# grid meter carried the step - an inverter that moved across it (a battery covering the house, Dom's Deye) took
+# part of it and its own reactive with it, so the step is grouped by size alone (ANGLE_STEADY); and a group's
+# angle width is its own steps' measured spread, never under EDGE_ANGLE_KERNEL (ANGLE_WIDTH_FIT). Bench dials.
+ANGLE_STEADY = 1.0
+ANGLE_WIDTH_FIT = 1.0
 MIX_ANGLE_WIDTHS = 2.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
@@ -2761,6 +2767,10 @@ class PhaseState:
         was_q = _median(self.q_recent) if self.q_recent else self.q_level
         step_q = None if (new_q is None or was_q is None) else new_q - was_q
         pv_step = None if (new_pv is None or self.pv_level is None) else new_pv - self.pv_level
+        if ANGLE_STEADY and pv_step is not None and abs(pv_step) >= self.noise:
+            # the inverters moved across the step: the grid meter carried only part of it, and its
+            # reactive change is not the load's (a battery covering the house) - no angle, size alone
+            step_q = None
         self.level = new_level
         if new_q is not None:
             self.q_level = new_q
@@ -4887,6 +4897,7 @@ class StepGroup:
     recent: List[tuple] = field(default_factory=list)
     joined: Optional[int] = None
     mix_sd: Optional[float] = None
+    angle_sd: Optional[float] = None    # its steps' angle spread, fitted daily (ANGLE_WIDTH_FIT)
     # its voltage exponent (P ~ V^k: ~2 a heater, ~1 a current-limited charger, ~0
     # a switched-mode supply) and its centre at V_NOMINAL, fitted daily from the steps
     # store where the voltage moves enough (mix_daily, _volt_k); None elsewhere
@@ -4963,7 +4974,7 @@ class StepGroup:
                 "where": self.owner, "cannot": [list(x) for x in self.cannot],
                 "recent": [[_trim(x[0], 1), _trim(x[1], 1), *[_trim(v, 2) for v in x[2:]]] for x in self.recent],
                 "joined": self.joined,
-                "mix_sd": _trim(self.mix_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
+                "mix_sd": _trim(self.mix_sd, 2), "angle_sd": _trim(self.angle_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4977,7 +4988,7 @@ class StepGroup:
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
                    owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
                    recent=[(tuple(x) + (None, None))[:4] for x in d.get("recent") or []], joined=d.get("joined"),
-                   mix_sd=d.get("mix_sd"),
+                   mix_sd=d.get("mix_sd"), angle_sd=d.get("angle_sd"),
                    k=d.get("k"), c_nom=d.get("c_nom"))
 
 
@@ -6410,6 +6421,10 @@ class Detector:
                 joined += 1
                 if gone is a:
                     break
+        if ANGLE_WIDTH_FIT:
+            for c in self.edges:
+                angs = [x[1] for x in c.recent if x[1] is not None]
+                c.angle_sd = _robust_sd(angs) if c.joined is None and len(angs) >= MIX_TEST_MIN else None
         return split, joined
 
     def _fold_order(self, gone: int, keep: int) -> None:
@@ -6924,7 +6939,9 @@ class Detector:
         q = max((st.q_quantum for st in sts), default=0.0)
         p = max(size, 1.0)
         aerr = math.degrees(math.sqrt(2.0) * max(math.atan2(q, p), math.sqrt(2.0 * q / p)))
-        return width, max(EDGE_ANGLE_KERNEL, aerr)
+        # ...and never under the spread its own steps' angles show (ANGLE_WIDTH_FIT): Dom's boiler reads
+        # -28 to +35 degrees by evening where its amps' resolution says 6 (2026-11-16)
+        return width, max(EDGE_ANGLE_KERNEL, aerr, c.angle_sd or 0.0)
 
     def _by_mixture(self, ph: str, up: bool, size: float, angle: Optional[float], keys: Dict[str, str],
                     kind: List["StepGroup"], where: str, von: Optional[float] = None) -> Optional["StepGroup"]:
