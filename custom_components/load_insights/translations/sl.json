@@ -551,11 +551,13 @@
                         "data": {
                             "plan_full_soc": "Polna baterija (%)",
                             "plan_full_soc_entity": "Entiteta polne baterije",
-                            "plan_minimum_floor": "Spodnja meja minimuma (%)"
+                            "plan_minimum_floor": "Spodnja meja minimuma (%)",
+                            "plan_minimum_cap": "Omeji minimalni SOC"
                         },
                         "data_description": {
                             "plan_full_soc": "Cilj šteje navzdol od tod. Velja, kadar spodnja entiteta ni nastavljena ali ne daje vrednosti.",
-                            "plan_full_soc_entity": "Neobvezno. Število z ravnjo polne baterije, na primer meja SOC upravljalca bremen."
+                            "plan_full_soc_entity": "Neobvezno. Število z ravnjo polne baterije, na primer meja SOC upravljalca bremen.",
+                            "plan_minimum_cap": "Drži minimalni SOC med 0 in 100 % ali ciljnim SOC, kadar je ta nižji, da oblačno obdobje, globlje od baterije, ne zahteva več, kot baterija hrani. Neomejena vrednost ostane v atributu raw_value senzorja, capped_by pa pove, kaj jo je omejilo. Izklopljeno: surova vrednost."
                         }
                     },
                     "target": {

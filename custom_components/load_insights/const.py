@@ -47,10 +47,13 @@ CONF_PLAN_CONSUMPTION_SCALE = "plan_consumption_scale"
 CONF_PLAN_FULL_SOC = "plan_full_soc"                  # the target counts down from here, in %
 CONF_PLAN_FULL_SOC_ENTITY = "plan_full_soc_entity"    # a number entity that takes over from it
 CONF_PLAN_MINIMUM_FLOOR = "plan_minimum_floor"
+# The minimum SOC held to [0, 100 %, or the target when lower] (planning.capped_minimum);
+# off by default: the raw value, as before (the owner, 2026-11-16, for Dom's 872 %)
+CONF_PLAN_MINIMUM_CAP = "plan_minimum_cap"
 CONF_PLAN_SPREAD = "plan_spread_evenly"               # devices planned with their energy spread evenly
 PLAN_DEFAULTS = {
     CONF_PLAN_DAYS: 5, CONF_PLAN_PRODUCTION_SCALE: 1.0, CONF_PLAN_CONSUMPTION_SCALE: 1.0,
-    CONF_PLAN_FULL_SOC: 100, CONF_PLAN_MINIMUM_FLOOR: 10,
+    CONF_PLAN_FULL_SOC: 100, CONF_PLAN_MINIMUM_FLOOR: 10, CONF_PLAN_MINIMUM_CAP: False,
 }
 PLAN_SENSORS = ("target", "minimum", "excess")
 # per sensor and side: (full hours, derate %/h)

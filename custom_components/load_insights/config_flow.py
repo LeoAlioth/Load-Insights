@@ -22,6 +22,7 @@ from .const import (
     CONF_PLAN_FULL_SOC,
     CONF_PLAN_FULL_SOC_ENTITY,
     CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_MINIMUM_CAP,
     CONF_PLAN_PRODUCTION_SCALE,
     CONF_PLAN_SPREAD,
     PLAN_DEFAULTS,
@@ -408,6 +409,8 @@ def _plan_schema(current: dict, devices: dict) -> dict:
     out = {vol.Optional(k, default=current.get(k, default)): sel for k, default, sel in _plan_fields()}
     out[vol.Optional(CONF_PLAN_FULL_SOC_ENTITY, description={"suggested_value": current.get(CONF_PLAN_FULL_SOC_ENTITY)})] = \
         selector.EntitySelector(selector.EntitySelectorConfig(domain=["number", "input_number"]))
+    out[vol.Optional(CONF_PLAN_MINIMUM_CAP, default=current.get(CONF_PLAN_MINIMUM_CAP, PLAN_DEFAULTS[CONF_PLAN_MINIMUM_CAP]))] = \
+        selector.BooleanSelector()
     if devices:
         out[vol.Optional(CONF_PLAN_SPREAD, description={"suggested_value": [
             e for e in current.get(CONF_PLAN_SPREAD) or [] if e in devices]})] = selector.SelectSelector(
@@ -939,9 +942,9 @@ class LoadInsightsOptionsFlow(SectionedFlowMixin, config_entries.OptionsFlow):
         weights (insights/planning.py). Every other page's options are
         carried over whole."""
         if user_input is not None:
-            own = {k for k, _, _ in _plan_fields()} | {CONF_PLAN_FULL_SOC_ENTITY, CONF_PLAN_SPREAD}
+            own = {k for k, _, _ in _plan_fields()} | {CONF_PLAN_FULL_SOC_ENTITY, CONF_PLAN_SPREAD, CONF_PLAN_MINIMUM_CAP}
             keep = {k: v for k, v in self.config_entry.options.items() if k not in own}
-            # a 0 is an answer (no derate, no floor), an emptied selector clears
+            # a 0 is an answer (no derate, no floor), and so is an unticked cap (False == 0); an emptied selector clears
             return self.async_create_entry(data={**keep, **{
                 k: v for k, v in user_input.items() if k in own and v or v == 0}})
         manager = await async_get_manager(self.hass)

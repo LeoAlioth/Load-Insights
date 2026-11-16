@@ -11,7 +11,9 @@ template helpers, 2026-10-17):
     minimum = floor + max(0, -min S) / capacity x 100   cover for the weakest
     excess  = each calendar day's peak of S, less the energy the pack still takes to be full
 
-The values are RAW: negative is allowed, the consumer clamps. A reading is
+The values are RAW: negative is allowed, the consumer clamps - except the
+minimum when its cap is on (``capped_minimum``), which keeps the raw value in
+an attribute. A reading is
 None when any hour it needs is missing, and the caller keeps its last value
 (the helpers did the same after 2026-10-16: a half-rolled forecast must not
 move the target).
@@ -153,6 +155,23 @@ def minimum(bal: Balance, floor: float, capacity: float, tz) -> Tuple[int, dict]
     """The floor plus the deepest dip of S, as points of the pack."""
     value = round(floor + max(0.0, -min(bal.running)) / capacity * 100.0)
     return value, {**_extremes(bal, tz), "floor": floor, "days": _days(bal, capacity, tz)}
+
+
+def capped_minimum(raw: int, target_value: Optional[int]) -> Tuple[int, Optional[str]]:
+    """The minimum held to [0, upper]: upper is 100 %, or the target when that
+    is lower - a minimum above the target would ask the pack to hold what it
+    must leave free for the sun. -> (value, what capped it: "100", "target",
+    "0" or None). A dull month's dip can be several packs deep (Dom, November:
+    172 kWh on a 20 kWh pack, raw 872 %); the cap is the owner's option, off
+    by default (2026-11-16)."""
+    upper, by = 100, "100"
+    if target_value is not None and target_value < upper:
+        upper, by = target_value, "target"
+    if raw > upper:
+        return max(0, upper), by
+    if raw < 0:
+        return 0, "0"
+    return raw, None
 
 
 def full_at(bal: Balance, until_full_kwh: float, tz) -> Optional[str]:
@@ -329,7 +348,8 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
              soc: Optional[float], full_soc: float, cfg: dict, tz=None) -> Dict[str, Optional[dict]]:
     """The three sensors from one set of inputs - what the coordinator and a
     replay both call. ``cfg``: ``days`` (1-7), ``production_scale``,
-    ``consumption_scale``, ``floor``, and ``weights[sensor] = (consumption
+    ``consumption_scale``, ``floor``, ``minimum_cap`` (optional; on, the minimum is
+    held by ``capped_minimum``) and ``weights[sensor] = (consumption
     (full_h, drop), production (full_h, drop))``. -> {sensor: {"value",
     "attributes"}} with None for a sensor whose hours are not all there (the
     caller keeps its last value)."""
@@ -355,9 +375,15 @@ def plan_all(now: datetime, use: Dict[float, float], production: Dict[float, flo
         v, a = read(bal)
         return {"value": v, "attributes": {**a, **common, "weights": weights_of(n), **(extra or {})}}
 
-    return {
+    out = {
         "target": one("target", days * 24, False, lambda b: target(b, full_soc, capacity, tz)),
         "minimum": one("minimum", days * 24, False, lambda b: minimum(b, cfg["floor"], capacity, tz)),
         "excess": one("excess", hours_until_day(now, days), True,
                       lambda b: excess(b, days, max(0.0, (100.0 - soc) / 100.0 * capacity), tz), {"soc": soc}),
     }
+    m = out["minimum"]
+    if cfg.get("minimum_cap") and m is not None:
+        raw = m["value"]
+        m["value"], by = capped_minimum(raw, out["target"]["value"] if out["target"] else None)
+        m["attributes"].update({"raw_value": raw, "capped_by": by})
+    return out

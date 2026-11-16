@@ -49,6 +49,7 @@ from .const import (
     CONF_PLAN_FULL_SOC,
     CONF_PLAN_FULL_SOC_ENTITY,
     CONF_PLAN_MINIMUM_FLOOR,
+    CONF_PLAN_MINIMUM_CAP,
     CONF_PLAN_PRODUCTION_SCALE,
     CONF_PLAN_SPREAD,
     PLAN_DEFAULTS,
@@ -714,7 +715,7 @@ class InsightsCoordinator(DataUpdateCoordinator):
         full = _read_number(self.hass, [opts.get(CONF_PLAN_FULL_SOC_ENTITY)]) if opts.get(CONF_PLAN_FULL_SOC_ENTITY) else None
         cfg = {"days": get(CONF_PLAN_DAYS), "production_scale": get(CONF_PLAN_PRODUCTION_SCALE),
                "consumption_scale": get(CONF_PLAN_CONSUMPTION_SCALE), "floor": get(CONF_PLAN_MINIMUM_FLOOR),
-               "weights": weights}
+               "minimum_cap": bool(get(CONF_PLAN_MINIMUM_CAP)), "weights": weights}
         fresh = plan_all(now, spread_evenly(use, spread), pv, site.battery_capacity_kwh, soc,
                          full if full is not None else get(CONF_PLAN_FULL_SOC), cfg)
         names = {s: next((d.label for d in site.devices if d.energy == s), s) for s in opts.get(CONF_PLAN_SPREAD) or []}

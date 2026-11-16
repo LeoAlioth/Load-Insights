@@ -188,6 +188,40 @@ def test_plan_all_gives_three_readings_and_holds_nothing_back_when_complete():
 
 
 
+
+def test_the_minimum_cap_holds_it_to_100_or_the_target_and_keeps_the_raw_value():
+    """Dom, 2026-11-16: a 172.4 kWh dip on a 20 kWh pack over a 10 % floor is
+    10 + 862 = 872 % raw."""
+    raw = round(10 + 172.4 / 20 * 100)
+    assert raw == 872
+    assert PL.capped_minimum(raw, None) == (100, "100")             # no target: capped at 100
+    assert PL.capped_minimum(raw, 100) == (100, "100")
+    assert PL.capped_minimum(raw, 64) == (64, "target")             # the target leaves room for the sun
+    assert PL.capped_minimum(raw, -5) == (0, "target")              # a raw target under 0 caps at 0
+    assert PL.capped_minimum(10, 64) == (10, None)                  # the floor alone: nothing to cap
+    assert PL.capped_minimum(-3, 64) == (0, "0")
+
+
+def test_plan_all_caps_the_minimum_only_with_the_option_and_says_by_what():
+    cfg = {"days": 5, "production_scale": 1.0, "consumption_scale": 1.0, "floor": 10,
+           "weights": {"target": ((24, 0.9), (24, 0.9)), "minimum": ((48, 0.5), (48, 0.5)), "excess": ((24, 0), (24, 0))}}
+    use = {k: 2.0 for k in KEYS}                                     # a dull week: 48 kWh a day against little sun
+    off = PL.plan_all(NOW, use, day_sun(1.0), 20.0, 50.0, 100.0, cfg)
+    assert off["minimum"]["value"] > 100                             # raw, as today
+    assert "raw_value" not in off["minimum"]["attributes"]
+    on = PL.plan_all(NOW, use, day_sun(1.0), 20.0, 50.0, 100.0, {**cfg, "minimum_cap": True})
+    assert on["minimum"]["value"] == 100 and on["minimum"]["attributes"]["capped_by"] == "100"
+    assert on["minimum"]["attributes"]["raw_value"] == off["minimum"]["value"]
+    assert on["target"] == off["target"] and on["excess"] == off["excess"]
+    # a sunny week on a big pack: target 70, the minimum is the floor alone, nothing capped
+    sunny = PL.plan_all(NOW, {k: 0.5 for k in KEYS}, day_sun(3.0), 50.0, 50.0, 100.0, {**cfg, "minimum_cap": True})
+    assert sunny["target"]["value"] == 70
+    assert sunny["minimum"]["value"] == 10 and sunny["minimum"]["attributes"]["capped_by"] is None
+    # the sun outruns a small pack: the raw target is below 0, so the minimum is held at 0 by it
+    small = PL.plan_all(NOW, {k: 0.2 for k in KEYS}, day_sun(3.0), 20.0, 50.0, 100.0, {**cfg, "minimum_cap": True})
+    assert small["target"]["value"] < 0
+    assert (small["minimum"]["value"], small["minimum"]["attributes"]["capped_by"]) == (0, "target")
+
 def test_the_absorption_rate_is_what_the_full_hours_pull():
     full = [(NOW + timedelta(hours=h), 1.9) for h in range(8)]          # a 1.9 kW element, eight full hours
     ends = [(NOW + timedelta(hours=100 + h), 0.4) for h in range(4)]    # part hours at the ends of runs

@@ -2,6 +2,10 @@
 
 ## 0.5.3
 
+### New Features
+
+- **Cap the minimum SOC.** The *Minimum SOC* sensor adds the deepest stretch of the forecast to the floor, and in a dull month that can be several packs deep: on a site with a 20 kWh battery, November's 172 kWh shortfall over five days read 872 %. The new *Cap the minimum SOC* option on the SOC planning page holds it between 0 and 100 %, or the *Target SOC* when that is lower, since the pack must keep that room free for the sun. The sensor's `raw_value` attribute keeps the uncapped figure and `capped_by` says what held it (`100`, `target`, `0`, or none). Off by default, so nothing changes until you turn it on.
+
 ### Fixes
 
 - **A load on a meter is offered for naming even when one of its runs was named on the grid.** A meter's load was left off the naming page whenever the grid's look-alike of it had a name, even when that look-alike held only one stray run of it: Home's dryer heater, 325 runs on its own plug, never showed up because a grid load named after the oven had taken one of them. The grid's named look-alike now hides it only when it holds at least half of its runs.

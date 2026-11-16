@@ -551,11 +551,13 @@
                         "data": {
                             "plan_full_soc": "Full SOC (%)",
                             "plan_full_soc_entity": "Full SOC entity",
-                            "plan_minimum_floor": "Minimum SOC floor (%)"
+                            "plan_minimum_floor": "Minimum SOC floor (%)",
+                            "plan_minimum_cap": "Cap the minimum SOC"
                         },
                         "data_description": {
                             "plan_full_soc": "The target counts down from here. Used when no entity below is set or it does not read.",
-                            "plan_full_soc_entity": "Optional. A number that holds the full level, for example the SOC limit a load manager uses."
+                            "plan_full_soc_entity": "Optional. A number that holds the full level, for example the SOC limit a load manager uses.",
+                            "plan_minimum_cap": "Holds the minimum SOC between 0 and 100 %, or the target SOC when that is lower, so a dull spell deeper than the pack does not ask for more than it holds. The uncapped value stays in the sensor's raw_value attribute, and capped_by says what held it. Off: the raw value."
                         }
                     },
                     "target": {

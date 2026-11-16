@@ -13,7 +13,7 @@ def _abc(prefix: str) -> tuple:
 
 _PLAN = [
     ("scope", ("plan_days", "plan_production_scale", "plan_consumption_scale"), False),
-    ("battery", ("plan_full_soc", "plan_full_soc_entity", "plan_minimum_floor"), False),
+    ("battery", ("plan_full_soc", "plan_full_soc_entity", "plan_minimum_floor", "plan_minimum_cap"), False),
 ] + [
     (sensor, tuple(f"plan_{sensor}_{side}_{what}" for side in ("consumption", "production")
                    for what in ("full_hours", "derate")), True)

@@ -851,7 +851,9 @@ class PlanSensor(CoordinatorEntity, SensorEntity):
     """One SOC planning reading (insights/planning.py): the target and the
     minimum in % of the pack, the daily excess in kWh (state: today's, the
     days in the ``days`` attribute). The values are RAW - negative where the
-    sun outruns the pack - and the consumer clamps. When an hour of the
+    sun outruns the pack - and the consumer clamps; only the minimum, with the
+    *Cap the minimum SOC* option on, is held to [0, 100 or the target], its raw
+    value in ``raw_value`` and what held it in ``capped_by``. When an hour of the
     horizon is missing the last reading stands, and ``held_since`` says so.
 
     The base consumption (``base``, W) rides on the same machinery and the
