@@ -423,6 +423,7 @@ GROUP_CEIL = 0.0
 # angle width is its own steps' measured spread, never under EDGE_ANGLE_KERNEL (ANGLE_WIDTH_FIT). Bench dials.
 ANGLE_STEADY = 1.0
 ANGLE_WIDTH_FIT = 1.0
+PAIR_FOLD = 1.0                # the daily joins re-key pair_home (Detector._rekey_joined); bench dial, 0 = before
 MIX_ANGLE_WIDTHS = 2.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
@@ -7359,6 +7360,33 @@ class Detector:
             into[sid] = into.get(sid, 0.0) + n
         self._device_home, self._votes, self._starts = None, None, None
 
+    def _rekey_joined(self) -> int:
+        """After the daily joins (mix_daily): every device key of pair_home
+        followed through them (_final), rows of keys that now name one device
+        added together - so the pairs a young start (or stop) group's runs were
+        filed into on the day it was born are that device's pairs, and
+        _merge_devices folds them into the survivor's the next pass, by its own
+        rules (a named pair of another name stays apart). Dom's eloBLOCK: 16
+        pairs, each of one afternoon's start group, every one of them joined
+        into the main start group that night and never folded (2026-11-16, the
+        owner: "go ahead"). Returns how many keys moved."""
+        moved, out = 0, {}
+        for k, row in self.pair_home.items():
+            d = int(k)
+            if d < 0:
+                a, b = divmod(-d, PAIR_ID_BASE)
+                nk = -(self._final(a) * PAIR_ID_BASE + self._final(b))
+            else:
+                nk = self._final(d)
+            moved += nk != d
+            into = out.setdefault(str(nk), {})
+            for sid, n in row.items():
+                into[sid] = into.get(sid, 0.0) + n
+        if moved:
+            self.pair_home = out
+            self._device_home, self._votes, self._starts = None, None, None
+        return moved
+
     def _device_pair(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Pair"]:
         """The pair most of this device's runs went to, of those on the
@@ -8670,6 +8698,8 @@ class Fleet:
                     det._rejudge.add(det._home[pair.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
             det.mix_daily()                  # the groups' one-or-two tests and joins (run lifecycle)
+            if PAIR_FOLD:
+                det._rekey_joined()          # ...and the devices filed under the joined groups with them
             det._join_signatures()             # the signatures a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:

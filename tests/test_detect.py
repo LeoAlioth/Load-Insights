@@ -446,6 +446,23 @@ def test_a_join_keeps_what_the_joined_group_learned_of_order():
     assert abs(det.pair_ratio(5, 9)[0] - math.log(0.86)) < 1e-9
 
 
+def test_the_daily_joins_rekey_the_devices_filed_under_the_joined_groups():
+    """Start group 5 is joined into 4 in the daily pass: the pairs its runs were
+    filed into (device 5>9) become device 4>9's, so _merge_devices folds them
+    into the survivor's (PAIR_FOLD; Dom's eloBLOCK, 16 one-afternoon pairs,
+    2026-11-16)."""
+    det = D.Detector()
+    det.edges = [D.StepGroup(id=4, phase="a", up=True, watts=900.0), D.StepGroup(id=5, phase="a", up=True, watts=950.0),
+                 D.StepGroup(id=9, phase="a", up=False, watts=900.0)]
+    B = D.PAIR_ID_BASE
+    det.pair_home = {str(-(4 * B + 9)): {10: 20.0}, str(-(5 * B + 9)): {11: 3.0}, "5": {12: 1.0}}
+    assert det._rekey_joined() == 0
+    det.edges[1].joined = 4
+    det._by_id = None
+    assert det._rekey_joined() == 2
+    assert det.pair_home == {str(-(4 * B + 9)): {10: 20.0, 11: 3.0}, "4": {12: 1.0}}, det.pair_home
+
+
 def test_a_step_the_inverters_moved_across_carries_no_angle():
     """A battery inverter covering the house took a 2 kW load's step (Dom's Deye,
     2026-11-16): the site consumption steps, the inverters' power steps with it
