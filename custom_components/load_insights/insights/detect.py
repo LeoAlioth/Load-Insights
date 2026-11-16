@@ -412,6 +412,12 @@ MIX_JOIN_WIDTHS = 2.0
 MIX_TEST_MIN = 12              # ...and how many before it is tested
 MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
+# Bench dials, the wider groups (the owner, 2026-10-28 design; benched 2026-11-16):
+# GROUP_CEIL > 0 lets a step join a group of its key past MIX_JOIN_WIDTHS as long
+# as the group's smallest to largest recent step, with it, stays within that
+# ratio (0 = off, today's); MIX_ANGLE_WIDTHS is the angle's own gate
+GROUP_CEIL = 0.0
+MIX_ANGLE_WIDTHS = 2.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -5411,6 +5417,8 @@ class Detector:
     _order_ver: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # group id -> (its recent steps' stamp, smallest, largest size): GROUP_CEIL's span, from recent alone
+    _span: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair: Optional[Dict[int, "Pair"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair_of: Optional[list] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the list it indexes
     # start group -> its pair_home keys, in pair_home's order (start_homes); built again when a key comes or goes
@@ -6330,6 +6338,7 @@ class Detector:
         steps together and joined where one wins: the bigger keeps them, the
         other is never chosen again (StepGroup.joined). Returns (split, joined)."""
         split = joined = 0
+        self._span = None
         for c in self.edges:
             got = _volt_k([(x[0], x[3]) for x in c.recent if x[3]])
             c.k, c.c_nom = (got if got else (None, None))
@@ -6935,12 +6944,30 @@ class Detector:
             else:
                 z = (size - c.watts) / w
             za = (angle - c.angle) / aw if angle is not None and c.angle is not None else 0.0
-            if abs(z) > MIX_JOIN_WIDTHS or abs(za) > MIX_JOIN_WIDTHS:
+            if abs(za) > MIX_ANGLE_WIDTHS:
+                continue
+            if abs(z) > MIX_JOIN_WIDTHS and not (GROUP_CEIL > 0 and self._within_ceiling(c, size)):
                 continue
             score = -0.5 * (z * z + za * za) - math.log(w) + math.log(max(c.count, 1.0))
             if best is None or score > best[0]:
                 best = (score, c)
         return best[1] if best else None
+
+    def _within_ceiling(self, c: "StepGroup", size: float) -> bool:
+        """Would group ``c``'s recent steps, with one of ``size``, span no more
+        than GROUP_CEIL from smallest to largest? Off its recent steps alone, so
+        a restart (which keeps them) answers the same."""
+        if not c.recent or size <= 0 or not (c.watts / GROUP_CEIL <= size <= c.watts * GROUP_CEIL):
+            return False
+        if self._span is None:
+            self._span = {}
+        key = (len(c.recent), c.recent[0][2], c.recent[-1][2])
+        got = self._span.get(c.id)
+        if got is None or got[0] != key:
+            xs = [x[0] for x in c.recent]
+            got = self._span[c.id] = (key, min(xs), max(xs))
+        lo, hi = min(got[1], size), max(got[2], size)
+        return lo > 0 and hi <= GROUP_CEIL * lo
 
     def _by_state(self, h: Dict[int, float], hk: Dict[str, Dict[int, float]], b: int,
                   seg: Tuple[int, int], states: Dict[str, str],

@@ -734,10 +734,24 @@ def energy(site: str, folder: str, dials: list) -> dict:
         cur = det._current(s.pair_id) if s.pair_id is not None else None
         return cur if cur in by_id else f"gone {s.pair_id}"
     sids = [sid_of(s) for s in filed]
+
+    def gid_of(s):
+        # the start group the run began in, followed through the daily joins (Detector._final)
+        d, name = det, ""
+        if s.parent_pair:
+            name, s = s.parent_pair
+            while s.parent_pair:
+                name, s = s.parent_pair
+            d = fleet.subs[name]
+        p = next((x for x in ([s.pair] if getattr(s, "pair", None) else []) + list(getattr(s, "legs", ()))
+                  if x and x[0] is not None), None)
+        return f"{name}:{d._final(p[0])}" if p else f"{name}:none"
+    gids = [gid_of(s) for s in filed]
+    by_group: dict = collections.defaultdict(lambda: collections.defaultdict(float))
     run_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], runs)
     kitchen_wh = _run_credit([s for s in filed if s.energy_wh > 0 and s.quality >= gate], kitchen, KITCHEN_RUN_S)
 
-    def attribute(keep=lambda s: True):
+    def attribute(keep=lambda s: True, group=None):
         """(per pair: its energy, runs and each load's share; each
         load's credited sessions; Wh below the quality gate) over the sessions
         ``keep`` keeps."""
@@ -770,6 +784,8 @@ def energy(site: str, folder: str, dials: list) -> dict:
                 if credit > 0:
                     row[name] = row.get(name, 0.0) + credit
                     credited[name].append(s)
+                    if group is not None:
+                        group[name][gids[k]] += credit
             for name, (rows, ptimes) in plant_rows.items():
                 # as a meter's: only a run the plant switched on with, each moment once - credited by overlap alone,
                 # every run spanning a pulse took it again (a daily 2 kW plant 13.7 kWh right of 7.3, 2026-11-09)
@@ -785,7 +801,7 @@ def energy(site: str, folder: str, dials: list) -> dict:
             if id(s) in run_wh:       # the fridges as one load, too
                 row[FRIDGES] = row.get(FRIDGES, 0.0) + min(sum(wh for _, wh in run_wh[id(s)]), s.energy_wh)
         return per_pair, credited, gated
-    per_pair, credited, gated = attribute()
+    per_pair, credited, gated = attribute(group=by_group)
     # a meter of EXTRA_SUBS is scored from its first reading - Home's fan and
     # blinds from 22 Sep; the fridges over the sessions credited a run the
     # finder found - it finds about half of them (2026-10-02: 46 of the 126
@@ -805,6 +821,20 @@ def energy(site: str, folder: str, dials: list) -> dict:
            "pairing": _pairing(log, credited)}
     for k, names in tables.items():
         res["tables"][k], res["owners"][k] = _table(per_pair, truth, floors, names, small, scope)
+    # fragmentation (the wider groups' bench, 2026-11-16): how many pairs and how many start
+    # groups (after the daily joins) hold 90 % of each measured load's credited energy
+    def n90(vals):
+        vals, acc = sorted(vals, reverse=True), 0.0
+        for i, v in enumerate(vals):
+            acc += v
+            if acc >= 0.9 * sum(vals):
+                return i + 1
+        return 0
+    for tab in res["tables"].values():
+        for n, g in tab["loads"].items():
+            g["pairs90"] = n90([r[n] for r in per_pair.values() if r.get(n, 0.0) > 0])
+            g["groups90"] = n90(list(by_group.get(n, {}).values()))
+    res["groups"] = len(det.edges), sum(c.joined is None for c in det.edges)
     own = res["owners"]["devices"]
     res["sessions"] = [[s.phases, round(s.start, 3), round(s.end, 3), round(s.energy_wh, 3), sid, own.get(sid)]
                        for s, sid in zip(filed, sids)]
@@ -854,7 +884,7 @@ def _print_run(res: dict, per_pair: dict, by_id: dict) -> None:
                           key=lambda x: x[0], reverse=True)[:3]   # ids mix numbers and "gone N"
             went_s = " ".join(f"#{sid}:{e/1000:.2f}kWh={e/row['total']:.0%}of{row['n']}" for e, sid, row in went)
             print(f"  {'':{len(k) + 1}s} {name:20s} {g['truth_kwh']:9.2f} {g['floor_kwh']:9.2f} {g['attributed_kwh']:10.2f} "
-                  f"{g['correct_kwh']:9.2f} {_pct(g['capture']):>7s} {_pct(g['impurity']):>8s}  {pairs}   {went_s}")
+                  f"{g['correct_kwh']:9.2f} {_pct(g['capture']):>7s} {_pct(g['impurity']):>8s}  90%-in {g.get('pairs90')}p/{g.get('groups90')}g  {pairs}   {went_s}")
         print(f"  {'':{len(k) + 1}s} {'all':20s} {tab['truth_kwh']:9.2f} {'':9s} {tab['attributed_kwh']:10.2f} "
               f"{tab['attributed_kwh'] - tab['wrong_kwh']:9.2f} {_pct(tab['capture']):>7s} {_pct(tab['impurity']):>8s}"
               f"   capture weighted by energy, impurity pooled")
@@ -1076,6 +1106,9 @@ def card(args: list) -> None:
                     six = got[(site, m, "6")]["tables"][tname]
                     sh = [(six["loads"].get(name) or {}).get(k) if t else six.get(k) for k in ("capture_share", "impurity_share")]
                     row += f" {vals[0]:>20s} {vals[1]:>20s} {_pct(sh[0]) + '/' + _pct(sh[1]):>11s}"
+                    if t:
+                        g6 = six["loads"].get(name) or {}
+                        row += f" {str(g6.get('pairs90')) + 'p/' + str(g6.get('groups90')) + 'g':>9s}"
                 lines.append(row)
         if first["rest"]:
             r = first["rest"]
