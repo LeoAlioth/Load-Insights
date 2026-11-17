@@ -412,19 +412,20 @@ MIX_JOIN_WIDTHS = 2.0
 MIX_TEST_MIN = 12              # ...and how many before it is tested
 MIX_SPLIT_FAR = 4.0            # piles closer than this many step errors split only on overlaps (mix_daily)
 GROUP_SPAN = 3.0
-# Bench dials, the wider groups (the owner, 2026-10-28 design; benched 2026-11-16):
-# GROUP_CEIL > 0 lets a step join a group of its key past MIX_JOIN_WIDTHS as long
-# as the group's smallest to largest recent step, with it, stays within that
-# ratio (0 = off, today's); MIX_ANGLE_WIDTHS is the angle's own gate
-GROUP_CEIL = 0.0
-# The reactive fix (the owner, 2026-11-16, both parts): a step's reactive change is the load's only where the
-# grid meter carried the step - an inverter that moved across it (a battery covering the house, Dom's Deye) took
-# part of it and its own reactive with it, so the step is grouped by size alone (ANGLE_STEADY); and a group's
-# angle width is its own steps' measured spread, never under EDGE_ANGLE_KERNEL (ANGLE_WIDTH_FIT). Bench dials.
-ANGLE_STEADY = 1.0
-ANGLE_WIDTH_FIT = 1.0
-PAIR_FOLD = 1.0                # the daily joins re-key pair_home (Detector._rekey_joined); bench dial, 0 = before
-MIX_ANGLE_WIDTHS = 2.0
+# How far a step's reactive angle is trusted (the owner, 2026-11-16/17): its reactive change is the load's only
+# where the grid meter carried the step - an inverter that moved across it (a battery covering the house, Dom's
+# Deye) took part of it and its own reactive with it. So every step keeps its angle, trusted
+# 1 - ANGLE_GRADED x |the inverters' move| / the step's size, floored at 0: its angle distance to a group is
+# scaled by that trust and the group's angle learned weighted by it. Benched 2026-11-16/17 (devices hidden,
+# capture / impurity): Home 39.9 % / 8.7 % (90.9 of 227.9 kWh) against 40.4 / 8.6 (92.1) with no fix and
+# 37.1 / 12.5 (84.6) dropping the angle outright wherever the inverters moved; Kozolec 84.7 / 3.3 and the
+# third 91.0 / 3.6 as before; Dom's eloBLOCK / 65 W pairs 20 / 16 -> 13 / 14 (7 / 11 dropping it). Swept
+# g = 0.5, 1, 2, 4: Home 39.0 / 8.7, 39.9 / 8.7, 39.8 / 9.6, 39.4 / 10.4. Tried and dropped the same days:
+# the angle dropped outright, or only past a share of the step (0.1-0.5); the angle as a soft score with the
+# size (z^2 + za^2 <= 2.5-3.5^2); a group's angle width fitted from its own steps (Home -2.5 points); the daily
+# joins re-keying the devices filed under joined groups (Kozolec 84.7 / 3.3 -> 83.3 / 4.7); a 2-5x size
+# ceiling on a group (Kozolec 84.7 -> 70.6-79.2).
+ANGLE_GRADED = 1.0
 # A load running on its own is followed as it SAGS, and its stop may close it
 # at the size it has sagged to as well as the size it started at. A fridge's
 # compressor draws ~58 W at the start and ~44 W by the end of a 28-minute run;
@@ -2768,10 +2769,11 @@ class PhaseState:
         was_q = _median(self.q_recent) if self.q_recent else self.q_level
         step_q = None if (new_q is None or was_q is None) else new_q - was_q
         pv_step = None if (new_pv is None or self.pv_level is None) else new_pv - self.pv_level
-        if ANGLE_STEADY and pv_step is not None and abs(pv_step) >= self.noise:
-            # the inverters moved across the step: the grid meter carried only part of it, and its
-            # reactive change is not the load's (a battery covering the house) - no angle, size alone
-            step_q = None
+        if pv_step is not None and abs(pv_step) >= self.noise and self.lib is not None:
+            moved = self.lib._pv_at
+            moved[(self.name, since)] = abs(pv_step)
+            if len(moved) > 4096:
+                del moved[next(iter(moved))]
         self.level = new_level
         if new_q is not None:
             self.q_level = new_q
@@ -4898,7 +4900,6 @@ class StepGroup:
     recent: List[tuple] = field(default_factory=list)
     joined: Optional[int] = None
     mix_sd: Optional[float] = None
-    angle_sd: Optional[float] = None    # its steps' angle spread, fitted daily (ANGLE_WIDTH_FIT)
     # its voltage exponent (P ~ V^k: ~2 a heater, ~1 a current-limited charger, ~0
     # a switched-mode supply) and its centre at V_NOMINAL, fitted daily from the steps
     # store where the voltage moves enough (mix_daily, _volt_k); None elsewhere
@@ -4912,12 +4913,12 @@ class StepGroup:
 
     def absorb(self, ts: float, watts: float, pf: Optional[float], surge: float,
                kinds: Dict[str, str], lags: Dict[str, Tuple[str, float]], values: Dict[str, float],
-               angle: Optional[float] = None) -> None:
+               angle: Optional[float] = None, trust: float = 1.0) -> None:
         n = min(self.count, ABSORB_WINDOW)
         if angle is not None:
             m = min(self.angle_n, ABSORB_WINDOW)
-            self.angle = angle if self.angle is None else (self.angle * m + angle) / (m + 1)
-            self.angle_n += 1.0
+            self.angle = angle if self.angle is None else (self.angle * m + angle * trust) / (m + trust)
+            self.angle_n += trust
         self.watts_mad = (self.watts_mad * n + abs(watts - self.watts)) / (n + 1) if self.count else 0.0
         self.watts = (self.watts * n + watts) / (n + 1) if self.count else watts
         if pf is not None:
@@ -4975,7 +4976,7 @@ class StepGroup:
                 "where": self.owner, "cannot": [list(x) for x in self.cannot],
                 "recent": [[_trim(x[0], 1), _trim(x[1], 1), *[_trim(v, 2) for v in x[2:]]] for x in self.recent],
                 "joined": self.joined,
-                "mix_sd": _trim(self.mix_sd, 2), "angle_sd": _trim(self.angle_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
+                "mix_sd": _trim(self.mix_sd, 2), "k": _trim(self.k, 3), "c_nom": _trim(self.c_nom, 1)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepGroup":
@@ -4989,7 +4990,7 @@ class StepGroup:
                    keys=dict(d.get("keys") or {}), angle=d.get("angle"), angle_n=float(d.get("angle_n") or 0.0),
                    owner=d.get("where") or "", cannot=[tuple(x) for x in d.get("cannot") or []],
                    recent=[(tuple(x) + (None, None))[:4] for x in d.get("recent") or []], joined=d.get("joined"),
-                   mix_sd=d.get("mix_sd"), angle_sd=d.get("angle_sd"),
+                   mix_sd=d.get("mix_sd"),
                    k=d.get("k"), c_nom=d.get("c_nom"))
 
 
@@ -5429,8 +5430,6 @@ class Detector:
     _order_ver: int = field(default=0, repr=False, compare=False, metadata=DERIVED)
     _ev_cache: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _kinds: Optional[Dict[tuple, List["StepGroup"]]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
-    # group id -> (its recent steps' stamp, smallest, largest size): GROUP_CEIL's span, from recent alone
-    _span: Optional[Dict[int, tuple]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair: Optional[Dict[int, "Pair"]] = field(default=None, repr=False, compare=False, metadata=DERIVED)
     _by_pair_of: Optional[list] = field(default=None, repr=False, compare=False, metadata=DERIVED)   # the list it indexes
     # start group -> its pair_home keys, in pair_home's order (start_homes); built again when a key comes or goes
@@ -5501,6 +5500,8 @@ class Detector:
     # where a meter's own fall was all of it: the stop pairs at the owner's size,
     # as the run was booked at the owner's rise (_declare) - read once
     placed_fall: Optional[tuple] = field(default=None, repr=False, compare=False, metadata=DERIVED)
+    # the inverters' move across each recent step, by (phase, since): ANGLE_GRADED's trust
+    _pv_at: Dict[tuple, float] = field(default_factory=dict, repr=False, compare=False, metadata=DERIVED)
     _segs: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
     # each group's size density between steps: [the histogram, its keys' order, first bin, density] - see _valleys
     _dens: Dict[str, list] = field(default_factory=dict, repr=False, compare=False)
@@ -6247,7 +6248,8 @@ class Detector:
         cluster = self._classify_step(pattern, since, sum(m["watts"] for m in members),
                                       sum(vars_) if all(v is not None for v in vars_) else None,
                                       max(m["surge"] for m in members), window_ok=len(members) == 1,
-                                      legs=[(m["ph"], m["since"], m["watts"]) for m in members])
+                                      legs=[(m["ph"], m["since"], m["watts"]) for m in members],
+                                      at=[(m["ph"], m["since"]) for m in members])
         conf, self.placement_conf = self.placement_conf, None
         win, self.placement_window = self.placement_window, None
         step, self.placement_step = self.placement_step, None
@@ -6350,7 +6352,6 @@ class Detector:
         steps together and joined where one wins: the bigger keeps them, the
         other is never chosen again (StepGroup.joined). Returns (split, joined)."""
         split = joined = 0
-        self._span = None
         for c in self.edges:
             got = _volt_k([(x[0], x[3]) for x in c.recent if x[3]])
             c.k, c.c_nom = (got if got else (None, None))
@@ -6422,10 +6423,6 @@ class Detector:
                 joined += 1
                 if gone is a:
                     break
-        if ANGLE_WIDTH_FIT:
-            for c in self.edges:
-                angs = [x[1] for x in c.recent if x[1] is not None]
-                c.angle_sd = _robust_sd(angs) if c.joined is None and len(angs) >= MIX_TEST_MIN else None
         return split, joined
 
     def _fold_order(self, gone: int, keep: int) -> None:
@@ -6669,7 +6666,8 @@ class Detector:
             cid = self._classify_step("".join(sorted(phases)), min(m["since"] for m in members),
                                       -sum(m["watts"] for m in members),
                                       sum(qs) if all(x is not None for x in qs) else None,
-                                      max(m["surge"] for m in members)).id
+                                      max(m["surge"] for m in members),
+                                      at=[(m["ph"], m["since"]) for m in members]).id
             self.placed_fall = None
             for m in members:
                 self.edge_at.setdefault(m["ph"], []).append((m["since"], cid, -m["watts"]))
@@ -6749,12 +6747,17 @@ class Detector:
             self._form_event(first, list(self._pending), self.event_window())
 
     def _classify_step(self, ph: str, since: float, watts: float, var: Optional[float], surge: float,
-                       window_ok: bool = False, legs: Optional[List[tuple]] = None) -> "StepGroup":
+                       window_ok: bool = False, legs: Optional[List[tuple]] = None,
+                       at: Optional[List[tuple]] = None) -> "StepGroup":
         """File a step - or an all-phase event, ``ph`` then being its phase
         pattern, ``watts`` its total and ``legs`` its (phase, since, watts)
         on each - as an edge (see EDGE_LAG_REACH_S) and return its cluster."""
         size = abs(watts)
         pf = size / math.hypot(size, var) if var is not None and size > 0 else None
+        trust = 1.0
+        if size > 0:
+            moved = sum(self._pv_at.get(k, 0.0) for k in (at or [(ph, since)]))
+            trust = max(0.0, 1.0 - ANGLE_GRADED * moved / size)
         events, times, numbers = self.signals or ({}, {}, {})
         learned = [n for n in events if self.window(n)]     # as of this step, not of the pass's first
         bins = int(round(2 * EDGE_LAG_REACH_S / EDGE_LAG_BIN_S))
@@ -6839,7 +6842,7 @@ class Detector:
         if self.volts_at is not None:
             vs = [v for v in (self.volts_at(p, since, watts < 0) for p in ph) if v]
             von = sum(vs) / len(vs) if vs else None
-        cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where, von)
+        cluster = self._by_mixture(ph, watts > 0, size, angle, keys, kind, where, von, trust)
         if cluster is None:
             cluster = StepGroup(id=self.next_edge_id, phase=ph, up=watts > 0, watts=size, keys=keys, owner=where)
             self.next_edge_id += 1
@@ -6853,10 +6856,10 @@ class Detector:
                 kind.remove(gone)
                 self.edges = [c for c in self.edges if c is not gone]
                 self._by_id = None
-        cluster.absorb(since, size, pf, surge, kinds, lags, values, angle)
+        cluster.absorb(since, size, pf, surge, kinds, lags, values, angle if trust > 0 else None, trust)
         vs = [v for v in (self.volts_at(p, since, watts < 0) if self.volts_at is not None else None for p in ph) if v]
         rows = cluster.recent
-        rows.append((size, angle, round(since, 2), round(sum(vs) / len(vs), 2) if vs else None))
+        rows.append((size, angle if trust >= 0.5 else None, round(since, 2), round(sum(vs) / len(vs), 2) if vs else None))
         while rows and ((rows[0][2] is not None and rows[0][2] < since - STEP_AGE_S)
                         or ((rows[0][2] is None or rows[0][2] < since - STEP_MIN_S) and len(rows) > STEP_MAX)):
             del rows[0]                          # in time order: only the oldest can go (_kept_steps)
@@ -6940,12 +6943,11 @@ class Detector:
         q = max((st.q_quantum for st in sts), default=0.0)
         p = max(size, 1.0)
         aerr = math.degrees(math.sqrt(2.0) * max(math.atan2(q, p), math.sqrt(2.0 * q / p)))
-        # ...and never under the spread its own steps' angles show (ANGLE_WIDTH_FIT): Dom's boiler reads
-        # -28 to +35 degrees by evening where its amps' resolution says 6 (2026-11-16)
-        return width, max(EDGE_ANGLE_KERNEL, aerr, c.angle_sd or 0.0)
+        return width, max(EDGE_ANGLE_KERNEL, aerr)
 
     def _by_mixture(self, ph: str, up: bool, size: float, angle: Optional[float], keys: Dict[str, str],
-                    kind: List["StepGroup"], where: str, von: Optional[float] = None) -> Optional["StepGroup"]:
+                    kind: List["StepGroup"], where: str, von: Optional[float] = None,
+                    trust: float = 1.0) -> Optional["StepGroup"]:
         """The group of its key (phase pattern, direction, meter, the inputs the
         histogram keyed it by) a step is most likely from: within
         MIX_JOIN_WIDTHS of its centre in size and, where both are measured, in
@@ -6961,31 +6963,13 @@ class Detector:
                 z = (size * (V_NOMINAL / von) ** c.k - c.c_nom) / w
             else:
                 z = (size - c.watts) / w
-            za = (angle - c.angle) / aw if angle is not None and c.angle is not None else 0.0
-            if abs(za) > MIX_ANGLE_WIDTHS:
-                continue
-            if abs(z) > MIX_JOIN_WIDTHS and not (GROUP_CEIL > 0 and self._within_ceiling(c, size)):
+            za = trust * (angle - c.angle) / aw if angle is not None and c.angle is not None else 0.0
+            if abs(z) > MIX_JOIN_WIDTHS or abs(za) > MIX_JOIN_WIDTHS:
                 continue
             score = -0.5 * (z * z + za * za) - math.log(w) + math.log(max(c.count, 1.0))
             if best is None or score > best[0]:
                 best = (score, c)
         return best[1] if best else None
-
-    def _within_ceiling(self, c: "StepGroup", size: float) -> bool:
-        """Would group ``c``'s recent steps, with one of ``size``, span no more
-        than GROUP_CEIL from smallest to largest? Off its recent steps alone, so
-        a restart (which keeps them) answers the same."""
-        if not c.recent or size <= 0 or not (c.watts / GROUP_CEIL <= size <= c.watts * GROUP_CEIL):
-            return False
-        if self._span is None:
-            self._span = {}
-        key = (len(c.recent), c.recent[0][2], c.recent[-1][2])
-        got = self._span.get(c.id)
-        if got is None or got[0] != key:
-            xs = [x[0] for x in c.recent]
-            got = self._span[c.id] = (key, min(xs), max(xs))
-        lo, hi = min(got[1], size), max(got[2], size)
-        return lo > 0 and hi <= GROUP_CEIL * lo
 
     def _by_state(self, h: Dict[int, float], hk: Dict[str, Dict[int, float]], b: int,
                   seg: Tuple[int, int], states: Dict[str, str],
@@ -7359,33 +7343,6 @@ class Detector:
         for sid, n in self.pair_home.pop(str(start)).items():
             into[sid] = into.get(sid, 0.0) + n
         self._device_home, self._votes, self._starts = None, None, None
-
-    def _rekey_joined(self) -> int:
-        """After the daily joins (mix_daily): every device key of pair_home
-        followed through them (_final), rows of keys that now name one device
-        added together - so the pairs a young start (or stop) group's runs were
-        filed into on the day it was born are that device's pairs, and
-        _merge_devices folds them into the survivor's the next pass, by its own
-        rules (a named pair of another name stays apart). Dom's eloBLOCK: 16
-        pairs, each of one afternoon's start group, every one of them joined
-        into the main start group that night and never folded (2026-11-16, the
-        owner: "go ahead"). Returns how many keys moved."""
-        moved, out = 0, {}
-        for k, row in self.pair_home.items():
-            d = int(k)
-            if d < 0:
-                a, b = divmod(-d, PAIR_ID_BASE)
-                nk = -(self._final(a) * PAIR_ID_BASE + self._final(b))
-            else:
-                nk = self._final(d)
-            moved += nk != d
-            into = out.setdefault(str(nk), {})
-            for sid, n in row.items():
-                into[sid] = into.get(sid, 0.0) + n
-        if moved:
-            self.pair_home = out
-            self._device_home, self._votes, self._starts = None, None, None
-        return moved
 
     def _device_pair(self, device: int, context: Optional[str], avoid: Sequence[int],
                           phases: str, run: Optional["Run"] = None) -> Optional["Pair"]:
@@ -8698,8 +8655,6 @@ class Fleet:
                     det._rejudge.add(det._home[pair.id])      # its device's merges are judged again (_merge_devices)
             _hint_split(det)
             det.mix_daily()                  # the groups' one-or-two tests and joins (run lifecycle)
-            if PAIR_FOLD:
-                det._rekey_joined()          # ...and the devices filed under the joined groups with them
             det._join_signatures()             # the signatures a drifting start size cut apart (_join_neighbours)
 
     def _wait_of(self, name: str) -> float:

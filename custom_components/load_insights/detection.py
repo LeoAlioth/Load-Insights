@@ -2278,9 +2278,8 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         inverter feeds the house beside the grid and follows the load: Dom's
         Deye hybrid, its battery covering the house, takes part or all of a
         step and its reactive with it (the boiler read -28 to +35 degrees by
-        evening, 2026-11-16). So a step across which the inverters moved
-        carries no reactive change (detect.ANGLE_STEADY, PhaseState) and is
-        grouped by size alone.
+        evening, 2026-11-16). So a step's angle is trusted the less the more
+        the inverters moved across it (detect.ANGLE_GRADED, PhaseState).
 
         Nothing is returned when no role can offer one, which is honest: no
         power factor beats a fabricated one."""

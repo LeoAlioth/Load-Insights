@@ -446,29 +446,12 @@ def test_a_join_keeps_what_the_joined_group_learned_of_order():
     assert abs(det.pair_ratio(5, 9)[0] - math.log(0.86)) < 1e-9
 
 
-def test_the_daily_joins_rekey_the_devices_filed_under_the_joined_groups():
-    """Start group 5 is joined into 4 in the daily pass: the pairs its runs were
-    filed into (device 5>9) become device 4>9's, so _merge_devices folds them
-    into the survivor's (PAIR_FOLD; Dom's eloBLOCK, 16 one-afternoon pairs,
-    2026-11-16)."""
-    det = D.Detector()
-    det.edges = [D.StepGroup(id=4, phase="a", up=True, watts=900.0), D.StepGroup(id=5, phase="a", up=True, watts=950.0),
-                 D.StepGroup(id=9, phase="a", up=False, watts=900.0)]
-    B = D.PAIR_ID_BASE
-    det.pair_home = {str(-(4 * B + 9)): {10: 20.0}, str(-(5 * B + 9)): {11: 3.0}, "5": {12: 1.0}}
-    assert det._rekey_joined() == 0
-    det.edges[1].joined = 4
-    det._by_id = None
-    assert det._rekey_joined() == 2
-    assert det.pair_home == {str(-(4 * B + 9)): {10: 20.0, 11: 3.0}, "4": {12: 1.0}}, det.pair_home
-
-
 def test_a_step_the_inverters_moved_across_carries_no_angle():
     """A battery inverter covering the house took a 2 kW load's step (Dom's Deye,
     2026-11-16): the site consumption steps, the inverters' power steps with it
-    and the grid meter's reactive change is not the load's - the step is
-    grouped by size alone (ANGLE_STEADY). With the inverters steady it keeps its
-    angle (Home's SolarEdge)."""
+    and the grid meter's reactive change is not the load's - the inverters moved
+    by the whole step, so its angle has no trust left (ANGLE_GRADED) and is not
+    kept. With the inverters steady it keeps its angle (Home's SolarEdge)."""
     n = int(3600 / DT)
     on = lambda s: 600 <= s < 1800                                  # noqa: E731
     house = [(T0 + i * DT, 300.0 + (2000.0 if on(i * DT) else 0.0)) for i in range(n)]
@@ -480,27 +463,6 @@ def test_a_step_the_inverters_moved_across_carries_no_angle():
         angles[name] = [x[1] for c in det.edges if c.up and c.watts > 1500 for x in c.recent]
     assert angles["steady"] and all(a is not None and a > 10 for a in angles["steady"]), angles
     assert angles["moved"] and all(a is None for a in angles["moved"]), angles
-
-
-def test_a_groups_angle_width_is_its_own_steps_spread():
-    """ANGLE_WIDTH_FIT: a group whose angles scatter +-20 degrees (Dom's boiler by
-    evening, the reactive read off the grid side) is that wide in angle after the
-    daily pass, never under EDGE_ANGLE_KERNEL."""
-    rnd = random.Random(3)
-    det = D.Detector()
-    det.phases["a"].noise = 2.83
-    g = det._classify_step("a", T0, 1000.0, 0.0, 0.0)
-    g.recent = [(rnd.gauss(1000.0, 3.0), rnd.gauss(0.0, 20.0), None, None) for _ in range(30)]
-    g.count = 30.0
-    det.mix_daily()
-    w = det._mix_widths("a", 1000.0, g)[1]
-    assert 12.0 < w < 30.0 and g.angle_sd == w, (w, g.angle_sd)
-    tight = D.Detector()
-    tight.phases["a"].noise = 2.83
-    h = tight._classify_step("a", T0, 1000.0, 0.0, 0.0)
-    h.recent = [(1000.0, 0.5 * (k % 3), None, None) for k in range(30)]
-    tight.mix_daily()
-    assert tight._mix_widths("a", 1000.0, h)[1] == D.EDGE_ANGLE_KERNEL
 
 
 def test_a_fall_far_from_every_run_closes_nothing():
