@@ -65,6 +65,8 @@ Completed items are removed - history lives in `git log` and `RELEASE_NOTES.md`.
 
 *The room sensor's two refinements feed Load Juggler's early start; do them as one stretch.*
 
+- [ ] **INS-34 [FEATURE] Market-aware planning: price the slots, plan when to charge (GitHub issue 1, moved from Load Juggler's 24 on 2026-11-24)** *(not designed; the owner moved it here 2026-11-24)* - the reporter (Netherlands, quarter-hour dynamic prices) wants charging and energy decisions to follow the value of a kWh, not just self-consumption: separate import and export tariffs; price sources (GE-Spot, HA price entities); the solar forecast; targets from EV Smart Charging or the user (departure time, target / minimum SoC, maximum power); export solar at noon and charge later when import is cheaper; optionally curtail the inverter at negative prices. Split proposed by the assistant: Load Insights does the PLANNING (prices x house forecast x sun forecast x targets -> per-slot plan: charge / hold / export / curtail, beside the SOC planning sensors), Load Juggler does the DOING (a "follow a schedule" input for a load, and inverter curtailment), so a Load Juggler item follows once the plan's output is designed. New ground: Load Insights has been kWh-only so far (INS-19's heat nudge has no tariff by decision), so prices would be its first money input. Open for the owner: whether to take it on at all, and in which repo each half lives.
+
 
 ### Edges, stage 1 (one bench session)
 
