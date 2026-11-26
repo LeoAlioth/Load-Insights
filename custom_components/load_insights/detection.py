@@ -25,7 +25,7 @@ from homeassistant.const import (
     EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
     UnitOfEnergy,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
@@ -35,6 +35,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.json import json_bytes
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -564,6 +565,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         # rename, a statistics rewrite - each waits for the pass to finish
         self._lock = asyncio.Lock()
         self._stopping = False
+        self._config_pending = False             # a registry refresh queued on the lock: one is enough
         # what detection named by itself and put on the Energy dashboard (INS-21)
         self.autonamer = AutoNamer(self)
 
@@ -1761,7 +1763,17 @@ class DetectionRunner(DataUpdateCoordinator[None]):
         self.entry.async_on_unload(async_track_time_interval(self.hass, self._tick, timedelta(seconds=STREAM_TICK_S)))
         self.entry.async_on_unload(self.hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, self._registry_changed))
         self.entry.async_on_unload(self._stop_listening)
+        # nothing runs until Home Assistant has started: its start waits for every task created during it, and the
+        # restart catch-up (_run chaining itself, a recorder slice a step) with the registry refreshes queued on the
+        # lock behind it held Home's start for the full 300 s bootstrap timeout (2026-11-26). Plain tasks, not
+        # background ones, so a stop still waits for a step instead of cancelling it under the lock (_final_write).
+        self.entry.async_on_unload(async_at_started(self.hass, self._started))
+
+    async def _started(self, _hass: HomeAssistant) -> None:
         self.hass.async_create_task(self.async_refresh())
+
+    def _running(self) -> bool:
+        return self.hass.state is CoreState.running and not self._stopping
 
     @callback
     def _stop_listening(self) -> None:
@@ -1771,11 +1783,15 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     @callback
     def _registry_changed(self, _event) -> None:
-        if not self._stopping:
+        # before the start every step refreshes the config anyway (_step); after it, one queued refresh covers every
+        # registry event before it runs
+        if self._running() and not self._config_pending:
+            self._config_pending = True
             self.hass.async_create_task(self._refresh_config_locked())
 
     async def _refresh_config_locked(self) -> None:
         async with self._lock:                   # never under a step: it changes the detector's meters
+            self._config_pending = False         # an event from here on needs a refresh of its own
             await self._refresh_config()
 
     async def _refresh_config(self) -> None:
@@ -1802,7 +1818,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
     @callback
     def _on_minute(self, _now) -> None:
         """Every minute of the clock: the minute's work for the live stream (_minute)."""
-        if self._stopping or self.entry.pref_disable_polling:
+        if not self._running() or self.entry.pref_disable_polling:
             return
         self.hass.async_create_task(self._minute())
 
@@ -2094,7 +2110,7 @@ class DetectionRunner(DataUpdateCoordinator[None]):
 
     @callback
     def _tick(self, _now) -> None:
-        if self._stopping or self.entry.pref_disable_polling or self._lock.locked():
+        if not self._running() or self.entry.pref_disable_polling or self._lock.locked():
             return
         self._live = self._listen_from is not None and self.last_processed is not None \
             and self.last_processed.timestamp() >= self._listen_from
